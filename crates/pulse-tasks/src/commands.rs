@@ -211,13 +211,13 @@ fn usage(cmd: &str, sub: &str) -> anyhow::Error {
     pulse_cli::errorf(2, &what, "see the usage", &format!("pulse help {cmd}")).into()
 }
 
-fn need(args: &[String], n: usize, fix: &str) -> Result<()> {
+fn need(cmd: &str, args: &[String], n: usize, fix: &str) -> Result<()> {
     if args.len() < n {
         Err(pulse_cli::errorf(
             2,
             "Missing argument",
             &format!("the command needs {fix}"),
-            "pulse help task",
+            &format!("pulse help {cmd}"),
         )
         .into())
     } else {
@@ -483,7 +483,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             Ok(())
         }
         "show" => {
-            need(rest, 1, "a schedule id")?;
+            need("schedule", rest, 1, "a schedule id")?;
             let sc = schedules::get(store(c)?, &rest[0])?;
             let js = schedules::jobs(store(c)?, &sc.id)?;
             if c.json {
@@ -540,7 +540,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             Ok(())
         }
         "pause" | "end" => {
-            need(rest, 1, "a schedule id")?;
+            need("schedule", rest, 1, "a schedule id")?;
             let s = store(c)?;
             let sc = if sub == "pause" {
                 schedules::pause(s, &rest[0], &fs.get_string("note"), &actor(c))?
@@ -553,7 +553,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             printf(c, format_args!("{} {}\n", sc.id, sc.status))
         }
         "resume" => {
-            need(rest, 1, "a schedule id")?;
+            need("schedule", rest, 1, "a schedule id")?;
             let sc = schedules::resume(store(c)?, &rest[0], &actor(c))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
@@ -564,7 +564,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             )
         }
         "run" => {
-            need(rest, 1, "a schedule id")?;
+            need("schedule", rest, 1, "a schedule id")?;
             let sc = schedules::run_now(store(c)?, &rest[0], &actor(c))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &ScheduleOut { schedule: &sc });
@@ -588,7 +588,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
             }
         }
         "log" => {
-            need(rest, 1, "a schedule id")?;
+            need("schedule", rest, 1, "a schedule id")?;
             let sc = schedules::get(store(c)?, &rest[0])?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &ScheduleLogOut { schedule: &sc });
@@ -691,7 +691,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             Ok(())
         }
         "show" => {
-            need(rest, 1, "a task id")?;
+            need("task", rest, 1, "a task id")?;
             let (t, revs) = get(store(c)?, &rest[0])?;
             let msgs = messages(store(c)?, "", &t.id, "", "")?;
             let js = jobs(store(c)?, &t.id)?;
@@ -768,7 +768,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             Ok(())
         }
         "amend" => {
-            need(rest, 1, "a task id")?;
+            need("task", rest, 1, "a task id")?;
             let brief = read_body(&fs.get_string("brief"), &fs.get_string("brief-file"))?;
             let t = amend(
                 store(c)?,
@@ -784,7 +784,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             printf(c, format_args!("{} amended: rev {}\n", t.id, t.current_rev))
         }
         "cancel" => {
-            need(rest, 1, "a task id")?;
+            need("task", rest, 1, "a task id")?;
             let t = cancel(store(c)?, &rest[0], &fs.get_string("reason"), &actor(c))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &TaskOut { task: &t });
@@ -792,7 +792,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             printf(c, format_args!("{} cancelled\n", t.id))
         }
         "status" => {
-            need(rest, 2, "a task id and a status")?;
+            need("task", rest, 2, "a task id and a status")?;
             let t = set_status(store(c)?, &rest[0], &rest[1], &actor(c))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &TaskOut { task: &t });
@@ -800,7 +800,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             printf(c, format_args!("{} is {}\n", t.id, t.status))
         }
         "reply" => {
-            need(rest, 1, "a task id")?;
+            need("task", rest, 1, "a task id")?;
             let body = read_body(&rest[1..].join(" "), &fs.get_string("file"))?;
             let m = reply(store(c)?, &rest[0], &actor(c), &body)?;
             if c.json {
@@ -874,7 +874,7 @@ pub fn run_msg(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             Ok(())
         }
         "read" => {
-            need(rest, 1, "one or more message ids")?;
+            need("msg", rest, 1, "one or more message ids")?;
             let n = mark_read(store(c)?, rest, &actor(c))?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &MarkedOut { marked: n });
@@ -980,7 +980,7 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
             Ok(())
         }
         "approve" | "deny" => {
-            need(rest, 1, "a request id")?;
+            need("compute", rest, 1, "a request id")?;
             let who = actor(c);
             let r = if sub == "approve" {
                 approve(store(c)?, &rest[0], &fs.get_string("words"), &who)?
