@@ -1623,7 +1623,7 @@ pub(crate) fn run_job(
             log.add(format!("answer skipped: {}", err_message(&e)));
         }
         for q in &parsed.questions {
-            let _ = crate::board::create_post(
+            if let Err(e) = crate::board::create_post(
                 s,
                 now.to_string(),
                 crate::board::PostOpts {
@@ -1640,7 +1640,11 @@ pub(crate) fn run_job(
                     for_owner: true,
                     ..Default::default()
                 },
-            );
+            ) {
+                let msg = format!("question post skipped: {}", err_message(&e));
+                eprintln!("run {run_id}: {msg}");
+                log.add(msg);
+            }
         }
         for sg in &parsed.suggestions {
             let area = if sg.area.is_empty() {
@@ -1659,7 +1663,7 @@ pub(crate) fn run_job(
             } else {
                 (sg.card.clone(), sg.card.clone())
             };
-            let _ = crate::board::create_post(
+            if let Err(e) = crate::board::create_post(
                 s,
                 now.to_string(),
                 crate::board::PostOpts {
@@ -1679,7 +1683,11 @@ pub(crate) fn run_job(
                     session: run_id.clone(),
                     ..Default::default()
                 },
-            );
+            ) {
+                let msg = format!("suggestion post skipped: {}", err_message(&e));
+                eprintln!("run {run_id}: {msg}");
+                log.add(msg);
+            }
         }
         std::fs::write(&log_path, log.text()).ok();
     }
