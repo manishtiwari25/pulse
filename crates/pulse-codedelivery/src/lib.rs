@@ -1,4 +1,4 @@
-//! PULSE: code delivery signals for the tally (port of Go package internal/codedelivery).
+//! PULSE: code delivery signals for the tally.
 
 pub mod evidence;
 pub mod report;

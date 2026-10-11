@@ -8,7 +8,6 @@ pub(crate) const CRED_HEADER: &str = "X-Pulse-Cred";
 pub(crate) const RESOLVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 impl Handler {
-    /// Go: func (h *Handler) additionCred(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_cred(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
         let sub = parts.iter().skip(1).cloned().collect::<Vec<_>>().join("/");
         if sub.is_empty() {
@@ -206,7 +205,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) credState(w http.ResponseWriter, r *http.Request)
     pub(crate) fn cred_state(&self, w: &mut ResponseWriter, _r: &Request) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -234,7 +232,6 @@ impl Handler {
     }
 }
 
-/// Go: func credFailure(w http.ResponseWriter, err error, fix string)
 pub(crate) fn cred_failure(w: &mut ResponseWriter, err: anyhow::Error, fix: &str) {
     if let Some(refusal) = err.downcast_ref::<pulse_cred_setup::Refusal>() {
         let code = if refusal.code == 2 { 400 } else { 409 };
@@ -277,7 +274,6 @@ pub(crate) fn cred_failure(w: &mut ResponseWriter, err: anyhow::Error, fix: &str
     );
 }
 
-/// Go: func additionFlag(w http.ResponseWriter, payload map[string]any, key string, dflt bool) (bool, bool)
 pub(crate) fn addition_flag(
     w: &mut ResponseWriter,
     payload: JsonMap,
@@ -363,7 +359,7 @@ mod tests {
         if confirmed {
             headers.push((CRED_HEADER, "yes"));
         }
-        crate::test_helpers_f3::request(h, method, path, body, &headers)
+        crate::test_helpers_http::request(h, method, path, body, &headers)
     }
 
     fn git_repo() -> tempfile::TempDir {
@@ -435,7 +431,7 @@ mod tests {
     #[test]
     fn cred_routes() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(true);
+        let s = crate::test_helpers_http::additions_store(true);
         let _env = pulse_testutil::setenv("OP_SERVICE_ACCOUNT_TOKEN", "");
         let calls = Arc::new(Mutex::new(Vec::<String>::new()));
         let probes = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -511,8 +507,8 @@ mod tests {
         }
         let _restore = Restore;
         let repo = git_repo();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/projects",
             &format!(
@@ -532,7 +528,7 @@ mod tests {
         };
         let loopback = "127.0.0.1:8765";
         let (status, result, raw) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/cred",
             "",
@@ -553,7 +549,7 @@ mod tests {
         assert_eq!(result["providers"][2]["generate"], true);
         assert!(!raw.contains("BEGIN OPENSSH"));
         let (status, _, _) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/cred/token",
             r#"{"token":"x"}"#,
@@ -562,7 +558,7 @@ mod tests {
         );
         assert_eq!(status, 403);
         let (status, _, _) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/cred/set",
             r#"{"reference":"file:///x"}"#,
@@ -571,7 +567,7 @@ mod tests {
         );
         assert_eq!(status, 403);
         let (status, _, _) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/cred/op/vaults",
             "",
@@ -580,7 +576,7 @@ mod tests {
         );
         assert_eq!(status, 405);
         let (status, _, _) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/cred/nope",
             "{}",
@@ -590,7 +586,7 @@ mod tests {
         assert_eq!(status, 404);
         let post = |path: &str, body: &str| {
             let out = cred_request(
-                crate::test_helpers_f3::handler(&s),
+                crate::test_helpers_http::handler(&s),
                 "POST",
                 &format!("/api/v1/cred/{path}"),
                 body,
@@ -605,12 +601,12 @@ mod tests {
         assert!(result["error"].as_str().unwrap().contains("token"));
         let (status, _, _) = post(
             "token",
-            &crate::test_helpers_f3::json_body(json!({"token": CRED_TEST_KEY})),
+            &crate::test_helpers_http::json_body(json!({"token": CRED_TEST_KEY})),
         );
         assert_eq!(status, 400);
         let (status, result, _) = post(
             "token",
-            &crate::test_helpers_f3::json_body(json!({"token": CRED_TEST_TOKEN})),
+            &crate::test_helpers_http::json_body(json!({"token": CRED_TEST_TOKEN})),
         );
         assert_eq!(status, 200);
         assert!(
@@ -644,10 +640,10 @@ mod tests {
         let (status, _, _) = post("op/items", "{}");
         assert_eq!(status, 400);
         let (status, result, _) = cred_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/cred/set",
-            &crate::test_helpers_f3::json_body(json!({"reference": reference})),
+            &crate::test_helpers_http::json_body(json!({"reference": reference})),
             loopback,
             true,
         );
@@ -670,7 +666,7 @@ mod tests {
         assert_eq!(probes.lock().unwrap().len(), 1);
         let (status, result, _) = post(
             "set",
-            &crate::test_helpers_f3::json_body(json!({"reference": CRED_TEST_KEY})),
+            &crate::test_helpers_http::json_body(json!({"reference": CRED_TEST_KEY})),
         );
         assert_eq!(status, 400);
         assert!(
@@ -684,7 +680,7 @@ mod tests {
         *probe_err.lock().unwrap() = false;
         let (status, result, _) = post(
             "set",
-            &crate::test_helpers_f3::json_body(json!({"reference": reference})),
+            &crate::test_helpers_http::json_body(json!({"reference": reference})),
         );
         assert_eq!(status, 200);
         assert_eq!(result["result"]["reference"], reference);
@@ -708,8 +704,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(actor, "human:dashboard");
-        let (status, settings, _) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, settings, _) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/settings",
             "",

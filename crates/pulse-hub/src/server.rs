@@ -13,7 +13,6 @@ pub type LoadHubFn = Box<dyn Fn() -> Result<()> + Send + Sync>;
 pub type HandoverFn = Arc<dyn Fn(LoadHubFn) + Send + Sync>;
 pub(crate) type ProviderCache = Arc<Mutex<BTreeMap<String, Arc<dyn pulse_provider::Provider>>>>;
 
-/// Go: type Handler struct {
 pub struct Handler {
     pub store: Option<Arc<pulse_store::Store>>,
     pub source: Option<Arc<dyn crate::board::TallySource>>,
@@ -30,7 +29,8 @@ pub struct Handler {
     pub(crate) org_cache_ttl: Duration,
 }
 
-/// Go fs.FS-compatible UI filesystem.
+/// Where the console's files are served from: the embedded static export, or
+/// an in-memory tree in tests.
 pub trait UiFs: Send + Sync {
     fn read_file(&self, name: &str) -> std::io::Result<Vec<u8>>;
     fn is_dir(&self, name: &str) -> bool;
@@ -58,7 +58,6 @@ impl UiFs for Dist {
 }
 
 impl Handler {
-    /// Go: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
     pub fn serve_http(&self, w: &mut ResponseWriter, r: &Request) {
         w.header_mut().insert(
             "x-content-type-options",
@@ -162,7 +161,6 @@ impl Handler {
         self.static_(w, r);
     }
 
-    /// Go: func (h *Handler) static(w http.ResponseWriter, r *http.Request)
     pub(crate) fn static_(&self, w: &mut ResponseWriter, r: &Request) {
         let mut name = clean_url_path(r.path());
         if name == "." || name.is_empty() {
@@ -258,12 +256,11 @@ impl Handler {
     }
 }
 
-/// Go: func New(s *store.Store, source TallySource) *Handler
 pub fn new_handler(
     store: Option<Arc<pulse_store::Store>>,
     source: Option<Arc<dyn crate::board::TallySource>>,
 ) -> Handler {
-    // Go: if source == nil && s != nil { source = nativeTally{s} }
+    // Without an explicit source, a handler with a store tallies it natively.
     let source = source.or_else(|| {
         store.clone().map(|store| {
             Arc::new(crate::board::NativeTally { store }) as Arc<dyn crate::board::TallySource>
@@ -283,7 +280,6 @@ pub fn new_handler(
     }
 }
 
-/// Go: func writeJSON(w http.ResponseWriter, status int, payload any)
 pub(crate) fn write_json(w: &mut ResponseWriter, status: i64, payload: Value) {
     w.header_mut().insert(
         header::CONTENT_TYPE,
@@ -298,7 +294,6 @@ pub(crate) fn write_json(w: &mut ResponseWriter, status: i64, payload: Value) {
     }
 }
 
-/// Go: func writeError(w http.ResponseWriter, status int, what, why, fix string)
 pub(crate) fn write_error(
     w: &mut ResponseWriter,
     status: i64,
@@ -313,7 +308,6 @@ pub(crate) fn write_error(
     write_json(w, status, json!(payload));
 }
 
-/// Go: func readPayload(w http.ResponseWriter, r *http.Request) (map[string]any, bool)
 pub(crate) fn read_payload(w: &mut ResponseWriter, r: &Request) -> (JsonMap, bool) {
     let origin = r.header("Origin");
     if !origin.is_empty() {
@@ -417,7 +411,6 @@ pub(crate) fn read_payload(w: &mut ResponseWriter, r: &Request) -> (JsonMap, boo
     (map.into_iter().collect(), true)
 }
 
-/// Go: func readMethod(w http.ResponseWriter, r *http.Request) bool
 pub(crate) fn read_method(w: &mut ResponseWriter, r: &Request) -> bool {
     if r.method == "GET" || r.method == "HEAD" {
         return true;
@@ -434,7 +427,6 @@ pub(crate) fn read_method(w: &mut ResponseWriter, r: &Request) -> bool {
     false
 }
 
-/// Go: func Serve(ctx context.Context, listener net.Listener, h http.Handler) error
 pub fn serve(
     ctx: &pulse_bus::CancellationToken,
     listener: std::net::TcpListener,
@@ -443,7 +435,6 @@ pub fn serve(
     crate::httpx::serve(ctx, listener, handler)
 }
 
-/// Go: func openBrowser(address string) error
 pub(crate) fn open_browser(address: String) -> Result<()> {
     let command = if cfg!(target_os = "macos") {
         "open"
@@ -596,8 +587,8 @@ mod tests {
     #[test]
     fn static_export() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "one");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "one");
         let mut h = new_handler(Some(Arc::new((*s).clone())), None);
         h.ui = map_fs(&[
             ("index.html", b"home"),
@@ -690,8 +681,8 @@ mod tests {
     #[test]
     fn decide_and_settings_writes() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "amistio-template");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "amistio-template");
         let h = new_handler(Some(Arc::new((*s).clone())), None);
         let (agent, _) = pulse_board::join_agent(
             &s,
@@ -782,7 +773,7 @@ mod tests {
     #[test]
     fn write_guards_and_json() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let h = new_handler(Some(Arc::new((*s).clone())), None);
         let cases = vec![
             (
@@ -912,7 +903,7 @@ mod tests {
     #[test]
     fn settings_storage_failure_is_not_bad_input() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         s.conn()
             .expect("conn")
             .execute_batch("PRAGMA query_only=ON")
@@ -1034,7 +1025,7 @@ mod tests {
     #[test]
     fn store_copy_is_outside_repository() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let cwd = std::env::current_dir().expect("cwd");
         let home = std::path::Path::new(&s.home);
         assert!(

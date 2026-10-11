@@ -1,7 +1,6 @@
-//! What the runner does about dead agents. New in Rust: Go only knew the
-//! supervised execution beat; every agent now has a heartbeat
-//! (`pulse_board::presence`), and silence longer than `heartbeat.dead_after`
-//! makes it dead.
+//! What the runner does about dead agents. Every agent has a heartbeat
+//! (`pulse_board::presence`), not only the supervised execution beat, and
+//! silence longer than `heartbeat.dead_after` makes it dead.
 
 use crate::util::{Row, event_at, exec1, is_nil, must_one, must_rows};
 use serde_json::Value;

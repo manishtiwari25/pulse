@@ -1,8 +1,8 @@
-//! Stamps the binary with the same version Go's toolchain would derive from
-//! the checkout (Go >= 1.24 sets the main module version from VCS):
-//! the exact semver tag at HEAD, else the pseudo-version
-//! `vX.Y.Z-0.yyyymmddhhmmss-<12hex>` / `v0.0.0-yyyymmddhhmmss-<12hex>`,
-//! each with `+dirty` when the tree has uncommitted changes.
+//! Stamps the binary with a version derived from the checkout: the exact
+//! semver tag at HEAD, else the pseudo-version
+//! `vX.Y.Z-0.yyyymmddhhmmss-<12hex>` (the patch after the latest reachable
+//! tag) or `v0.0.0-yyyymmddhhmmss-<12hex>` (no tag at all), each with
+//! `+dirty` when the tree has uncommitted changes.
 
 use std::fs;
 use std::path::Path;
@@ -28,7 +28,7 @@ fn semver(tag: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// Unix seconds -> yyyymmddhhmmss in UTC, like Go's pseudo-version timestamp.
+/// Unix seconds -> yyyymmddhhmmss in UTC, the pseudo-version timestamp.
 fn stamp(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -47,9 +47,10 @@ fn stamp(secs: i64) -> String {
     format!("{y:04}{mo:02}{d:02}{h:02}{m:02}{s:02}")
 }
 
-/// Go: strconv.Quote, applied by BuildInfo.String() to a setting value that quoteValue()
-/// says needs it (" \t\r\n\"`"). Versions and -ldflags values are printable ASCII, so the
-/// short escapes are the whole alphabet strconv.Quote would use for them.
+/// A build setting value as the build-info block writes it: bare unless it contains a space,
+/// tab, CR, LF, `"` or backtick, in which case it is double-quoted with `\\`, `\"`, `\n`, `\r`
+/// and `\t` escapes. Versions and -ldflags values are printable ASCII, so those escapes are the
+/// whole alphabet needed; `version::unquote` reads them back.
 fn strconv_quote(value: &str) -> String {
     if !value.contains([' ', '\t', '\r', '\n', '"', '`']) {
         return value.to_string();
@@ -85,9 +86,10 @@ fn rust_string(value: &str) -> String {
     out
 }
 
-/// The text `debug.ReadBuildInfo` would return for a Go build of cmd/pulse: `pulse version`,
-/// `Revision()` and the pair hands inspection all read this block, so a Rust build carries the
-/// same lines (leading '\n' so a grep for `^mod\t...` anchors inside the binary's rodata).
+/// The build-info block embedded in the binary: tab-separated `path`, `mod` and `build` lines,
+/// with a leading '\n' so a grep for `^mod\t...` anchors inside the binary's rodata. `pulse
+/// version`, `revision()` and the pair-hands inspection all read this block, so its layout must
+/// stay stable.
 fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
     let module_version = if rev.is_empty() { "(devel)" } else { version };
     let mut text = format!(

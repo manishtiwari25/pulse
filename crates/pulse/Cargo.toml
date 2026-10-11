@@ -35,7 +35,6 @@ anyhow.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-pulse-parity.workspace = true
 tempfile.workspace = true
 pulse-testutil.workspace = true
 serde.workspace = true

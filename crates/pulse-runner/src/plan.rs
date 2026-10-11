@@ -1,11 +1,6 @@
-//! Port of internal/runner/plan.go.
-
 #![cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "ported Go runner APIs are consumed incrementally across slices"
-    )
+    allow(dead_code, reason = "not every item has a caller in the crate")
 )]
 #![cfg_attr(test, allow(dead_code))]
 
@@ -16,7 +11,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-/// Go: func ballotHours(s *store.Store) int
 pub(crate) fn ballot_hours(s: &pulse_store::Store) -> i32 {
     let h = setting_int(s, "lead.ballot_hours");
     if h >= 1 { h } else { 1 }
@@ -36,7 +30,6 @@ pub(crate) fn ballot_wait_minutes(s: &pulse_store::Store) -> (i64, bool) {
     }
 }
 
-/// Go: func recordPlanDeferred(s *store.Store, slug, now, actor, suggestionID string)
 pub(crate) fn record_plan_deferred(
     s: &pulse_store::Store,
     slug: String,
@@ -59,7 +52,6 @@ pub(crate) fn record_plan_deferred(
     }
 }
 
-/// Go: func planDeferredEventExists(s *store.Store, slug, suggestionID string) bool
 pub(crate) fn plan_deferred_event_exists(
     s: &pulse_store::Store,
     slug: String,
@@ -69,13 +61,11 @@ pub(crate) fn plan_deferred_event_exists(
     must_one(&conn, "SELECT COUNT(*) AS n FROM events WHERE action = 'plan.deferred' AND subject = ?\n\t\tAND json_valid(detail) AND json_extract(detail, '$.project') = ?", &[&suggestion_id, &slug]).int("n") != 0
 }
 
-/// Go: func lastEventSeq(s *store.Store) int
 pub(crate) fn last_event_seq(s: &pulse_store::Store) -> i32 {
     let Ok(conn) = s.conn() else { return 0 };
     must_one(&conn, "SELECT COALESCE(MAX(seq), 0) AS n FROM events", &[]).int("n")
 }
 
-/// Go: func planDeferredLinesSince(s *store.Store, seq int) []string
 pub(crate) fn plan_deferred_lines_since(s: &pulse_store::Store, seq: i32) -> Vec<String> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
@@ -86,7 +76,6 @@ pub(crate) fn plan_deferred_lines_since(s: &pulse_store::Store, seq: i32) -> Vec
         .collect()
 }
 
-/// Go: func threadStatuses(s *store.Store, rows []row, now string) map[string]string
 /// The in-memory reference for `thread_statuses_for`, kept so tests can hold
 /// the aggregate to the walk it replaced.
 #[cfg(test)]
@@ -122,7 +111,6 @@ pub(crate) fn thread_statuses(
         .collect()
 }
 
-/// Go: func projectPosts(q querier, slug string) []row
 /// Every post of the board; production paths read only the kinds they follow.
 #[cfg(test)]
 pub(crate) fn project_posts(q: &dyn Querier, slug: String) -> Vec<Row> {
@@ -184,7 +172,6 @@ pub(crate) fn thread_statuses_for(
     .collect()
 }
 
-/// Go: func openQuestions(s *store.Store, slug, now string) []row
 /// Only questions and answers decide what is open, so only they are read;
 /// the thread statuses come from one aggregate over the board.
 pub(crate) fn open_questions(s: &pulse_store::Store, slug: String, now: String) -> Vec<Row> {
@@ -231,7 +218,6 @@ pub(crate) fn open_questions(s: &pulse_store::Store, slug: String, now: String) 
     out
 }
 
-/// Go: func ballotCap(s *store.Store) int
 pub(crate) fn ballot_cap(s: &pulse_store::Store) -> i32 {
     pulse_tally::ballot_cap(s) as i32
 }
@@ -252,7 +238,6 @@ fn ballot_since(s: &pulse_store::Store, slug: &str, now: &str) -> Option<String>
     Some(since)
 }
 
-/// Go: func ballotDue(s *store.Store, slug, now string, suggestions []tally.Suggestion) []tally.Suggestion
 pub(crate) fn ballot_due(
     s: &pulse_store::Store,
     slug: String,
@@ -347,7 +332,6 @@ pub(crate) fn ballot_listing(
     }
 }
 
-/// Go: func canAnyAgentVoteOnSuggestion(s *store.Store, sg tally.Suggestion) bool
 pub(crate) fn can_any_agent_vote_on_suggestion(
     s: &pulse_store::Store,
     sg: pulse_tally::Suggestion,
@@ -362,7 +346,6 @@ pub(crate) fn can_any_agent_vote_on(s: &pulse_store::Store, author: &str, id: &s
     !must_one(&conn, "SELECT 1 AS x FROM agents a\n\t\tWHERE a.status = 'active' AND a.kind != 'human' AND a.name != ?\n\t\tAND NOT EXISTS (SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.agent = a.name AND v.on_post = ?)\n\t\tLIMIT 1", &[&author, &id]).0.is_empty()
 }
 
-/// Go: func isOwnerAddressedPost(post row) bool
 pub(crate) fn is_owner_addressed_post(post: Row) -> bool {
     if post
         .get("for_owner")
@@ -374,7 +357,6 @@ pub(crate) fn is_owner_addressed_post(post: Row) -> bool {
     pulse_store::post_for_owner(&post.str("extra")).unwrap_or(false)
 }
 
-/// Go: func answerable(q row, plannerActor string) bool
 pub(crate) fn answerable(q: Row, planner_actor: String) -> bool {
     if is_owner_addressed_post(q.clone()) || owner_targeted(q.clone()) {
         return false;
@@ -386,7 +368,6 @@ pub(crate) fn answerable(q: Row, planner_actor: String) -> bool {
     q.str("summary") != pulse_evolve::STOP_SUMMARY
 }
 
-/// Go: func tallyPost(s *store.Store, id string) *tally.Post
 pub(crate) fn tally_post(s: &pulse_store::Store, id: String) -> Option<pulse_tally::Post> {
     let Ok(conn) = s.conn() else { return None };
     let r = crate::board::post_row(&conn, id);
@@ -408,12 +389,10 @@ pub(crate) fn tally_post(s: &pulse_store::Store, id: String) -> Option<pulse_tal
     })
 }
 
-/// Go: func ownerTargeted(post row) bool
 pub(crate) fn owner_targeted(post: Row) -> bool {
     pulse_tally::owner_targeted(&post.str("summary"), &post.str("body"))
 }
 
-/// Go: func planJobs(s *store.Store, slug, now, createdBy string) ([]row, error)
 pub(crate) fn plan_jobs(
     s: &pulse_store::Store,
     slug: String,
@@ -812,7 +791,6 @@ Read `pulse evolve report --project "
     Ok(created)
 }
 
-/// Go: func stuckThreads(s *store.Store, slug, now, actor string) map[string]bool
 pub(crate) fn stuck_threads(
     s: &pulse_store::Store,
     slug: String,
@@ -924,7 +902,6 @@ pub(crate) fn stuck_threads(
     stuck
 }
 
-/// Go: func suggestionQualityScore(body string) int
 pub(crate) fn suggestion_quality_score(body: String) -> i32 {
     let b = body.to_lowercase();
     let mut score = 50;
@@ -973,7 +950,7 @@ static SYMBOL_LIKE_RE: LazyLock<regex::Regex> =
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f4::{plan_handoff, suppress_planner_reflect};
+    use crate::test_helpers_completion::{plan_handoff, suppress_planner_reflect};
 
     fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
         s.set_setting(crate::util::HUMAN_AGENT, key, value)
@@ -993,7 +970,6 @@ mod tests {
         );
     }
 
-    /// Go: func loopFirstSuggestion(t *testing.T, s *store.Store, thread, summary string, votes int) *board.Post
     fn loop_first_suggestion(
         s: &pulse_store::Store,
         thread: &str,
@@ -1039,7 +1015,6 @@ mod tests {
         post
     }
 
-    /// Go: func plainSuggestion(t *testing.T, s *store.Store, thread, summary string, votes int) *board.Post
     /// plainSuggestion is a worker's one-line SUGGESTION: voted and pointing at evidence, but naming no File: and
     /// no Variable:, so the loop cannot run it as an experiment and does not claim it.
     fn plain_suggestion(
@@ -1642,7 +1617,7 @@ mod tests {
         join(&s, "aurora");
         set_setting(&s, "lead.research_minutes", "60");
         set_setting(&s, "lead.idle_factor", "3");
-        set_setting(&s, "workers", "4");
+        set_setting(&s, "workers", "6");
         set_setting(&s, "parallel_per_project", "2");
         suppress_planner_reflect(&s);
         let improve = |n: i32| {
@@ -1661,14 +1636,37 @@ mod tests {
             .expect("add worker")
             .0
         };
+        let lease = |job: &crate::util::Row| {
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'leased', lease_agent = 'aurora', lease_until = ? WHERE id = ?",
+                &[&crate::util::plus_hours(TEST_NOW, 1.0), &job.str("id")],
+            );
+        };
         let first = improve(1);
-        assert!(crate::research::fleet_idle(&s), "no lease held: fleet idle");
+        // A queued job is work waiting for a slot: the fleet is not idle,
+        // however few leases it holds, so the plain rule applies.
+        assert!(
+            !crate::research::fleet_idle(&s),
+            "a queued job means the fleet has work waiting: not idle"
+        );
+        let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "a job is open",
+            "research is not seeded over a waiting queue = {ok} {reason:?}"
+        );
+        lease(&first);
+        assert!(
+            crate::research::fleet_idle(&s),
+            "one of six slots leased and nothing queued: fleet idle"
+        );
         let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
         assert!(
             ok && reason.is_empty(),
-            "a free lane lets research run beside a queued job: {ok} {reason:?}"
+            "a free lane lets research run beside an in-flight job: {ok} {reason:?}"
         );
-        improve(2);
+        let second = improve(2);
+        lease(&second);
         let (_, reason, ok) = crate::research::research_due(&s, "proj".into(), TEST_NOW.into());
         assert!(
             !ok && reason == "2 of 2 lanes are open (fleet idle)",
@@ -1933,7 +1931,7 @@ mod tests {
         suppress_planner_reflect(&s);
         // Posted 90 minutes ago by `prop`; `voter` has not voted, so it waits
         // below its quorum of one informed voter. No suggestion is on the board.
-        let am = crate::test_helpers_f1b::open_amendment(
+        let am = crate::test_helpers_hands::open_amendment(
             &s,
             &crate::util::plus_minutes(TEST_NOW, -90.0),
         );
@@ -2432,7 +2430,7 @@ mod tests {
         jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("second");
         assert!(jobs.is_empty(), "second plan while queued {jobs:?}");
         let source = format!("handoff:{}", h.str("id"));
-        let tried = crate::test_helpers_f4::jobs_by_source(&s, &source);
+        let tried = crate::test_helpers_completion::jobs_by_source(&s, &source);
         crate::util::exec1(
             &s.conn().expect("conn"),
             "UPDATE jobs SET status = 'failed', finished_at = ? WHERE id = ?",
@@ -2822,10 +2820,10 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         crate::evolve_plan::reset_evolve_plan_reasons();
-        let _gate = crate::test_helpers_f4::with_closed_login_gate();
+        let _gate = crate::test_helpers_completion::with_closed_login_gate();
         let s = new_store();
         new_repo(&s);
-        crate::test_helpers_f5::evolve_plan_ready(&s);
+        crate::test_helpers_daemon::evolve_plan_ready(&s);
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
             join(&s, name);
         }
@@ -2960,10 +2958,10 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         crate::evolve_plan::reset_evolve_plan_reasons();
-        let _gate = crate::test_helpers_f4::with_closed_login_gate();
+        let _gate = crate::test_helpers_completion::with_closed_login_gate();
         let s = new_store();
         new_repo(&s);
-        crate::test_helpers_f5::evolve_plan_ready(&s);
+        crate::test_helpers_daemon::evolve_plan_ready(&s);
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
             join(&s, name);
         }
@@ -3020,10 +3018,10 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         crate::evolve_plan::reset_evolve_plan_reasons();
-        let _gate = crate::test_helpers_f4::with_closed_login_gate();
+        let _gate = crate::test_helpers_completion::with_closed_login_gate();
         let s = new_store();
         new_repo(&s);
-        crate::test_helpers_f5::evolve_plan_ready(&s);
+        crate::test_helpers_daemon::evolve_plan_ready(&s);
         if let Err(err) = s.set_setting(crate::util::HUMAN_AGENT, "evolve.loop", "0") {
             panic!("{err}");
         }

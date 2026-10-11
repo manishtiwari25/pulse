@@ -48,7 +48,7 @@ fn set_deps(d: Deps) -> Deps {
     std::mem::replace(&mut *guard, d)
 }
 
-/// Register all commands from the Go package init().
+/// Registers the `cred` command once.
 pub fn register() {
     REGISTER.call_once(|| {
         register_command(Command {

@@ -1,4 +1,3 @@
-//! Port of internal/runner/recover.go.
 #![allow(dead_code)]
 
 use anyhow::{Result, anyhow};
@@ -113,7 +112,6 @@ fn err_message(err: &anyhow::Error) -> String {
     err.to_string()
 }
 
-/// Go: func recoverFailedJobs(s *store.Store, project row, now, actor string) []string
 pub(crate) fn recover_failed_jobs(
     s: &pulse_store::Store,
     project: Row,
@@ -323,7 +321,6 @@ pub(crate) fn recover_failed_jobs(
     lines
 }
 
-/// Go: func environmentBlockReason(job row) string
 pub(crate) fn environment_block_reason(job: Row) -> String {
     if job.0.is_empty() || job.str("status") != "blocked" {
         return String::new();
@@ -334,7 +331,6 @@ pub(crate) fn environment_block_reason(job: Row) -> String {
     String::new()
 }
 
-/// Go: func environmentBlockBackoffDue(q querier, jobID, now string) string
 pub(crate) fn environment_block_backoff_due(q: &Querier, job_id: String, _now: String) -> String {
     let r = must_one(
         q,
@@ -352,7 +348,6 @@ pub(crate) fn environment_block_backoff_due(q: &Querier, job_id: String, _now: S
     }
 }
 
-/// Go: func environmentHealthBlock(q querier, executor, project, now string) (string, bool)
 pub(crate) fn environment_health_block(
     q: &Querier,
     mut executor: String,
@@ -382,13 +377,11 @@ pub(crate) fn environment_health_block(
     }
 }
 
-/// Go: func ownerCancelledFailure(result, summary string) bool
 pub(crate) fn owner_cancelled_failure(result: String, summary: String) -> bool {
     result.trim_start().starts_with("cancelled by the owner")
         || summary.trim_start().starts_with("cancelled by the owner")
 }
 
-/// Go: func recoveryLedger(s *store.Store, slug, since string) map[string]int
 pub(crate) fn recovery_ledger(
     s: &pulse_store::Store,
     slug: String,
@@ -409,7 +402,6 @@ pub(crate) fn recovery_ledger(
     out
 }
 
-/// Go: func recoveryWindowJobs(s *store.Store, slug, now string, days int) []row
 pub(crate) fn recovery_window_jobs(
     s: &pulse_store::Store,
     slug: String,
@@ -427,13 +419,11 @@ pub(crate) fn recovery_window_jobs(
     )
 }
 
-/// Go: func recoveredAfter(s *store.Store, id, finished string) bool
 pub(crate) fn recovered_after(s: &pulse_store::Store, id: String, finished: String) -> bool {
     let conn = s.conn().expect("conn");
     !recovery_decision(&conn, id, finished).0.is_empty()
 }
 
-/// Go: func recoveryDecision(q querier, id, finished string) row
 pub(crate) fn recovery_decision(q: &Querier, id: String, finished: String) -> Row {
     must_one(
         q,
@@ -445,7 +435,6 @@ pub(crate) fn recovery_decision(q: &Querier, id: String, finished: String) -> Ro
     )
 }
 
-/// Go: func lastRecoveryRun(q querier, jobID string) row
 pub(crate) fn last_recovery_run(q: &Querier, job_id: String) -> Row {
     must_one(
         q,
@@ -454,7 +443,6 @@ pub(crate) fn last_recovery_run(q: &Querier, job_id: String) -> Row {
     )
 }
 
-/// Go: func recoveryQuestionAsked(q querier, slug, jobID string) bool
 pub(crate) fn recovery_question_asked(q: &Querier, slug: String, job_id: String) -> bool {
     !must_one(
         q,
@@ -465,7 +453,6 @@ pub(crate) fn recovery_question_asked(q: &Querier, slug: String, job_id: String)
     .is_empty()
 }
 
-/// Go: func recoveryCarrier(q querier, job row, root string) string
 pub(crate) fn recovery_carrier(q: &Querier, job: Row, root: String) -> String {
     pulse_board::recovery_carrier(
         q.conn(),
@@ -494,7 +481,6 @@ pub(crate) fn recovery_carrier(q: &Querier, job: Row, root: String) -> String {
     .unwrap()
 }
 
-/// Go: func leadFollowedUp(q querier, job row) bool
 pub(crate) fn lead_followed_up(q: &Querier, job: Row) -> bool {
     let task = job.str("source").trim_start_matches("task:").to_string();
     !must_one(
@@ -506,7 +492,6 @@ pub(crate) fn lead_followed_up(q: &Querier, job: Row) -> bool {
     .is_empty()
 }
 
-/// Go: func recoveryPending(s *store.Store, jobID string) bool
 pub(crate) fn recovery_pending(s: &pulse_store::Store, job_id: String) -> bool {
     if s.setting("daemon.recover", "on") == "off" {
         return false;
@@ -547,7 +532,6 @@ pub(crate) fn recovery_pending(s: &pulse_store::Store, job_id: String) -> bool {
         && recovery_carrier(&conn, job, root).is_empty()
 }
 
-/// Go: func retryTitle(root, title string) string
 pub(crate) fn retry_title(root: String, title: String) -> String {
     let prefix = format!("Retry {root}: ");
     crate::util::trunc(
@@ -556,13 +540,11 @@ pub(crate) fn retry_title(root: String, title: String) -> String {
     )
 }
 
-/// Go: func recoveryChain(s *store.Store, job row) (string, int)
 pub(crate) fn recovery_chain(s: &pulse_store::Store, job: Row) -> (String, i32) {
     let conn = s.conn().expect("conn");
     recovery_chain_from(&conn, job)
 }
 
-/// Go: func recoveryChainFrom(q querier, job row) (string, int)
 pub(crate) fn recovery_chain_from(q: &Querier, job: Row) -> (String, i32) {
     let mut root = job.str("id");
     let r = must_one(
@@ -586,7 +568,6 @@ pub(crate) fn recovery_chain_from(q: &Querier, job: Row) -> (String, i32) {
     (root, n.int("n"))
 }
 
-/// Go: func recoverOne(...)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn recover_one(
     s: &pulse_store::Store,
@@ -916,7 +897,6 @@ The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human.
     Ok(true)
 }
 
-/// Go: func queueRecovery(...)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn queue_recovery(
     q: &Querier,
@@ -1009,7 +989,6 @@ pub(crate) fn queue_recovery(
     }
 }
 
-/// Go: func recoveryOwnedElsewhere(job row) bool
 pub(crate) fn recovery_owned_elsewhere(job: Row) -> bool {
     matches!(
         job.str("kind").as_str(),
@@ -1017,7 +996,6 @@ pub(crate) fn recovery_owned_elsewhere(job: Row) -> bool {
     )
 }
 
-/// Go: func recoveryRunActive(q querier, jobID string) bool
 pub(crate) fn recovery_run_active(q: &Querier, job_id: String) -> bool {
     !must_one(
         q,
@@ -1028,7 +1006,6 @@ pub(crate) fn recovery_run_active(q: &Querier, job_id: String) -> bool {
     .is_empty()
 }
 
-/// Go: func currentRecoveryFailure(q querier, snapshot row) (row, error)
 pub(crate) fn current_recovery_failure(q: &Querier, snapshot: Row) -> anyhow::Result<Row> {
     let current = crate::jobs::job_row(q, snapshot.str("id"));
     if current.0.is_empty()
@@ -1047,7 +1024,6 @@ pub(crate) fn current_recovery_failure(q: &Querier, snapshot: Row) -> anyhow::Re
     Ok(current)
 }
 
-/// Go: func holdRecoveryFailure(...)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hold_recovery_failure(
     s: &pulse_store::Store,
@@ -1081,7 +1057,6 @@ pub(crate) fn hold_recovery_failure(
     })
 }
 
-/// Go: func blockEnvironmentFailure(...)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn block_environment_failure(
     s: &pulse_store::Store,
@@ -1160,7 +1135,6 @@ pub(crate) fn block_environment_failure(
     (format!("blocked {} ({})", job.str("id"), reason), true)
 }
 
-/// Go: func recoveryEvent(q querier, now, actor, jobID, outcome string, f failure, root string, n int, newJob string)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn recovery_event(
     q: &Querier,
@@ -1193,7 +1167,6 @@ pub(crate) fn recovery_event(
     )
 }
 
-/// Go: func correctedBrief(job, run row, f failure) string
 pub(crate) fn corrected_brief(job: Row, run: Row, f: crate::failure::Failure) -> String {
     let mut run_id = "none".to_string();
     let mut executor = "unknown".to_string();
@@ -1231,7 +1204,6 @@ pub(crate) fn corrected_brief(job: Row, run: Row, f: crate::failure::Failure) ->
         + RECOVERY_BRIEF_END
 }
 
-/// Go: func compactRecoveryBrief(brief string) (string, []string)
 pub(crate) fn compact_recovery_brief(mut brief: String) -> (String, Vec<String>) {
     let mut base = String::new();
     let mut previous = Vec::new();
@@ -1273,7 +1245,6 @@ pub(crate) fn compact_recovery_brief(mut brief: String) -> (String, Vec<String>)
     (base, previous)
 }
 
-/// Go: func recoveryLogEvidence(run row) string
 pub(crate) fn recovery_log_evidence(run: Row) -> String {
     if run.0.is_empty() {
         return "Run log unavailable: no run was recorded.".into();
@@ -1301,7 +1272,6 @@ pub(crate) fn recovery_log_evidence(run: Row) -> String {
     note + "\nNo run summary was recorded."
 }
 
-/// Go: func recoveryLogTail(path string) (string, error)
 pub(crate) fn recovery_log_tail(path: String) -> anyhow::Result<String> {
     let info = std::fs::metadata(&path)?;
     if !info.is_file() {
@@ -1319,7 +1289,6 @@ pub(crate) fn recovery_log_tail(path: String) -> anyhow::Result<String> {
     ))
 }
 
-/// Go: func tailLog(text string, lines, chars int) string
 pub(crate) fn tail_log(text: String, lines: i32, chars: i32) -> String {
     let text = text.trim_end_matches('\n');
     let mut parts = text.split('\n').collect::<Vec<_>>();
@@ -1329,7 +1298,6 @@ pub(crate) fn tail_log(text: String, lines: i32, chars: i32) -> String {
     crate::executor::tail(&parts.join("\n"), chars as usize)
 }
 
-/// Go: func dropStaleBranch(root string, job, run row) error
 pub(crate) fn drop_stale_branch(root: String, job: Row, run: Row) -> anyhow::Result<()> {
     let mut seen = BTreeMap::<String, bool>::new();
     let mut branches = Vec::<String>::new();
@@ -1421,7 +1389,6 @@ struct RecoveryDecisionDetail {
     n: i32,
 }
 
-/// Go: func completeRecoveryFinding(s *store.Store, slug string, decision row, now, actor string) (bool, error)
 pub(crate) fn complete_recovery_finding(
     s: &pulse_store::Store,
     slug: String,
@@ -1444,7 +1411,6 @@ pub(crate) fn complete_recovery_finding(
     post_recovery_finding(s, slug, detail.root, detail.n, now, actor)
 }
 
-/// Go: func postRecoveryFinding(s *store.Store, slug, root string, n int, now, actor string) (bool, error)
 pub(crate) fn post_recovery_finding(
     s: &pulse_store::Store,
     slug: String,
@@ -1511,7 +1477,6 @@ struct RecoveryMetaNote {
     note: String,
 }
 
-/// Go: func writeRecoveryNote(s *store.Store, slug, now, text string, keep bool)
 pub(crate) fn write_recovery_note(
     s: &pulse_store::Store,
     slug: String,
@@ -1542,7 +1507,6 @@ pub(crate) fn write_recovery_note(
     );
 }
 
-/// Go: func rowStr(r row, key string) string
 pub(crate) fn row_str(r: Row, key: String) -> String {
     if r.0.is_empty() {
         String::new()
@@ -1551,7 +1515,6 @@ pub(crate) fn row_str(r: Row, key: String) -> String {
     }
 }
 
-/// Go: func detailString(m map[string]any, key string) string
 pub(crate) fn detail_string(m: BTreeMap<String, Value>, key: String) -> String {
     match m.get(&key) {
         Some(Value::String(s)) => s.clone(),
@@ -1560,7 +1523,6 @@ pub(crate) fn detail_string(m: BTreeMap<String, Value>, key: String) -> String {
     }
 }
 
-/// Go: func shortDuration(d time.Duration) string
 pub(crate) fn short_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs.is_multiple_of(3600) {
@@ -1575,14 +1537,12 @@ pub(crate) fn short_duration(d: Duration) -> String {
 }
 
 impl RecoveryStats {
-    /// Go: func (st *recoveryStats) nextAt(due string)
     pub(crate) fn next_at(&mut self, due: String) {
         if self.next.is_empty() || due < self.next {
             self.next = due;
         }
     }
 
-    /// Go: func (st recoveryStats) note() string
     pub(crate) fn note(&mut self) -> String {
         let mut parts = Vec::new();
         for (outcome, label) in [
@@ -1635,8 +1595,8 @@ impl RecoveryStats {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::{exec1, must_one, must_rows};
-    use crate::test_helpers_f7::*;
+    use crate::test_helpers_daemon::{exec1, must_one, must_rows};
+    use crate::test_helpers_recover::*;
     use base64::Engine;
     use serde_json::{Value, json};
     use std::path::Path;
@@ -1687,7 +1647,7 @@ mod tests {
         if n == 0 || text.contains("probe") {
             Ok((
                 0,
-                "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=4096".into(),
+                "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=20480".into(),
                 String::new(),
             ))
         } else if n == 1 || text.contains("prepare") {
@@ -2816,7 +2776,6 @@ mod tests {
         assert!(note.contains("2 answer(s) tried once"), "note = {note}");
     }
 
-    // Assigned recovery_resilience/peer_recovery/lost tests that still depend on non-F7 behavior.
     #[test]
     fn recovery_resilience_failed_write_is_atomic() {
         let _serial = crate::test_helpers::serial();
@@ -4866,7 +4825,7 @@ mod tests {
             job.insert("id", json!("job-peer"));
             job.insert("kind", json!("task"));
             job.insert("tier", json!(0));
-            let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+            let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
                 job,
                 project: project.clone(),
                 agent: "aurora".into(),

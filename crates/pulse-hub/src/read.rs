@@ -518,8 +518,9 @@ impl Handler {
         };
         let overview = d.overview();
         let evo = crate::evolution::evolution_summary(d.evolution.clone());
-        // Go copies the post slice and stable-sorts it by -date; the head of
-        // that order is the first post carrying the greatest date.
+        // The newest post: the first in row order to carry the greatest date
+        // (`min_by` keeps the first of equal elements; the comparison is
+        // reversed).
         let last = d
             .posts
             .iter()
@@ -581,8 +582,8 @@ impl Handler {
                 )
             })
             .collect::<Vec<_>>();
-        object(
-            "slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open owner_questions suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected amendments_open proposals_awaiting posts posts_24h tally_mode can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals questions present missing error",
+        let mut row = object(
+            "slug kind brain base path remote name branch head dirty built_at board_present claims_active threads_open questions_open owner_questions suggestions_eligible suggestions_plannable suggestions_needing_votes suggestions_rejected amendments_open proposals_awaiting posts posts_24h can_decide agents identities evolution_present loop stop_present baseline last_post active_claims proposals questions present missing error",
             vec![
                 json!(p.slug),
                 json!(kind),
@@ -629,7 +630,6 @@ impl Handler {
                     .unwrap_or(Value::Null),
                 json!(d.posts.len()),
                 json!(posts24),
-                json!("go"),
                 json!(true),
                 json!(identities.len()),
                 json!(crate::board::sorted_keys(&identities)),
@@ -645,14 +645,25 @@ impl Handler {
                 json!(false),
                 json!(view.error),
             ],
-        )
+        );
+        // The shared board has no goal; a project row says whether its lead
+        // works toward a goal the owner chose or the generated default.
+        if kind == "project"
+            && let Some(store) = self.store.as_deref()
+        {
+            let goal = crate::lifecycle::goal_summary(store, &p.slug);
+            row.insert("goal_source".into(), json!(goal.source));
+            row.insert("goal_preview".into(), json!(goal.preview));
+        }
+        row
     }
 
     pub(crate) fn org<'a, V: OrgViews<'a>>(&self, views: V) -> JsonMap {
         let views = views.into_views();
         let views = views.as_ref();
-        // Go's projects, commons and all alias the same maps, so the
-        // identities/proposals deletes below show in the emitted rows too.
+        // `projects` and `commons` are taken from `all` after the loop below
+        // has stripped `identities`, `proposals` and `questions`, so the
+        // emitted rows do not carry them.
         let mut project_idx = Vec::new();
         let mut commons_idx = None;
         let mut all = Vec::new();
@@ -798,7 +809,7 @@ impl Handler {
             .sum();
         let ballot_proposals: i64 = ballot.iter().map(|r| num(r, "proposals")).sum();
         object(
-            "generated_at registry tally_mode can_decide commons_dir projects commons stamp notices totals active_claims proposals questions owner_presence",
+            "generated_at registry can_decide commons_dir projects commons stamp notices totals active_claims proposals questions owner_presence",
             vec![
                 json!(store_now(self)),
                 json!(
@@ -807,7 +818,6 @@ impl Handler {
                         .map(|s| s.path.clone())
                         .unwrap_or_default()
                 ),
-                json!("go"),
                 json!(true),
                 json!(commons_dir),
                 json!(projects),
@@ -1057,7 +1067,7 @@ pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String
 }
 
 pub(crate) fn org_timeline(views: &[ProjectView], mut now: String) -> JsonMap {
-    // Go appends every project's post maps to one slice; the maps are shared.
+    // Every project's posts, borrowed rather than cloned.
     let mut posts = Vec::<&JsonMap>::new();
     for view in views {
         if let Some(d) = &view.data {
@@ -1097,7 +1107,6 @@ pub(crate) fn json_map(value: Value) -> Result<JsonMap> {
         .ok_or_else(|| anyhow!("JSON value is not an object"))
 }
 
-/// Go: func parseTime(text string) time.Time
 pub(crate) fn parse_dt(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let text = text.trim().trim_end_matches('Z').replace(' ', "T");
     // Cut on a char boundary: a byte slice panics on multi-byte input such as
@@ -1177,7 +1186,7 @@ mod tests {
         assert!(parse_dt("2026-10-04T01:04:4é").is_none());
         assert!(parse_dt("ééééééééééééééééééééé").is_none());
     }
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use anyhow::{Result, anyhow};
     use serde_json::{Map, Value, json};
     use std::io::Write;
@@ -1235,8 +1244,8 @@ mod tests {
         dir.display().to_string()
     }
 
-    fn project_reader_fixture() -> (f2::TestStore, Handler) {
-        let s = f2::additions_store(false);
+    fn project_reader_fixture() -> (http::TestStore, Handler) {
+        let s = http::additions_store(false);
         let (agent, _) = pulse_board::join_agent(
             &s,
             pulse_board::JoinInput {
@@ -1249,7 +1258,7 @@ mod tests {
         )
         .unwrap();
         for slug in ["delta", "charlie", "bravo", "alpha"] {
-            f2::additions_project(&s, slug);
+            http::additions_project(&s, slug);
             s.conn()
                 .unwrap()
                 .execute(
@@ -1271,7 +1280,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut h = f2::handler(&s);
+        let mut h = http::handler(&s);
         h.org_cache_ttl = std::time::Duration::ZERO;
         (s, h)
     }
@@ -1286,368 +1295,10 @@ mod tests {
         }
     }
 
-    const GOLDEN_DIR: &str = "/tmp/pulse-parity/golden";
-
-    fn read_golden(name: &str) -> Option<Value> {
-        let path = std::path::Path::new(GOLDEN_DIR).join(name);
-        let data = match std::fs::read(&path) {
-            Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("Python parity goldens are not installed at {GOLDEN_DIR}");
-                return None;
-            }
-            Err(err) => panic!("read {path:?}: {err}"),
-        };
-        Some(serde_json::from_slice(&data).expect("golden json"))
-    }
-
-    fn copy_snapshot(now: &str) -> Option<pulse_store::Store> {
-        let mut src = match std::fs::File::open("/tmp/pulse-parity/pulse.sqlite") {
-            Ok(src) => src,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!("Python parity snapshot is not installed at /tmp/pulse-parity");
-                return None;
-            }
-            Err(err) => panic!("open parity snapshot: {err}"),
-        };
-        let home = crate::test_helpers::hold_tempdir(tempfile::tempdir().expect("snapshot home"));
-        let db = home.join("pulse.sqlite");
-        let mut dst = std::fs::File::create(&db).expect("create snapshot copy");
-        std::io::copy(&mut src, &mut dst).expect("copy snapshot");
-        dst.flush().expect("flush snapshot");
-        Some(
-            pulse_store::Store::open(pulse_store::Options {
-                home: home.display().to_string(),
-                now: now.to_string(),
-                ..Default::default()
-            })
-            .expect("open snapshot"),
-        )
-    }
-
-    fn normalize_golden(v: Value, parent: &str) -> Value {
-        match v {
-            Value::Object(map) => {
-                let mut out = Map::new();
-                for (key, value) in map {
-                    if matches!(
-                        key.as_str(),
-                        "generated_at"
-                            | "time"
-                            | "last_check"
-                            | "built_at"
-                            | "now"
-                            | "stamp"
-                            | "tally_script"
-                            | "tally_mode"
-                    ) || (parent == "tally" && matches!(key.as_str(), "script" | "mode"))
-                    {
-                        continue;
-                    }
-                    out.insert(key.clone(), normalize_golden(value, &key));
-                }
-                Value::Object(out)
-            }
-            Value::Array(rows) => Value::Array(
-                rows.into_iter()
-                    .map(|value| normalize_golden(value, parent))
-                    .collect(),
-            ),
-            other => other,
-        }
-    }
-
-    fn json_differences(path: &str, want: &Value, got: &Value) -> Vec<String> {
-        if want == got {
-            return Vec::new();
-        }
-        match (want, got) {
-            (Value::Object(w), Value::Object(g)) => {
-                let keys = w
-                    .keys()
-                    .chain(g.keys())
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>();
-                keys.into_iter()
-                    .flat_map(|key| {
-                        json_differences(
-                            &format!("{path}.{key}"),
-                            w.get(&key).unwrap_or(&Value::Null),
-                            g.get(&key).unwrap_or(&Value::Null),
-                        )
-                    })
-                    .collect()
-            }
-            (Value::Array(w), Value::Array(g)) if w.len() == g.len() => w
-                .iter()
-                .zip(g.iter())
-                .enumerate()
-                .flat_map(|(i, (w, g))| json_differences(&format!("{path}[{i}]"), w, g))
-                .collect(),
-            (Value::Array(_), Value::Array(_)) => vec![format!("{path}.length")],
-            _ => vec![path.to_string()],
-        }
-    }
-
-    fn roster_golden(value: Value, legacy: bool) -> Value {
-        let mut rows = value.as_array().cloned().expect("roster array");
-        for row in &mut rows {
-            if legacy
-                && row.get("status").and_then(Value::as_str) == Some("working")
-                && row.get("agent_status").is_some()
-            {
-                let status = row["agent_status"].clone();
-                row.as_object_mut().unwrap().insert("status".into(), status);
-            }
-        }
-        rows.sort_by(|a, b| {
-            a.get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .cmp(b.get("agent").and_then(Value::as_str).unwrap_or(""))
-        });
-        Value::Array(rows)
-    }
-
-    fn thread_enrichment_golden_field(path: &str) -> bool {
-        [
-            ".participants",
-            ".last_by",
-            ".last_kind",
-            ".open_questions",
-            ".open_handoffs",
-            ".active_claims",
-        ]
-        .iter()
-        .any(|suffix| path.ends_with(suffix))
-    }
-
-    fn documented_difference(slug: &str, route: &str, path: &str) -> &'static str {
-        if route == "roster" && path.starts_with("$[") {
-            let field = path.split_once("].").map(|(_, f)| f).unwrap_or("");
-            match field {
-                "presence"
-                | "presence_reason"
-                | "last_heartbeat_at"
-                | "presence_session"
-                | "presence_checked_at"
-                | "presence_expires_at" => {
-                    return "WU-024 adds supervised presence separately from unchanged identity, score and history fields";
-                }
-                "current_job" | "current_job_kind" | "current_job_title" | "current_thread"
-                | "executor" | "focus_since" | "current_task" | "current_task_title"
-                | "current_project" | "current_source" => {
-                    return "agents-focus-roster adds current work/task fields separately from identity, score and history fields";
-                }
-                _ => {}
-            }
-        }
-        if path.ends_with(".head") || path.ends_with(".dirty") || path.ends_with(".branch") {
-            return "checkout state: the goldens were captured at another commit with uncommitted changes";
-        }
-        if (route == "project" || (slug == "org" && route == "org"))
-            && matches!(
-                path,
-                "$.store"
-                    | "$.records_version"
-                    | "$.schema_version"
-                    | "$.binary_version"
-                    | "$.registry"
-                    | "$.fingerprint"
-                    | "$.tool"
-                    | "$.note"
-            )
-        {
-            return "approved native metadata: actual store path and schema/records/binary versions";
-        }
-        if route == "project"
-            && (slug == "amistio" || slug == "project-light")
-            && (path == "$.evolution_present" || path == "$.board_params.constitution_present")
-        {
-            return "D-H/D-L: filesystem-only evolution has not been imported into this SQL snapshot";
-        }
-        if route == "settings" && path == "$.settings.length" {
-            return "API v1 adds compute.* and evolve.* settings; legacy rows checked separately";
-        }
-        if route == "executors" && (path.ends_with(".admin") || path.ends_with(".healed_at")) {
-            return "ADR-034 adds the admin route and the heal marker to every executor row";
-        }
-        if route == "runner" && path == "$.landing" {
-            return "ADR-024: the runner view carries the daemon's landing holds so the console can say why verified branches wait";
-        }
-        if route == "overview" && path.starts_with("$.evolution.") {
-            return "SQL-native evolution fields follow the revised contract, not the Python filesystem report";
-        }
-        if route == "overview" && path == "$.suggestions_plannable" {
-            return "hub adds planner gate visibility for eligible suggestions";
-        }
-        if ((route == "overview" && path.contains(".open_threads["))
-            || (route == "threads" && path.starts_with("$["))
-            || (route == "thread" && path.starts_with("$.thread.")))
-            && thread_enrichment_golden_field(path)
-        {
-            return "hub adds thread status enrichment for participants, last activity, open questions, handoffs, and claims";
-        }
-        if route == "suggestions" && path.starts_with("$[") {
-            let field = path.split_once("].").map(|(_, f)| f).unwrap_or("");
-            if matches!(field, "job" | "job_status" | "gate" | "plannable") {
-                return "hub adds planner gate visibility for suggestion rows";
-            }
-        }
-        if slug == "org" && route == "org" {
-            if path == "$.owner_presence" || path == "$.totals.votes_plannable" {
-                return "hub adds owner-away and planner gate visibility";
-            }
-            if path.ends_with(".suggestions_plannable") {
-                return "hub adds planner gate visibility to project summaries";
-            }
-            for index in ["0", "1", "2"] {
-                for key in ["evolution_present", "loop", "stop_present", "baseline"] {
-                    if path == format!("$.projects[{index}].{key}") {
-                        return "SQL-native evolution fields follow the revised contract";
-                    }
-                }
-            }
-            for key in ["evolution_present", "loop", "stop_present", "baseline"] {
-                if path == format!("$.commons.{key}") {
-                    return "SQL-native evolution fields follow the revised contract";
-                }
-            }
-        }
-        if slug == "org" && route == "votes" && path.starts_with("$.suggestions[") {
-            let field = path.split_once("].").map(|(_, f)| f).unwrap_or("");
-            if matches!(field, "job" | "job_status" | "gate" | "plannable") {
-                return "hub adds planner gate visibility for organization vote rows";
-            }
-        }
-        ""
-    }
-
-    fn path_escape(value: &str) -> String {
-        let mut out = String::new();
-        for &b in value.as_bytes() {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-                out.push(b as char);
-            } else {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn golden_parity() {
-        let _serial = crate::test_helpers::serial();
-        let Some(health) = read_golden("org__health.json") else {
-            return;
-        };
-        let Some(s) = copy_snapshot(health["time"].as_str().unwrap_or("")) else {
-            return;
-        };
-        let h = f2::handler(&s);
-        for entry in std::fs::read_dir(GOLDEN_DIR).expect("golden dir") {
-            let path = entry.expect("golden entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            let stem = name.trim_end_matches(".json");
-            let (slug, route) = stem.split_once("__").expect("golden name");
-            let want = read_golden(&name).expect("golden file");
-            let mut api_route = route.to_string();
-            if route == "thread" {
-                api_route = format!(
-                    "threads/{}",
-                    path_escape(want["thread"]["key"].as_str().unwrap_or(""))
-                );
-            }
-            if route == "post" {
-                api_route = format!("posts/{}", path_escape(want["id"].as_str().unwrap_or("")));
-            }
-            let api_path = if slug == "org" {
-                format!("/api/v1/{api_route}")
-            } else {
-                format!("/api/v1/projects/{slug}/{api_route}")
-            };
-            let (status, got_map) = f2::additions_request(h.clone(), "GET", &api_path, "");
-            assert_eq!(status, 200, "{api_path}");
-            let mut got = Value::Object(got_map);
-            if slug != "org" {
-                for alias in [format!("/{slug}/api/v1/"), format!("/p/{slug}/api/v1/")] {
-                    let (alias_status, alias_json) =
-                        f2::additions_request(h.clone(), "GET", &(alias + &api_route), "");
-                    assert_eq!(alias_status, 200, "alias {api_path}");
-                    assert_eq!(
-                        normalize_golden(got.clone(), ""),
-                        normalize_golden(Value::Object(alias_json), ""),
-                        "alias differs from {api_path}"
-                    );
-                }
-            }
-            if route == "evolution" {
-                continue;
-            }
-            let mut want = want;
-            if route == "roster" {
-                want = roster_golden(want, true);
-                got = roster_golden(got, false);
-                eprintln!(
-                    "WU-024: compare roster history by identity, without legacy claim-derived working labels"
-                );
-            }
-            let diffs =
-                json_differences("$", &normalize_golden(want, ""), &normalize_golden(got, ""));
-            let unexpected = diffs
-                .into_iter()
-                .filter(|diff| documented_difference(slug, route, diff).is_empty())
-                .collect::<Vec<_>>();
-            assert!(
-                unexpected.is_empty(),
-                "{api_path} unexpected differences: {}",
-                unexpected.join(", ")
-            );
-        }
-    }
-
-    #[test]
-    fn legacy_settings_rows() {
-        let _serial = crate::test_helpers::serial();
-        let Some(want) = read_golden("org__settings.json") else {
-            return;
-        };
-        let Some(s) = copy_snapshot("") else {
-            return;
-        };
-        let got = f2::handler(&s).settings().unwrap();
-        let rows = got["settings"].as_array().expect("settings rows");
-        let want_rows = want["settings"].as_array().expect("golden settings rows");
-        assert!(
-            rows.len() > want_rows.len(),
-            "new compute settings not present"
-        );
-        for (i, row) in want_rows.iter().enumerate() {
-            let mut legacy = rows[i].clone();
-            assert_eq!(
-                legacy["secret"], false,
-                "legacy setting missing explicit secret:false: {legacy:?}"
-            );
-            legacy.as_object_mut().unwrap().remove("secret");
-            assert_eq!(row, &legacy, "legacy setting differs");
-        }
-        let mut names = rows
-            .iter()
-            .filter_map(|row| row["name"].as_str())
-            .filter(|name| name.starts_with("compute."))
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        names.sort();
-        assert_eq!(names, pulse_store::compute_setting_names());
-    }
-
     #[test]
     fn extra_settings_effective_defaults() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let stored: i64 = s
             .conn()
             .unwrap()
@@ -1658,8 +1309,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, 0, "fresh stores must not persist extra defaults");
-        let h = f2::handler(&s);
-        let (status, data) = f2::additions_request(h.clone(), "GET", "/api/v1/settings", "");
+        let h = http::handler(&s);
+        let (status, data) = http::additions_request(h.clone(), "GET", "/api/v1/settings", "");
         assert_eq!(status, 200, "settings: {data:?}");
         let mut names = Vec::new();
         for value in data["settings"].as_array().unwrap() {
@@ -1683,7 +1334,7 @@ mod tests {
         assert_eq!(names, want_names, "incorrect legacy/extra setting order");
         s.set_setting("human:dashboard", "compute.auto_approve", "1")
             .unwrap();
-        let (status, data) = f2::additions_request(h, "GET", "/api/v1/settings", "");
+        let (status, data) = http::additions_request(h, "GET", "/api/v1/settings", "");
         assert_eq!(status, 200, "updated settings: {data:?}");
         for value in data["settings"].as_array().unwrap() {
             let row = value.as_object().unwrap();
@@ -1730,7 +1381,7 @@ mod tests {
                 let sleep = pulse_testutil::setenv("PULSE_TEST_SLEEP_GIT", "");
                 let request = || {
                     let (status, data) =
-                        f2::additions_request(h.clone(), "GET", &format!("/api/v1/{route}"), "");
+                        http::additions_request(h.clone(), "GET", &format!("/api/v1/{route}"), "");
                     assert_eq!(status, 200, "{route}: status {status}: {data:?}");
                     pulse_store::gojson::to_vec(&Value::Object(data)).unwrap()
                 };

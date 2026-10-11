@@ -1,11 +1,7 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 
 use std::path::Path;
 
-/// Go: func landingStop(ctx context.Context, s *store.Store, root string) string
 pub(crate) fn landing_stop(
     ctx: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -31,7 +27,6 @@ pub(crate) fn landing_stop(
     String::new()
 }
 
-/// Go: func shWithContext(ctx context.Context, dir, cmd string, budget time.Duration) (rc *int, stdout, stderr string)
 pub(crate) fn sh_with_context(
     ctx: &pulse_bus::CancellationToken,
     dir: String,
@@ -49,7 +44,7 @@ pub(crate) fn sh_with_context(
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::{exec1, job_row, ref_of, set_setting};
+    use crate::test_helpers_daemon::{exec1, job_row, ref_of, set_setting};
     use std::path::Path;
     use std::time::{Duration, Instant};
 

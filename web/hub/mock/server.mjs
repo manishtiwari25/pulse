@@ -79,6 +79,8 @@ async function init() {
   state.questions = await loadJson("questions.json");
   state.events = (await loadJson("events.json")).events;
   const org = await loadJson("org.json");
+  // An owner-set goal the fixture seeds (ADR-040) lives in state.goals like one set from the console, so GET goal, the org rows and the registry rows agree.
+  for (const p of org.projects) if (p.kind !== "commons" && p.goal_source === "owner") state.goals.set(p.slug, { text: p.goal_preview, source: "owner", updated_at: "2026-09-02T10:00:00Z", updated_by: "human" });
   // The registry rows mirror the org rows' self-improvement gates (ADR-029), the loop's record refs (ADR-030) and the daemon's baseline job (ADR-031) so either payload can feed the console.
   const gate = (p) => ({ fixtures_enabled: p.fixtures_enabled ?? 0, baseline: p.baseline === true, evolve_level: p.evolve_level ?? "", evolve_next: p.evolve_next ?? "none", constitution: p.constitution ?? null, evaluators: p.evaluators ?? null, baseline_job: p.baseline_job ?? null, baseline_failed_at: p.baseline_failed_at ?? "" });
   state.projects = org.projects
@@ -180,6 +182,22 @@ function projectGoal(p) {
     },
     can_edit: p.status === "active",
   };
+}
+
+// The goal fields a project row carries (ADR-040): whose goal the lead works
+// toward and its first ~120 characters, cut at a word like the hub does.
+function goalFields(p) {
+  const { text, source } = projectGoal(p).goal;
+  const one = text.split(/\s+/).filter(Boolean).join(" ");
+  const chars = Array.from(one);
+  let preview = one;
+  if (chars.length > 120) {
+    let head = chars.slice(0, 120).join("");
+    const cut = head.lastIndexOf(" ");
+    if (cut >= 60) head = head.slice(0, cut);
+    preview = head.replace(/[\s.,;:!?…-]+$/u, "") + "…";
+  }
+  return { goal_source: source, goal_preview: preview };
 }
 
 function folders(raw) {
@@ -988,7 +1006,7 @@ async function handle(req, res) {
     return send(res, 200, { messages: state.messages.filter((m) => (!p || m.project === p) && (!t || m.task_id === t) && (!since || m.at > since)) });
   }
   if (segs[0] === "compute" && segs.length === 1) return send(res, 200, state.compute);
-  if (segs[0] === "projects" && segs.length === 1) return send(res, 200, { projects: state.projects, brain: state.projects.find((p) => p.brain)?.slug || "" });
+  if (segs[0] === "projects" && segs.length === 1) return send(res, 200, { projects: state.projects.map((p) => ({ ...p, ...goalFields(p) })), brain: state.projects.find((p) => p.brain)?.slug || "" });
   if (segs[0] === "folders" && segs.length === 1) {
     const f = folders(q.get("path") || "");
     if (f.error) return fail(res, 404, f.error, "nothing exists at that path in the mock tree", "go up one level");
@@ -1011,7 +1029,7 @@ async function handle(req, res) {
     const projects = org.projects
       .filter((p) => p.kind === "commons" || state.projects.some((x) => x.slug === p.slug && x.status === "active"))
       .map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !GATE_FIELDS.includes(k))))
-      .map((p) => (p.kind === "commons" ? p : { ...p, owner_questions: state.questions.filter((x) => x.slug === p.slug).length }));
+      .map((p) => (p.kind === "commons" ? p : { ...p, owner_questions: state.questions.filter((x) => x.slug === p.slug).length, ...goalFields(state.projects.find((x) => x.slug === p.slug)) }));
     return send(res, 200, { ...org, projects, proposals: state.proposals, questions: state.questions, totals: { ...org.totals, owner_questions: state.questions.length }, generated_at: now() });
   }
   if (segs[0] === "events" && segs.length === 1) {

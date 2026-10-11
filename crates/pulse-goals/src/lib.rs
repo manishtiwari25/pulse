@@ -1,4 +1,4 @@
-//! PULSE: shared project goals (port of Go package internal/goals).
+//! PULSE: shared project goals.
 
 use anyhow::{Result, anyhow};
 use chrono::DateTime;
@@ -652,7 +652,6 @@ mod tests {
     use pulse_store::{Options, Record, Store};
     use std::collections::BTreeMap;
     use std::path::Path;
-    use std::process::Command;
     use std::sync::Arc;
     use std::thread;
 
@@ -1518,121 +1517,6 @@ mod tests {
         let got = context(&goal);
         assert!(got.starts_with("## Project goal\n\nSource: owner; updated by human at 2026-09-13T06:00:00Z.\n\n> First\n> Second\n\n"));
         assert!(got.contains("Only the owner may set or reset the goal"));
-    }
-
-    #[test]
-    fn oracle_goal_rows_match_rust_for_same_inputs() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        let oracle =
-            std::env::var("PULSE_GO_ORACLE").unwrap_or_else(|_| "/tmp/pulse-oracle/pulse".into());
-        if !Path::new(&oracle).exists() {
-            return;
-        }
-        let repo = tempfile::tempdir().unwrap();
-        let git = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(["init", "-q"])
-            .status();
-        if git.is_err() || !git.unwrap().success() {
-            return;
-        }
-        let go_home = tempfile::tempdir().unwrap();
-        let out = Command::new(&oracle)
-            .current_dir(repo.path())
-            .env("PULSE_HOME", go_home.path())
-            .env("PULSE_NOW", GOAL_NOW)
-            .args(["init", "--name", "Goal Parity"])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let go = Store::open(Options {
-            home: go_home.path().display().to_string(),
-            read_only: true,
-            skip_records: true,
-            ..Options::default()
-        })
-        .unwrap();
-        let slug: String = go
-            .conn()
-            .unwrap()
-            .query_row("SELECT slug FROM projects ORDER BY slug LIMIT 1", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let go_goal = get(&go, &slug).unwrap();
-        let go_setting: (String, String, String, String) = go
-            .conn()
-            .unwrap()
-            .query_row(
-                "SELECT name, value, updated_at, updated_by FROM settings WHERE name = ?",
-                [format!("{KEY_PREFIX}{slug}")],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        let go_event: (String, String, String, String) = go
-            .conn()
-            .unwrap()
-            .query_row(
-                "SELECT action, actor, subject, detail FROM events WHERE action = 'project.goal.generated'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-
-        let rust_home = tempfile::tempdir().unwrap();
-        let rust = Store::open(Options {
-            home: rust_home.path().display().to_string(),
-            create: true,
-            now: GOAL_NOW.into(),
-            ..Options::default()
-        })
-        .unwrap();
-        rust.conn()
-            .unwrap()
-            .execute(
-                "INSERT INTO projects (slug, name, path, brain, verify_cmd, added_at) VALUES (?, ?, ?, ?, ?, ?)",
-                params![
-                    slug,
-                    "Goal Parity",
-                    repo.path().display().to_string(),
-                    0,
-                    "",
-                    GOAL_NOW
-                ],
-            )
-            .unwrap();
-        let rust_goal = get(&rust, &slug).unwrap();
-        assert_eq!(rust_goal, go_goal);
-        ensure_default(&rust, &slug).unwrap();
-        let rust_setting: (String, String, String, String) = rust
-            .conn()
-            .unwrap()
-            .query_row(
-                "SELECT name, value, updated_at, updated_by FROM settings WHERE name = ?",
-                [format!("{KEY_PREFIX}{slug}")],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        let rust_event: (String, String, String, String) = rust
-            .conn()
-            .unwrap()
-            .query_row(
-                "SELECT action, actor, subject, detail FROM events WHERE action = 'project.goal.generated'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(rust_setting, go_setting);
-        assert_eq!(rust_event, go_event);
-        assert!(!rust_event.3.contains("Goal Parity"));
-        assert!(rust_event.3.contains("text_hash"));
     }
 }
 #[cfg(test)]

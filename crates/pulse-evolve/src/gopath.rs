@@ -1,13 +1,11 @@
-//! Go's `path.Match` and `filepath.Glob` (Unix), ported byte for byte.
-//!
-//! Scope patterns in a constitution behave exactly as the Go product read
+//! Shell-style path matching and globbing for the scope patterns in a
+//! constitution. The rules are fixed because stored constitutions rely on
 //! them: `*` and `?` never cross a `/`, `**` is one `*`, a character class
-//! may be negated with `^`, `\` escapes, and a malformed pattern is an error
-//! rather than a non-match. `Glob` opens only the directories the pattern
-//! names instead of walking a checkout (a tree with node_modules or target
-//! took tens of seconds per project).
+//! may be negated with `^`, `\` escapes the next character, and a malformed
+//! pattern is an error rather than a non-match. `filepath_glob` opens only
+//! the directories the pattern names instead of walking a checkout (a tree
+//! with node_modules or target took tens of seconds per project).
 
-/// Go: var ErrBadPattern = errors.New("syntax error in pattern")
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BadPattern;
 
@@ -19,8 +17,8 @@ impl std::fmt::Display for BadPattern {
 
 const RUNE_ERROR: char = '\u{FFFD}';
 
-/// Go: utf8.DecodeRuneInString; (RuneError, 0) on empty input, (RuneError, 1)
-/// on an invalid byte.
+/// Decodes the first UTF-8 character of `s`: (U+FFFD, 0) on empty input,
+/// (U+FFFD, 1) on an invalid byte so the caller can report a bad pattern.
 fn decode_rune(s: &[u8]) -> (char, usize) {
     let Some(&first) = s.first() else {
         return (RUNE_ERROR, 0);
@@ -41,7 +39,6 @@ fn decode_rune(s: &[u8]) -> (char, usize) {
     }
 }
 
-/// Go: func Match(pattern, name string) (matched bool, err error)
 pub(crate) fn path_match(pattern: &str, name: &str) -> Result<bool, BadPattern> {
     let mut pattern = pattern.as_bytes();
     let mut name = name.as_bytes();
@@ -98,7 +95,6 @@ pub(crate) fn path_match(pattern: &str, name: &str) -> Result<bool, BadPattern> 
     Ok(name.is_empty())
 }
 
-/// Go: func scanChunk(pattern string) (star bool, chunk, rest string)
 fn scan_chunk(mut pattern: &[u8]) -> (bool, &[u8], &[u8]) {
     let mut star = false;
     while !pattern.is_empty() && pattern[0] == b'*' {
@@ -121,7 +117,6 @@ fn scan_chunk(mut pattern: &[u8]) -> (bool, &[u8], &[u8]) {
     (star, &pattern[..i], &pattern[i..])
 }
 
-/// Go: func matchChunk(chunk, s string) (rest string, ok bool, err error)
 fn match_chunk<'s>(mut chunk: &[u8], mut s: &'s [u8]) -> (&'s [u8], bool, Option<BadPattern>) {
     // failed records whether the match has failed. After the match fails,
     // the loop continues on processing chunk, checking that the pattern is
@@ -222,7 +217,6 @@ fn match_chunk<'s>(mut chunk: &[u8], mut s: &'s [u8]) -> (&'s [u8], bool, Option
     (s, true, None)
 }
 
-/// Go: func getEsc(chunk string) (r rune, nchunk string, err error)
 fn get_esc(mut chunk: &[u8]) -> Result<(char, &[u8]), BadPattern> {
     if chunk.is_empty() || chunk[0] == b'-' || chunk[0] == b']' {
         return Err(BadPattern);
@@ -244,7 +238,6 @@ fn get_esc(mut chunk: &[u8]) -> Result<(char, &[u8]), BadPattern> {
     Ok((r, nchunk))
 }
 
-/// Go: func Clean(path string) string (Unix: no volume names)
 pub(crate) fn clean(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
@@ -271,8 +264,8 @@ pub(crate) fn clean(path: &str) -> String {
             // .. element: remove to last /
             r += 2;
             if out.len() > dotdot {
-                // can backtrack: Go's lazybuf steps w back until the byte at
-                // w is a separator, which drops that separator too.
+                // can backtrack: step w back until the byte at w is a
+                // separator, then truncate there so that separator goes too.
                 let mut w = out.len() - 1;
                 while w > dotdot && out[w] != b'/' {
                     w -= 1;
@@ -305,7 +298,6 @@ pub(crate) fn clean(path: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
-/// Go: func Join(elem ...string) string (Unix)
 pub(crate) fn join(elem: &[&str]) -> String {
     for (i, e) in elem.iter().enumerate() {
         if !e.is_empty() {
@@ -315,7 +307,6 @@ pub(crate) fn join(elem: &[&str]) -> String {
     String::new()
 }
 
-/// Go: func Split(path string) (dir, file string)
 fn split(path: &str) -> (&str, &str) {
     match path.rfind('/') {
         Some(i) => (&path[..=i], &path[i + 1..]),
@@ -323,12 +314,10 @@ fn split(path: &str) -> (&str, &str) {
     }
 }
 
-/// Go: func hasMeta(path string) bool (Unix: `\` is magic too)
 fn has_meta(path: &str) -> bool {
     path.contains(['*', '?', '[', '\\'])
 }
 
-/// Go: func cleanGlobPath(path string) string
 fn clean_glob_path(path: &str) -> &str {
     match path {
         "" => ".",
@@ -337,14 +326,13 @@ fn clean_glob_path(path: &str) -> &str {
     }
 }
 
-/// Go: func Glob(pattern string) (matches []string, err error)
 pub(crate) fn filepath_glob(pattern: &str) -> Result<Vec<String>, BadPattern> {
     glob_with_limit(pattern, 0)
 }
 
-/// Go: func globWithLimit(pattern string, depth int) (matches []string, err error)
 fn glob_with_limit(pattern: &str, depth: usize) -> Result<Vec<String>, BadPattern> {
-    // This limit is used prevent stack exhaustion issues. See CVE-2022-30632.
+    // Bounds the recursion so a pattern with thousands of separators cannot
+    // exhaust the stack (CVE-2022-30632).
     const PATH_SEPARATORS_LIMIT: usize = 10000;
     if depth == PATH_SEPARATORS_LIMIT {
         return Err(BadPattern);
@@ -363,7 +351,8 @@ fn glob_with_limit(pattern: &str, depth: usize) -> Result<Vec<String>, BadPatter
     if !has_meta(dir) {
         return glob_dir(dir, file, Vec::new());
     }
-    // Prevent infinite recursion. See issue 15879.
+    // Prevent infinite recursion when the directory part cleans back to the
+    // pattern itself.
     if dir == pattern {
         return Err(BadPattern);
     }
@@ -374,8 +363,6 @@ fn glob_with_limit(pattern: &str, depth: usize) -> Result<Vec<String>, BadPatter
     Ok(matches)
 }
 
-/// Go: func glob(dir, pattern string, matches []string) (m []string, e error)
-///
 /// Searches for files matching pattern in the directory dir and appends them
 /// to matches. If the directory cannot be opened, it returns the existing
 /// matches. New matches are added in lexicographical order.
@@ -406,7 +393,6 @@ fn glob_dir(dir: &str, pattern: &str, mut matches: Vec<String>) -> Result<Vec<St
 mod tests {
     use super::*;
 
-    /// Go: func TestMatch(t *testing.T) (path/match_test.go table, in part)
     #[test]
     fn match_table() {
         let ok = Ok(true);
@@ -484,7 +470,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestClean(t *testing.T) (path/filepath tests, in part)
     #[test]
     fn clean_and_join_follow_go() {
         for (input, want) in [
@@ -547,7 +532,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestGlob(t *testing.T) and TestGlobError
     #[test]
     fn glob_opens_only_the_named_directories() {
         let dir = tempfile::tempdir().unwrap();
@@ -572,7 +556,7 @@ mod tests {
             rel(filepath_glob(&join(&[&root, "src/*.rs"])).unwrap()),
             vec!["src/a.rs", "src/b.rs"]
         );
-        // `**` is one segment, as in Go: it does not descend.
+        // `**` is one segment: it does not descend.
         assert_eq!(
             rel(filepath_glob(&join(&[&root, "src/**/*.rs"])).unwrap()),
             vec!["src/deep/c.rs"]
@@ -581,7 +565,8 @@ mod tests {
             rel(filepath_glob(&join(&[&root, "*/[ab].rs"])).unwrap()),
             vec!["src/a.rs", "src/b.rs"]
         );
-        // Readdirnames sees dotfiles; a literal pattern is an Lstat.
+        // Directory listings include dotfiles; a literal pattern is a plain
+        // existence check.
         assert_eq!(
             rel(filepath_glob(&join(&[&root, "*/y.rs"])).unwrap()),
             vec![".hidden/y.rs"]

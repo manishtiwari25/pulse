@@ -1,11 +1,8 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 #![allow(
     clippy::type_complexity,
     clippy::unused_unit,
-    reason = "Go-port signatures intentionally mirror internal/runner"
+    reason = "signatures intentionally mirror the original runner"
 )]
 
 use std::collections::BTreeMap;
@@ -18,7 +15,6 @@ pub(crate) struct ProjectLandingOutcome {
     pub(crate) hold: Option<String>,
 }
 
-/// Go: func landingHeld(state string) bool
 pub(crate) fn landing_held(state: String) -> bool {
     matches!(
         state.as_str(),
@@ -26,7 +22,6 @@ pub(crate) fn landing_held(state: String) -> bool {
     )
 }
 
-/// Go: func tendLandings(s *store.Store, projects []row, actor, now string, prev map[string]string) (lines []string, cur map[string]string)
 pub(crate) fn tend_landings(
     s: &pulse_store::Store,
     projects: Vec<crate::util::Row>,
@@ -38,7 +33,6 @@ pub(crate) fn tend_landings(
     tend_landings_context(&ctx, s, projects, actor, now, prev)
 }
 
-/// Go: func tendLandingsContext(ctx context.Context, s *store.Store, projects []row, actor, now string, prev map[string]string) (lines []string, cur map[string]string)
 pub(crate) fn tend_landings_context(
     ctx: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -199,7 +193,6 @@ pub(crate) fn tend_landing_project(
     ProjectLandingOutcome { slug, lines, hold }
 }
 
-/// Go: func recordLandingHolds(s *store.Store, holds map[string]string, now string)
 pub(crate) fn record_landing_holds(
     s: &pulse_store::Store,
     holds: BTreeMap<String, String>,
@@ -244,12 +237,10 @@ pub(crate) fn load_landing_holds(s: &pulse_store::Store) -> BTreeMap<String, Str
         .collect()
 }
 
-/// Go: func pushOn(s *store.Store) bool
 pub(crate) fn push_on(s: &pulse_store::Store) -> bool {
     s.setting("landing.push", "off") == "main"
 }
 
-/// Go: func pushOwed(s *store.Store, slug string) bool
 pub(crate) fn push_owed(s: &pulse_store::Store, slug: String) -> bool {
     let Ok(conn) = s.conn() else { return false };
     let r = crate::util::must_one(&conn, "SELECT COALESCE((SELECT MAX(seq) FROM events WHERE action = 'land.landed' AND json_extract(detail, '$.project') = ?), 0) AS landed,
@@ -257,7 +248,6 @@ pub(crate) fn push_owed(s: &pulse_store::Store, slug: String) -> bool {
     !r.0.is_empty() && r.int("landed") > r.int("pushed")
 }
 
-/// Go: func pushLanded(s *store.Store, project row, actor, now string, landedNow bool) (line, note string)
 pub(crate) fn push_landed(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -385,7 +375,6 @@ pub(crate) fn push_landed(
     )
 }
 
-/// Go: func pushCredentialEnv(s *store.Store, root string) (env []string, cleanup func(), why string)
 pub(crate) fn push_credential_env(
     s: &pulse_store::Store,
     root: String,
@@ -430,7 +419,6 @@ pub(crate) fn push_credential_env(
     (env, Box::new(move |_, _| material.cleanup()), String::new())
 }
 
-/// Go: func pushEnv(root string) []string
 pub(crate) fn push_env(root: String) -> Vec<String> {
     if std::env::var("GIT_SSH_COMMAND").unwrap_or_default() != ""
         || !crate::util::git_timeout(
@@ -452,7 +440,7 @@ pub(crate) fn push_env(root: String) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
     use std::collections::BTreeMap;
 
     #[test]

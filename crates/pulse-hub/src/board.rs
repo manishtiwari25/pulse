@@ -8,10 +8,9 @@ use std::sync::LazyLock;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 
-/// Go's nil map read: every key is absent.
+/// The row a lookup falls back to when a post id is unknown: every key is absent.
 static EMPTY_ROW: JsonMap = JsonMap::new();
 
-/// Go: d.ByID[id]
 fn post_at<'a>(
     by_id: &BTreeMap<String, usize>,
     posts: &'a [JsonMap],
@@ -31,7 +30,6 @@ pub trait TallySource: Send + Sync {
     }
 }
 
-/// Go: type nativeTally struct{ store *store.Store }
 pub struct NativeTally {
     pub store: std::sync::Arc<pulse_store::Store>,
 }
@@ -56,10 +54,10 @@ impl TallySource for NativeTally {
     }
 }
 
-/// The fields of a cached post row. Go's rows carried `frontmatter` and
-/// `body` too; here those two stay in the store and `Handler::post_detail`
-/// reads them for the one post a request asks for, so a snapshot holds a few
-/// kilobytes per post rather than the whole board text (see `snapshot`).
+/// The fields of a cached post row. `frontmatter` and `body` stay in the
+/// store and `Handler::post_detail` reads them for the one post a request
+/// asks for, so a snapshot holds a few kilobytes per post rather than the
+/// whole board text (see `snapshot`).
 pub(crate) const POST_ROW_FIELDS: &str = "id rel_path area thread thread_key kind agent runner model session date branch expires on_post vote text_hash has_read_line resolution summary links files provenance_ok provenance_missing in_area name project";
 
 #[derive(Debug, Clone, Default)]
@@ -71,7 +69,7 @@ pub(crate) struct BoardData {
     /// (proposal text, read lines, owner questions) is computed while the
     /// snapshot is built, from the store rows the tally was computed from.
     pub(crate) posts: Vec<JsonMap>,
-    /// Go's ByID shares the post maps with Posts; here it indexes into them.
+    /// Index of each post id into `posts`.
     pub(crate) by_id: BTreeMap<String, usize>,
     pub(crate) claims: Vec<JsonMap>,
     pub(crate) threads: Vec<JsonMap>,
@@ -187,8 +185,7 @@ impl crate::server::Handler {
                     let post = db_posts
                         .get(f[3])
                         .ok_or_else(|| anyhow!("tally references missing post {:?}", f[3]))?;
-                    // Go reads these from the frontmatter map, which copies
-                    // the post's own fields.
+                    // Provenance: which identity fields the post left blank.
                     let mut missing = Vec::new();
                     for (key, value) in [
                         ("agent", &post.agent),
@@ -283,9 +280,9 @@ impl crate::server::Handler {
         let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res);
         d.enrich_threads();
         d.collect_owner_questions(&decided_posts(store, project)?, &db_posts);
-        // Go reads a post's body from its row; the rows no longer carry one,
-        // so the body of a post that has a row comes from the store post the
-        // row was built from (every row's id is a `db_posts` key).
+        // The rows carry no body, so the body of a post that has a row comes
+        // from the store post the row was built from (every row's id is a
+        // `db_posts` key).
         let body_of = |id: &str| -> &str {
             if d.by_id.contains_key(id) {
                 db_posts
@@ -406,7 +403,7 @@ impl crate::server::Handler {
         });
         let evo_summary = crate::evolution::evolution_summary(d.evolution.clone());
         d.meta = object(
-            "schema_version built_at now repo repo_name remote branch head dirty board_present evolution_present tally_script tally_mode board_params posts_without_kind last_error",
+            "schema_version built_at now repo repo_name remote branch head dirty board_present evolution_present board_params posts_without_kind last_error",
             vec![
                 json!("3"),
                 json!(store.now()),
@@ -445,8 +442,6 @@ impl crate::server::Handler {
                     .get("evolution_present")
                     .cloned()
                     .unwrap_or_else(|| json!("")),
-                json!(""),
-                json!("go"),
                 json!(d.params.clone()),
                 json!(nokind),
                 json!(""),
@@ -460,14 +455,13 @@ impl crate::server::Handler {
         Ok(d)
     }
 
-    /// Go: d.post(id) - the whole post row, `frontmatter` and `body`
-    /// included, with the responses on it; empty for an unknown post. The
-    /// cached rows carry neither field, so both are read from the store for
-    /// the one post asked for (a primary-key lookup) and emitted as the
-    /// snapshot would have: the frontmatter map of the store post, the body
-    /// without its surrounding newlines. A post deleted since the snapshot
-    /// was built keeps the row's shape with an empty body and frontmatter
-    /// until the watermark rebuilds the snapshot.
+    /// The whole post row, `frontmatter` and `body` included, with the
+    /// responses on it; empty for an unknown post. The cached rows carry
+    /// neither field, so both are read from the store for the one post asked
+    /// for (a primary-key lookup): the frontmatter map of the store post, the
+    /// body without its surrounding newlines. A post deleted since the
+    /// snapshot was built keeps the row's shape with an empty body and
+    /// frontmatter until the watermark rebuilds the snapshot.
     pub(crate) fn post_detail(&self, d: &BoardData, id: &str) -> Result<JsonMap> {
         let mut row = d.post(id);
         if row.is_empty() {
@@ -518,7 +512,7 @@ impl BoardData {
             thread.insert("open_handoffs".into(), json!(0));
             thread.insert("active_claims".into(), json!(Vec::<String>::new()));
         }
-        // Go sorts a copy of the slice; the maps behind it are shared.
+        // Sort references so `self.posts` keeps its own order.
         let mut posts = self.posts.iter().collect::<Vec<_>>();
         order(&mut posts, &["date", "id"]);
         let mut seen = BTreeMap::<String, BTreeSet<String>>::new();
@@ -693,7 +687,6 @@ impl BoardData {
         self.questions = rows;
     }
 
-    /// Go: d.ByID[id]
     pub(crate) fn post_by_id(&self, id: &str) -> Option<&JsonMap> {
         post_at(&self.by_id, &self.posts, id)
     }
@@ -745,8 +738,7 @@ impl BoardData {
             .cloned()
             .collect::<Vec<_>>();
         order(&mut open, &["-last"]);
-        // Go picks every post and stable-sorts the picks by -date; pick keeps
-        // "date", so sorting references first yields the same head.
+        // The twelve newest posts: sort references, then pick only those twelve.
         let mut by_date = self.posts.iter().collect::<Vec<_>>();
         order(&mut by_date, &["-date"]);
         let recent = by_date
@@ -761,7 +753,8 @@ impl BoardData {
             .collect::<Vec<_>>();
         let mut kinds = BTreeMap::<String, i64>::new();
         let mut areas = BTreeSet::<String>::new();
-        // Go keys the agent rows by agent + "\x00" + session and walks them sorted.
+        // One row per agent + "\x00" + session; the map walks them in key
+        // order, which the stable sort by -last below keeps for ties.
         let mut agents = BTreeMap::<String, JsonMap>::new();
         let mut without = 0;
         for p in &self.posts {
@@ -958,10 +951,10 @@ pub(crate) fn order<R: std::borrow::Borrow<JsonMap>>(rows: &mut [R], fields: &[&
     });
 }
 
-/// Go: exec.CommandContext(5s) + Output(): stdout is read while the command
-/// runs, so a long listing never fills the pipe and stalls git, and a command
-/// still running at the deadline is killed. Any failure reads as "" - an
-/// unborn checkout has no branch, a missing remote is normal.
+/// Runs git with a five-second deadline. Stdout is read on its own thread
+/// while the command runs, so a long listing never fills the pipe and stalls
+/// git, and a command still running at the deadline is killed. Any failure
+/// reads as "" - an unborn checkout has no branch, a missing remote is normal.
 pub(crate) fn git_value(repo: &str, args: &[&str]) -> String {
     let mut command = Command::new(pulse_gitenv::git_program());
     command.arg("-C").arg(repo).args(args);
@@ -971,8 +964,8 @@ pub(crate) fn git_value(repo: &str, args: &[&str]) -> String {
             command.env(k, v);
         }
     }
-    // Output() with a nil Stderr captures the child's stderr into the error;
-    // nothing here reads it, so it must not reach the hub's own log either.
+    // Nothing here reads the child's stderr, so it must not reach the hub's
+    // own log either.
     let Ok(mut child) = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1252,7 +1245,7 @@ fn suggestion_cmp(a: &JsonMap, b: &JsonMap) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::json;
     use std::process::Command;
 
@@ -1317,8 +1310,8 @@ mod tests {
             ("up", "up"),
             ("down", "down"),
         ] {
-            let s = f2::additions_store(false);
-            f2::additions_project(&s, "one");
+            let s = http::additions_store(false);
+            http::additions_project(&s, "one");
             join(&s, "proposer");
             join(&s, "voter");
             let suggestion = pulse_board::create_post(
@@ -1352,7 +1345,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let data = f2::handler(&s).snapshot("one", "").unwrap();
+            let data = http::handler(&s).snapshot("one", "").unwrap();
             assert_eq!(data.suggestions.len(), 1);
             assert_eq!(str_key(&data.suggestions[0], "id"), suggestion.id);
             let votes = data.suggestions[0]["votes"].as_array().unwrap();
@@ -1367,9 +1360,9 @@ mod tests {
     #[test]
     fn store_amendment_vote_reason_uses_summary() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        f2::additions_record(
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        http::additions_record(
             &s,
             "EVO-constitution",
             "one",
@@ -1412,7 +1405,7 @@ mod tests {
             },
         )
         .unwrap();
-        let data = f2::handler(&s).snapshot("one", "").unwrap();
+        let data = http::handler(&s).snapshot("one", "").unwrap();
         assert_eq!(data.amendments.len(), 1);
         assert_eq!(str_key(&data.amendments[0], "id"), amendment.id);
         let votes = data.amendments[0]["votes"].as_array().unwrap();
@@ -1423,13 +1416,13 @@ mod tests {
         assert_eq!(votes[0]["read_line"], restatement);
     }
 
-    // Go's rows carried every post's body and frontmatter; the cached rows
-    // keep neither, what the board derives from a body is still derived, and
-    // the post route reads both from the store for the one post it serves.
+    // The cached rows carry neither body nor frontmatter; what the board
+    // derives from a body is still derived, and the post route reads both
+    // from the store for the one post it serves.
     #[test]
     fn cached_rows_leave_body_and_frontmatter_to_the_post_route() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let repo = repo();
         pulse_board::add_project(
             &s,
@@ -1506,7 +1499,7 @@ mod tests {
             "agreed",
             "2026-09-06T08:02:00Z",
         );
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let data = h.snapshot("one", "").unwrap();
         let fields = POST_ROW_FIELDS.split_whitespace().collect::<BTreeSet<_>>();
         assert_eq!(data.posts.len(), 3);
@@ -1536,7 +1529,7 @@ mod tests {
         let plain = h.post_detail(&data, &answer.id).unwrap();
         assert!(plain["frontmatter"].get("for_owner").is_none());
 
-        let (status, _, raw) = crate::test_helpers_f3::request(
+        let (status, _, raw) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             &format!("/api/v1/projects/one/posts/{}", ask.id),
@@ -1555,7 +1548,7 @@ mod tests {
         assert_eq!(served["frontmatter"]["for_owner"], "true");
         assert_eq!(served["in_area"], 1);
 
-        let (status, _, raw) = crate::test_helpers_f3::request(
+        let (status, _, raw) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/projects/one/threads/api/limits",
@@ -1573,8 +1566,8 @@ mod tests {
     #[test]
     fn thread_rows_carry_enriched_status() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         join(&s, "alpha");
         join(&s, "bravo");
         let question = pulse_board::create_post(
@@ -1635,7 +1628,7 @@ mod tests {
             },
         )
         .unwrap();
-        let data = f2::handler(&s).snapshot("one", "").unwrap();
+        let data = http::handler(&s).snapshot("one", "").unwrap();
         let thread = data.thread("api/rate-limits")["thread"]
             .as_object()
             .unwrap()
@@ -1657,7 +1650,7 @@ mod tests {
     #[test]
     fn suggestion_rows_carry_jobs_and_plan_gates() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let repo = repo();
         let project = pulse_board::add_project(
             &s,
@@ -1746,7 +1739,7 @@ mod tests {
                 [job.id.as_str()],
             )
             .unwrap();
-        let data = f2::handler(&s).snapshot(&project.slug, "").unwrap();
+        let data = http::handler(&s).snapshot(&project.slug, "").unwrap();
         let by_id = data
             .suggestions
             .iter()
@@ -1767,7 +1760,7 @@ mod tests {
     #[test]
     fn owner_questions_wait_until_decided_answered_or_resolved() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let repo = repo();
         pulse_board::add_project(
             &s,
@@ -1920,7 +1913,7 @@ mod tests {
             "2026-09-06T08:09:00Z",
         );
 
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let data = h.snapshot("one", "").unwrap();
         let ids = data
             .questions
@@ -1958,7 +1951,7 @@ mod tests {
         assert_eq!(flat.len(), 2);
         assert_eq!(str_key(&flat[0], "id"), gate.id);
 
-        let (status, _, raw) = crate::test_helpers_f3::request(
+        let (status, _, raw) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/projects/one/questions",
@@ -1978,8 +1971,8 @@ mod tests {
     #[test]
     fn org_owner_presence_and_plannable_totals() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = f2::handler(&s);
+        let s = http::additions_store(false);
+        let h = http::handler(&s);
         let evolution =
             json!({"loop":{"loop":"","stop":"","limits":""},"archive":{"rows":[],"record":null}});
         let data = BoardData {

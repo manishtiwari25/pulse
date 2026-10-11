@@ -23,6 +23,52 @@ owner  ──►  pulse hub (Next.js console)  ──►  ~/.pulse/pulse.sqlite 
 
 The only Markdown in this repository is this file.
 
+## Contents
+
+- [At a glance](#at-a-glance)
+- [Install](#install)
+- [The owner's path](#the-owners-path)
+- [Share PULSE](#share-pulse)
+- [The agents' path](#the-agents-path)
+  - [Standing jobs: `pulse schedule`](#standing-jobs-pulse-schedule)
+  - [Shared project goals](#shared-project-goals)
+  - [Records in SQLite](#records-in-sqlite)
+  - [Democracy and self-improvement](#democracy-and-self-improvement)
+  - [Events, hooks and channels](#events-hooks-and-channels)
+- [The harness](#the-harness)
+- [The runner](#the-runner)
+  - [The daemon loop](#the-daemon-loop)
+  - [Services and self-update](#services-and-self-update)
+  - [Stall detection](#stall-detection)
+  - [macOS folder access](#macos-folder-access)
+  - [Workers, landing and the load governor](#workers-landing-and-the-load-governor)
+  - [Credentials](#credentials)
+  - [Pairing hands](#pairing-hands)
+  - [Heartbeats and presence](#heartbeats-and-presence)
+  - [Removing projects and executors](#removing-projects-and-executors)
+  - [Failed jobs and recovery](#failed-jobs-and-recovery)
+  - [Lessons, briefs and peer help](#lessons-briefs-and-peer-help)
+  - [Sweep, retention and hygiene](#sweep-retention-and-hygiene)
+  - [Executor self-heal and self-retire](#executor-self-heal-and-self-retire)
+  - [When the owner is quiet: handoffs, idle leads and research](#when-the-owner-is-quiet-handoffs-idle-leads-and-research)
+  - [When the owner is away](#when-the-owner-is-away)
+- [Development](#development)
+  - [Upgrading from older PULSE](#upgrading-from-older-pulse)
+
+## At a glance
+
+`pulse help` groups the commands like this; the last column points at the
+part of this file that explains them.
+
+| Group | Commands | Where in this README |
+| --- | --- | --- |
+| Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `task`, `thread`, `vote`, `watch` | [The agents' path](#the-agents-path) |
+| Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](#records-in-sqlite) |
+| Human - the maintainer's calls | `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop` | [The owner's path](#the-owners-path) |
+| Runner | `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `service`, `sweep`, `work` | [The runner](#the-runner) |
+| Hub | `hub`, `serve` | [The owner's path](#the-owners-path) |
+| Inspect | `agents`, `events`, `jobs`, `projects`, `schema`, `signers`, `status`, `tally`, `usage`, `verify`, `version` | [The owner's path](#the-owners-path) / [Development](#development) |
+
 ## Install
 
 Requires a Rust toolchain (stable, 1.95+; [rustup](https://rustup.rs)). No Go,
@@ -64,103 +110,15 @@ console service is missing or unloaded. The `pulse hub` you started hands over
 to the service's at the same address (`pulse service
 install` in a terminal does the same). A fresh copy carries the framework's
 records inside the binary, so nothing has to be imported first (see
-[Share PULSE](#share-pulse)).
-
-If the owner's pause is on, **Resume daemon** clears only the `stop` setting
-(`pulse start` in a terminal). It does not start a missing service, remove
-file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
-that the daemon is disabled: it may still be running or waiting. A loop that
-stays silent for half an hour (six intervals when the interval is longer) is
-treated as hung: the daemon writes its own thread's stack and thread count to
-`~/.pulse/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
-event log, cancels the runs in flight and exits 3, so the service starts it
-again; `kill -USR1 <pid>` writes the same dump without a restart. The controls
-show the recorded PID, service state and diagnostic commands rather than
-starting a duplicate daemon. `daemon.self_update = off` only disables
-automatic rebuilds; it is not the daemon's enable switch.
+[Share PULSE](#share-pulse)). How the services, self-update, restart drain
+and stall detection work is described under
+[Services and self-update](#services-and-self-update).
 
 Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
 you enter it on github.com, and every worker on this machine runs with that
 login from then on (`pulse harness login` is the same flow in a terminal).
 The account needs a GitHub Copilot seat or plan; the card says so when it
 does not, and `pulse status` carries the same `harness` line.
-
-`pulse service install` writes two units: `pulse.daemon` (the fleet) and
-`pulse.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
-`--no-hub` skips it). Both restart themselves when a new `pulse` binary lands
-on disk, so the console you keep open is always the build the daemon runs, and
-neither dies with a terminal. Running `pulse service install` again is safe: a
-unit whose file did not change and is loaded is left running.
-
-That install line is for the first install only. After it, the daemon keeps
-itself current (ADR-035): when a landing moves the brain's `main`, it rebuilds
-`pulse` from that clean checkout, smoke-tests the new binary, installs it in
-place and restarts once its runs in flight finish - the console follows within
-a minute and shows the build it runs beside the daemon's under **Settings →
-Running**. The restart is a handover, not a pause: a daemon whose binary
-changed on disk while runs are in flight keeps dispatching, planning and
-landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
-runs of a kind on a project once less of that window is left than such a run
-is expected to take (log line `restarting: only any run on blog, lamplitlabs;
-ballot, reflect, lead runs on amistio-template start with <left> left of the
-restart window; N in flight` while the short runs still fit, then
-`restarting: no new runs with <left> left of the restart window; N in
-flight`, each said once per change rather than per countdown tick; when
-no run could fit the whole window the first notice already says `no new run
-starts`), and exits with code 3 the moment nothing is in flight; its
-heartbeat says `restarting: N in flight` meanwhile. The window is the drain
-or the time until the slowest of the runs that were in flight when the
-binary changed is expected to end, whichever is longer: the restart waits
-for those runs anyway, so a run that ends before the slowest of them is
-expected to delays nothing, while stopping at the end of the drain idled
-every project for as long as that one run took (the first notice then says
-`new runs may start for up to <window> while the slowest run in flight is
-expected to go on`). Runs started inside the window do not extend it. The
-expectation is measured per project and kind of job: the 90th percentile of
-the last fifty real runs of that kind on that project that ran a worker to an
-end, plus five minutes of setup and report, capped at `minutes_per_job + 5`,
-which also stands in until ten such runs exist (a project with fewer borrows
-the measure of the kind over every project, a kind with fewer the measure of
-all runs together). A ballot takes a minute and an improve run half an hour,
-an improve run on the brain an hour and one on a blog five minutes, so one
-measure for all either held the short runs for every window or admitted long
-runs against the runs in flight's two-hour budget while those ended within
-the half hour - one such run held nine idle slots for forty minutes at each
-release. A run the window outlives is waited for, never cut. `0` stops
-dispatching at once and waits for the runs, as before. The build itself is a
-full release compile, so it keeps out of the runs' way: it runs at nice 10
-with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
-default), and it does not start while the load governor (below) says the
-machine is saturated or every local slot under `daemon.max_jobs` holds a run -
-the daemon then says `self-update: brain HEAD <rev> differs from the running
-<rev>; building once the machine has room: <why>` once, keeps one local slot
-free so the build starts within one run, and the experiment lane measures
-nothing new meanwhile, as when the build waits for the lane. Nor does it start
-until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
-(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
-apart, and eight release builds a day, each followed by a restart drain, were
-the price of building on every landing - the daemon says `building once it has
-stood for 15 min` once, and a further landing restarts the clock, so the burst
-builds once, from its last commit. A build that then exits three times early is put back to
-the previous one by the launcher, which turns `daemon.self_update` off and
-leaves a finding. A revision already installed by hand is not built again:
-when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
-restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
-have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
-
-On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
-system ask once whether `pulse` may access that folder the first time the
-daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
-status` reports the daemon as silent until then). macOS ties that answer to
-the binary's code-signing requirement, and a plain `cargo build`'s requirement
-is its own hash - so every rebuild would ask again. `pulse service install`
-therefore re-signs the installed `pulse` with a requirement every build meets,
-`identifier "pulse"`, and the daemon signs each build it installs the same way:
-no certificate, no password, and the answer holds. Checkouts elsewhere never
-ask. The
-services run pulse through small `/bin/sh` launchers
-(`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
-and the crash guard has a home.
 
 Everything else happens in the console. The Home page starts with **For you**,
 **Your projects** and **What's happening**; the machine details, service
@@ -203,7 +161,12 @@ controls and raw activity fold under **Show details**.
   "measuring" while its job runs), the level the loop may reach - and the
   project page lists its fixtures. Open a project's **Overview → Project
   goal** to give every agent the same direction. **Edit goal** sets your
-  outcome; without one, PULSE supplies a project-derived default.
+  outcome; without one, PULSE supplies a project-derived default. Until you
+  set one, the Home page's **Needs attention** list says so - *runs on a
+  generated goal* - with a link straight to that panel, since the lead plans,
+  votes and researches toward whatever goal is there; × puts the note away
+  for that project, and it returns if the goal is ever reset to the default.
+  `pulse goal set --project my-app --text '...'` sets it from a terminal.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent picks it up the same tick, turns
   it into jobs at the task's priority (urgent runs first) and reports back on
@@ -825,6 +788,24 @@ pass that had in fact finished, whose result the wait had received and
 dropped, leaving the pass marked running until the next daemon start. A pass
 whose thread ends without a result is cleared the same way.
 
+A streak of exact ties is not progress: when a project's last
+`evolve.flat_cycles` experiment cycles (default `6`; baseline refresh rows
+do not count) all scored the variant equal to its baseline, the fixtures are
+not telling a better variant from a worse one, and every further cycle would
+cost a worker run and a measurement and teach nothing. The loop then pauses
+with one owner question (`Evolution paused: the fixtures do not tell variants
+apart`) on the project's `evolution/loop-gate` thread, listing the tied
+cycles, the enabled fixtures and the next step; `pulse evolve status` shows
+the same reason on its `Experiment planning` line (`blocked - …`) and the
+step as `Next human step`. Two things clear it: a
+fixture enabled after the streak began (usually a metric fixture, `pulse
+evolve fixture add --project P --name N --metric --scorer CMD`, which the loop
+notices on its own), or your answer to the question (`pulse post answer
+--project P --area evolution --thread loop-gate --on QUESTION_ID --summary
+'Reviewed'`), which lets the loop run `evolve.flat_cycles` more cycles before
+it may ask again. `pulse settings set evolve.flat_cycles 0` turns the gate
+off; the smallest streak it accepts is `2`.
+
 After a measured experiment is finalized with no pending branch, the daemon
 can queue one durable, result-specific reflection per eligible archive, for
 both kept and discarded outcomes. The archive must belong to the job's latest
@@ -867,6 +848,7 @@ record, read with `pulse record show WF-evolve`.
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
+| `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
@@ -891,25 +873,8 @@ These are defaults, not the owner's effective values. Read those with
 defaults, validation rules and descriptions). Only the owner changes caps;
 neither an unlimited loop nor these docs adds a measurement-wide credit budget.
 
-#### Legacy fixture notes: F03 and F08
-
-At PULSE's Go/store HEAD `b56e905` (2026-09-08), both legacy requests are
-**no-op**: their `docs/` targets no longer exist. They remain historical
-cases in `EVO-evaluators`, not names in PULSE's six registered `starter-*`
-fixtures (`pulse evolve fixture list --project amistio-template`).
-
-| Fixture | Status at that HEAD | Premise evidence |
-| --- | --- | --- |
-| F03 - add the WU-to-plan-index prune step | **no-op** | B-006 (`4087406`) already had the requested step. The Go/store tree has neither `docs/plans/` nor `docs/workflows/prune.md`; do not manufacture a duplicate step or work unit to satisfy the stale request. |
-| F08 - fix the moved-file relative link | **no-op** | B-006 found no broken link, and all three F08 runs hit the ten-minute cap hunting for one. Neither `docs/guides/spec-driven-pitfalls.md` nor `docs/scripts/check-links.sh` exists in the Go/store tree. |
-
-On a docs-based tree that still has the link checker, F08 runs that check
-first and stops without editing or hunting when it passes. Missing legacy
-targets at the HEAD above are not a passing link check or a measured repair.
-These notes change neither historical expected tiers nor evaluator rules,
-tolerances, or B-006 scores. Retargeting needs an owner-maintained fixture
-on a pinned tree where the gap is reproduced. Canonical evidence:
-`pulse record show EVO-archive` (B-006 and the fixture applicability notes).
+Applicability notes for the historical legacy fixtures (F03, F08) live in the
+`EVO-archive` record (`pulse record show EVO-archive`).
 
 ### Events, hooks and channels
 
@@ -1215,6 +1180,8 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 `pulse plan`, `pulse executor`, `pulse pair`, `pulse hands`, `pulse env` and
 `pulse sweep` are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
 
+### The daemon loop
+
 Use `pulse daemon --interval S` (or `pulse service install --interval S`) to
 set the idle wait and the retry pause after an all-error batch. The default
 is 300 seconds; zero or negative values use that default. Store events can
@@ -1238,14 +1205,121 @@ Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Idle workers are reused instead of
 repeatedly selecting a busy identity. Project fairness includes lease
-reservations before the worker goroutine records its start, so dispatch can
+reservations before the worker's run thread records its start, so dispatch can
 spread work across projects without waiting for their processes to launch.
 Configured concurrency, daily limits and lead priority remain unchanged.
+
+### Services and self-update
+
+`pulse service install` writes two units: `pulse.daemon` (the fleet) and
+`pulse.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
+`--no-hub` skips it). Both restart themselves when a new `pulse` binary lands
+on disk, so the console you keep open is always the build the daemon runs, and
+neither dies with a terminal. Running `pulse service install` again is safe: a
+unit whose file did not change and is loaded is left running.
+
+That install line is for the first install only. After it, the daemon keeps
+itself current (ADR-035): when a landing moves the brain's `main`, it rebuilds
+`pulse` from that clean checkout, smoke-tests the new binary, installs it in
+place and restarts once its runs in flight finish - the console follows within
+a minute and shows the build it runs beside the daemon's under **Settings →
+Running**. The restart is a handover, not a pause: a daemon whose binary
+changed on disk while runs are in flight keeps dispatching, planning and
+landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
+runs of a kind on a project once less of that window is left than such a run
+is expected to take (log line `restarting: only any run on blog, lamplitlabs;
+ballot, reflect, lead runs on amistio-template start with <left> left of the
+restart window; N in flight` while the short runs still fit, then
+`restarting: no new runs with <left> left of the restart window; N in
+flight`, each said once per change rather than per countdown tick; when
+no run could fit the whole window the first notice already says `no new run
+starts`), and exits with code 3 the moment nothing is in flight; its
+heartbeat says `restarting: N in flight` meanwhile. The window is the drain
+or the time until the slowest of the runs that were in flight when the
+binary changed is expected to end, whichever is longer: the restart waits
+for those runs anyway, so a run that ends before the slowest of them is
+expected to delays nothing, while stopping at the end of the drain idled
+every project for as long as that one run took (the first notice then says
+`new runs may start for up to <window> while the slowest run in flight is
+expected to go on`). Runs started inside the window do not extend it. The
+expectation is measured per project and kind of job: the 90th percentile of
+the last fifty real runs of that kind on that project that ran a worker to an
+end, plus five minutes of setup and report, capped at `minutes_per_job + 5`,
+which also stands in until ten such runs exist (a project with fewer borrows
+the measure of the kind over every project, a kind with fewer the measure of
+all runs together). A ballot takes a minute and an improve run half an hour,
+an improve run on the brain an hour and one on a blog five minutes, so one
+measure for all either held the short runs for every window or admitted long
+runs against the runs in flight's two-hour budget while those ended within
+the half hour - one such run held nine idle slots for forty minutes at each
+release. A run the window outlives is waited for, never cut. `0` stops
+dispatching at once and waits for the runs, as before. The build itself is a
+full release compile, so it keeps out of the runs' way: it runs at nice 10
+with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
+default), and it does not start while the load governor (below) says the
+machine is saturated or every local slot under `daemon.max_jobs` holds a run -
+the daemon then says `self-update: brain HEAD <rev> differs from the running
+<rev>; building once the machine has room: <why>` once, keeps one local slot
+free so the build starts within one run, and the experiment lane measures
+nothing new meanwhile, as when the build waits for the lane. Nor does it start
+until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
+(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
+apart, and eight release builds a day, each followed by a restart drain, were
+the price of building on every landing - the daemon says `building once it has
+stood for 15 min` once, and a further landing restarts the clock, so the burst
+builds once, from its last commit. A build that then exits three times early is put back to
+the previous one by the launcher, which turns `daemon.self_update` off and
+leaves a finding. A revision already installed by hand is not built again:
+when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
+restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
+have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
+
+### Stall detection
+
+If the owner's pause is on, **Resume daemon** clears only the `stop` setting
+(`pulse start` in a terminal). It does not start a missing service, remove
+file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
+that the daemon is disabled: it may still be running or waiting. A loop that
+stays silent for half an hour (six intervals when the interval is longer) is
+treated as hung: the daemon writes its own thread's stack and thread count to
+`~/.pulse/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
+event log, cancels the runs in flight and exits 3, so the service starts it
+again; `kill -USR1 <pid>` writes the same dump without a restart. The controls
+show the recorded PID, service state and diagnostic commands rather than
+starting a duplicate daemon. `daemon.self_update = off` only disables
+automatic rebuilds; it is not the daemon's enable switch.
+
+### macOS folder access
+
+On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
+system ask once whether `pulse` may access that folder the first time the
+daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
+status` reports the daemon as silent until then). macOS ties that answer to
+the binary's code-signing requirement, and a plain `cargo build`'s requirement
+is its own hash - so every rebuild would ask again. `pulse service install`
+therefore re-signs the installed `pulse` with a requirement every build meets,
+`identifier "pulse"`, and the daemon signs each build it installs the same way:
+no certificate, no password, and the answer holds. Checkouts elsewhere never
+ask. The services run pulse through small `/bin/sh` launchers
+(`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
+and the crash guard has a home.
+
+### Workers, landing and the load governor
 
 Workers commit in their own clones and never push; the runner copies each
 job's commits to a `pulse/<agent>/<job>` branch in your checkout, and the
 daemon lands them into the default branch (ADR-024: verify command first,
-fast-forward or a `Land …` merge commit). The verify command runs in a
+fast-forward or a `Land …` merge commit). The verify command is the project's
+`verify_cmd` (`pulse init PATH --verify CMD` sets or replaces it; re-registering
+keeps everything else); a project registered without one adopts its recipe's
+`suggested_check` the first time the daemon or a run reads a recipe that
+parses - once, with a `finding` on the project's `runner/verify` thread and a
+`verify.adopted` event - so a project is never left landing unchecked work
+because nobody passed `--verify` (`pulse env status` shows both when they
+differ, and an owner's own command is never replaced; before this, seven of
+eleven projects on one machine had no verify command and landed every job
+unchecked, three of them with a `make test` committed in their recipe that
+the daemon never ran). The verify command runs in a
 throwaway worktree that starts bare, so the daemon first runs the project's
 setup there - the recipe's `setup:` lines from the default branch, else the
 lockfile rules (`corepack pnpm install`, `uv sync`, `npm ci`, …) that a worker
@@ -1262,8 +1336,10 @@ login during heal/provision, and `pulse executor login NAME --admin
 admin@host` copies that login to the hand's `pulse` user (`--with-token`
 still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 `harness=yes|no` and the `pulse` build it runs. The probe also refuses a hand
-whose workdir filesystem has under `daemon.min_free_mb` (default 1024) megabytes
-free and names that path in its note; 0 turns the check off. The daemon checks
+whose workdir filesystem has under `daemon.min_free_mb` (default 10240, ten
+gigabytes: a build and the clones beside it, since a run that hits ENOSPC
+mid-build is lost work) megabytes free and names that path in its note; 0
+turns the check off. The daemon checks
 the same floor before it leases new work or starts an experiment measurement,
 so a full work filesystem pauses dispatch with `disk under floor: <free> MB
 free on <path> (daemon.min_free_mb <floor>)`; after fifteen minutes it writes
@@ -1362,7 +1438,26 @@ a `land.base-red` event records the tail, and `pulse land --project X`
 retries at once after you fixed it. The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
-`land.resumed` when the branches land again. A branch that changes
+`land.resumed` when the branches land again. A red default branch is also a
+plan, not just a hold: the first run or landing that finds the base itself
+failing the verify command records it (`base.red` event, one `finding` on the
+project's `runner/verify` thread with the check's tail), queues one `improve`
+job to make the check pass - source `redbase:<slug>`, priority above the
+planner's improve jobs, a brief that carries the command, the exit code and
+the failing lines and forbids loosening or skipping the check; a corrected
+job keeps the source if it fails - and holds the project's other landing
+work (improve, task, experiment and clean jobs) with its attempts intact
+until the default branch moves; research, ballots, answers and leads keep
+running, and the idle line counts the held jobs (`2 jobs of blog wait for a
+green default branch (3f9c… is red; fix job … leased)`). The hold lifts on
+the tick after the default branch moves (`base.moved`), whoever moved it; if
+half an hour passes with no fix job open and the base still red, the daemon
+asks the owner once (`default branch main is still red at …`, a question
+marked for the owner) with the two ways out - land a fix by hand, or give the
+project a check it can pass with `pulse init PATH --verify CMD` - and answers
+its own question when the branch moves. In the week before this landed, 42
+runs across 40 jobs on one machine each spent a worker to learn the same
+thing and threw their commits away. A branch that changes
 `docs/context/environment.md` alone is yours to land (ADR-026): the daemon
 holds it, asks once on the project's `runner/environment` thread, and then
 leaves it be for thirty minutes at a time instead of re-reading it every
@@ -1486,20 +1581,78 @@ today - the module does not build there (process groups, signals and disk
 statistics are POSIX-only), so nothing in this section applies until that is
 a decision of its own.
 
-`pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) reads the
-machine and prints the proposed scripts without applying them. For installed
-hands it loads or builds the Linux template locally (`PULSE_HANDS_BINARY`, a
-`pulse-linux-ARCH` beside the binary, or `cargo build --release --target
-ARCH-unknown-linux-musl` from the checkout), then reports mismatches as
-`hands=differs (installed VERSION SHA7, template VERSION SHA7)`. Versions come
-from the build metadata embedded in the binary or a script's `# pulse-hands
-VERSION` header;
-`SHA7` is the first seven hex digits of its SHA-256. Metadata is read, never
-executed. Exact shipped pre-Go script hashes report `hands=older` with
+### Pairing hands
+
+`pulse pair ADMIN@HOST --name NAME [--workdir /srv/pulse] [--workers N]
+[--projects a,b|*]` turns a Linux machine into an executor in one run, from
+the account that runs the daemon. Over the admin's ssh session it reads the
+machine first (`uname`, `sudo`, a `pulse` user, installed hands, the workdir,
+`authorized_keys`, the sshd drop-in, git, copilot, …) and refuses before
+changing anything when the machine is not fit: not Linux, no passwordless
+sudo, a `pulse` `authorized_keys` with other content, clones with git remotes
+under the workdir, an sshd without `Include sshd_config.d` (the manual Match
+block is printed), `--install-copilot` without apt. Then, in this order:
+
+- **Here**, idempotently: `~/.ssh/pulse_hands_ed25519` is generated if it is
+  missing; a `Host NAME` block (HostName, Port, `User pulse`, that key) is
+  appended to `~/.ssh/config` only if an identical block is not there yet (the
+  previous file is kept as `~/.ssh/config.bak` on the first change); the
+  machine's host keys are added to `~/.ssh/known_hosts` only if absent. A
+  second run changes none of them.
+- **There, as root**: the apply script `--dry-run` prints is streamed to `ssh
+  -p PORT ADMIN@HOST sudo -n sh -s` (ten minutes at most). It creates the
+  `pulse` user, installs the hands binary as `/usr/local/bin/pulse-hands` with
+  `/usr/local/bin/pulse` linked to it, makes the workdir, writes the one
+  `command="… hands",restrict` line in its `authorized_keys`, a gitconfig,
+  `mise` and - with `--install-copilot` only - node and copilot through apt,
+  then the drop-in `/etc/ssh/sshd_config.d/60-pulse-hands.conf` and reloads
+  sshd. Every step reports `kept` or `done`, so a re-pair is safe. `sudo -n`
+  never prompts: when sudo wants a password the run stops with the dry-run
+  output and the way out (a `NOPASSWD` line for the admin, or run the printed
+  script as root yourself and then `pulse executor add NAME --ssh pulse@NAME
+  --workdir D --workers N --projects P`).
+- **In the store**: the executor is registered exactly as `pulse executor add
+  NAME --ssh pulse@NAME --workdir D --workers N --projects P` would; a name
+  that already exists is updated (address, workdir, workers, projects) instead
+  of refused, which is how you re-pair after a reinstall or change the worker
+  count.
+- **The probe** is `pulse executor probe NAME`, in the same process. When it
+  passes, the commit script removes the drop-in's `.prev` copy there, the
+  executor is `active` and one screen sums it up (host, user, workdir,
+  workers, projects, the probe line, the undo one-liner). When the machine is reached
+  but not ready - no harness login, copilot missing, disk under the floor -
+  the pairing stays, the executor stays `drained` with the probe note, the
+  summary names the next step (`pulse executor login NAME --admin ADMIN@HOST`,
+  `pulse pair ADMIN@HOST --name NAME --install-copilot`, or fix it and `pulse
+  executor probe NAME`) and the exit code is 1. When the hand does not answer
+  at all - ssh refused, the forced command missing, the wrong workdir - the
+  undo script runs over the admin session (the drop-in this run wrote is
+  restored or removed and sshd reloaded; a drop-in it kept is left alone), a
+  row this run created is removed from the store (a re-paired one is
+  drained), the local ssh files stay as they are (the block is harmless), and
+  the run exits 1 with the probe output and `ssh -v NAME` as the next check.
+
+A run that applied records one `pair.applied` event with the host, the
+executor and the probe outcome (`active`, `drained` or `undone`); refusals
+and failed applies record nothing. `pulse remove executor NAME` is the undo
+for a paired hand.
+
+`pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) still reads
+the machine and prints the apply, undo and commit scripts and the local
+changes without applying any of it. For installed hands it loads or builds
+the Linux template locally (`PULSE_HANDS_BINARY`, a `pulse-linux-ARCH` beside
+the binary, or `cargo build --release --target ARCH-unknown-linux-musl` from
+the checkout), then reports mismatches as `hands=differs (installed VERSION
+SHA7, template VERSION SHA7)`. Versions come from the build metadata embedded
+in the binary or a script's `# pulse-hands VERSION` header; `SHA7` is the
+first seven hex digits of its SHA-256. Metadata is read, never executed.
+Exact hashes of the earlier shipped hands scripts report `hands=older` with
 `legacy-COMMIT` versions, including the old `.sh` installation path. Edited
 or unrecognized artifacts remain `differs`, even if they claim an older
 version; unavailable metadata is `unknown`. These diagnostics do not change
 the pairing approval gate or the apply policy.
+
+### Heartbeats and presence
 
 Every agent has a heartbeat, and an agent that stops beating is dead. A beat
 is any sign of life recorded under the agent's name: a `pulse` command run as
@@ -1534,6 +1687,8 @@ agent simply shows as dead until it beats again. Heartbeats replace bounded
 metadata, not posts or useful-output scores; existing useful-output pruning and
 permanently retired names are unchanged.
 
+### Removing projects and executors
+
 `pulse remove project <slug>` and `pulse remove executor <name>` show a preview
 of what deactivates (nothing is deleted) and ask before applying; `--dry-run`
 only previews, `--yes` skips the prompt. `pulse remove project <slug> --forget`
@@ -1553,11 +1708,15 @@ immutability triggers from their stored definitions, verifies they are present,
 and writes a `post.remove.duplicates` event. Human and worker findings are left
 alone.
 
+### Failed jobs and recovery
+
 What the daemon does on its own when a job fails (ADR-036): every failed job is
 classified from what the runner wrote. A transient failure - the machine, the
 runner or the moment: a lost run, a runner error, an unreachable executor, a
-timeout or a landing conflict - runs again after a growing pause (5 min, 15,
-45, ... at most 6 h), with its stale branch removed first. A deterministic
+timeout, a landing conflict or a default branch that was already red before
+the job - runs again after a growing pause (5 min, 15, 45, ... at most 6 h),
+with its stale branch removed first (a red-base re-run then waits behind the
+project's fix job until the branch is green, so it is not thrown away twice). A deterministic
 failure - the work: a non-zero exit, a reported failure, no report or commits
 that fail the check - becomes one corrected job whose brief carries the failure
 and the run log's tail; a task's job instead goes back to the lead to re-plan
@@ -1592,20 +1751,29 @@ instructions and human retry notes while bounding old failure summaries and
 log excerpts; unavailable logs are reported explicitly.
 
 A recipe that does not parse stops every job of its project before a worker
-starts, so the runner treats it as an ask, not a log line: one `question`
-marked for the owner on the project's `runner/recipe` thread (agent `daemon`,
-coalesced on the breakage, so it posts once however many jobs hit it) names
-the copy it read - the store's `CTX-environment-<slug>` record, which `pulse
-init` fills from the committed `docs/context/environment.md` and `pulse env
-import --project SLUG` copies again, or the file at the base commit when the
-store has none - and the exact `setup`/`tools`/`env` line to fix; the project's
-card and the inbox count it, and the first run that parses answers it
-(`resolution: answered`, event `env.valid`). Onboarding stores the file
-verbatim, as `pulse env set` does, so a recipe the committed file gets right
-cannot go wrong on the way into the store (before this landed the importer
-kept one line per key and turned `setup:` lists into `setup: ''`; two freshly
-onboarded projects then erred 342 runs in 14 hours while their cards read
-"Quiet").
+starts, so the daemon treats it as a hold and an ask, not a log line. Dispatch
+checks the recipe before it leases: a project whose recipe does not parse is
+held on every executor like one that lacks a tool - the idle line reads
+`executor local has an environment recipe that does not parse for <slug>` with
+the step that clears it - and its queued jobs wait with their attempts intact
+rather than erring three times each into `failed after 3 runner errors` (a
+run that still meets the breakage, say one started by hand, keeps its attempt
+too). One `question` marked for the owner on the project's `runner/recipe`
+thread (agent `daemon`, coalesced on the breakage, so it posts once however
+many ticks or jobs hit it) names the copy it read - the store's
+`CTX-environment-<slug>` record, which `pulse init` fills from the committed
+`docs/context/environment.md` and `pulse env import --project SLUG` copies
+again, or the file at the default branch's head when the store has none - and
+the exact `setup`/`tools`/`env` line to fix; the project's card and the inbox
+count it. The hold lifts on the tick after the recipe parses again, and the
+daemon answers its own question (`resolution: answered`, event `env.valid`);
+the held jobs then run as they were. Onboarding stores the file verbatim, as
+`pulse env set` does, so a recipe the committed file gets right cannot go
+wrong on the way into the store (before the ask landed the importer kept one
+line per key and turned `setup:` lists into `setup: ''`; two freshly onboarded
+projects then erred 342 runs in 14 hours while their cards read "Quiet", and
+before the hold landed the same two projects spent 385 runs of 136 jobs in a
+week on a recipe no run could use).
 
 Open **Home → Failed job repair**, or the same section in a project's
 **Overview**, to inspect current recovery reasons. The historical total counts
@@ -1626,6 +1794,8 @@ The owner API exposes `GET /api/v1/jobs/failed` with project filtering and
 bounded cursor pagination, and `POST /api/v1/jobs/repair` with explicit
 `job_ids` and `X-Pulse-Job-Repair: yes`. It never accepts an actor or a
 blanket retry-all request.
+
+### Lessons, briefs and peer help
 
 A cause that fails twice becomes a memory record
 (`MEM-failure-pattern-...`, `pulse record list memory`) the daemon writes and
@@ -1656,6 +1826,8 @@ for another turn. Lead-directed questions do not also spawn ordinary answer
 workers, and owner-only decisions and hard stops stay with the owner.
 Workers continue independent work or report `SUMMARY: blocked: ...` and
 release their slot rather than wait.
+
+### Sweep, retention and hygiene
 
 What the daemon does on its own to keep this machine clean: every run and
 landing leaves things that matter only while it is in flight - a clone with
@@ -1815,6 +1987,8 @@ the machine and refreshes the moment a cleaning event lands, a project's
 Overview shows the same panel narrowed to that checkout, and the home feed
 lists the events as housekeeping.
 
+### Executor self-heal and self-retire
+
 What the daemon does on its own when an executor's Copilot login is refused
 (ADR-034): with a fine-grained token that reaches no repository placed by
 `pulse executor token --with-token` (stdin; `pulse executor token` reports
@@ -1831,6 +2005,8 @@ only removed from the roster and left running. Every step is a finding on the
 board, never a question, and no compute is bought while there is no login
 source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
 switch the two halves off.
+
+### When the owner is quiet: handoffs, idle leads and research
 
 What the daemon does on its own when the owner is quiet: a handoff nobody
 claimed becomes one `improve` job, tried once; its first step is to read the
@@ -1855,12 +2031,15 @@ Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued or leased (blocked jobs do not count), and no research job or
 job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
 not count), the planner seeds one research job. While the fleet is idle
-(fewer than half the local slots leased) a free lane is enough: research then
-runs beside the project's in-flight jobs as long as fewer than
-`parallel_per_project` ordinary jobs are open and the last research is older
-than the idle cadence, so idle slots make the next cards instead of waiting
-for the last job to finish (the idle line reads `N of M lanes are open (fleet
-idle)` when the lanes are full). The research job is a `reflect` job whose
+(fewer than half the local slots leased and no job queued anywhere) a free
+lane is enough: research then runs beside the project's in-flight jobs as
+long as fewer than `parallel_per_project` ordinary jobs are open and the last
+research is older than the idle cadence, so idle slots make the next cards
+instead of waiting for the last job to finish (the idle line reads `N of M
+lanes are open (fleet idle)` when the lanes are full). A queued job is work
+waiting for a slot, however few leases the load governor lets out: the fleet
+is not idle over it, and research keeps the plain cadence rather than
+lengthening the queue it would be feeding. The research job is a `reflect` job whose
 brief points a worker at one focus in turn (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the
 project's checks, the loop's report, the docs against the code, the
@@ -1877,7 +2056,8 @@ operating-layer improve jobs have already reached
 `plan.operating_layer_per_day`, the rotation keeps to the product focuses
 (product, code, goal, docs): cards from the others would join a pile the cap
 holds until tomorrow while the slots stand idle for want of a product card. While fewer than
-half the local worker slots hold a lease the fleet is idle, and research comes
+half the local worker slots hold a lease and no decided work is queued (a
+queued reflect, ballot, lead or answer does not count) the fleet is idle, and research comes
 `lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
@@ -1908,6 +2088,8 @@ counts from the daemon heartbeat.
 `pulse queue` marks such cards `not planned:` with the reason and counts each
 project's plannable items; the console's Votes page shows the same gate on
 the card.
+
+### When the owner is away
 
 What the daemon does when the owner is away (`pulse settings set
 owner.presence away`, or **Settings → Owner** in the console; `present` is
@@ -1953,13 +2135,6 @@ The binary is a Cargo workspace: one crate per package under `crates/`, with
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
-The differential parity tests (`cargo test -p pulse --test parity`) replay
-scripted `pulse` sessions against the last Go build of PULSE (commit
-`28f35b8`) and this binary, comparing stdout, stderr, exit codes and a
-canonical dump of the resulting store. They read the oracle binary from
-`PULSE_GO_ORACLE`, else `/tmp/pulse-oracle/pulse`, and skip - saying so - when
-neither exists.
-
 The console is a Next.js 16 + Tailwind 4 + shadcn/ui app in `web/hub/`:
 
 ```bash
@@ -1998,7 +2173,7 @@ hub holds the boards the console asked for in the last minute or two, not
 every project and area ever opened, and an idle hub's heap empties on its own.
 
 ```text
-crates/pulse/                  the binary (registers every command crate; the parity harness lives in its tests)
+crates/pulse/                  the binary (registers every command crate)
 crates/pulse-cli               command registry, context, errors, JSON output
 crates/pulse-store             SQLite store: schema, additive DDL, records, settings, events, transactions
 crates/pulse-board             posts, agents, projects, jobs, decide, init, export, remove
@@ -2018,19 +2193,19 @@ crates/pulse-runner            daemon, planner, workers, landing, executors, lea
 crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
 crates/pulse-inspect           status, projects, jobs, agents, events, settings, schema, verify, signers
 crates/pulse-hub               the HTTP API and SSE the console uses; embeds web/hub/out
-crates/pulse-parity            the differential parity harness (oracle vs. this binary); pulse-testutil shared test helpers
+crates/pulse-testutil          shared test helpers
 web/hub/                       the console (source, mock API, committed static export, rust-embed)
 ```
 
-## Notes for maintainers migrating from the Python tools
+### Upgrading from older PULSE
 
-- The store schema is unchanged (`schema_version` is never bumped); new tables
-  are additive and created on first open.
-- `pulse migrate --records --repo . --ref <sha>` imports the last committed
-  Markdown records; afterwards the `docs/` tree can go.
-- `pulse service install` replaces the Python launchd/systemd unit in place;
-  `pulse hooks install` replaces the shell hooks.
-- Compute and evolve settings are not inserted at store creation; they show
-  their defaults until set.
-- Two job kinds were added beyond the Python runner: `experiment` (the loop's
-  variants) and `lead` (a project's lead run).
+A machine that ran an earlier, script-based PULSE moves over in three commands:
+
+```bash
+pulse migrate --records --repo . --ref <sha>   # import the last committed Markdown records; the docs/ tree can go afterwards
+pulse service install                          # replaces the earlier launchd/systemd unit in place
+pulse hooks install copilot|claude             # replaces the earlier shell hooks
+```
+
+The store schema is additive: new tables are created on first open and
+`schema_version` is never bumped.

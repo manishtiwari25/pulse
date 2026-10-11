@@ -1,4 +1,4 @@
-//! PULSE: owner tasks, messages, compute requests and caps (port of Go package internal/tasks).
+//! PULSE: owner tasks, messages, compute requests and caps.
 
 pub mod commands;
 pub mod compute;

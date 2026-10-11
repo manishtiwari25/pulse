@@ -884,11 +884,11 @@ mod tests {
         assert_eq!(l.min_free_mem_mb, 1024, "the documented default floor");
         assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
         assert_eq!(l.build_jobs, 6, "daemon.build_jobs 0 is half the cores");
-        crate::test_helpers_f5::set_setting(&s, "daemon.max_jobs", "2");
-        crate::test_helpers_f5::set_setting(&s, "daemon.max_load", "20");
-        crate::test_helpers_f5::set_setting(&s, "daemon.min_free_mem_mb", "0");
-        crate::test_helpers_f5::set_setting(&s, "daemon.nice", "0");
-        crate::test_helpers_f5::set_setting(&s, "daemon.build_jobs", "3");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.max_jobs", "2");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.max_load", "20");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.min_free_mem_mb", "0");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.nice", "0");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.build_jobs", "3");
         let l = limits_from(&s, &m, 0);
         assert_eq!((l.max_jobs, l.source), (2, "daemon.max_jobs"));
         assert_eq!(l.max_load, 20.0);

@@ -21,7 +21,6 @@ pub(crate) struct OnboardOpts {
     pub brain: bool,
 }
 
-/// Go: func authorizingDecision(q querier, marker, now string) *decisionHit
 pub(crate) fn authorizing_decision(
     q: &dyn crate::util::Querier,
     marker: String,
@@ -52,7 +51,6 @@ pub(crate) fn authorizing_decision(
     None
 }
 
-/// Go: func agentGate(q querier, marker, actor, now string) (string, error)
 pub(crate) fn agent_gate(
     q: &dyn crate::util::Querier,
     marker: String,
@@ -71,7 +69,6 @@ pub(crate) fn agent_gate(
     Ok(found.post_id)
 }
 
-/// Go: func daemonStatus(s *store.Store, now string) string
 pub(crate) fn daemon_status(s: &pulse_store::Store, now: String) -> String {
     let Ok(conn) = s.conn() else {
         return "never started".into();
@@ -119,7 +116,6 @@ pub(crate) fn daemon_status(s: &pulse_store::Store, now: String) -> String {
     format!("{state} pid {pid}, last loop {age}s ago, {loops} loop(s), interval {interval}s")
 }
 
-/// Go: func onboardProject(s *store.Store, path, now string, o onboardOpts) ([]string, error)
 pub(crate) fn onboard_project(
     s: &pulse_store::Store,
     path: String,
@@ -310,7 +306,6 @@ pub(crate) fn onboard_project(
     Ok(lines)
 }
 
-/// Go: func starterCount(s *store.Store, slug string) int
 pub(crate) fn starter_count(s: &pulse_store::Store, slug: String) -> i32 {
     match pulse_evolve::list_fixtures(s, &slug, false) {
         Ok(fixtures) => fixtures
@@ -321,7 +316,6 @@ pub(crate) fn starter_count(s: &pulse_store::Store, slug: String) -> i32 {
     }
 }
 
-/// Go: func loopRecordLine(s *store.Store, slug, name string) string
 pub(crate) fn loop_record_line(s: &pulse_store::Store, slug: String, name: String) -> String {
     let rows = s.list_records(pulse_store::RecordFilter {
         project: slug.clone(),
@@ -355,7 +349,6 @@ pub(crate) fn loop_record_line(s: &pulse_store::Store, slug: String, name: Strin
     format!("{name}: present ({} r{})", rec.id, rec.current_rev)
 }
 
-/// Go: func heldoutStep(s *store.Store) string
 pub(crate) fn heldout_step(s: &pulse_store::Store) -> String {
     if pulse_evolve::heldout_mode(s) == "owner" {
         "2. keep at least two private fixtures in evolve.heldout_dir: pulse evolve setup DIR".into()
@@ -410,7 +403,7 @@ mod tests_existing {
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, new_store};
-    use crate::test_helpers_f3b::*;
+    use crate::test_helpers_sweep::*;
 
     #[test]
     fn onboard_seeds_starters_and_names_the_human_steps() {

@@ -1,5 +1,3 @@
-//! Port of internal/runner/heartbeat.go.
-
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use regex::Regex;
@@ -114,7 +112,6 @@ fn report_presence(err: Option<anyhow::Error>, reported: &Arc<PresenceReporter>)
     }
 }
 
-/// Go: func heartbeatReporter(log *runLog) func(error)
 #[allow(dead_code)]
 pub(crate) fn heartbeat_reporter(log: Option<crate::exec::RunLog>) -> Arc<PresenceReporter> {
     Arc::new(PresenceReporter {
@@ -123,7 +120,6 @@ pub(crate) fn heartbeat_reporter(log: Option<crate::exec::RunLog>) -> Arc<Presen
     })
 }
 
-/// Go: func stepsCapable(fields map[string]string) bool
 #[allow(dead_code)]
 pub(crate) fn steps_capable(fields: BTreeMap<String, String>) -> bool {
     fields.get("steps").is_some_and(|v| v == "1")
@@ -146,19 +142,16 @@ fn hands_session_path(
         .to_string())
 }
 
-/// Go: func handsHeartbeatPath(dir, session string) (string, error)
 #[allow(dead_code)]
 pub(crate) fn hands_heartbeat_path(dir: String, session: String) -> anyhow::Result<String> {
     hands_session_path(&dir, &session, "presence-", ".json", "heartbeat")
 }
 
-/// Go: func handsStepsPath(dir, session string) (string, error)
 #[allow(dead_code)]
 pub(crate) fn hands_steps_path(dir: String, session: String) -> anyhow::Result<String> {
     hands_session_path(&dir, &session, "harness-steps-", ".jsonl", "steps")
 }
 
-/// Go: func writeHandsHeartbeat(path string, h board.ExecutionHeartbeat) error
 #[allow(dead_code)]
 pub(crate) fn write_hands_heartbeat(
     path: String,
@@ -195,7 +188,6 @@ pub(crate) fn write_hands_heartbeat(
 
 #[allow(dead_code)]
 impl crate::exec::LocalExec {
-    /// Go: func (e *localExec) execution(env map[string]string) board.ExecutionIdentity
     pub(crate) fn execution(
         &mut self,
         env: BTreeMap<String, String>,
@@ -209,7 +201,6 @@ impl crate::exec::LocalExec {
             executor: self.row.str("name"),
         }
     }
-    /// Go: func (e *localExec) observer(id board.ExecutionIdentity) *processObserver
     pub(crate) fn observer(
         &mut self,
         id: pulse_board::ExecutionIdentity,
@@ -294,7 +285,6 @@ impl crate::exec::LocalExec {
         let _ = beater.join();
         out
     }
-    /// Go: func (e *localExec) stopHeartbeat(id board.ExecutionIdentity, report func(error))
     pub(crate) fn stop_heartbeat(
         &mut self,
         id: pulse_board::ExecutionIdentity,
@@ -426,12 +416,10 @@ impl crate::exec::SshExec {
         })
     }
 
-    /// Go: func (e *sshExec) heartbeatCapable(ctx context.Context) bool
     pub(crate) fn heartbeat_capable(&mut self, cancel: &pulse_bus::CancellationToken) -> bool {
         let fields = self.probe_capabilities(cancel);
         !fields.is_empty() && self.heartbeat_capable_from(fields)
     }
-    /// Go: func (e *sshExec) probeCapabilities(ctx context.Context) map[string]string
     pub(crate) fn probe_capabilities(
         &mut self,
         cancel: &pulse_bus::CancellationToken,
@@ -459,7 +447,6 @@ impl crate::exec::SshExec {
             }
         }
     }
-    /// Go: func (e *sshExec) heartbeatCapableFrom(fields map[string]string) bool
     pub(crate) fn heartbeat_capable_from(&mut self, fields: BTreeMap<String, String>) -> bool {
         if fields.get("heartbeat").is_some_and(|v| v == "1") {
             return true;
@@ -469,7 +456,6 @@ impl crate::exec::SshExec {
             .add("presence unavailable: these hands do not acknowledge supervised heartbeats");
         false
     }
-    /// Go: func (e *sshExec) watchRemote(ctx context.Context, id board.ExecutionIdentity)
     pub(crate) fn watch_remote(
         &mut self,
         cancel: &pulse_bus::CancellationToken,
@@ -569,7 +555,6 @@ impl crate::hands::Hands {
         Ok(Path::new(&self.workdir).join(job).display().to_string())
     }
 
-    /// Go: func (h *hands) heartbeatObserver(job string, env map[string]string) (*processObserver, error)
     pub(crate) fn heartbeat_observer(
         &mut self,
         job: String,
@@ -627,7 +612,6 @@ impl crate::hands::Hands {
             stop: Some(Arc::new(stop_cb)),
         }))
     }
-    /// Go: func (h *hands) heartbeat(job, session string) error
     pub(crate) fn heartbeat(&mut self, job: String, session: String) -> anyhow::Result<()> {
         let dir = self.owned_job_dir(&job)?;
         let path = hands_heartbeat_path(dir, session.clone())?;
@@ -653,7 +637,6 @@ impl crate::hands::Hands {
         self.stdout.write_all(&data)?;
         Ok(())
     }
-    /// Go: func (h *hands) steps(job, session, offsetText string) error
     pub(crate) fn steps(
         &mut self,
         job: String,
@@ -691,7 +674,7 @@ mod tests {
     use super::*;
     use crate::exec::Executor;
     use crate::test_helpers::{TEST_NOW, new_store};
-    use crate::test_helpers_f2::*;
+    use crate::test_helpers_heartbeat::*;
     use chrono::{DateTime, TimeZone};
     use std::io::{Result as IoResult, Write};
     use std::path::Path;
@@ -964,7 +947,7 @@ mod tests {
                 assert!(out.timeout, "{mode}: {out:?}");
                 assert_eq!(stops_rx.len(), 1);
             }
-            crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
+            crate::test_helpers_heartbeat::discard_heartbeat_fifo(&fifo);
         }
     }
 
@@ -979,8 +962,8 @@ mod tests {
         let cancel = pulse_bus::CancellationToken::new();
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let cancel_for_thread = cancel.clone();
-        // Go keeps `e` (a pointer) for the old-observer check after runWorker; the worker thread
-        // needs `&mut`, so the same executor is shared with it through a clone.
+        // The old-observer check below needs the executor after run_worker; the worker thread
+        // takes `&mut`, so the same executor is shared with it through a clone.
         let mut old = Clone::clone(&e);
         std::thread::spawn(move || {
             let out = e.run_worker(&cancel_for_thread, &argv, &env, 1);
@@ -1483,7 +1466,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         for timeout in [false, true] {
             let _fake = fake_heartbeat_clock();
-            let workdir = crate::test_helpers_f2::f2_temp_dir();
+            let workdir = crate::test_helpers_heartbeat::heartbeat_temp_dir();
             let dir = workdir.join("job-quiet");
             std::fs::create_dir_all(&dir).unwrap();
             let out = SharedBuf::default();
@@ -1517,7 +1500,7 @@ mod tests {
                 observer.as_ref(),
             );
             if !fifo.is_empty() {
-                crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
+                crate::test_helpers_heartbeat::discard_heartbeat_fifo(&fifo);
             }
             assert_eq!(rc, want);
             let path = hands_heartbeat_path(dir.display().to_string(), "run-quiet".into()).unwrap();
@@ -1538,7 +1521,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let fake = fake_heartbeat_clock();
-        let workdir = crate::test_helpers_f2::f2_temp_dir();
+        let workdir = crate::test_helpers_heartbeat::heartbeat_temp_dir();
         let dir = workdir.join("job-quiet");
         let clone = dir.join("clone");
         std::fs::create_dir_all(clone.join(".git")).unwrap();
@@ -1641,7 +1624,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let cancel = pulse_bus::CancellationToken::new();
         let (fifo, _) = heartbeat_fifo();
-        let scratch = crate::test_helpers_f2::f2_temp_dir();
+        let scratch = crate::test_helpers_heartbeat::heartbeat_temp_dir();
         let ready = scratch.join("ready");
         let argv = vec![
             "sh".into(),
@@ -1671,7 +1654,7 @@ mod tests {
             &err,
             pulse_bus::ContextError::Canceled
         ));
-        crate::test_helpers_f2::discard_heartbeat_fifo(&fifo);
+        crate::test_helpers_heartbeat::discard_heartbeat_fifo(&fifo);
     }
 
     #[test]

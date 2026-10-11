@@ -5,7 +5,6 @@ use serde_json::Value;
 pub(crate) const JOB_REPAIR_HEADER: &str = "X-Pulse-Job-Repair";
 
 impl Handler {
-    /// Go: func (h *Handler) additionJobs(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_jobs(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
         if parts.len() != 2 || parts[0] != "jobs" || (parts[1] != "failed" && parts[1] != "repair")
         {
@@ -187,7 +186,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) jobRepairProject(w http.ResponseWriter, query, body string) (string, bool)
     pub(crate) fn job_repair_project(
         &self,
         w: &mut ResponseWriter,
@@ -249,10 +247,10 @@ fn go_value<T: serde::Serialize>(v: &T) -> Value {
 mod tests {
     use super::*;
 
-    fn job_repair_store() -> crate::test_helpers_f3::TestStore {
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "one");
-        crate::test_helpers_f3::additions_project(&s, "two");
+    fn job_repair_store() -> crate::test_helpers_http::TestStore {
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "one");
+        crate::test_helpers_http::additions_project(&s, "two");
         for id in ["job-one", "job-two"] {
             let project = id.trim_start_matches("job-");
             s.conn().unwrap().execute(
@@ -270,7 +268,7 @@ mod tests {
         path: &str,
         body: &str,
     ) -> (u16, JsonMap, String) {
-        crate::test_helpers_f3::request(
+        crate::test_helpers_http::request(
             h,
             method,
             path,
@@ -292,7 +290,7 @@ mod tests {
         let s = job_repair_store();
         let before = repair_row_count(&s, "events");
         let (status, page, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/jobs/failed?project=one&limit=1",
             "",
@@ -310,7 +308,7 @@ mod tests {
         assert!(!raw.contains("\"brief\""));
         assert!(!raw.contains("\"log\""));
         let (status, page, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/jobs/failed?limit=1",
             "",
@@ -321,7 +319,7 @@ mod tests {
         let next_before = page["next_before"].as_str().unwrap();
         assert_ne!(next_before, "");
         let (status, page, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             &format!("/api/v1/jobs/failed?limit=1&before={next_before}"),
             "",
@@ -340,11 +338,11 @@ mod tests {
             "/api/v1/jobs/failed?before=bad",
         ] {
             let (status, _, raw) =
-                job_repair_request(crate::test_helpers_f3::handler(&s), "GET", path, "");
+                job_repair_request(crate::test_helpers_http::handler(&s), "GET", path, "");
             assert_eq!(status, 400, "{path}: {raw}");
         }
         let (status, _, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/jobs/failed?project=missing",
             "",
@@ -371,7 +369,7 @@ mod tests {
             }
             headers.push((header, value));
             let (status, raw) = if name == "content type" {
-                let srv = crate::test_helpers_f3::server(crate::test_helpers_f3::handler(&s));
+                let srv = crate::test_helpers_http::server(crate::test_helpers_http::handler(&s));
                 let resp = crate::test_helpers::client()
                     .post(format!("{}/api/v1/jobs/repair", srv.url))
                     .header(JOB_REPAIR_HEADER, "yes")
@@ -383,8 +381,8 @@ mod tests {
                 let raw = resp.text().unwrap();
                 (status, raw)
             } else {
-                let (status, _, raw) = crate::test_helpers_f3::request(
-                    crate::test_helpers_f3::handler(&s),
+                let (status, _, raw) = crate::test_helpers_http::request(
+                    crate::test_helpers_http::handler(&s),
                     "POST",
                     "/api/v1/jobs/repair",
                     r#"{"job_ids":["job-one"]}"#,
@@ -418,7 +416,7 @@ mod tests {
             r#"{"job_ids":["job-one"]} {}"#,
         ] {
             let (status, _, raw) = job_repair_request(
-                crate::test_helpers_f3::handler(&s),
+                crate::test_helpers_http::handler(&s),
                 "POST",
                 "/api/v1/jobs/repair",
                 body,
@@ -426,8 +424,8 @@ mod tests {
             assert_eq!(status, 400, "{body}: {raw}");
         }
         assert_eq!(repair_row_count(&s, "events"), before);
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/jobs/repair",
             r#"{"job_ids":["job-one"],"project":"one"}"#,
@@ -455,7 +453,7 @@ mod tests {
             .unwrap();
         assert_eq!(actor, pulse_store::HUMAN_AGENT);
         let (status, result, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/jobs/repair",
             r#"{"job_ids":["job-one"],"project":"one"}"#,
@@ -484,7 +482,7 @@ mod tests {
                 r#"{"job_ids":["job-one"]}"#,
             ),
         ] {
-            let mut h = crate::test_helpers_f3::handler(&s);
+            let mut h = crate::test_helpers_http::handler(&s);
             h.project = "one".to_string();
             let (status, _, raw) = job_repair_request(h, method, path, body);
             assert_eq!(status, 404, "{raw}");
@@ -496,7 +494,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let mut h = crate::test_helpers_f3::handler(&s);
+        let mut h = crate::test_helpers_http::handler(&s);
         h.project = "one".to_string();
         let (status, result, raw) = job_repair_request(
             h,
@@ -510,7 +508,7 @@ mod tests {
         assert_eq!(result["results"][0]["category"], "inactive_project");
         assert_eq!(result["results"][1]["category"], "not_found");
         assert_eq!(result["results"][2]["category"], "not_found");
-        let h = crate::test_helpers_f3::handler(&s);
+        let h = crate::test_helpers_http::handler(&s);
         let (status, _, raw) = job_repair_request(
             h,
             "POST",
@@ -519,7 +517,7 @@ mod tests {
         );
         assert_eq!(status, 400, "{raw}");
         let (status, _, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/jobs/repair",
             r#"{"job_ids":["job-one"],"project":"missing"}"#,
@@ -528,7 +526,7 @@ mod tests {
         s.set_setting(pulse_store::HUMAN_AGENT, "stop", "1")
             .unwrap();
         let (status, result, raw) = job_repair_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/jobs/repair",
             r#"{"job_ids":["job-two"]}"#,
@@ -550,7 +548,7 @@ mod tests {
             ("GET", "/api/v1/jobs/failed/extra", 404),
         ] {
             let (status, _, raw) =
-                job_repair_request(crate::test_helpers_f3::handler(&s), method, path, "{}");
+                job_repair_request(crate::test_helpers_http::handler(&s), method, path, "{}");
             assert_eq!(status, want, "{method} {path}: {raw}");
         }
         let (status, _, _) = job_repair_request(

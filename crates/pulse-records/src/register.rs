@@ -751,7 +751,7 @@ pub fn run_guide(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> 
     Ok(())
 }
 
-/// Go: `fs.SetOutput(c.Err)` — what Parse prints (usage on `-h`, bad flag
+/// What Parse prints (usage on `-h`, bad flag
 /// messages) goes to the command's error writer.
 pub fn parse_flags(c: &mut Context, fs: &mut FlagSet, args: &[String]) -> Result<()> {
     fs.set_output(Output::Capture);

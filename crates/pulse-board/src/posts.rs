@@ -565,10 +565,7 @@ pub(crate) fn touch_agent_conn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{
-        TEST_NOW, code, count_rows, fixture, no_tty, oracle, oracle_available, run_cmd,
-        snapshot_home, what_any,
-    };
+    use crate::test_helpers::{TEST_NOW, code, count_rows, fixture, no_tty, run_cmd, what_any};
     use std::time::Duration;
 
     const AMENDMENT_BODY: &str =
@@ -1216,47 +1213,6 @@ mod tests {
     #[test]
     fn create_post_rule_matrix() {
         let _serial = crate::test_helpers::serial();
-        if oracle_available().is_none() {
-            eprintln!("no Go oracle; running Rust rule matrix only");
-        }
         test_create_post_rule_matrix();
-    }
-
-    #[test]
-    fn create_post_rule_matrix_without_oracle() {
-        let _serial = crate::test_helpers::serial();
-        test_create_post_rule_matrix();
-    }
-
-    #[test]
-    fn hash_parity_with_oracle() {
-        let _serial = crate::test_helpers::serial();
-        let Some((home_dir, _home, s)) = snapshot_home() else {
-            eprintln!("no snapshot at /tmp/pulse-parity/pulse.sqlite; skipping");
-            return;
-        };
-        let row = s
-            .conn()
-            .unwrap()
-            .query_row(
-                "SELECT id, body FROM posts WHERE kind = 'amendment' AND text_hash != '' ORDER BY id DESC LIMIT 1",
-                [],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )
-            .ok();
-        let Some((id, body)) = row else {
-            eprintln!("no amendment in snapshot; skipping");
-            return;
-        };
-        let Some(block) = fenced_block(&body, "Proposed text") else {
-            panic!("no proposed text block");
-        };
-        let Some(_bin) = oracle_available() else {
-            eprintln!("no Go oracle; skipping");
-            return;
-        };
-        let (out, err, code) = oracle(home_dir.path(), &[], &["hash", &id]).unwrap();
-        assert_eq!(code, 0, "{err}");
-        assert_eq!(block_hash(&block), out.trim());
     }
 }

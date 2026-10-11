@@ -55,7 +55,6 @@ pub(crate) fn init() {
     crate::provider::register_provider(MultipassProvider {});
 }
 
-/// Go: func multipassSettings(s *store.Store, size string) (multipassConfig, error)
 pub(crate) fn multipass_settings(
     s: &pulse_store::Store,
     size: String,
@@ -84,7 +83,6 @@ pub(crate) fn multipass_settings(
     Ok(cfg)
 }
 
-/// Go: func multipassBytes(v string) bool
 pub(crate) fn multipass_bytes(v: String) -> bool {
     let mut i = 0;
     for b in v.as_bytes() {
@@ -103,7 +101,6 @@ pub(crate) fn multipass_bytes(v: String) -> bool {
     )
 }
 
-/// Go: func multipassErr(what string, rc int, stdout, stderr string, err error) error
 pub(crate) fn multipass_err(
     what: String,
     rc: i32,
@@ -114,7 +111,6 @@ pub(crate) fn multipass_err(
     crate::provider::cli_err(what, rc, stdout, stderr, err)
 }
 
-/// Go: func multipassDescribe(ctx context.Context, name string) (*multipassInfo, error)
 pub(crate) fn multipass_describe(
     ctx: &pulse_bus::CancellationToken,
     name: String,
@@ -158,15 +154,12 @@ pub(crate) fn multipass_describe(
 }
 
 impl MultipassProvider {
-    /// Go: func (multipassProvider) Name() string
     pub(crate) fn name(&self) -> String {
         "multipass".into()
     }
-    /// Go: func (multipassProvider) Kind() string
     pub(crate) fn kind(&self) -> String {
         "Multipass instance".into()
     }
-    /// Go: func (p multipassProvider) Provision(ctx context.Context, req ProvisionRequest) (*Machine, error)
     pub(crate) fn provision(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -313,7 +306,6 @@ impl MultipassProvider {
         crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
         Ok(m)
     }
-    /// Go: func (p multipassProvider) Release(ctx context.Context, m *Machine) error
     pub(crate) fn release(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -341,7 +333,6 @@ impl MultipassProvider {
         }
         Ok(())
     }
-    /// Go: func (p multipassProvider) Probe(ctx context.Context, m *Machine) error
     pub(crate) fn probe(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -363,7 +354,6 @@ impl MultipassProvider {
         }
         Ok(())
     }
-    /// Go: func (p multipassProvider) Find(ctx context.Context, _ *store.Store, executor, host string) (*Machine, error)
     pub(crate) fn find(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -419,7 +409,6 @@ impl MultipassProvider {
         }
         Ok(None)
     }
-    /// Go: func (p multipassProvider) Stop(ctx context.Context, m *Machine) error
     pub(crate) fn stop(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -441,15 +430,12 @@ impl MultipassProvider {
         }
         Ok(())
     }
-    /// Go: func (p multipassProvider) Place(*Machine) string
     pub(crate) fn place(&self, _value: &crate::provider::Machine) -> String {
         "this machine".into()
     }
-    /// Go: func (p multipassProvider) StartHint(m *Machine) string
     pub(crate) fn start_hint(&self, m: &crate::provider::Machine) -> String {
         format!("multipass start {}", m.name)
     }
-    /// Go: func (p multipassProvider) Delete(ctx context.Context, m *Machine) (bool, []string, error)
     pub(crate) fn delete(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -481,7 +467,6 @@ impl MultipassProvider {
 }
 
 impl MultipassConfig {
-    /// Go: func (c *multipassConfig) parseSize(size string) error
     pub(crate) fn parse_size(&mut self, size: String) -> anyhow::Result<()> {
         for part in size.split(',') {
             let part = part.trim();
@@ -542,7 +527,6 @@ impl MultipassConfig {
 }
 
 impl MultipassInfo {
-    /// Go: func (i multipassInfo) ip() string
     pub(crate) fn ip(&self) -> String {
         self.i_pv4.first().cloned().unwrap_or_default()
     }

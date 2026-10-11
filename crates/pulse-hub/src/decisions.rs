@@ -241,11 +241,11 @@ fn split_cli_error(text: &str) -> (String, String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
 
-    fn decisions_fixture() -> (f2::TestStore, String) {
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "my-app");
+    fn decisions_fixture() -> (http::TestStore, String) {
+        let s = http::additions_store(false);
+        http::additions_project(&s, "my-app");
         (s, "my-app".to_string())
     }
 
@@ -271,8 +271,8 @@ mod tests {
     }
 
     fn last_revision(store: &pulse_store::Store, id: &str) -> serde_json::Value {
-        let (status, result) = f2::additions_request(
-            f2::handler(store),
+        let (status, result) = http::additions_request(
+            http::handler(store),
             "GET",
             &format!("/api/v1/records/{id}"),
             "",
@@ -291,16 +291,16 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let (s, project) = decisions_fixture();
         let accepted = proposed_adr(&s, &project, "Accept me", "console");
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{accepted}/accept"),
             r#"{"words":"  "}"#,
         );
         assert_eq!(status, 400);
         assert_eq!(result["error"], "Your words are required");
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{accepted}/accept"),
             r#"{"words":"Approved because the guard is the same as the terminal's."}"#,
@@ -315,8 +315,8 @@ mod tests {
         );
 
         let deferred = proposed_adr(&s, &project, "Defer me", "billing");
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{deferred}/status"),
             r#"{"status":"deferred","words":"Not this quarter."}"#,
@@ -329,8 +329,8 @@ mod tests {
         );
 
         let rejected = proposed_adr(&s, &project, "Decline me", "auth");
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{rejected}/status"),
             r#"{"status":"Rejected","words":"Option 1 already covers it."}"#,
@@ -341,8 +341,8 @@ mod tests {
             last_revision(&s, &rejected)["note"],
             "status: Rejected - Option 1 already covers it. (via console)"
         );
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/records?kind=adr&status=Proposed",
             "",
@@ -378,8 +378,8 @@ mod tests {
             ("/status", r#"{"words":"yes"}"#, 400, ""),
             ("/accept", "{}", 400, ""),
         ] {
-            let (status, result) = f2::additions_request(
-                f2::handler(&s),
+            let (status, result) = http::additions_request(
+                http::handler(&s),
                 "POST",
                 &format!("/api/v1/records/{id}{path}"),
                 body,
@@ -389,8 +389,8 @@ mod tests {
                 assert_eq!(result["error"], what);
             }
         }
-        let (status, _) = f2::additions_request(
-            f2::handler(&s),
+        let (status, _) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/records/ADR-999-my-app/accept",
             r#"{"words":"yes"}"#,
@@ -410,8 +410,8 @@ mod tests {
             },
         )
         .unwrap();
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{}/accept", plan.id),
             r#"{"words":"yes"}"#,
@@ -423,15 +423,15 @@ mod tests {
                 .unwrap()
                 .starts_with("Cannot accept ")
         );
-        let (status, _) = f2::additions_request(
-            f2::handler(&s),
+        let (status, _) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/records/{id}/nope"),
             r#"{"words":"yes"}"#,
         );
         assert_eq!(status, 404);
-        let (status, _) = f2::additions_request(
-            f2::handler(&s),
+        let (status, _) = http::additions_request(
+            http::handler(&s),
             "GET",
             &format!("/api/v1/records/{id}/accept"),
             "",
@@ -439,8 +439,12 @@ mod tests {
         assert_eq!(status, 405);
         let err = pulse_records::status(&s, &id, "Accepted", "copilot-cli/test").unwrap_err();
         assert!(err.to_string().contains("human only"));
-        let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", &format!("/api/v1/records/{id}"), "");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "GET",
+            &format!("/api/v1/records/{id}"),
+            "",
+        );
         assert_eq!(status, 200);
         assert_eq!(result["record"]["status"], "Proposed");
     }

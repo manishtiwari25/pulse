@@ -81,7 +81,6 @@ fn pair_legacy_hands() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Go: func pairLegacyHandsIndex(hash string) int
 pub(crate) fn pair_legacy_hands_index(hash: String) -> i32 {
     pair_legacy_hands()
         .iter()
@@ -90,7 +89,6 @@ pub(crate) fn pair_legacy_hands_index(hash: String) -> i32 {
         .unwrap_or(-1)
 }
 
-/// Go: func pairInspectHandsScript(path, hash string) string
 pub(crate) fn pair_inspect_hands_script(path: String, hash: String) -> String {
     format!(
         r#"HANDS_FILE={path_q}
@@ -123,7 +121,6 @@ fi
     )
 }
 
-/// Go: func pairHandsBuildVersion(info *debug.BuildInfo) string
 pub(crate) fn pair_hands_build_version(info: &pulse_cli::BuildInfo) -> String {
     if info.main.path != PAIR_HANDS_MODULE {
         return "unknown".into();
@@ -183,7 +180,6 @@ fn pair_buildinfo_from_grep_bytes(data: &[u8]) -> Option<pulse_cli::BuildInfo> {
     pulse_cli::parse_build_info(&text)
 }
 
-/// Go: func pairHandsVersion(data []byte) string
 pub(crate) fn pair_hands_version(data: Vec<u8>) -> String {
     if let Some((rev, _)) = pair_legacy_hands()
         .iter()
@@ -201,7 +197,6 @@ pub(crate) fn pair_hands_version(data: Vec<u8>) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Go: func pairInstalledHandsVersion(insp map[string]string) string
 pub(crate) fn pair_installed_hands_version(insp: BTreeMap<String, String>) -> String {
     if let Some(version) = insp.get("hands_version")
         && PAIR_HANDS_VERSION_RE.is_match(version)
@@ -220,7 +215,6 @@ pub(crate) fn pair_installed_hands_version(insp: BTreeMap<String, String>) -> St
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Go: func pairHandsSHA7(hash string) string
 pub(crate) fn pair_hands_sha7(hash: String) -> String {
     if PAIR_HANDS_HASH_RE.is_match(&hash) {
         hash[..7].into()
@@ -229,7 +223,6 @@ pub(crate) fn pair_hands_sha7(hash: String) -> String {
     }
 }
 
-/// Go: func pairHandsSummary(insp map[string]string, template []byte) string
 pub(crate) fn pair_hands_summary(insp: BTreeMap<String, String>, template: Vec<u8>) -> String {
     if insp.get("hands").map(String::as_str) == Some("absent") {
         return "absent".into();
@@ -403,7 +396,7 @@ mod tests {
     #[test]
     fn pair_inspect_hands_script() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(Duration::from_secs(60));
+        let _deadline = crate::test_helpers_daemon::test_deadline(Duration::from_secs(60));
         let shared_bin = tempfile::tempdir().expect("shared bin");
         for name in ["head", "sed", "grep", "base64", "tr"] {
             let tool = which::which(name).unwrap_or_else(|_| panic!("{name} missing"));
@@ -651,7 +644,7 @@ mod tests {
     #[test]
     fn pair_hands_go_binary_metadata() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(Duration::from_secs(60));
+        let _deadline = crate::test_helpers_daemon::test_deadline(Duration::from_secs(60));
         let dir = tempfile::tempdir().expect("rust fixture dir");
         let path = dir.path().join("pulse-hands");
         let src = dir.path().join("main.rs");

@@ -7,11 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
 
-/// Go: var OnProjectCreated func(s *store.Store, p *store.Project, actor string) error
-///
 /// Runs after [`register_project`] has inserted a new project row. The evolve
-/// crate installs its seeding hook at binary start (Go: an `init()`); tests
-/// swap it with [`set_on_project_created`].
+/// crate installs its seeding hook at binary start (`pulse_evolve::init`);
+/// tests swap it with [`set_on_project_created`].
 pub type ProjectCreatedHook = fn(&pulse_store::Store, &pulse_store::Project, &str) -> Result<()>;
 static ON_PROJECT_CREATED: RwLock<Option<ProjectCreatedHook>> = RwLock::new(None);
 
@@ -644,7 +642,7 @@ mod tests {
     #[test]
     fn project_goal_canonical_slug_registration() {
         let _serial = crate::test_helpers::serial();
-        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        // goals::require_owner reads PULSE_AGENT: hold the env lock so no parallel test changes it.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         const NAME: &str = "customer-support-ticket-management-system";
@@ -694,7 +692,7 @@ mod tests {
     #[test]
     fn project_goal_registration_reinit_and_restore() {
         let _serial = crate::test_helpers::serial();
-        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        // goals::require_owner reads PULSE_AGENT: hold the env lock so no parallel test changes it.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();
@@ -756,7 +754,7 @@ mod tests {
     #[test]
     fn project_goal_legacy_registration_preserves_explicit_value() {
         let _serial = crate::test_helpers::serial();
-        // goals::require_owner reads PULSE_AGENT: hold the env lock like Go's serial run.
+        // goals::require_owner reads PULSE_AGENT: hold the env lock so no parallel test changes it.
         let _env = pulse_testutil::env_lock();
         let (_dir, _home, s) = new_home();
         let repo = git_repo();

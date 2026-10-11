@@ -43,7 +43,6 @@ pub(crate) struct EnvReport {
     pub unfit: Vec<EnvUnfit>,
 }
 
-/// Go: func currentProject(s *store.Store, explicit string) (row, error)
 pub(crate) fn current_project(
     s: &pulse_store::Store,
     explicit: String,
@@ -88,7 +87,6 @@ pub(crate) fn current_project(
     Ok(p)
 }
 
-/// Go: func recipeSource(s *store.Store, project row) string
 pub(crate) fn recipe_source(s: &pulse_store::Store, project: crate::util::Row) -> String {
     if let (Some(rec), _) = crate::recipe::recipe_record(s, &project.str("slug")) {
         return rec.id;
@@ -118,7 +116,6 @@ pub(crate) fn recipe_source(s: &pulse_store::Store, project: crate::util::Row) -
     }
 }
 
-/// Go: func envCheck(s *store.Store, project, executor, now string) (*envReport, error)
 pub(crate) fn env_check(
     s: &pulse_store::Store,
     project: String,
@@ -241,7 +238,6 @@ pub(crate) fn env_check(
     Ok(Some(Box::new(rep)))
 }
 
-/// Go: func localToolsMissing(project row, recipe *Recipe) string
 pub(crate) fn local_tools_missing(
     project: crate::util::Row,
     recipe: Option<&crate::recipe::Recipe>,
@@ -300,12 +296,10 @@ pub(crate) fn local_tools_missing(
     String::new()
 }
 
-/// Go: func onPath(tool string) bool
 pub(crate) fn on_path(tool: String) -> bool {
     which::which(tool).is_ok()
 }
 
-/// Go: func envCheckText(rep *envReport) string
 pub(crate) fn env_check_text(rep: &EnvReport) -> String {
     let mut out = Vec::new();
     for e in &rep.projects {
@@ -342,15 +336,17 @@ pub(crate) fn env_check_text(rep: &EnvReport) -> String {
                 asks.join("; ")
             ));
             if !e.suggested_check.is_empty() && e.suggested_check != e.verify_cmd {
-                let v = if e.verify_cmd.is_empty() {
-                    "-"
+                if e.verify_cmd.is_empty() {
+                    out.push(format!(
+                        "{:<16} suggested_check `{}` (no verify command yet; the daemon adopts it on its next tick)",
+                        "", e.suggested_check
+                    ));
                 } else {
-                    &e.verify_cmd
-                };
-                out.push(format!(
-                    "{:<16} suggested_check `{}` (the store's verify command `{}` decides)",
-                    "", e.suggested_check, v
-                ));
+                    out.push(format!(
+                        "{:<16} suggested_check `{}` (the store's verify command `{}` decides)",
+                        "", e.suggested_check, e.verify_cmd
+                    ));
+                }
             }
         }
         for ex in &e.executors {
@@ -378,7 +374,6 @@ pub(crate) fn env_check_text(rep: &EnvReport) -> String {
     out.join("\n") + "\n"
 }
 
-/// Go: func envShow(s *store.Store, project row) (string, string, bool)
 pub(crate) fn env_show(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -414,7 +409,6 @@ pub(crate) fn env_show(
     (String::new(), String::new(), false)
 }
 
-/// Go: func envSet(s *store.Store, project row, text, author, origin, note string) (string, int, *Recipe, error)
 pub(crate) fn env_set(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -499,7 +493,6 @@ pub(crate) fn env_set(
     Ok((id, rev as i32, Some(Box::new(recipe))))
 }
 
-/// Go: func envImport(s *store.Store, project row, author string) (string, int, *Recipe, error)
 pub(crate) fn env_import(
     s: &pulse_store::Store,
     project: crate::util::Row,

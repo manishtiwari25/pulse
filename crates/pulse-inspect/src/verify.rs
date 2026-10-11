@@ -367,8 +367,8 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "worker@pulse.local")
             .env("GIT_COMMITTER_NAME", "worker")
             .env("GIT_COMMITTER_EMAIL", "worker@pulse.local")
-            .env("GIT_AUTHOR_DATE", PARITY_NOW)
-            .env("GIT_COMMITTER_DATE", PARITY_NOW)
+            .env("GIT_AUTHOR_DATE", TEST_NOW)
+            .env("GIT_COMMITTER_DATE", TEST_NOW)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         let mut child = cmd.spawn().unwrap();
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_commit_parity() {
+    fn verify_names_the_commit_it_checked() {
         let _guard = pulse_testutil::env_lock();
         let (_dir, s) = temporary_store();
         let root = tempfile::tempdir().unwrap();
@@ -471,7 +471,7 @@ mod tests {
         let other_public = std::fs::read_to_string(wrong_key.with_extension("pub")).unwrap();
         s.conn().unwrap().execute(
             "INSERT INTO projects(slug,name,path,added_at) VALUES ('verify-project','Verify',?,?)",
-            (root.path().to_str().unwrap(), PARITY_NOW),
+            (root.path().to_str().unwrap(), TEST_NOW),
         ).unwrap();
         for (id, job, agent, started, signing_key) in [
             (
@@ -485,21 +485,21 @@ mod tests {
                 "run-retry",
                 "job-known",
                 "worker",
-                PARITY_NOW,
+                TEST_NOW,
                 other_public.trim(),
             ),
             (
                 "run-wrong-key",
                 "job-wrong",
                 "worker",
-                PARITY_NOW,
+                TEST_NOW,
                 other_public.trim(),
             ),
             (
                 "run-wrong-agent",
                 "job-author",
                 "other",
-                PARITY_NOW,
+                TEST_NOW,
                 public.trim(),
             ),
         ] {
@@ -593,14 +593,6 @@ mod tests {
             assert_eq!(decoded.verified, want_ok, "{name}: {as_json:?}");
             assert_eq!(decoded.commit, commit);
             assert_eq!(as_json.code, got.code);
-            assert_parity(
-                got,
-                oracle(
-                    &s.home,
-                    true,
-                    &["verify", &commit, "--project", &project.slug],
-                ),
-            );
         }
         for refname in ["does-not-exist", "--help"] {
             let got = invoke(
@@ -611,20 +603,8 @@ mod tests {
                 &["--", refname],
             );
             assert_eq!(got.code, 2, "{got:?}");
-            if refname != "--help" {
-                assert_parity(
-                    got,
-                    oracle(
-                        &s.home,
-                        true,
-                        &["verify", refname, "--project", &project.slug],
-                    ),
-                );
-            }
         }
-        assert_parity(
-            invoke(Some(s.clone()), false, "", "signers", &[]),
-            oracle(&s.home, true, &["signers"]),
-        );
+        let signers = invoke(Some(s.clone()), false, "", "signers", &[]);
+        assert_eq!(signers.code, 0, "{signers:?}");
     }
 }

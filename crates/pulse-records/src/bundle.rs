@@ -16,8 +16,8 @@ pub const FRAMEWORK_KINDS: &[&str] = &[
     "template",
     "architecture",
 ];
-/// Go: const bundleFile = "internal/records/seed/bundle.json" - the bundle's path inside the PULSE
-/// checkout; the Rust crate embeds it from here, so `pulse seed export` refreshes this file.
+/// The bundle's path inside the PULSE checkout; the crate embeds it from
+/// here, so `pulse seed export` refreshes this file.
 pub const BUNDLE_FILE: &str = "crates/pulse-records/seed/bundle.json";
 pub const BUNDLE_VERSION: i64 = 1;
 

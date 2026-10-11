@@ -4,9 +4,9 @@ use pulse_cli::{Command, Context};
 use std::io::Write;
 use std::sync::{Arc, Mutex, Once};
 
-/// One writer shared between `run` and the command's `Context` (Go hands the
-/// same `os.Stdout` to both). Lines stream through as they are written, which
-/// `pulse daemon` and `pulse hub` need for their service logs.
+/// One writer shared between the runner and the command's `Context`. Lines
+/// stream through as they are written, which `pulse daemon` and `pulse hub`
+/// need for their service logs.
 #[derive(Clone)]
 struct Shared(Arc<Mutex<Box<dyn Write + Send>>>);
 
@@ -62,7 +62,7 @@ impl Globals {
         fs.string_var(
             "now",
             &std::env::var("PULSE_NOW").unwrap_or_default(),
-            "fixed UTC clock like 2026-09-06T10:00:00Z (tests, parity)",
+            "fixed UTC clock like 2026-09-06T10:00:00Z (tests)",
         );
         fs.bool_var("json", false, "machine-readable output");
         fs.bool_var("quiet", false, "print only what a script needs");
@@ -83,12 +83,11 @@ impl Globals {
 
 static REGISTER: Once = Once::new();
 
-/// Everything Go's `main.go` pulled in with blank imports: every package's
-/// `init()` registered its commands (and the model providers registered
-/// themselves). Order does not matter; the help output sorts by group and name.
+/// Registers every crate's commands (and the model providers) once. Order
+/// does not matter; the help output sorts by group and name.
 pub fn register_all() {
     REGISTER.call_once(|| {
-        // internal/bus init(): store events feed the process bus from the start.
+        // Store events feed the process bus from the start.
         pulse_bus::install_store_observer();
         register_version();
         pulse_board::register();
@@ -138,8 +137,8 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
     Ok(())
 }
 
-/// Go: func run(argv []string, stdout, stderr io.Writer) int — for callers that
-/// lend borrowed writers (tests). Output is collected and copied out at the end.
+/// Runs the CLI for callers that lend borrowed writers (tests). Output is
+/// collected and copied out at the end.
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let out_buf = pulse_cli::Buffer::new();
     let err_buf = pulse_cli::Buffer::new();
@@ -155,8 +154,8 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 }
 
 /// The binary's entry: writes stream straight through to `out`/`err`.
-/// `out_is_tty` stands in for Go's `out.(*os.File) && IsTTY(f)` check, which a
-/// `dyn Write` cannot answer for itself.
+/// `out_is_tty` says whether `out` is a terminal, which a `dyn Write` cannot
+/// answer for itself.
 pub fn run_streaming(
     argv: &[String],
     out: Box<dyn Write + Send>,
@@ -226,11 +225,11 @@ pub fn run_streaming(
         bind(&mut fs);
     }
     let args = if cmd.raw {
-        // raw commands parse their own flags (Go: cmd.Raw); no late globals
+        // raw commands parse their own flags; no late globals
         rest.to_vec()
     } else {
-        // the global flags are accepted after the command word too, so the
-        // Python spellings (`pulse post --project X ...`) keep working
+        // the global flags are accepted after the command word too, so
+        // `pulse post --project X ...` works as well as `pulse --project X post ...`
         late_bind(&mut fs);
         let args = match parse_interleaved(&mut fs, rest) {
             Ok(a) => a,
@@ -267,7 +266,7 @@ pub fn run_streaming(
     }
     match result {
         Ok(()) => 0,
-        // Go: errors.Is(err, flag.ErrHelp) -> the command's help, exit 0
+        // the command asked for its own help: print it, exit 0
         Err(e) if matches!(e.downcast_ref::<FlagError>(), Some(FlagError::Help)) => {
             let _ = pulse_cli::help_command(out, color, &cmd);
             0
@@ -302,7 +301,6 @@ fn beat_as_agent(ctx: &Context, read_only: bool) {
     }
 }
 
-/// Go: cli.ColorEnabled(out, noColor) — colour only on a terminal, never under NO_COLOR.
 fn color_enabled(out_is_tty: bool, no_color: bool) -> bool {
     if no_color || std::env::var_os("NO_COLOR").is_some() {
         return false;
@@ -423,15 +421,13 @@ pub(crate) mod test_helpers {
 
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    /// Go runs a package's tests one at a time; the command registry, the
-    /// process env and the captured `SEEN` context are shared, so every test
-    /// holds this lock first.
+    /// The command registry, the process env and the captured `SEEN` context
+    /// are shared between tests, so every test holds this lock first.
     pub(crate) fn serial() -> MutexGuard<'static, ()> {
         SERIAL.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-// Ports of cmd/pulse/main_test.go and cmd/pulse/settings_test.go.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,7 +448,6 @@ mod tests {
         String::from_utf8(b.to_vec()).unwrap()
     }
 
-    /// Go: func TestHelpAndVersion(t *testing.T)
     #[test]
     fn help_and_version() {
         let _serial = crate::test_helpers::serial();
@@ -488,7 +483,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestUnknownCommand(t *testing.T)
     #[test]
     fn unknown_command() {
         let _serial = crate::test_helpers::serial();
@@ -511,7 +505,6 @@ mod tests {
         Ok(())
     }
 
-    /// Go: func TestNoStoreMapping(t *testing.T)
     #[test]
     fn no_store_mapping() {
         let _serial = crate::test_helpers::serial();
@@ -584,7 +577,6 @@ mod tests {
         Ok(())
     }
 
-    /// Go: func TestInterleavedFlagsAndErrors(t *testing.T)
     #[test]
     fn interleaved_flags_and_errors() {
         let _serial = crate::test_helpers::serial();
@@ -674,7 +666,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestSettingsHelpWithoutStore(t *testing.T)
     #[test]
     fn settings_help_without_store() {
         let _serial = crate::test_helpers::serial();
@@ -764,7 +755,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestSettingsHelpRejectsArguments(t *testing.T)
     #[test]
     fn settings_help_rejects_arguments() {
         let _serial = crate::test_helpers::serial();
@@ -786,7 +776,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestSettingsActionsNeedStore(t *testing.T)
     #[test]
     fn settings_actions_need_store() {
         let _serial = crate::test_helpers::serial();
@@ -819,7 +808,6 @@ mod tests {
         }
     }
 
-    /// Go: func TestSettingsStoreActions(t *testing.T)
     #[test]
     fn settings_store_actions() {
         let _serial = crate::test_helpers::serial();

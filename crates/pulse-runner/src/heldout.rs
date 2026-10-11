@@ -1,9 +1,4 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
-
-//! Port of internal/runner/heldout.go.
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 
 use anyhow::anyhow;
 use std::sync::{LazyLock, RwLock};
@@ -29,7 +24,6 @@ pub(crate) fn set_sealed_call(f: Box<SealedCallFn>) {
 pub(crate) const HELDOUT_RETRY_MINUTES: i32 = 60;
 pub(crate) const HELDOUT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
-/// Go: func runSealedCall(ctx context.Context, s *store.Store, prompt string) (string, error)
 pub(crate) fn run_sealed_call(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -115,7 +109,6 @@ pub(crate) fn run_sealed_call(
     Ok(text)
 }
 
-/// Go: func sealedEnv(environ []string) []string
 pub(crate) fn sealed_env(environ: &[String]) -> Vec<String> {
     environ
         .iter()
@@ -130,7 +123,6 @@ pub(crate) fn sealed_env(environ: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Go: func tendHeldout(s *store.Store, now string) []string
 pub(crate) fn tend_heldout(s: &pulse_store::Store, now: String) -> Vec<String> {
     let mut g = HELDOUT_GEN.lock();
     let lines = std::mem::take(&mut g.lines);
@@ -155,7 +147,6 @@ pub(crate) fn tend_heldout(s: &pulse_store::Store, now: String) -> Vec<String> {
     lines
 }
 
-/// Go: func generateHeldout(s *store.Store, now string)
 pub(crate) fn generate_heldout(s: &pulse_store::Store, now: String) {
     let ctx = pulse_bus::CancellationToken::new().with_timeout(HELDOUT_CALL_TIMEOUT);
     let result = pulse_evolve::generate(
@@ -197,7 +188,6 @@ pub(crate) fn generate_heldout(s: &pulse_store::Store, now: String) {
     }
 }
 
-/// Go: func heldoutFailure(err error) string
 pub(crate) fn heldout_failure(err: anyhow::Error) -> String {
     let mut text = crate::run::err_message(&err);
     if let Some(ce) = err.downcast_ref::<pulse_cli::Error>() {
@@ -217,7 +207,7 @@ pub(crate) fn heldout_failure(err: anyhow::Error) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 

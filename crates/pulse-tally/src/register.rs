@@ -204,7 +204,8 @@ fn run_board(c: &mut pulse_cli::Context, fs: &pulse_cli::FlagSet, _: &[String]) 
     }
     if c.json {
         let goal = project_goal(store(c)?, &slug)?;
-        // Go: struct { *Result; Goal *goals.Goal `json:"goal,omitempty"` }
+        // The tally's own fields plus `goal`, present only when the project
+        // has one.
         #[derive(serde::Serialize)]
         struct BoardJson<'a> {
             #[serde(flatten)]
@@ -332,7 +333,7 @@ fn run_ballot(c: &mut pulse_cli::Context, _: &pulse_cli::FlagSet, _: &[String]) 
     if c.json {
         let (sugs, ams) = crate::digest::split_ballot(&items);
         let goal = project_goal(store(c)?, &slug)?;
-        // Go: result := map[string]any{...}; if goal != nil { result["goal"] = goal }
+        // `goal` is present only when the project has one.
         return match goal {
             Some(goal) => pulse_cli::write_json(
                 &mut *c.out,
@@ -368,7 +369,7 @@ fn run_proposals(c: &mut pulse_cli::Context, _: &pulse_cli::FlagSet, _: &[String
     }
     let items = proposals(store(c)?, &c.project).map_err(wrap)?;
     if c.json {
-        // Go: if items == nil { items = []Proposal{} }
+        // An empty list, never null.
         return pulse_cli::write_json(&mut *c.out, &items.into_vec());
     }
     c.out.write_all(proposals_text(&items).as_bytes())?;

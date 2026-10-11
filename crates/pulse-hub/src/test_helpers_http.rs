@@ -142,3 +142,37 @@ pub(crate) fn json_body(v: serde_json::Value) -> String {
 pub(crate) fn strconv_int64(n: i64) -> String {
     n.to_string()
 }
+
+pub(crate) fn additions_request(
+    handler: Handler,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> (u16, serde_json::Map<String, Value>) {
+    let h = Arc::new(handler);
+    let server = crate::test_helpers::TestServer::start(Arc::new(move |w, r| h.serve_http(w, r)));
+    let client = crate::test_helpers::client();
+    let url = format!("{}{}", server.url, path);
+    let mut req = match method {
+        "POST" => client.post(&url).header("Content-Type", "application/json"),
+        "DELETE" => client.delete(&url),
+        _ => client.get(&url),
+    };
+    if !body.is_empty() {
+        req = req.body(body.to_string());
+    }
+    let response = req.send().expect("send request");
+    let status = response.status().as_u16();
+    let text = response.text().expect("read response");
+    let result = serde_json::from_str::<Value>(&text).unwrap_or_else(|err| {
+        panic!("{method} {path}: status {status}, non-JSON response {text:?}: {err}")
+    });
+    (status, result.as_object().expect("object response").clone())
+}
+
+pub(crate) fn event_subjects(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .map(|e| e["subject"].as_str().unwrap_or("").to_string())
+        .collect()
+}

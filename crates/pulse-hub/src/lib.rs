@@ -1,6 +1,6 @@
-//! PULSE: the HTTP API and SSE the console uses, with the embedded console (port of Go package internal/hub).
+//! PULSE: the HTTP API and SSE the console uses, with the embedded console.
 //!
-//! One module per Go file (`internal/hub/<name>.go` -> `<name>.rs`); `web/hub/out` is embedded via rust-embed in server.rs.
+//! `web/hub/out` is embedded via rust-embed in server.rs.
 
 #![allow(unused_imports)]
 
@@ -84,6 +84,4 @@ pub use store_views::*;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 #[cfg(test)]
-pub(crate) mod test_helpers_f2;
-#[cfg(test)]
-pub(crate) mod test_helpers_f3;
+pub(crate) mod test_helpers_http;

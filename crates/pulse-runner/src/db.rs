@@ -12,9 +12,6 @@ impl crate::util::Querier for ConnQ {
     }
 }
 
-/// Go: func (q connQ) Query(query string, args ...any) (*sql.Rows, error)
-/// Go: func (q connQ) QueryRow(query string, args ...any) *sql.Row
-/// Go: func (q connQ) Exec(query string, args ...any) (sql.Result, error)
 impl ConnQ {
     pub(crate) fn execute(
         &self,
@@ -25,7 +22,6 @@ impl ConnQ {
     }
 }
 
-/// Go: func immediate(s *store.Store, fn func(q querier) error) (err error)
 pub(crate) fn immediate<F>(s: &pulse_store::Store, fn_: F) -> Result<()>
 where
     F: FnOnce(&ConnQ) -> Result<()>,
@@ -54,7 +50,6 @@ where
     }
 }
 
-/// Go: func isBusy(err error) bool
 pub(crate) fn is_busy(err: &dyn std::error::Error) -> bool {
     let m = err.to_string();
     m.contains("SQLITE_BUSY")

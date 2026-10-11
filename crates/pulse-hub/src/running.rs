@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) type JsonMap = BTreeMap<String, serde_json::Value>;
 impl Handler {
-    /// Go: func (h *Handler) running(r *http.Request) (map[string]any, error)
     pub(crate) fn running(&self, r: &crate::httpx::Request) -> anyhow::Result<JsonMap> {
         let mut hub = JsonMap::new();
         hub.insert("version".into(), json!(pulse_cli::version()));
@@ -131,7 +130,6 @@ impl Handler {
             ("signed", signed),
         ]))
     }
-    /// Go: func (h *Handler) additionRunning(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_running(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -154,7 +152,7 @@ fn map_from_pairs(pairs: Vec<(&str, Value)>) -> JsonMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::{Value, json};
     use std::process::Command;
 
@@ -258,9 +256,9 @@ mod tests {
     #[test]
     fn running_names_the_builds_and_the_state() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(true);
-        let h = f2::handler(&s);
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(status, 200);
         assert_eq!(result["available"], true);
         assert_eq!(result["state"], "no-daemon");
@@ -288,7 +286,7 @@ mod tests {
             s.conn().unwrap().execute("INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [format!(r#"{{"pid":4242,"at":"2026-09-06T11:59:00Z","loops":3,"interval":300,"note":"","version":"dev-{}","revision":"{}","bus":{{"subscribers":2,"dropped":7,"deduped":3}}}}"#, &revision[..std::cmp::min(12, revision.len())], revision)]).unwrap();
         };
         beat("");
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["state"], "unstamped");
         let brain = result["brain"].as_object().unwrap();
         assert_eq!(brain["slug"], "brain");
@@ -296,7 +294,7 @@ mod tests {
         assert_eq!(brain["head"], head);
         assert_eq!(brain["dirty"], false);
         beat(&head);
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["state"], "current");
         let daemon = result["daemon"].as_object().unwrap();
         assert_eq!(daemon["pid"], 4242);
@@ -307,7 +305,7 @@ mod tests {
         assert_eq!(bus["dropped"], 7);
         assert_eq!(bus["deduped"], 3);
         beat("0123456789abcdef0123456789abcdef01234567");
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["state"], "behind");
         must_output(
             Command::new("git")
@@ -318,7 +316,7 @@ mod tests {
                 .arg("-b")
                 .arg("topic"),
         );
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["state"], "waiting");
         must_output(
             Command::new("git")
@@ -329,24 +327,24 @@ mod tests {
                 .arg("main"),
         );
         s.conn().unwrap().execute("INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-09-06T11:58:00Z','daemon','daemon.self_update','pulse',?)", [format!(r#"{{"from":"0123456789ab","to":"{}","binary":"/x/pulse","inflight":2}}"#, head)]).unwrap();
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_ne!(result["last"], Value::Null);
         let last = result["last"].as_object().unwrap();
         assert_eq!(last["to"], head);
         assert_eq!(last["inflight"], 2);
         assert_eq!(last["at"], "2026-09-06T11:58:00Z");
         s.conn().unwrap().execute("INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('daemon.self_update','off',?, 'owner') ON CONFLICT(name) DO UPDATE SET value = excluded.value", [s.now()]).unwrap();
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/running", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["state"], "off");
         assert_eq!(result["self_update"], "off");
-        let (status, _) = f2::additions_request(h, "POST", "/api/v1/running", "{}");
+        let (status, _) = http::additions_request(h, "POST", "/api/v1/running", "{}");
         assert_eq!(status, 405);
     }
 
     #[test]
     fn roster_presence_history_claims_and_shared_clock() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let exec = |query: &str, args: &[&dyn rusqlite::ToSql]| {
             s.conn().unwrap().execute(query, args).unwrap();
         };
@@ -498,7 +496,7 @@ mod tests {
             })),
             ..Default::default()
         }];
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let rows = h.roster(&views).unwrap();
         let by_name = rows
             .iter()
@@ -569,7 +567,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let expired = f2::handler(&later).roster(&views).unwrap();
+        let expired = http::handler(&later).roster(&views).unwrap();
         for r in expired {
             if r["agent"] == "live" {
                 assert_eq!(r["presence"], "dead");
@@ -587,7 +585,7 @@ mod tests {
         )
         .unwrap();
         assert!(ok);
-        let returned = f2::handler(&later).roster(&views).unwrap();
+        let returned = http::handler(&later).roster(&views).unwrap();
         assert_eq!(returned.len(), rows.len());
         for r in returned {
             if r["agent"] == "live" {
@@ -659,16 +657,16 @@ mod tests {
     #[test]
     fn runner_view_carries_landing_holds() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(true);
-        let h = f2::handler(&s);
-        let (code, body) = f2::additions_request(h.clone(), "GET", "/api/v1/runner", "");
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let (code, body) = http::additions_request(h.clone(), "GET", "/api/v1/runner", "");
         assert_eq!(code, 200);
         assert_eq!(body["available"], true);
         assert_eq!(body["landing"].as_array().unwrap().len(), 0);
         s.conn().unwrap().execute(r#"INSERT INTO meta(key,value) VALUES
         ('daemon','{"pid":123,"at":"2026-09-06T11:59:30Z","loops":4,"interval":30,"note":""}'),
         ('landing','{"proj":{"at":"2026-09-06T11:59:31Z","note":"3 branches waiting; deferred: the checkout of /w/proj has uncommitted changes"}}')"#, []).unwrap();
-        let (code, body) = f2::additions_request(h, "GET", "/api/v1/runner", "");
+        let (code, body) = http::additions_request(h, "GET", "/api/v1/runner", "");
         assert_eq!(code, 200);
         let held = body["landing"].as_array().unwrap();
         assert_eq!(held.len(), 1);
@@ -684,11 +682,11 @@ mod tests {
     #[test]
     fn runner_view_carries_capacity_hold() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(true);
-        let h = f2::handler(&s);
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
         const HOLD: &str = "workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login";
         s.conn().unwrap().execute(&format!(r#"INSERT INTO meta(key,value) VALUES ('capacity','{{"queued":2,"slots":0,"inflight":0,"starved_since":"","held":"{HOLD}"}}')"#), []).unwrap();
-        let (code, body) = f2::additions_request(h, "GET", "/api/v1/runner", "");
+        let (code, body) = http::additions_request(h, "GET", "/api/v1/runner", "");
         assert_eq!(code, 200);
         let want_capacity = format!("2 job(s) queued, 0 slot(s), 0 in flight; {HOLD}");
         assert_eq!(body["capacity"], want_capacity);

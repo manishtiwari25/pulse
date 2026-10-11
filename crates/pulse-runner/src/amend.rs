@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 pub(crate) type AmendRefusals = BTreeMap<String, String>;
 
-/// Go: func autoApplyAmendments(s *store.Store, slug, now string, refused amendRefusals) []string
 pub(crate) fn auto_apply_amendments(
     s: &pulse_store::Store,
     slug: String,

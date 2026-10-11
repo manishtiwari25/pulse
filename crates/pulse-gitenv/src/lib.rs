@@ -1,7 +1,10 @@
 //! Git environment scrubbing for child git commands.
 
-/// Go's runtime.GOOS for this build: PULSE stores and compares Go's names
-/// ("darwin", not "macos"), so every port of `runtime.GOOS` must use this.
+/// The operating-system name for this build, in the fixed spelling PULSE
+/// stores and compares everywhere ("darwin", not "macos"): service units,
+/// credential resolution and harness prompts (`{{.Info.os}}`) all match on
+/// these names, so they must not change. Falls back to
+/// `std::env::consts::OS` for a target not listed.
 pub const GOOS: &str = if cfg!(target_os = "macos") {
     "darwin"
 } else if cfg!(target_os = "linux") {
@@ -30,7 +33,9 @@ pub const GOOS: &str = if cfg!(target_os = "macos") {
     std::env::consts::OS
 };
 
-/// Go's runtime.GOARCH for this build ("amd64", "arm64", ...).
+/// The CPU architecture name for this build, in the same fixed spelling as
+/// [`GOOS`] ("amd64", "arm64", "386", ...). Falls back to
+/// `std::env::consts::ARCH` for a target not listed.
 pub const GOARCH: &str = if cfg!(target_arch = "x86_64") {
     "amd64"
 } else if cfg!(target_arch = "aarch64") {
@@ -69,10 +74,10 @@ pub const HOOK_VARS: &[&str] = &[
     "GIT_REFLOG_ACTION=",
 ];
 
-/// Go: exec.Command("git", ...) resolves git through this process's PATH
-/// (exec.LookPath) before spawning. Rust's Command does that lookup in the
-/// child instead whenever the child's environment carries its own PATH - which
-/// every [`env`] caller's does - and to run it there std has to fork the whole
+/// The first executable `git` on this process's PATH, resolved before
+/// spawning. `std::process::Command` does that lookup in the child instead
+/// whenever the child's environment carries its own PATH - which every
+/// [`env`] caller's does - and to run it there std has to fork the whole
 /// process rather than posix_spawn it. For a hub holding gigabytes of board
 /// data that is a page-table copy per git call, with every other thread's
 /// allocations blocked on the allocator's fork lock meanwhile. Pass this as

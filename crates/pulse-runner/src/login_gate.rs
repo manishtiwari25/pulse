@@ -22,8 +22,8 @@ pub(crate) fn set_login_gate(
     )
 }
 
-/// Go: `prev := loginGate; loginGate = f; t.Cleanup(func() { loginGate = prev })` - the swap
-/// lives as long as the guard.
+/// Holds the previous login gate; dropping the guard puts it back, so a
+/// swapped gate lives as long as the guard.
 pub(crate) struct LoginGateGuard(Option<Box<dyn Fn(&pulse_store::Store) -> String + Send + Sync>>);
 
 impl Drop for LoginGateGuard {
@@ -40,7 +40,6 @@ pub(crate) fn swap_login_gate(
     LoginGateGuard(Some(set_login_gate(f)))
 }
 
-/// Go: func localLoginGate(s *store.Store) string
 pub(crate) fn local_login_gate(s: &pulse_store::Store) -> String {
     if !s.harness_native() {
         return String::new();
@@ -70,7 +69,6 @@ pub(crate) fn local_login_gate(s: &pulse_store::Store) -> String {
     }
 }
 
-/// Go: func localProvider(home, name string, settings map[string]string) (provider.Provider, error)
 pub(crate) fn local_provider(
     home: String,
     name: String,
@@ -106,7 +104,6 @@ pub(crate) fn local_provider(
     Ok(p)
 }
 
-/// Go: func providerSettingsKey(settings map[string]string) string
 pub(crate) fn provider_settings_key(settings: BTreeMap<String, String>) -> String {
     settings
         .into_iter()
@@ -115,7 +112,6 @@ pub(crate) fn provider_settings_key(settings: BTreeMap<String, String>) -> Strin
         .join("\0")
 }
 
-/// Go: func loginWanted(s *store.Store, brain row, queued int, gate, now, actor string) row
 pub(crate) fn login_wanted(
     s: &pulse_store::Store,
     brain: crate::util::Row,
@@ -170,12 +166,12 @@ CLI path meanwhile. Remote executors keep working. This post is a measurement, n
 mod tests {
     use super::*;
     use crate::test_helpers::TEST_NOW;
-    use crate::test_helpers_f5::set_setting;
-    use crate::test_helpers_f6::{invoke, invoke_ok, stub_gh};
+    use crate::test_helpers_daemon::set_setting;
     use crate::test_helpers_login_reuse::{
         LOGIN_REUSE_GH_TOKEN, LOGIN_REUSE_PROVIDER_NAME, LOGIN_REUSE_PROVIDER_TOKEN,
         login_reuse_store,
     };
+    use crate::test_helpers_provider::{invoke, invoke_ok, stub_gh};
     use crate::test_helpers_token::{
         FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
     };
@@ -575,7 +571,7 @@ mod tests {
         .unwrap();
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
         let hand_calls = Arc::new(Mutex::new(0));
-        let _ssh = crate::test_helpers_f1b::install_run_ssh({
+        let _ssh = crate::test_helpers_hands::install_run_ssh({
             let sent = sent.clone();
             let hand_calls = hand_calls.clone();
             move |_, argv, stdin, _| {
@@ -591,7 +587,7 @@ mod tests {
                 let mut hand_calls = hand_calls.lock().unwrap();
                 *hand_calls += 1;
                 match *hand_calls {
-                    1 => Ok((0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into(), String::new())),
+                    1 => Ok((0, "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into(), String::new())),
                     2 => Ok((0, String::new(), String::new())),
                     _ => Ok((0, "SUMMARY: ok\n".into(), String::new())),
                 }
@@ -614,7 +610,7 @@ mod tests {
                 && !out.contains(LOGIN_REUSE_PROVIDER_TOKEN),
             "executor login output: {out:?}"
         );
-        let ev = crate::test_helpers_f5::must_one(
+        let ev = crate::test_helpers_daemon::must_one(
             &s,
             "SELECT detail FROM events WHERE action = 'executor.login' ORDER BY seq DESC LIMIT 1",
             &[],

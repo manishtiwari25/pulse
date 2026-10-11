@@ -1,4 +1,4 @@
-//! PULSE: posts, agents, projects, jobs, decide, init, export, remove (port of Go package internal/board).
+//! PULSE: posts, agents, projects, jobs, decide, init, export, remove.
 
 pub mod agents;
 pub mod board;

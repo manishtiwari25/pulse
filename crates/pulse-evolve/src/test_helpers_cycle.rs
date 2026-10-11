@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::Duration;
 
-pub(crate) static E2_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+pub(crate) static CYCLE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 static FAKE_EXECUTABLE: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
@@ -27,8 +27,8 @@ pub(crate) fn set_fake_executable(path: Option<String>) {
     *FAKE_EXECUTABLE.lock().expect("fake executable lock") = path;
 }
 
-pub(crate) fn e2_guard() -> std::sync::MutexGuard<'static, ()> {
-    E2_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+pub(crate) fn cycle_guard() -> std::sync::MutexGuard<'static, ()> {
+    CYCLE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(crate) fn set_env(name: &str, value: &str) {

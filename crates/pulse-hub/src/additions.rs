@@ -1435,7 +1435,7 @@ pub(crate) fn value_from<T: Serialize>(v: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::{Value, json};
     use std::io::{BufRead, BufReader};
     use std::sync::{Arc, Barrier};
@@ -1453,7 +1453,7 @@ mod tests {
         let _session = pulse_testutil::setenv("PULSE_SESSION", "parent");
         let _project = pulse_testutil::setenv("PULSE_PROJECT", "parent");
         {
-            let fixture = f2::additions_store(false);
+            let fixture = http::additions_store(false);
             assert_eq!(std::env::var("PULSE_JOB").unwrap_or_default(), "");
             assert_eq!(std::env::var("PULSE_AGENT").unwrap_or_default(), "");
             assert_eq!(std::env::var("PULSE_SESSION").unwrap_or_default(), "");
@@ -1465,12 +1465,13 @@ mod tests {
     #[test]
     fn additions_records() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let (status, result) = f2::additions_request(f2::handler(&s), "GET", "/api/v1/records", "");
+        let s = http::additions_store(false);
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/records", "");
         assert_eq!(status, 200);
         assert_eq!(arr(&result, "records").len(), 0);
-        let mut rec = f2::additions_record(&s, "ADR-001", "one", "adr", "first", "First body");
-        f2::additions_record(&s, "MEM-other", "two", "memory", "other", "Other body");
+        let mut rec = http::additions_record(&s, "ADR-001", "one", "adr", "first", "First body");
+        http::additions_record(&s, "MEM-other", "two", "memory", "other", "Other body");
         rec.status = "Accepted".to_string();
         s.put_record(
             rec.clone(),
@@ -1480,8 +1481,8 @@ mod tests {
             "revised",
         )
         .unwrap();
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/records?project=one&kind=adr&status=accepted&area=hub",
             "",
@@ -1492,13 +1493,17 @@ mod tests {
         assert_eq!(rows[0]["id"], rec.id);
         assert_eq!(rows[0].as_object().unwrap().len(), 16);
         assert!(rows[0].get("body").is_none());
-        let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", "/api/v1/records/ADR-001?rev=1", "");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "GET",
+            "/api/v1/records/ADR-001?rev=1",
+            "",
+        );
         assert_eq!(status, 200);
         assert_eq!(result["body"], "First body");
         assert_eq!(arr(&result, "revisions").len(), 2);
         let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", "/api/v1/records/ADR-001", "");
+            http::additions_request(http::handler(&s), "GET", "/api/v1/records/ADR-001", "");
         assert_eq!(status, 200);
         assert_eq!(result["body"], "Second body");
         for path in [
@@ -1506,12 +1511,12 @@ mod tests {
             "/api/v1/records/ADR-001?rev=9",
             "/api/v1/records/ADR-001?project=two",
         ] {
-            let (status, _) = f2::additions_request(f2::handler(&s), "GET", path, "");
+            let (status, _) = http::additions_request(http::handler(&s), "GET", path, "");
             assert_eq!(status, 404, "{path}");
         }
         for rev in ["-1", "x", "1.5"] {
-            let (status, result) = f2::additions_request(
-                f2::handler(&s),
+            let (status, result) = http::additions_request(
+                http::handler(&s),
                 "GET",
                 &format!("/api/v1/records/ADR-001?rev={rev}"),
                 "",
@@ -1525,10 +1530,10 @@ mod tests {
     #[test]
     fn additions_constitution() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/constitution?project=one",
             "",
@@ -1537,7 +1542,7 @@ mod tests {
         assert!(result["record"].is_null());
         assert_eq!(result["body"], "");
         assert_eq!(arr(&result, "amendments").len(), 0);
-        f2::additions_record(
+        http::additions_record(
             &s,
             "EVO-constitution",
             "one",
@@ -1545,16 +1550,16 @@ mod tests {
             "constitution",
             "## Purpose\nImprove carefully.",
         );
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/constitution?project=one",
             "",
         );
         assert_eq!(status, 200);
         assert_eq!(result["body"], "## Purpose\nImprove carefully.");
-        let (status, _) = f2::additions_request(
-            f2::handler(&s),
+        let (status, _) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/constitution?project=two",
             "",
@@ -1565,13 +1570,13 @@ mod tests {
     #[test]
     fn additions_specific_missing_resource_errors() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         for (path, message) in [
             ("/api/v1/records/missing", "no such record"),
             ("/api/v1/tasks/TASK-999", "No task \"TASK-999\""),
             ("/api/v1/constitution?project=missing", "no such project"),
         ] {
-            let (status, result) = f2::additions_request(f2::handler(&s), "GET", path, "");
+            let (status, result) = http::additions_request(http::handler(&s), "GET", path, "");
             assert_eq!(status, 404, "{path}");
             assert_eq!(result["error"], message);
             assert_ne!(result["why"], "");
@@ -1617,7 +1622,7 @@ mod tests {
             "events",
             "events/stream",
         ] {
-            let (status, result) = f2::additions_request(
+            let (status, result) = http::additions_request(
                 crate::new_handler(None, None),
                 "GET",
                 &format!("/api/v1/{path}"),
@@ -1628,18 +1633,20 @@ mod tests {
             assert!(result.get("why").is_some());
             assert!(result.get("fix").is_some());
         }
-        let s = f2::additions_store(true);
-        let (status, result) = f2::additions_request(f2::handler(&s), "GET", "/api/v1/tasks", "");
+        let s = http::additions_store(true);
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/tasks", "");
         assert_eq!(status, 503);
         assert_eq!(result["error"], "tasks are not available yet");
-        let (status, _) = f2::additions_request(f2::handler(&s), "POST", "/api/v1/events", "{}");
+        let (status, _) =
+            http::additions_request(http::handler(&s), "POST", "/api/v1/events", "{}");
         assert_eq!(status, 405);
     }
 
     #[test]
     fn additions_events_polling() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         s.event(
             "human",
             "message.sent",
@@ -1649,8 +1656,8 @@ mod tests {
         .unwrap();
         s.event("human", "message.sent", "two-msg", json!({"project":"two"}))
             .unwrap();
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/events?project=one&limit=1",
             "",
@@ -1664,20 +1671,20 @@ mod tests {
             s.event("human", "message.sent", subject, json!({"project":"one"}))
                 .unwrap();
         }
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             "/api/v1/events?project=one&limit=2",
             "",
         );
         assert_eq!(status, 200);
         assert_eq!(
-            f2::event_subjects(arr(&result, "events")).join(","),
+            http::event_subjects(arr(&result, "events")).join(","),
             "one-4,one-5"
         );
         for query in ["since=-1", "since=no", "limit=0", "limit=1001", "limit=2.5"] {
-            let (status, _) = f2::additions_request(
-                f2::handler(&s),
+            let (status, _) = http::additions_request(
+                http::handler(&s),
                 "GET",
                 &format!("/api/v1/events?{query}"),
                 "",
@@ -1689,8 +1696,8 @@ mod tests {
     #[test]
     fn additions_events_stream_starts_at_the_head_without_a_cursor() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = Arc::new(f2::handler(&s));
+        let s = http::additions_store(false);
+        let h = Arc::new(http::handler(&s));
         let server =
             crate::test_helpers::TestServer::start(Arc::new(move |w, r| h.serve_http(w, r)));
         for i in 0..5 {
@@ -1729,7 +1736,7 @@ mod tests {
     #[test]
     fn additions_events_stream_resume_replays_the_newest_window() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let cursor: i64 = s
             .conn()
             .unwrap()
@@ -1739,15 +1746,15 @@ mod tests {
             s.event("human", "message.sent", subject, json!({"project":"one"}))
                 .unwrap();
         }
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             &format!("/api/v1/events?project=one&since={cursor}&limit=2"),
             "",
         );
         assert_eq!(status, 200);
         assert_eq!(
-            f2::event_subjects(arr(&result, "events")).join(","),
+            http::event_subjects(arr(&result, "events")).join(","),
             "missed-3,missed-4"
         );
     }
@@ -1755,8 +1762,8 @@ mod tests {
     #[test]
     fn additions_events_stream_after_connection() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = std::sync::Arc::new(f2::handler(&s));
+        let s = http::additions_store(false);
+        let h = std::sync::Arc::new(http::handler(&s));
         let server = crate::test_helpers::TestServer::start(std::sync::Arc::new(move |w, r| {
             h.serve_http(w, r)
         }));
@@ -1836,8 +1843,8 @@ mod tests {
     #[test]
     fn additions_stream_heartbeat() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = std::sync::Arc::new(f2::handler(&s));
+        let s = http::additions_store(false);
+        let h = std::sync::Arc::new(http::handler(&s));
         let server = crate::test_helpers::TestServer::start(std::sync::Arc::new(move |w, r| {
             h.serve_http(w, r)
         }));
@@ -1872,14 +1879,15 @@ mod tests {
     #[test]
     fn additions_tasks_and_messages() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        f2::additions_project(&s, "two");
-        let (status, result) = f2::additions_request(f2::handler(&s), "GET", "/api/v1/tasks", "");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        http::additions_project(&s, "two");
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/tasks", "");
         assert_eq!(status, 200);
         assert_eq!(arr(&result, "tasks").len(), 0);
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/tasks",
             r#"{"project":"one","title":"Owner task","brief":"Build the thing","priority":3}"#,
@@ -1893,8 +1901,8 @@ mod tests {
         assert_eq!(task["priority"], 3);
         assert_eq!(task["jobs_total"], 0);
         assert_eq!(task["working"].as_array().unwrap().len(), 0);
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/tasks/{id}/amend"),
             r#"{"brief":"Build the amended thing","note":"Owner clarification"}"#,
@@ -1902,8 +1910,8 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(result["task"]["title"], "Owner task");
         assert_eq!(result["task"]["current_rev"], 2);
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/messages",
             &format!(r#"{{"project":"one","task_id":"{id}","body":"How is it going?"}}"#),
@@ -1912,12 +1920,12 @@ mod tests {
         assert_eq!(result["message"]["author"], "human");
         assert_eq!(result["message"]["body"], "How is it going?");
         let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
         assert_eq!(status, 200);
         assert_eq!(arr(&result, "revisions").len(), 2);
         assert_eq!(arr(&result, "messages").len(), 1);
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             &format!("/api/v1/tasks/{id}/cancel"),
             r#"{"reason":"Priorities changed"}"#,
@@ -1929,9 +1937,9 @@ mod tests {
     #[test]
     fn additions_write_validation() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        f2::additions_project(&s, "two");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        http::additions_project(&s, "two");
         for (path, body) in [
             ("tasks", r#"{"project":"one","title":1,"brief":"text"}"#),
             ("tasks", r#"{"project":"one","title":"text","brief":false}"#),
@@ -1952,8 +1960,12 @@ mod tests {
             ("tasks", "[]"),
             ("tasks", r#"{"project":"one""#),
         ] {
-            let (status, result) =
-                f2::additions_request(f2::handler(&s), "POST", &format!("/api/v1/{path}"), body);
+            let (status, result) = http::additions_request(
+                http::handler(&s),
+                "POST",
+                &format!("/api/v1/{path}"),
+                body,
+            );
             assert_eq!(status, 400, "{path} {body}");
             assert!(result.get("error").is_some());
             assert!(result.get("why").is_some());
@@ -1964,12 +1976,12 @@ mod tests {
     #[test]
     fn additions_message_cursor_same_second() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         let mut ninth_id = String::new();
         for i in 1..=12 {
-            let (status, result) = f2::additions_request(
-                f2::handler(&s),
+            let (status, result) = http::additions_request(
+                http::handler(&s),
                 "POST",
                 "/api/v1/messages",
                 &format!(r#"{{"project":"one","body":"Message {i}"}}"#),
@@ -1979,8 +1991,8 @@ mod tests {
                 ninth_id = result["message"]["id"].as_str().unwrap().to_string();
             }
         }
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "GET",
             &format!("/api/v1/messages?project=one&since={ninth_id}"),
             "",
@@ -1996,8 +2008,8 @@ mod tests {
     #[test]
     fn additions_concurrent_tasks() {
         let _serial = crate::test_helpers::serial();
-        let s = Arc::new(f2::additions_store(false));
-        f2::additions_project(&s, "one");
+        let s = Arc::new(http::additions_store(false));
+        http::additions_project(&s, "one");
         let barrier = Arc::new(Barrier::new(6));
         let mut joins = Vec::new();
         for i in 0..6 {
@@ -2007,7 +2019,7 @@ mod tests {
                 barrier.wait();
                 let body = format!(r#"{{"project":"one","title":"Task {i}","brief":"Build it"}}"#);
                 let (status, result) =
-                    f2::additions_request(f2::handler(&s), "POST", "/api/v1/tasks", &body);
+                    http::additions_request(http::handler(&s), "POST", "/api/v1/tasks", &body);
                 assert!(status == 200 || status == 201, "{status} {result:?}");
             }));
         }
@@ -2026,9 +2038,10 @@ mod tests {
     fn additions_compute() {
         let _serial = crate::test_helpers::serial();
         crate::test_helpers::test_main_setup();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        let (status, result) = f2::additions_request(f2::handler(&s), "GET", "/api/v1/compute", "");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/compute", "");
         assert_eq!(status, 200);
         assert_eq!(arr(&result, "requests").len(), 0);
         let conn = s.conn().unwrap();
@@ -2045,8 +2058,8 @@ mod tests {
             s.set_setting("human", key, value).unwrap();
         }
         for (i, action) in ["approve", "deny"].iter().enumerate() {
-            let (status, result) = f2::additions_request(
-                f2::handler(&s),
+            let (status, result) = http::additions_request(
+                http::handler(&s),
                 "POST",
                 &format!("/api/v1/compute/CMP-00{}/{}", i + 1, action),
                 r#"{"words":"Owner decision"}"#,
@@ -2060,8 +2073,8 @@ mod tests {
             assert_eq!(result["request"]["status"], want);
             assert_eq!(result["request"]["decided_by"], "human");
         }
-        let (status, _) = f2::additions_request(
-            f2::handler(&s),
+        let (status, _) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/compute/CMP-001/deny",
             r#"{"words":"Already decided"}"#,
@@ -2072,7 +2085,7 @@ mod tests {
     #[test]
     fn additions_concurrent_events() {
         let _serial = crate::test_helpers::serial();
-        let s = Arc::new(f2::additions_store(false));
+        let s = Arc::new(http::additions_store(false));
         let mut joins = Vec::new();
         for i in 0..6 {
             let s1 = s.clone();
@@ -2087,8 +2100,8 @@ mod tests {
             }));
             let s2 = s.clone();
             joins.push(thread::spawn(move || {
-                let (status, _) = f2::additions_request(
-                    f2::handler(&s2),
+                let (status, _) = http::additions_request(
+                    http::handler(&s2),
                     "GET",
                     "/api/v1/events?project=one",
                     "",

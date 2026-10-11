@@ -1,5 +1,3 @@
-//! Port of internal/evolve/fleet.go.
-
 use anyhow::{Result, anyhow};
 use regex::Regex;
 use rusqlite::{OptionalExtension, params};
@@ -54,7 +52,6 @@ pub struct FleetVerification {
     pub jobs: Vec<FleetJob>,
 }
 
-/// Go: func fleetPaths(home string, f *Fleet) {
 pub(crate) fn fleet_paths(home: &str, f: &mut Fleet) {
     f.paths.clear();
     if !f.cleaned_at.is_empty() {
@@ -72,7 +69,6 @@ pub(crate) fn fleet_paths(home: &str, f: &mut Fleet) {
     }
 }
 
-/// Go: func PrepareFleet(ctx context.Context, s *store.Store, project, ref string, n int, actor string) (fleet *Fleet, retErr error) {
 pub fn prepare_fleet(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -147,7 +143,6 @@ pub fn prepare_fleet(
     Ok(fleet)
 }
 
-/// Go: func ListFleets(s *store.Store, project string) ([]Fleet, error) {
 pub fn list_fleets(s: &pulse_store::Store, project: &str) -> Result<Vec<Fleet>> {
     let conn = s.conn()?;
     let mut stmt = conn.prepare(
@@ -182,7 +177,6 @@ pub fn list_fleets(s: &pulse_store::Store, project: &str) -> Result<Vec<Fleet>> 
     Ok(out)
 }
 
-/// Go: func getFleet(s *store.Store, id string) (*Fleet, error) {
 pub(crate) fn get_fleet(s: &pulse_store::Store, id: &str) -> Result<Fleet> {
     if !MANAGED_ID.is_match(id) {
         return Err(crate::fixtures::input_error(
@@ -203,7 +197,6 @@ pub(crate) fn get_fleet(s: &pulse_store::Store, id: &str) -> Result<Fleet> {
     ))
 }
 
-/// Go: func VerifyFleet(ctx context.Context, s *store.Store, id string) (*FleetVerification, error) {
 pub fn verify_fleet(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -280,7 +273,6 @@ pub fn verify_fleet(
     Ok(report)
 }
 
-/// Go: func CleanFleet(s *store.Store, id, actor string) error {
 pub fn clean_fleet(s: &pulse_store::Store, id: &str, actor: &str) -> Result<()> {
     let fleet = get_fleet(s, id)?;
     if !fleet.cleaned_at.is_empty() {
@@ -319,7 +311,6 @@ pub fn clean_fleet(s: &pulse_store::Store, id: &str, actor: &str) -> Result<()> 
     tx.commit()
 }
 
-/// Go: func archivedForJob(s *store.Store, project, job string) (*Archived, error) {
 pub(crate) fn archived_for_job(
     s: &pulse_store::Store,
     project: &str,
@@ -351,13 +342,13 @@ pub(crate) fn archived_for_job(
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use std::path::Path;
 
     #[test]
     fn fleet_prepare_verify_store_results_and_clean() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         fixture(&s, "demo", "F01", "printf 1", 1.0);
@@ -416,7 +407,7 @@ mod tests {
     #[test]
     fn fleet_refuses_project_and_symlink_destinations() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         let mut alias = s.clone();
@@ -434,7 +425,7 @@ mod tests {
     #[test]
     fn fleet_detects_reattached_clone() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let cancel = pulse_bus::CancellationToken::new();

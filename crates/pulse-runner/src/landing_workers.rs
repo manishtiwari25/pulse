@@ -264,7 +264,7 @@ fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
     use std::collections::BTreeMap;
     use std::path::Path;
 

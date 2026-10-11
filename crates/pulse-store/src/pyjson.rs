@@ -3,15 +3,17 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Go `PyJSON`: encoding/json's output (struct fields in declaration order,
-/// map keys sorted) re-spaced the way Python's `json.dumps` prints it. The
-/// compact text is re-read token by token so a struct's field order survives
+/// JSON text in the spacing stored events have always used: struct fields
+/// in declaration order, map keys sorted, `, ` between items, `: ` after
+/// keys, and every non-ASCII character written as a `\uXXXX` escape (the
+/// same layout as Python's `json.dumps` default). The compact text is
+/// re-read token by token so a struct's field order survives
 /// (`serde_json::Value` objects would sort it).
 pub fn py_json<T: Serialize>(value: T) -> Result<String> {
     py_json_str(&crate::gojson::to_string_no_html(&value)?)
 }
 
-/// Go `PyJSON`'s token loop over compact JSON text.
+/// The token loop behind [`py_json`], over compact JSON text.
 pub(crate) fn py_json_str(compact: &str) -> Result<String> {
     // stack of container states: 'k' object expecting key, 'v' object expecting value, 'a' array
     let mut stack: Vec<(u8, usize)> = Vec::new();

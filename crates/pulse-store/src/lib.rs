@@ -37,13 +37,6 @@ pub use settings::*;
 pub use store::*;
 pub use tasks_ddl::TASKS_DDL;
 
-// Compatibility aliases for the committed partial port and Go names.
-pub const RECORDS: &[&str] = RECORDS_DDL;
-pub const TASKS: &[&str] = TASKS_DDL;
-pub const HOOKS: &[&str] = HOOKS_DDL;
-pub const RUNNER: &[&str] = RUNNER_DDL;
-pub const EVOLVE: &[&str] = EVOLVE_DDL;
-pub const HARNESS: &[&str] = HARNESS_DDL;
 #[cfg(test)]
 pub(crate) mod test_helpers {
     pub(crate) fn serial() -> impl Drop {

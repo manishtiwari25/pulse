@@ -1,11 +1,6 @@
-//! Port of internal/runner/brief.go.
-
 #![cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "ported Go runner APIs are consumed incrementally across slices"
-    )
+    allow(dead_code, reason = "not every item has a caller in the crate")
 )]
 #![cfg_attr(test, allow(dead_code))]
 
@@ -105,7 +100,6 @@ pub(crate) struct Report {
     pub found: bool,
 }
 
-/// Go: func ownerPathsTouched(clone, base string) []string
 pub(crate) fn owner_paths_touched(clone: String, base: String) -> Vec<String> {
     let out = crate::util::git(&clone, &["diff", "--name-only", &format!("{base}..HEAD")]);
     let mut files = if out.ok() {
@@ -125,7 +119,6 @@ pub(crate) fn owner_paths_touched(clone: String, base: String) -> Vec<String> {
     files
 }
 
-/// Go: func writeBrief(o briefOpts) (string, error)
 pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     let store = o
         .store
@@ -615,7 +608,6 @@ pub(crate) fn write_earlier_attempt_section(
     b.push(String::new());
 }
 
-/// Go: func writeFocusBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool)
 pub(crate) fn write_focus_brief_section(
     b: &mut Vec<String>,
     s: &pulse_store::Store,
@@ -640,7 +632,6 @@ pub(crate) fn write_focus_brief_section(
     }
 }
 
-/// Go: func briefStore(s *store.Store, now string) (*store.Store, func())
 pub(crate) fn brief_store(
     s: &pulse_store::Store,
     now: String,
@@ -649,7 +640,6 @@ pub(crate) fn brief_store(
     (Some(s.clone()), Box::new(|| {}))
 }
 
-/// Go: func writeMentionsBriefSection(b *[]string, s *store.Store, project, agent, now string, remote bool)
 pub(crate) fn write_mentions_brief_section(
     b: &mut Vec<String>,
     s: &pulse_store::Store,
@@ -672,7 +662,6 @@ pub(crate) fn write_mentions_brief_section(
     }
 }
 
-/// Go: func mentionLines(s *store.Store, project, agent, now string) []string
 pub(crate) fn mention_lines(
     s: &pulse_store::Store,
     project: String,
@@ -691,7 +680,6 @@ pub(crate) fn mention_lines(
     out
 }
 
-/// Go: func mentionLine(p board.Post) string
 pub(crate) fn mention_line(p: pulse_board::Post) -> String {
     let mut summary = p.summary.clone();
     if pulse_board::parse_mentions(&summary).is_empty() {
@@ -713,7 +701,6 @@ pub(crate) fn mention_line(p: pulse_board::Post) -> String {
     )
 }
 
-/// Go: func focusLines(s *store.Store, project, exclude, now string) []string
 pub(crate) fn focus_lines(
     s: &pulse_store::Store,
     project: String,
@@ -781,13 +768,11 @@ pub(crate) fn focus_lines_marking(
     lines
 }
 
-/// Go: func plainCancelSummary(summary string) bool
 pub(crate) fn plain_cancel_summary(summary: String) -> bool {
     let text = summary.to_lowercase();
     text.contains("interrupted:") || text.contains("context canceled")
 }
 
-/// Go: func parseResultText(text *string) report
 pub(crate) fn parse_result_text(text: Option<String>) -> Report {
     let mut out = Report::default();
     let Some(text) = text else {
@@ -832,7 +817,6 @@ pub(crate) fn parse_result_text(text: Option<String>) -> Report {
     out
 }
 
-/// Go: func cardBody(text string) (body, summary string, ok bool)
 pub(crate) fn card_body(text: String) -> (String, String, bool) {
     let marks: Vec<_> = CARD_FIELD_RE.find_iter(&text).collect();
     if marks.is_empty() {
@@ -921,7 +905,6 @@ pub(crate) fn empty_suggestion(card: &str) -> bool {
         .any(|prefix| text.starts_with(prefix))
 }
 
-/// Go: func parseSuggestionLine(text string) suggestion
 pub(crate) fn parse_suggestion_line(text: String) -> Suggestion {
     if let Some(m) = SUGGESTION_RE.captures(&text) {
         let area = m[1].to_string();
@@ -944,7 +927,6 @@ pub(crate) fn parse_suggestion_line(text: String) -> Suggestion {
 }
 
 impl Report {
-    /// Go: func (r report) reported() bool
     pub(crate) fn reported(&mut self) -> bool {
         !self.summary.is_empty()
             || !self.questions.is_empty()
@@ -953,7 +935,6 @@ impl Report {
             || !self.votes.is_empty()
             || !self.decisions.is_empty()
     }
-    /// Go: func (r report) incomplete() bool
     pub(crate) fn incomplete(&mut self) -> bool {
         self.summary
             .split_once(':')
@@ -965,7 +946,7 @@ impl Report {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f4::must_write_brief;
+    use crate::test_helpers_completion::must_write_brief;
 
     #[test]
     fn card_body_turns_one_line_card_into_fields() {
@@ -1155,7 +1136,7 @@ mod tests {
             );
             let arg_refs = args[2..].iter().map(String::as_str).collect::<Vec<_>>();
             let (out, err_text, code) =
-                crate::test_helpers_f6::invoke(&s, "job", "proj", &arg_refs);
+                crate::test_helpers_provider::invoke(&s, "job", "proj", &arg_refs);
             assert_eq!(
                 (code, out.as_str()),
                 (0, format!("{jid} {status}\n").as_str()),

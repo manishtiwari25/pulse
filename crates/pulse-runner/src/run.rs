@@ -61,7 +61,6 @@ fn cancel_child(parent: &pulse_bus::CancellationToken) -> pulse_bus::Cancellatio
     parent.child()
 }
 
-/// Go: func runnerStopped(s *store.Store) string
 pub(crate) fn runner_stopped(s: &pulse_store::Store) -> String {
     if s.setting("stop", "0") == "1" {
         return "the runner is stopped in the store (pulse start to resume)".to_string();
@@ -83,14 +82,12 @@ pub(crate) fn runner_stopped(s: &pulse_store::Store) -> String {
     String::new()
 }
 
-/// Go: func runsToday(s *store.Store, now string) int
 pub(crate) fn runs_today(s: &pulse_store::Store, now: &str) -> i32 {
     let c = conn(s);
     let day = now.get(..10).unwrap_or(now);
     crate::util::must_one(&c, "SELECT COUNT(*) AS n FROM runs WHERE mode != 'dry-run' AND status != 'error' AND substr(started_at, 1, 10) = ?", &[&day]).int("n")
 }
 
-/// Go: func dailyCap(s *store.Store) int
 pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
     match s.setting("jobs_per_day", "").trim().to_lowercase().as_str() {
         "" | "0" | "none" | "off" | "unlimited" => 0,
@@ -98,8 +95,6 @@ pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
     }
 }
 
-/// Go: func takeJob(s *store.Store, agent, project, jobID string, dryRun bool, now, executor string, taken int) (row, row, string, error)
-///
 /// `held` names projects this call may not lease, with the unfit reason each
 /// carries - the daemon's disk headroom for the local executor (diskroom.rs);
 /// a project's own marks and blocks come first. `fits` names the project and
@@ -260,6 +255,13 @@ pub(crate) fn take_job(
             ));
         }
     }
+    // A red default branch holds the project's landing kinds behind its fix
+    // job; the lease still takes the fix job and the project's other kinds.
+    let red = crate::redbase::holds(s, now);
+    let hold_except = red
+        .keys()
+        .map(|slug| (slug.clone(), crate::redbase::fix_source(slug)))
+        .collect();
     let job = crate::jobs::lease_job(
         s,
         agent.to_string(),
@@ -267,9 +269,10 @@ pub(crate) fn take_job(
         crate::jobs::LeaseOpts {
             project: project.to_string(),
             job_id: job_id.to_string(),
-            projects,
+            projects: projects.clone(),
             any_proj,
             fits: fits.to_vec(),
+            hold_except,
             ..Default::default()
         },
     )?;
@@ -283,6 +286,10 @@ pub(crate) fn take_job(
         }
         if project.is_empty() {
             why.push_str(&held_queue_note(&c, &exrow.str("name"), &unfit));
+            why.push_str(&crate::redbase::queue_note(&c, &projects, any_proj, &red));
+        } else {
+            let only: Vec<String> = vec![project.to_string()];
+            why.push_str(&crate::redbase::queue_note(&c, &only, false, &red));
         }
         return Ok((Row::new(), exrow, why));
     }
@@ -338,7 +345,6 @@ fn held_queue_note(
     )
 }
 
-/// Go: func workOnce(s *store.Store, agent, project, jobID, now string, o runOpts) (row, string, error)
 pub(crate) fn work_once(
     s: &pulse_store::Store,
     agent: &str,
@@ -367,7 +373,6 @@ pub(crate) fn work_once(
     Ok((run, String::new()))
 }
 
-/// Go: func squeeze(s string, n int) string
 pub(crate) fn squeeze(s: &str, n: usize) -> String {
     let t = tail(&s.split_whitespace().collect::<Vec<_>>().join(" "), n);
     if t.is_empty() {
@@ -414,6 +419,17 @@ fn row_to_ballot(v: Value) -> BallotItem {
     }
 }
 
+/// What `prepare_setup` learned: the parsed recipe (if any), whether a recipe
+/// was found at all, where it came from, the setup lines shown in the brief
+/// and the tool pins installed.
+struct PreparedSetup {
+    recipe: Option<crate::recipe::Recipe>,
+    found: bool,
+    source: Option<crate::recipe::RecipeSource>,
+    setup_shown: String,
+    pins: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_setup(
     s: &pulse_store::Store,
@@ -426,24 +442,33 @@ fn prepare_setup(
     dry_run: bool,
     minutes: i32,
     log: &mut RunLog,
-) -> Result<(Option<crate::recipe::Recipe>, bool, String, Vec<String>)> {
+) -> Result<PreparedSetup> {
     let slug = project.str("slug");
     let (recipe, problems, found, source) = crate::recipe::read_recipe_from(s, &slug, root, base);
     if !problems.is_empty() {
         let now = s.now();
         crate::recipe::recipe_blocker(s, project.clone(), &problems, base, source.as_ref(), &now);
-        return Err(run_err(crate::recipe::recipe_problem_line(
-            &slug,
-            &problems,
-            base,
-            source.as_ref(),
-        )));
+        return Err(
+            crate::recipe::RecipeInvalid(crate::recipe::recipe_problem_line(
+                &slug,
+                &problems,
+                base,
+                source.as_ref(),
+            ))
+            .into(),
+        );
     }
     if found {
         crate::recipe::recipe_unblocked(s, project, base, source.as_ref(), &s.now());
     }
     let Some(r) = recipe.clone() else {
-        return Ok((None, found, String::new(), Vec::new()));
+        return Ok(PreparedSetup {
+            recipe: None,
+            found,
+            source,
+            setup_shown: String::new(),
+            pins: Vec::new(),
+        });
     };
     match crate::recipe::recipe_block(&r, ex.remote()).as_str() {
         crate::recipe::RECIPE_UNFIT_SERVICES => return Err(crate::executor::ExecutorUnfit { msg: format!("{} lists services ({}) that no machine starts; {} waits until an owner clears the list", crate::recipe::RECIPE_PATH, r.services.iter().take(4).cloned().collect::<Vec<_>>().join(", "), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_SERVICES.to_string(), project: project.str("slug"), detail: String::new() }.into()),
@@ -528,10 +553,15 @@ fn prepare_setup(
             }
         }
     }
-    Ok((Some(r), found, setup_shown, pins))
+    Ok(PreparedSetup {
+        recipe: Some(r),
+        found,
+        source,
+        setup_shown,
+        pins,
+    })
 }
 
-/// Go: func runJob(s *store.Store, job row, agent, now string, o runOpts) (row, error)
 pub(crate) fn run_job(
     s: &pulse_store::Store,
     job: Row,
@@ -540,7 +570,7 @@ pub(crate) fn run_job(
     o: RunOpts,
 ) -> Result<Row> {
     let c = conn(s);
-    let project = crate::board::project_by_slug(&c, job.str("project"));
+    let mut project = crate::board::project_by_slug(&c, job.str("project"));
     if is_nil(&project) {
         return Err(cli_err(
             2,
@@ -682,6 +712,9 @@ pub(crate) fn run_job(
     let mut transport_error = false;
     let mut fault = false;
     let mut unfit: Option<crate::executor::ExecutorUnfit> = None;
+    // The recipe did not parse: the project's fault, not the run's, so the
+    // job keeps its attempt and waits for dispatch to release the project.
+    let mut recipe_invalid = false;
     let mut pubkey = String::new();
     let mut worker_reported = String::new();
     // The ballot the brief showed; `VOTE:` lines may only name these cards.
@@ -706,9 +739,27 @@ pub(crate) fn run_job(
             "UPDATE runs SET base = ? WHERE id = ?",
             &[&base, &run_id],
         );
-        let (recipe, found, setup_shown, pins) = prepare_setup(
+        let PreparedSetup {
+            recipe,
+            found,
+            source: recipe_source,
+            setup_shown,
+            pins,
+        } = prepare_setup(
             s, &project, &root, &base, &clone, &*ex, &cancel, o.dry_run, minutes, &mut log,
         )?;
+        // A project without a verify command takes the recipe's
+        // `suggested_check` here, so this run is already checked by it.
+        if let Some(r) = &recipe
+            && let Some(cmd) =
+                crate::recipe::adopt_suggested_check(s, &project, r, recipe_source.as_ref(), now)
+        {
+            log.add(format!(
+                "verify command adopted from {}: {cmd}",
+                crate::recipe::RECIPE_PATH
+            ));
+            project = crate::board::project_by_slug(&c, job.str("project"));
+        }
         let mut ballot = Vec::new();
         for v in crate::tally::ballot_items_for(
             s,
@@ -1142,7 +1193,7 @@ pub(crate) fn run_job(
                 } else if !ok {
                     status = "failed".into();
                     summary = format!("{commits} commit(s) but {verify_note}; nothing landed");
-                    if let Some(base_rc) = base_tree_verify_red(
+                    if let Some((base_rc, base_tail)) = base_tree_verify_red(
                         ex.as_ref(),
                         &cancel,
                         &base,
@@ -1154,6 +1205,18 @@ pub(crate) fn run_job(
                             "{commits} commit(s) but {verify_note}; the base {} was already red before this job (verify exit {base_rc} on the base tree), so this is not a regression the job introduced; nothing landed",
                             crate::recipe::short(&base, 12)
                         );
+                        // The project, not the job, is what fails: plan the
+                        // fix once and hold the rest of its landing work.
+                        if let Some(fix) = crate::redbase::mark_red_base(
+                            s, &project, &base, base_rc, &base_tail, now,
+                        ) {
+                            log.add(format!(
+                                "red base: fix job {} planned; {}'s landing work waits until {} is green",
+                                fix.str("id"),
+                                project.str("slug"),
+                                crate::recipe::short(&base, 12)
+                            ));
+                        }
                     }
                 } else if !lease_ok(5) {
                     status = "stale".into();
@@ -1287,6 +1350,11 @@ pub(crate) fn run_job(
             status = "error".into();
             summary = e.to_string();
             log.put(&summary);
+        } else if let Some(e) = err.downcast_ref::<crate::recipe::RecipeInvalid>() {
+            recipe_invalid = true;
+            status = "error".into();
+            summary = e.to_string();
+            log.put(&summary);
         } else {
             status = "error".into();
             summary = err_message(&err);
@@ -1404,7 +1472,7 @@ pub(crate) fn run_job(
     };
     match status.as_str() {
         "dry-run" => job_status = "queued".into(),
-        "error" if fault || unfit.is_some() => {
+        "error" if fault || unfit.is_some() || recipe_invalid => {
             job_status = "queued".into();
             crate::util::exec1(
                 &c,
@@ -1623,7 +1691,6 @@ fn ballot_items_to_values(items: &[BallotItem]) -> Vec<Value> {
     items.iter().map(|it| json!({"id": it.id, "key": it.key, "summary": it.summary, "body": it.body, "up": it.up, "down": it.down, "kind": it.kind, "hash": it.hash})).collect()
 }
 
-/// Go: func postResultAnswer(s *store.Store, job row, agent, now, runID, branch string, rep report) error
 pub(crate) fn post_result_answer(
     s: &pulse_store::Store,
     job: Row,
@@ -1697,7 +1764,6 @@ pub(crate) fn post_result_answer(
     Ok(())
 }
 
-/// Go: func watchRunHarnessCancel(ctx context.Context, s *store.Store, runID string, cancel context.CancelFunc, ownerCancelled *atomic.Bool) func()
 pub(crate) fn watch_run_harness_cancel(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -1707,7 +1773,6 @@ pub(crate) fn watch_run_harness_cancel(
     watch_run_harness_cancel_every(cancel, s, run_id, owner_cancelled, Duration::from_secs(3))
 }
 
-/// Go: func watchRunHarnessCancelEvery(... interval time.Duration) func()
 pub(crate) fn watch_run_harness_cancel_every(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -1737,7 +1802,7 @@ pub(crate) fn watch_run_harness_cancel_every(
             done_t.store(true, Ordering::SeqCst);
             return;
         }
-        // Go: select { case <-ticker.C: check; case <-watchCtx.Done(): return }
+        // Check every interval until the watch is cancelled.
         let stopped = watch_thread.done();
         while let Err(crossbeam_channel::RecvTimeoutError::Timeout) = stopped.recv_timeout(interval)
         {
@@ -1756,12 +1821,10 @@ pub(crate) fn watch_run_harness_cancel_every(
     })
 }
 
-/// Go: func errMessage(err error) string
 pub(crate) fn err_message(err: &anyhow::Error) -> String {
     err.to_string()
 }
 
-/// Go: func applyResultDecisions(s *store.Store, job row, rep report, log *runLog) int
 pub(crate) fn apply_result_decisions(
     s: &pulse_store::Store,
     job: Row,
@@ -1879,7 +1942,6 @@ pub(crate) fn apply_result_decisions(
     recorded
 }
 
-/// Go: func castResultVotes(s *store.Store, slug string, arow *store.Agent, agent, now, runID string, votes []vote, ballot []ballotItem, log *runLog) int
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cast_result_votes(
     s: &pulse_store::Store,
@@ -1978,7 +2040,6 @@ pub(crate) fn cast_result_votes(
     cast
 }
 
-/// Go: func pickWorker(s *store.Store, now, agent string, exclude []string) (string, error)
 pub(crate) fn pick_worker(
     s: &pulse_store::Store,
     _now: &str,
@@ -2030,7 +2091,6 @@ pub(crate) fn pick_worker(
     Ok(crate::board::spawn_agent(s, runner, model, "worker".into())?.str("name"))
 }
 
-/// Go: func executorSlots(s *store.Store, now string, busy map[string]int, localClosed bool) []string
 #[allow(dead_code)]
 pub(crate) fn executor_slots(
     s: &pulse_store::Store,
@@ -2072,7 +2132,6 @@ pub(crate) fn executor_slots(
     slots
 }
 
-/// Go: func sweepLostRuns(s *store.Store, now string) int
 #[allow(dead_code)]
 pub(crate) fn sweep_lost_runs(s: &pulse_store::Store, now: &str) -> i32 {
     let c = conn(s);
@@ -2100,7 +2159,6 @@ pub(crate) fn sweep_lost_runs(s: &pulse_store::Store, now: &str) -> i32 {
     rows.len() as i32
 }
 
-/// Go: func releaseLostJob(s *store.Store, now, jobID, agent string)
 #[allow(dead_code)]
 pub(crate) fn release_lost_job(s: &pulse_store::Store, now: &str, job_id: &str, agent: &str) {
     let c = conn(s);
@@ -2147,7 +2205,6 @@ pub(crate) fn release_lost_job(s: &pulse_store::Store, now: &str, job_id: &str, 
     }
 }
 
-/// Go: func workerCLIEnv(env map[string]string, exe string)
 pub(crate) fn worker_cli_env(env: &mut BTreeMap<String, String>, exe: &str) {
     if exe.is_empty() {
         return;
@@ -2160,7 +2217,6 @@ pub(crate) fn worker_cli_env(env: &mut BTreeMap<String, String>, exe: &str) {
     }
 }
 
-/// Go: func cliOnPath(pathEnv, exe string) string
 pub(crate) fn cli_on_path(path_env: &str, exe: &str) -> String {
     if exe.is_empty() {
         return String::new();
@@ -2206,7 +2262,6 @@ pub(crate) fn cli_on_path(path_env: &str, exe: &str) -> String {
     }
 }
 
-/// Go: func remotePulseCLI(recipe *Recipe) string
 pub(crate) fn remote_pulse_cli(recipe: Option<&crate::recipe::Recipe>) -> String {
     if let Some(r) = recipe {
         let cli = crate::recipe::recipe_pulse_cli(r);
@@ -2237,7 +2292,7 @@ pub(crate) fn base_tree_verify_red(
     check_cmd: &str,
     minutes: i32,
     log: &RunLog,
-) -> Option<i32> {
+) -> Option<(i32, String)> {
     if base.trim().is_empty() || check_cmd.trim().is_empty() {
         return None;
     }
@@ -2275,7 +2330,7 @@ pub(crate) fn base_tree_verify_red(
                 "base tree verify exit {code}: the base was already red\n{}",
                 tail(&out, 20000)
             ));
-            Some(code)
+            Some((code, tail(&out, 4000)))
         }
         None => {
             log.add("base tree verify timed out; the base's state is unknown");
@@ -2479,6 +2534,40 @@ mod tests {
         assert!(
             run(&root, &["git", "worktree", "list"]).lines().count() == 1,
             "the base-tree worktree must be removed again"
+        );
+        // The project, not the job, is red: one fix job is planned, the
+        // failure is transient for recovery (the job runs again as it was),
+        // and dispatch holds the project's landing kinds behind the fix.
+        let fix = crate::util::must_one(
+            &conn(&s),
+            "SELECT * FROM jobs WHERE source = ? AND status = 'queued'",
+            &[&crate::redbase::fix_source("proj")],
+        );
+        assert!(
+            fix.str("title").contains("`sh ./check.sh`") && fix.str("brief").contains("exits 3"),
+            "{fix:?}"
+        );
+        assert_eq!(
+            crate::failure::classify_failure(
+                String::new(),
+                "failed".into(),
+                summary.clone(),
+                false
+            )
+            .class
+            .0,
+            crate::failure::FAILURE_TRANSIENT
+        );
+        let held = crate::redbase::holds(&s, TEST_NOW);
+        assert_eq!(
+            held.get("proj").map(|m| m.base.as_str()),
+            Some(base.as_str()),
+            "{held:?}"
+        );
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log.contains(&format!("red base: fix job {} planned", fix.str("id"))),
+            "{log}"
         );
     }
 
@@ -2753,7 +2842,7 @@ mod tests {
                 ("loop".to_string(), json!("off")),
                 ("limits".to_string(), json!("none")),
             ]),
-            crate::test_helpers_f1b::TEST_CONSTITUTION,
+            crate::test_helpers_hands::TEST_CONSTITUTION,
             crate::util::HUMAN_AGENT,
             "proj",
         )
@@ -2767,7 +2856,7 @@ mod tests {
                 area: "governance".into(),
                 thread: "fleet-votes".into(),
                 summary: "Count a fleet as one voter".into(),
-                body: crate::test_helpers_f1b::TEST_AMENDMENT.into(),
+                body: crate::test_helpers_hands::TEST_AMENDMENT.into(),
                 agent: crate::board::actor_agent(&s, "alice".into()),
                 session: "alice-session".into(),
                 ..Default::default()
@@ -3183,7 +3272,7 @@ mod tests {
         let conn = s.conn().unwrap();
         let mut scratch = Vec::new();
         for (i, project) in ["first", "second", "third"].iter().enumerate() {
-            let root = crate::test_helpers_f2::f2_temp_dir();
+            let root = crate::test_helpers_heartbeat::heartbeat_temp_dir();
             let dir = root.join(format!("fairness-{project}"));
             scratch.push(root);
             std::fs::create_dir_all(&dir).unwrap();
@@ -3225,7 +3314,7 @@ mod tests {
     fn scheduling_mixed_batch_does_not_pause_on_last_error() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
-        let (s, first) = crate::test_helpers_f2::daemon_retry_fixture();
+        let (s, first) = crate::test_helpers_heartbeat::daemon_retry_fixture();
         let second = scheduling_job(&s, "proj", "slow-error", 90);
         set_setting(&s, "workers", "2");
         set_setting(&s, "parallel_per_project", "2");
@@ -3253,7 +3342,8 @@ mod tests {
             -1,
         )
         .unwrap();
-        let mut failure_gate = crate::test_helpers_f2::new_lifecycle_gate("last runner error");
+        let mut failure_gate =
+            crate::test_helpers_heartbeat::new_lifecycle_gate("last runner error");
         let script = format!(
             "if [ \"$PULSE_JOB\" = {} ]; then echo 'SUMMARY: ok'; exit 0; fi; \
              if [ ! -f {} ]; then {}; fi; \
@@ -3263,7 +3353,7 @@ mod tests {
             failure_gate.command
         );
         let cancel = pulse_bus::CancellationToken::new()
-            .with_timeout(crate::test_helpers_f2::LIFECYCLE_WAIT_TIMEOUT);
+            .with_timeout(crate::test_helpers_heartbeat::LIFECYCLE_WAIT_TIMEOUT);
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
         let out = crate::test_helpers::OutBuf::new();
@@ -3293,7 +3383,7 @@ mod tests {
             let _ = done_tx.send(());
         });
         failure_gate.wait(&done_rx);
-        crate::test_helpers_f2::heartbeat_eventually(|| {
+        crate::test_helpers_heartbeat::heartbeat_eventually(|| {
             let beat = crate::util::must_one(
                 &s.conn().unwrap(),
                 "SELECT json_extract(value, '$.loops') AS loops FROM meta WHERE key = 'daemon'",
@@ -3302,7 +3392,7 @@ mod tests {
             !beat.0.is_empty() && beat.int("loops") >= 2
         });
         failure_gate.release();
-        crate::test_helpers_f2::wait_lifecycle_run(&done_rx);
+        crate::test_helpers_heartbeat::wait_lifecycle_run(&done_rx);
         let result = result_rx.recv().unwrap();
         let waits = waits.lock().unwrap().clone();
         assert!(
@@ -3327,7 +3417,6 @@ mod tests {
             "prompt retries after mixed batch = {n}, want 2\n{}",
             out.string()
         );
-        // Go: t.Cleanup - cancel(); waitLifecycleRun(t, done)
         cancel.cancel();
     }
 
@@ -3394,7 +3483,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            crate::test_helpers_f2::assert_lifecycle_suggestion(
+            crate::test_helpers_heartbeat::assert_lifecycle_suggestion(
                 &s,
                 &suggestion.str("id"),
                 TEST_NOW,
@@ -3417,7 +3506,7 @@ mod tests {
                 .unwrap();
             assert!(again.is_empty(), "planned twice before dispatch: {again:?}");
 
-            let fake = crate::test_helpers_f2::fake_heartbeat_clock();
+            let fake = crate::test_helpers_heartbeat::fake_heartbeat_clock();
             let missed_startup = Arc::new(AtomicBool::new(false));
             let missed_startup_for_now = Arc::clone(&missed_startup);
             let now_clock = Arc::clone(&fake.clock);
@@ -3431,8 +3520,8 @@ mod tests {
                     now_clock.load(Ordering::SeqCst),
                 ))
             });
-            let mut worker_gate = crate::test_helpers_f2::new_lifecycle_gate("worker exit");
-            let mut verify_gate = crate::test_helpers_f2::new_lifecycle_gate("verification");
+            let mut worker_gate = crate::test_helpers_heartbeat::new_lifecycle_gate("worker exit");
+            let mut verify_gate = crate::test_helpers_heartbeat::new_lifecycle_gate("verification");
             let check = format!(
                 "{}; test \"$(git show HEAD:lifecycle.txt)\" = 'slow lifecycle'",
                 verify_gate.command
@@ -3476,12 +3565,14 @@ mod tests {
             });
             worker_gate.wait(&done_rx);
             assert_eq!(
-                crate::test_helpers_f2::heartbeat_receive(&fake.periods),
+                crate::test_helpers_heartbeat::heartbeat_receive(&fake.periods),
                 pulse_board::HEARTBEAT_INTERVAL,
                 "heartbeat period {name}"
             );
-            crate::test_helpers_f2::heartbeat_eventually(|| missed_startup.load(Ordering::SeqCst));
-            let (h, exists) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            crate::test_helpers_heartbeat::heartbeat_eventually(|| {
+                missed_startup.load(Ordering::SeqCst)
+            });
+            let (h, exists) = crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
             assert!(
                 !exists,
                 "failed startup observation produced evidence: {h:?}"
@@ -3495,11 +3586,11 @@ mod tests {
                 ) + pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
             );
             fake.ticks.send(beat_at).unwrap();
-            crate::test_helpers_f2::heartbeat_eventually(|| {
-                let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            crate::test_helpers_heartbeat::heartbeat_eventually(|| {
+                let (h, _) = crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                 h.at == pulse_store::rfc3339_nano(beat_at)
             });
-            let (first, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            let (first, _) = crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
             assert_eq!(leased.str("status"), "leased", "initial lifecycle {name}");
             assert_eq!(leased.int("generation"), 1, "initial lifecycle {name}");
             assert_eq!(leased.int("attempts"), 1, "initial lifecycle {name}");
@@ -3515,7 +3606,7 @@ mod tests {
                     .unwrap(),
                 Ordering::SeqCst,
             );
-            crate::test_helpers_f2::assert_lifecycle_presence(
+            crate::test_helpers_heartbeat::assert_lifecycle_presence(
                 &s,
                 chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
                     fake.clock.load(Ordering::SeqCst),
@@ -3524,7 +3615,7 @@ mod tests {
             );
             fake.clock
                 .store(edge.timestamp_nanos_opt().unwrap(), Ordering::SeqCst);
-            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "dead");
+            crate::test_helpers_heartbeat::assert_lifecycle_presence(&s, edge, "dead");
             assert_eq!(
                 pulse_store::rfc3339_nano(edge),
                 leased.str("lease_until"),
@@ -3546,11 +3637,11 @@ mod tests {
                 "lease stolen at its exact deadline: {other:?}"
             );
             fake.ticks.send(edge).unwrap();
-            crate::test_helpers_f2::heartbeat_eventually(|| {
-                let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            crate::test_helpers_heartbeat::heartbeat_eventually(|| {
+                let (h, _) = crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                 h.at == pulse_store::rfc3339_nano(edge)
             });
-            crate::test_helpers_f2::assert_lifecycle_presence(&s, edge, "online");
+            crate::test_helpers_heartbeat::assert_lifecycle_presence(&s, edge, "online");
             let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
             assert_eq!(
                 current.0, leased.0,
@@ -3599,7 +3690,8 @@ mod tests {
                         && replacement.int("attempts") == 2,
                     "expired lease takeover: {replacement:?}"
                 );
-                let (before, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                let (before, _) =
+                    crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                 let late = pulse_board::ExecutionHeartbeat {
                     identity: first.identity.clone(),
                     at: replacement_at.clone(),
@@ -3638,7 +3730,8 @@ mod tests {
                     err.to_string().contains("Stale lease"),
                     "old generation finished the replacement job: {err}"
                 );
-                let (after, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                let (after, _) =
+                    crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                 assert_eq!(after, before, "stale observations changed heartbeat");
                 let current = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
                 assert_eq!(current.0, replacement.0, "stale work changed replacement");
@@ -3664,11 +3757,12 @@ mod tests {
                     ) + pulse_board::HEARTBEAT_INTERVAL.as_nanos() as i64,
                 );
                 fake.ticks.send(at).unwrap();
-                crate::test_helpers_f2::heartbeat_eventually(|| {
-                    let (h, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                crate::test_helpers_heartbeat::heartbeat_eventually(|| {
+                    let (h, _) =
+                        crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                     h.at == pulse_store::rfc3339_nano(at)
                 });
-                crate::test_helpers_f2::assert_lifecycle_presence(&s, at, "online");
+                crate::test_helpers_heartbeat::assert_lifecycle_presence(&s, at, "online");
             }
             worker_gate.release();
             if takeover != "worker" {
@@ -3679,7 +3773,8 @@ mod tests {
                     &[&first.run_id],
                 );
                 assert_eq!(r.str("status"), "running", "run ended before verification");
-                let (stopped, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+                let (stopped, _) =
+                    crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
                 assert!(
                     !stopped.stopped_at.is_empty(),
                     "worker heartbeat did not stop before verification"
@@ -3690,7 +3785,7 @@ mod tests {
                 );
                 // Stopped two beats ago but well inside `dead_after`: the worker stays
                 // online while its run is verified, so no sweep can take the run away.
-                crate::test_helpers_f2::assert_lifecycle_presence(
+                crate::test_helpers_heartbeat::assert_lifecycle_presence(
                     &s,
                     chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
                         fake.clock.load(Ordering::SeqCst),
@@ -3702,7 +3797,7 @@ mod tests {
                 }
                 verify_gate.release();
             }
-            crate::test_helpers_f2::wait_lifecycle_run(&done_rx);
+            crate::test_helpers_heartbeat::wait_lifecycle_run(&done_rx);
             let (result, reason) = result_rx
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
@@ -3736,7 +3831,7 @@ mod tests {
                     current.0, replacement.0,
                     "old run overwrote replacement lease"
                 );
-                crate::test_helpers_f2::assert_lifecycle_suggestion(
+                crate::test_helpers_heartbeat::assert_lifecycle_suggestion(
                     &s,
                     &suggestion.str("id"),
                     &replacement_at,
@@ -3827,14 +3922,15 @@ mod tests {
             let agent = crate::board::agent_row(&s.conn().unwrap(), "quiet".into());
             assert_eq!(agent.int("jobs_done"), 1, "worker completion counted");
             assert_eq!(agent.int("jobs_failed"), 0, "worker completion counted");
-            let (final_beat, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            let (final_beat, _) =
+                crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
             assert_eq!(final_beat.run_id, successful.str("id"), "final heartbeat");
             assert_eq!(final_beat.generation, want_runs as i64, "final heartbeat");
             assert!(!final_beat.stopped_at.is_empty(), "final heartbeat");
             let now = chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
                 fake.clock.load(Ordering::SeqCst),
             );
-            crate::test_helpers_f2::assert_lifecycle_presence(&s, now, "idle");
+            crate::test_helpers_heartbeat::assert_lifecycle_presence(&s, now, "idle");
             assert!(
                 !pulse_board::record_heartbeat(
                     &s,
@@ -3850,7 +3946,7 @@ mod tests {
                 .unwrap(),
                 "finished execution returned online"
             );
-            let (after, _) = crate::test_helpers_f2::runner_heartbeat(&s, "quiet").unwrap();
+            let (after, _) = crate::test_helpers_heartbeat::runner_heartbeat(&s, "quiet").unwrap();
             assert_eq!(after, final_beat, "late heartbeat replaced final evidence");
             assert!(
                 !crate::jobs::renew_lease(
@@ -3863,7 +3959,7 @@ mod tests {
                 ),
                 "completed job reacquired a lease"
             );
-            crate::test_helpers_f2::assert_lifecycle_suggestion(
+            crate::test_helpers_heartbeat::assert_lifecycle_suggestion(
                 &s,
                 &suggestion.str("id"),
                 &pulse_store::rfc3339_nano(now),

@@ -254,7 +254,7 @@ fn goal_value(goal: pulse_goals::Goal) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::{Value, json};
 
     fn must_json<T: serde::Serialize>(v: &T) -> String {
@@ -286,11 +286,11 @@ mod tests {
     #[test]
     fn project_goal_api_contract_persistence_and_reset() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        f2::additions_project(&s, "two");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        http::additions_project(&s, "two");
         let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", "/api/v1/projects/one/goal", "");
+            http::additions_request(http::handler(&s), "GET", "/api/v1/projects/one/goal", "");
         assert_eq!(status, 200);
         assert_eq!(result["project"], "one");
         assert_eq!(result["can_edit"], true);
@@ -312,8 +312,8 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
         let want = "Keep search useful, correct and reliable.";
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/projects/one/goal",
             &format!(r#"{{"text":"  {want}  "}}"#),
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(result["goal"]["source"], pulse_goals::OWNER);
         assert_eq!(result["goal"]["updated_by"], pulse_store::HUMAN_AGENT);
         let (status, other) =
-            f2::additions_request(f2::handler(&s), "GET", "/api/v1/projects/two/goal", "");
+            http::additions_request(http::handler(&s), "GET", "/api/v1/projects/two/goal", "");
         assert_eq!(status, 200);
         assert_eq!(other["goal"]["source"], pulse_goals::GENERATED);
         let ro = pulse_store::Store::open(pulse_store::Options {
@@ -333,11 +333,11 @@ mod tests {
         })
         .unwrap();
         let (status, result) =
-            f2::additions_request(f2::handler(&ro), "GET", "/api/v1/projects/one/goal", "");
+            http::additions_request(http::handler(&ro), "GET", "/api/v1/projects/one/goal", "");
         assert_eq!(status, 200);
         assert_eq!(result["goal"]["text"], want);
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/projects/one/goal",
             r#"{"reset":true}"#,
@@ -351,8 +351,8 @@ mod tests {
     #[test]
     fn project_goal_api_rejects_invalid_input_without_writes() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         let bodies = vec![
             "{}".to_string(),
             "null".to_string(),
@@ -389,8 +389,12 @@ mod tests {
             .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
             .unwrap();
         for body in bodies {
-            let (status, result) =
-                f2::additions_request(f2::handler(&s), "POST", "/api/v1/projects/one/goal", &body);
+            let (status, result) = http::additions_request(
+                http::handler(&s),
+                "POST",
+                "/api/v1/projects/one/goal",
+                &body,
+            );
             assert_eq!(status, 400, "{body} {result:?}");
             assert!(result.get("error").is_some());
             assert!(result.get("why").is_some());
@@ -417,8 +421,8 @@ mod tests {
     #[test]
     fn project_goal_api_private_path_references() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         let owner =
             pulse_goals::set(&s, "one", "Improve /api/search reliability.", "human").unwrap();
         let before: i64 = s
@@ -434,8 +438,8 @@ mod tests {
             "Use file://[::1]/home/x.",
             "Use file:///C:/work/plan.md.",
         ] {
-            let (status, result) = f2::additions_request(
-                f2::handler(&s),
+            let (status, result) = http::additions_request(
+                http::handler(&s),
                 "POST",
                 "/api/v1/projects/one/goal",
                 &must_json(&json!({"text": text})),
@@ -450,8 +454,8 @@ mod tests {
             .unwrap();
         assert_eq!(after, before);
         let text = "Prioritize path=/api/search.";
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/projects/one/goal",
             &must_json(&json!({"text": text})),
@@ -463,15 +467,19 @@ mod tests {
     #[test]
     fn project_goal_api_unicode_limit_including_escapes() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         let text = "🚀".repeat(4000);
         for body in [
             must_json(&json!({"text": text})),
             format!(r#"{{"text":"{}"}}"#, r#"\ud83d\ude80"#.repeat(4000)),
         ] {
-            let (status, result) =
-                f2::additions_request(f2::handler(&s), "POST", "/api/v1/projects/one/goal", &body);
+            let (status, result) = http::additions_request(
+                http::handler(&s),
+                "POST",
+                "/api/v1/projects/one/goal",
+                &body,
+            );
             assert_eq!(status, 200);
             assert_eq!(result["goal"]["text"], text);
         }
@@ -480,9 +488,9 @@ mod tests {
     #[test]
     fn project_goal_api_scope_ownership_and_methods() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        f2::additions_project(&s, "inactive");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        http::additions_project(&s, "inactive");
         s.conn()
             .unwrap()
             .execute(
@@ -492,8 +500,8 @@ mod tests {
             .unwrap();
         for (slug, want) in [("missing", 404), ("inactive", 400), ("commons", 400)] {
             for body in [r#"{"text":"Change direction."}"#, r#"{"reset":true}"#] {
-                let (status, _) = f2::additions_request(
-                    f2::handler(&s),
+                let (status, _) = http::additions_request(
+                    http::handler(&s),
                     "POST",
                     &format!("/api/v1/projects/{slug}/goal"),
                     body,
@@ -501,12 +509,16 @@ mod tests {
                 assert_eq!(status, want, "{slug}");
             }
         }
-        let (status, result) =
-            f2::additions_request(f2::handler(&s), "GET", "/api/v1/projects/inactive/goal", "");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "GET",
+            "/api/v1/projects/inactive/goal",
+            "",
+        );
         assert_eq!(status, 200);
         assert_eq!(result["can_edit"], false);
         let (status, _) =
-            f2::additions_request(f2::handler(&s), "DELETE", "/api/v1/projects/one/goal", "");
+            http::additions_request(http::handler(&s), "DELETE", "/api/v1/projects/one/goal", "");
         assert_eq!(status, 405);
         for (name, agent, job) in [
             ("agent", "aurora", ""),
@@ -516,12 +528,12 @@ mod tests {
             let _agent = pulse_testutil::setenv("PULSE_AGENT", agent);
             let _job = pulse_testutil::setenv("PULSE_JOB", job);
             let (status, result) =
-                f2::additions_request(f2::handler(&s), "GET", "/api/v1/projects/one/goal", "");
+                http::additions_request(http::handler(&s), "GET", "/api/v1/projects/one/goal", "");
             assert_eq!(status, 200, "{name}");
             assert_eq!(result["can_edit"], false, "{name}");
             for body in [r#"{"text":"Impersonate owner."}"#, r#"{"reset":true}"#] {
-                let (status, result) = f2::additions_request(
-                    f2::handler(&s),
+                let (status, result) = http::additions_request(
+                    http::handler(&s),
                     "POST",
                     "/api/v1/projects/one/goal",
                     body,
@@ -536,27 +548,27 @@ mod tests {
             vec![("Sec-Fetch-Site", "cross-site")],
         ] {
             let (status, body) =
-                project_goal_request(f2::handler(&s), &headers, "application/json");
+                project_goal_request(http::handler(&s), &headers, "application/json");
             assert_eq!(
                 status, 403,
                 "request headers {headers:?} bypassed guard: {status} {body}"
             );
         }
-        let (status, _) = project_goal_request(f2::handler(&s), &[], "text/plain");
+        let (status, _) = project_goal_request(http::handler(&s), &[], "text/plain");
         assert_eq!(status, 415);
     }
 
     #[test]
     fn project_goal_api_storage_failure_is_not_success() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         s.conn().unwrap().execute(
             "CREATE TRIGGER fail_goal BEFORE INSERT ON events WHEN NEW.action LIKE 'project.goal.%' BEGIN SELECT RAISE(ABORT, 'goal audit failed'); END",
             [],
         ).unwrap();
-        let (status, result) = f2::additions_request(
-            f2::handler(&s),
+        let (status, result) = http::additions_request(
+            http::handler(&s),
             "POST",
             "/api/v1/projects/one/goal",
             r#"{"text":"Keep search correct."}"#,

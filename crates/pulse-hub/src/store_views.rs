@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) type JsonMap = BTreeMap<String, serde_json::Value>;
 impl Handler {
-    /// Go: func (h *Handler) metadata() (map[string]any, error)
     pub(crate) fn metadata(&self) -> anyhow::Result<JsonMap> {
         let store = self
             .store
@@ -44,7 +43,6 @@ impl Handler {
             ),
         ]))
     }
-    /// Go: func (h *Handler) settings() (map[string]any, error)
     pub(crate) fn settings(&self) -> anyhow::Result<JsonMap> {
         let Some(store) = &self.store else {
             return Ok(map_from_pairs(vec![
@@ -83,7 +81,6 @@ impl Handler {
             ("settings", json!(rows)),
         ]))
     }
-    /// Go: func (h *Handler) writeAPI(w http.ResponseWriter, r *http.Request, route string)
     pub(crate) fn write_api(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -250,7 +247,6 @@ impl Handler {
             }
         }
     }
-    /// Go: func (h *Handler) executors(r *http.Request) ([]map[string]any, error)
     pub(crate) fn executors(&self, r: &crate::httpx::Request) -> anyhow::Result<Vec<JsonMap>> {
         let Some(store) = &self.store else {
             return Ok(vec![]);
@@ -306,7 +302,6 @@ impl Handler {
         }
         Ok(rows)
     }
-    /// Go: func (h *Handler) runner(r *http.Request) (map[string]any, error)
     pub(crate) fn runner(&self, r: &crate::httpx::Request) -> anyhow::Result<JsonMap> {
         let Some(store) = &self.store else {
             return Ok(map_from_pairs(vec![("available", json!(false))]));
@@ -491,7 +486,6 @@ impl Handler {
             ("hygiene", json!(hygiene)),
         ]))
     }
-    /// Go: func (h *Handler) roster(views []projectView) ([]map[string]any, error)
     pub(crate) fn roster(
         &self,
         views: &[crate::read::ProjectView],
@@ -510,7 +504,6 @@ impl Handler {
         let reference = crate::read::parse_dt(&now).unwrap_or_else(go_zero_time);
         for view in views {
             let Some(d) = &view.data else { continue };
-            // Go appends the post maps themselves; borrow them here.
             let mut by_agent = BTreeMap::<String, Vec<&JsonMap>>::new();
             for post in &d.posts {
                 by_agent
@@ -538,7 +531,8 @@ impl Handler {
                         model,
                         ..Default::default()
                     });
-                    // Go: row["names"] = []string{}
+                    // A legacy row collects its names from its posts: start
+                    // with an empty array, never null.
                     row.insert("names".into(), json!(Vec::<String>::new()));
                     row
                 });
@@ -687,7 +681,7 @@ impl Handler {
             status_rank(a)
                 .cmp(&status_rank(b))
                 .then_with(|| {
-                    // Go compares the float64 days_since values.
+                    // `days_since` is a float: compare it as one, not as text.
                     let days = |row: &JsonMap| {
                         row.get("days_since").and_then(Value::as_f64).unwrap_or(0.0)
                     };
@@ -698,7 +692,6 @@ impl Handler {
         Ok(out)
     }
 }
-/// Go: func newPerson(agent store.Agent) map[string]any
 pub(crate) fn new_person(agent: &pulse_store::Agent) -> JsonMap {
     let name = if agent.display.is_empty() {
         &agent.name
@@ -761,7 +754,6 @@ pub(crate) fn new_person(agent: &pulse_store::Agent) -> JsonMap {
         ("shared_with", json!([])),
     ])
 }
-/// Go: func uniqueAppend(values []string, value string) []string
 pub(crate) fn unique_append(values: Vec<String>, value: String) -> Vec<serde_json::Value> {
     let mut out = values;
     if !out.iter().any(|old| old == &value) {
@@ -825,8 +817,8 @@ mod tests {
     #[test]
     fn native_metadata() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        let data = crate::test_helpers_f3::handler(&s).metadata().unwrap();
+        let s = crate::test_helpers_http::additions_store(false);
+        let data = crate::test_helpers_http::handler(&s).metadata().unwrap();
         let info = std::fs::metadata(&s.path).unwrap();
         let sequence: i64 = s
             .conn()
@@ -860,7 +852,7 @@ mod tests {
         );
         s.event("human", "metadata.changed", "", Value::Null)
             .unwrap();
-        let updated = crate::test_helpers_f3::handler(&s).metadata().unwrap();
+        let updated = crate::test_helpers_http::handler(&s).metadata().unwrap();
         assert_ne!(updated["fingerprint"], data["fingerprint"]);
     }
 }

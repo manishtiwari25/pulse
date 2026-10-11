@@ -1,9 +1,4 @@
-//! Port of internal/runner/evolve_plan.go.
-
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, RwLock};
@@ -11,7 +6,6 @@ use std::sync::{LazyLock, RwLock};
 pub(crate) static EVOLVE_PLAN_REASONS: LazyLock<RwLock<BTreeMap<String, String>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
-/// Go: func resetEvolvePlanReasons()
 pub(crate) fn reset_evolve_plan_reasons() {
     EVOLVE_PLAN_REASONS
         .write()
@@ -19,7 +13,6 @@ pub(crate) fn reset_evolve_plan_reasons() {
         .clear();
 }
 
-/// Go: func rememberEvolveReason(slug, reason string) bool
 pub(crate) fn remember_evolve_reason(slug: String, reason: String) -> bool {
     let mut seen = EVOLVE_PLAN_REASONS.write().expect("evolve plan reasons");
     if seen.get(&slug) == Some(&reason) {
@@ -29,7 +22,6 @@ pub(crate) fn remember_evolve_reason(slug: String, reason: String) -> bool {
     true
 }
 
-/// Go: func recordEvolveReason(slug, reason string)
 pub(crate) fn record_evolve_reason(slug: String, reason: String) {
     EVOLVE_PLAN_REASONS
         .write()
@@ -37,7 +29,6 @@ pub(crate) fn record_evolve_reason(slug: String, reason: String) {
         .insert(slug, reason);
 }
 
-/// Go: func tendEvolve(s *store.Store, now, actor string, slugs []string) []string
 pub(crate) fn tend_evolve(
     s: &pulse_store::Store,
     _now: String,
@@ -126,7 +117,6 @@ pub(crate) fn tend_evolve(
     lines
 }
 
-/// Go: func hardStopText(text string) bool
 pub(crate) fn hard_stop_text(text: String) -> bool {
     let low = text.to_lowercase();
     low.contains("violation") || low.contains("hard stop") || low.contains("applyerror")
@@ -136,7 +126,7 @@ pub(crate) fn hard_stop_text(text: String) -> bool {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
 
     #[test]
     fn tend_evolve_loop_off_does_nothing() {

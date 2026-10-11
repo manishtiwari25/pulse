@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Loader2Icon, PencilIcon, RotateCcwIcon, TargetIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -18,16 +18,30 @@ import { invalidate, useApi } from "@/lib/use-api";
 
 const goalViews = (path: string) => path === "org" || path === "projects" || path.startsWith("projects/") || path.startsWith("events");
 
+// The id the home page's "generated goal" note links to (project/?slug=x#goal).
+export const GOAL_ANCHOR = "goal";
+
 export function ProjectGoalPanel({ slug }: { slug: string }) {
   const q = useApi<ProjectGoalPayload>(slug === "commons" ? null : projectPath(slug, "goal"));
   const [editing, setEditing] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const root = useRef<HTMLElement>(null);
+  // The panel mounts after the overview has loaded, too late for the
+  // browser's own jump to #goal, so it scrolls itself into view when asked.
+  useEffect(() => {
+    const jump = () => {
+      if (window.location.hash === "#" + GOAL_ANCHOR) window.requestAnimationFrame(() => root.current?.scrollIntoView());
+    };
+    jump();
+    window.addEventListener("hashchange", jump);
+    return () => window.removeEventListener("hashchange", jump);
+  }, []);
   if (slug === "commons") return null;
   const goal = q.data?.goal;
   const canEdit = q.data?.can_edit === true;
 
   return (
-    <>
+    <section ref={root} id={GOAL_ANCHOR} className="scroll-mt-32" aria-label="Project goal">
       <Panel
         title="Project goal"
         icon={TargetIcon}
@@ -87,7 +101,7 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
         success="Project default restored. New agent runs will read it."
         invalidates={goalViews}
       />
-    </>
+    </section>
   );
 }
 

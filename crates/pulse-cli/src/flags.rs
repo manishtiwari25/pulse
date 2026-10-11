@@ -1,14 +1,20 @@
+//! Single-dash command-line flags: a `FlagSet` whose `parse` stops at the
+//! first non-flag argument, fixed error texts (`flag provided but not
+//! defined: -x`, `flag needs an argument: -x`, `invalid value "v" for flag
+//! -x: parse error`), the `print_defaults` layout, and a `Usage of NAME:`
+//! message on stderr unless the output is discarded or captured. Command
+//! help and error output are built from this text, so it stays as it is.
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::time::Duration;
 
-/// Port of Go's `flag` package as PULSE uses it: a `FlagSet` with
-/// `ContinueOnError`, the same error texts, `PrintDefaults` layout and the
-/// default `Usage of NAME:` message on stderr unless the output is discarded.
+/// Why `parse` stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlagError {
-    /// Go's `flag.ErrHelp`: `-h`/`-help` seen and no such flag defined.
+    /// `-h`/`-help` was seen and no such flag is defined; the usage has
+    /// already been printed.
     Help,
     Message(String),
 }
@@ -24,15 +30,15 @@ impl fmt::Display for FlagError {
 
 impl std::error::Error for FlagError {}
 
-/// Where a `FlagSet` prints parse errors and its usage (Go: `SetOutput`;
-/// the default is stderr, `io.Discard` silences it).
+/// Where a `FlagSet` prints parse errors and its usage: stderr by default,
+/// `Discard` silences it, `Capture` collects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Output {
     #[default]
     Stderr,
     Discard,
-    /// Go `fs.SetOutput(c.Err)`: collect what Parse prints and let the
-    /// caller forward it with [`FlagSet::take_output`].
+    /// Collect what `parse` prints and let the caller forward it with
+    /// [`FlagSet::take_output`].
     Capture,
 }
 
@@ -62,7 +68,8 @@ pub enum FlagValue {
 }
 
 impl FlagValue {
-    /// Go `UnquoteUsage`'s fallback type name (`""` for booleans).
+    /// The type name shown in usage when the flag's usage text has no
+    /// back-quoted value name (`""` for booleans, which take no argument).
     fn type_name(&self) -> &'static str {
         match self {
             Self::String(_) => "string",
@@ -74,7 +81,7 @@ impl FlagValue {
         }
     }
 
-    /// Go `Value.String()`: what `DefValue` holds.
+    /// The value as `print_defaults` shows a default.
     fn default_text(&self) -> String {
         match self {
             Self::String(v) => v.clone(),
@@ -86,8 +93,8 @@ impl FlagValue {
         }
     }
 
-    /// Go `Value.Set(s)` for this value's type; the error is Go's `parse
-    /// error` / `value out of range`.
+    /// Parses `value` as this value's type; the error is `parse error` or
+    /// `value out of range`.
     fn set_from(&self, value: &str) -> Result<FlagValue, &'static str> {
         Ok(match self {
             Self::String(_) => Self::String(value.to_string()),
@@ -130,7 +137,8 @@ impl FlagSet {
         }
     }
 
-    /// Go `SetOutput`: `Output::Discard` is `io.Discard`.
+    /// Selects where parse errors and usage go; `Output::Discard` silences
+    /// them.
     pub fn set_output(&mut self, output: Output) {
         self.output = output;
     }
@@ -193,7 +201,8 @@ impl FlagSet {
         std::mem::take(&mut *self.captured.borrow_mut())
     }
 
-    /// Go `failf`: the message on the output, then the usage.
+    /// Prints the message on the output, then the usage, and returns the
+    /// message as the error.
     fn failf(&self, msg: String) -> FlagError {
         if let Some(mut w) = self.out() {
             let _ = writeln!(w, "{msg}");
@@ -202,7 +211,7 @@ impl FlagSet {
         FlagError::Message(msg)
     }
 
-    /// Go `defaultUsage`: `Usage of NAME:` (or `Usage:`) and the defaults.
+    /// Prints `Usage of NAME:` (or `Usage:` when unnamed) and the defaults.
     fn usage(&self) {
         let Some(mut w) = self.out() else {
             return;
@@ -215,8 +224,10 @@ impl FlagSet {
         let _ = self.print_defaults(&mut w);
     }
 
-    /// Go `Parse` with `ContinueOnError`: stops at the first non-flag
-    /// argument or `--`; `-h`/`-help` (when not defined) is [`FlagError::Help`].
+    /// Parses flags until the first non-flag argument or `--` (the rest is
+    /// left in `args()`). `-h`/`-help`, when not defined, prints the usage
+    /// and returns [`FlagError::Help`]; any other failure prints its message
+    /// and the usage and returns it as [`FlagError::Message`].
     pub fn parse(&mut self, args: &[String]) -> Result<(), FlagError> {
         self.args = args.to_vec();
         loop {
@@ -308,8 +319,9 @@ impl FlagSet {
         Ok(true)
     }
 
-    /// Go `FlagSet.Set`: sets a defined flag from text; the error is the
-    /// value's own (`parse error`, `value out of range`).
+    /// Sets a defined flag from text without touching the output; the error
+    /// is `no such flag -NAME` or the value's own (`parse error`, `value out
+    /// of range`).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), FlagError> {
         let Some(flag) = self.formal.get_mut(name) else {
             return Err(FlagError::Message(format!("no such flag -{name}")));
@@ -390,8 +402,10 @@ impl FlagSet {
         &self.name
     }
 
-    /// Go `PrintDefaults`: flags in name order, back-quoted usage names,
-    /// one-letter booleans on one line, non-zero defaults appended.
+    /// Writes one entry per flag in name order: `  -name VALUE` (VALUE from
+    /// [`unquote_usage`]), the usage on the same line for one-letter booleans
+    /// and on an indented line otherwise, and ` (default X)` appended when
+    /// the default is non-zero (strings quoted).
     pub fn print_defaults(&self, w: &mut dyn Write) -> io::Result<()> {
         for flag in self.formal.values() {
             let mut b = format!("  -{}", flag.name);
@@ -434,8 +448,8 @@ impl FlagSet {
     }
 }
 
-/// Go `flag.UnquoteUsage`: a back-quoted word in the usage names the value
-/// and loses its quotes; otherwise the type names it.
+/// The value name and usage text for a flag: a back-quoted word in the
+/// usage names the value and loses its quotes; otherwise the type names it.
 pub fn unquote_usage(flag: &Flag) -> (String, String) {
     let usage = &flag.usage;
     if let Some(i) = usage.find('`')
@@ -448,7 +462,9 @@ pub fn unquote_usage(flag: &Flag) -> (String, String) {
     (flag.default.type_name().to_string(), usage.clone())
 }
 
-/// Go `strconv.Quote` for the plain strings flags carry.
+/// A double-quoted literal for the plain strings flags carry: `\"`, `\\`,
+/// `\n`, `\r`, `\t`, `\a`, `\b`, `\f`, `\v`, and `\xHH` for any other
+/// control character.
 fn go_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -473,7 +489,9 @@ fn go_quote(s: &str) -> String {
     out
 }
 
-/// Go `strconv.FormatFloat(v, 'g', -1, 64)`.
+/// Shortest round-trip digits; exponent form with a signed two-digit
+/// exponent when the decimal exponent is below -4 or at least 21 (`1e-05`,
+/// `1e+21`); `NaN`, `+Inf`, `-Inf` and `-0` by name.
 fn format_float_g(v: f64) -> String {
     if v.is_nan() {
         return "NaN".into();
@@ -503,8 +521,9 @@ fn format_float_g(v: f64) -> String {
     v.to_string()
 }
 
-/// Go `strconv.ParseInt(s, 0, bitSize)`: optional sign, base by prefix
-/// (`0x`, `0o`, `0b`, leading `0` = octal), underscores between digits.
+/// An integer with optional sign and base by prefix (`0x`, `0o`, `0b`,
+/// leading `0` = octal, else decimal), underscores allowed between digits;
+/// `value out of range` beyond `bit_size` signed bits.
 fn parse_go_int(s: &str, bit_size: u32) -> Result<i64, &'static str> {
     if s.is_empty() {
         return Err(ERR_PARSE);
@@ -569,8 +588,8 @@ fn parse_go_uint(s0: &str) -> Result<u64, &'static str> {
     Ok(n)
 }
 
-/// Go `strconv.underscoreOK`: underscores only between digits (or after
-/// a base prefix).
+/// Underscores are allowed only between digits (or right after a base
+/// prefix): never leading, trailing or doubled.
 fn underscore_ok(s: &str) -> bool {
     let b = s.as_bytes();
     let mut saw = b'^';
@@ -605,7 +624,9 @@ fn underscore_ok(s: &str) -> bool {
     saw != b'_'
 }
 
-/// Go `strconv.ParseFloat(s, 64)` as far as flags need it.
+/// A decimal float with optional sign, exponent and underscores between
+/// digits, or `inf`/`infinity`/`nan` by name (any case); a finite literal
+/// too large for an f64 is `value out of range`.
 fn parse_go_float(s: &str) -> Result<f64, &'static str> {
     let cleaned = if s.contains('_') && underscore_ok(s.trim_start_matches(['+', '-'])) {
         s.replace('_', "")
@@ -620,8 +641,8 @@ fn parse_go_float(s: &str) -> Result<f64, &'static str> {
     Ok(v)
 }
 
-/// Port of main.go's `parseInterleaved`: flags and positional arguments may
-/// mix; `--` ends flag parsing.
+/// Flags and positional arguments may mix; `--` ends flag parsing and
+/// everything after it is positional.
 pub fn parse_interleaved(fs: &mut FlagSet, mut args: &[String]) -> Result<Vec<String>, FlagError> {
     let mut positional = Vec::new();
     while !args.is_empty() {

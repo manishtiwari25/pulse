@@ -44,7 +44,6 @@
     "suggestions_eligible": 0,
     "suggestions_needing_votes": 0,
     "suggestions_plannable": 0,
-    "tally_mode": "go",
     "threads_open": 1
   },
   "commons_dir": "/home/owner/.pulse/commons",
@@ -108,6 +107,8 @@
       "dirty": false,
       "error": "",
       "evolution_present": false,
+      "goal_preview": "Improve demo-app through useful, reliable product behavior. Prioritize demonstrated defects and user experience, make…",
+      "goal_source": "generated",
       "head": "59e2b92",
       "kind": "project",
       "last_post": {
@@ -135,7 +136,6 @@
       "suggestions_eligible": 2,
       "suggestions_needing_votes": 0,
       "suggestions_plannable": 0,
-      "tally_mode": "go",
       "threads_open": 2,
       "owner_questions": 2
     },
@@ -179,6 +179,8 @@
         "seeded_from": "amistio-template/TPL-evolution-evaluators@r1"
       },
       "evolution_present": false,
+      "goal_preview": "Keep demo-lib's public API stable and fast; every release ships a changelog entry and a benchmark that did not regress.",
+      "goal_source": "owner",
       "head": "c364d4d",
       "kind": "project",
       "last_post": {
@@ -206,7 +208,6 @@
       "suggestions_eligible": 0,
       "suggestions_needing_votes": 1,
       "suggestions_plannable": 0,
-      "tally_mode": "go",
       "threads_open": 2,
       "owner_questions": 0
     },
@@ -225,6 +226,8 @@
       "dirty": false,
       "error": "",
       "evolution_present": true,
+      "goal_preview": "Improve pulse through useful, reliable product behavior. Prioritize demonstrated defects and user experience, make…",
+      "goal_source": "generated",
       "head": "7527778",
       "kind": "project",
       "last_post": {
@@ -252,7 +255,6 @@
       "suggestions_eligible": 2,
       "suggestions_needing_votes": 0,
       "suggestions_plannable": 2,
-      "tally_mode": "go",
       "threads_open": 2,
       "owner_questions": 0
     }
@@ -279,7 +281,6 @@
   "schema_version": "3",
   "stamp": "2026-09-07T09:00:00Z|2026-09-07T09:00:00Z|2026-09-07T09:00:00Z|2026-09-07T09:00:00Z",
   "store": "/home/owner/.pulse/pulse.sqlite",
-  "tally_mode": "go",
   "tool": "pulse v0.0.0-20260909100531-6a5be5c7240c+dirty",
   "totals": {
     "agents": 8,

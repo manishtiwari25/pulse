@@ -1,10 +1,7 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 #![allow(
     clippy::type_complexity,
-    reason = "test hook mirrors the Go lock holder callback shape"
+    reason = "test hook mirrors the original lock holder callback shape"
 )]
 
 use serde::{Deserialize, Serialize};
@@ -76,7 +73,6 @@ pub(crate) fn set_lock_holders(
     )
 }
 
-/// Go: func indexLockPath(root string) string
 pub(crate) fn index_lock_path(root: String) -> String {
     let res = crate::util::git_timeout(
         &root,
@@ -99,7 +95,6 @@ pub(crate) fn index_lock_path(root: String) -> String {
         .to_string()
 }
 
-/// Go: func freeIndexLock(root string, now time.Time) (note string, moved *abandonedLock)
 pub(crate) fn free_index_lock(
     root: String,
     now: chrono::DateTime<chrono::Utc>,
@@ -208,13 +203,11 @@ pub(crate) fn free_index_lock(
     )
 }
 
-/// Go: func lockedCheckout(stderr string) bool
 pub(crate) fn locked_checkout(stderr: String) -> bool {
     stderr.contains("index.lock")
 }
 
 impl AbandonedLock {
-    /// Go: func (a abandonedLock) detail() map[string]any
     pub(crate) fn detail(&self) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([
             ("from".to_string(), serde_json::json!(self.from)),

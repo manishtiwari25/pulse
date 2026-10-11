@@ -1,5 +1,3 @@
-//! Port of internal/evolve/score.go.
-
 use anyhow::{Result, anyhow};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -14,12 +12,10 @@ pub(crate) struct StatusEntry {
 }
 
 impl StatusEntry {
-    /// Go: func (e statusEntry) isNew() bool   { return e.index == '?' || e.index == 'A' }
     pub(crate) fn is_new(&self) -> bool {
         self.index == b'?' || self.index == b'A'
     }
 
-    /// Go: func (e statusEntry) deleted() bool { return e.index == 'D' || e.tree == 'D' }
     pub(crate) fn deleted(&self) -> bool {
         self.index == b'D' || self.tree == b'D'
     }
@@ -37,7 +33,6 @@ pub(crate) struct ScoredTree {
 }
 
 impl ScoredTree {
-    /// Go: func (t *scoredTree) atCommit() (bool, string) {
     pub(crate) fn at_commit(&self) -> (bool, String) {
         if self.head != self.commit {
             return (
@@ -48,7 +43,6 @@ impl ScoredTree {
         (true, String::new())
     }
 
-    /// Go: func (t *scoredTree) clean() (bool, string) {
     pub(crate) fn clean(&self) -> (bool, String) {
         let (ok, reason) = self.at_commit();
         if !ok {
@@ -66,7 +60,6 @@ pub(crate) struct StarterRule {
     pub(crate) judge: fn(&ScoredTree) -> (bool, String),
 }
 
-/// Go: var starterRules = map[string]starterRule{
 pub(crate) static STARTER_RULES: LazyLock<BTreeMap<String, StarterRule>> = LazyLock::new(|| {
     fn tier0(t: &ScoredTree) -> (bool, String) {
         let (ok, reason) = t.at_commit();
@@ -178,12 +171,10 @@ pub(crate) static STARTER_RULES: LazyLock<BTreeMap<String, StarterRule>> = LazyL
     ])
 });
 
-/// Go: func starterNames() []string {
 pub(crate) fn starter_names() -> Vec<String> {
     STARTER_RULES.keys().cloned().collect()
 }
 
-/// Go: func scoreTree(ctx context.Context, dir, name, commit string) (score int, reason string, err error) {
 pub(crate) fn score_tree(
     cancel: &pulse_bus::CancellationToken,
     dir: &str,
@@ -209,7 +200,6 @@ pub(crate) fn score_tree(
     }
 }
 
-/// Go: func inspectTree(ctx context.Context, dir, commit string) (*scoredTree, error) {
 pub(crate) fn inspect_tree(
     cancel: &pulse_bus::CancellationToken,
     dir: &str,
@@ -342,7 +332,6 @@ pub(crate) fn inspect_tree(
     Ok(tree)
 }
 
-/// Go: func scoreFailure(ctx context.Context, step string) error {
 pub(crate) fn score_failure(cancel: &pulse_bus::CancellationToken, step: &str) -> anyhow::Error {
     if let Some(err) = cancel.err() {
         err.into()
@@ -355,7 +344,6 @@ pub(crate) fn score_failure(cancel: &pulse_bus::CancellationToken, step: &str) -
     }
 }
 
-/// Go: func parseStatus(raw string) ([]statusEntry, error) {
 pub(crate) fn parse_status(raw: &str) -> Result<Vec<StatusEntry>> {
     let mut entries = Vec::new();
     let fields: Vec<&str> = raw.split('\0').collect();
@@ -392,7 +380,6 @@ pub(crate) fn parse_status(raw: &str) -> Result<Vec<StatusEntry>> {
     Ok(entries)
 }
 
-/// Go: func isolatedRecords() (int, error) {
 pub(crate) fn isolated_records() -> Result<i64> {
     let Ok(home) = std::env::var("PULSE_HOME") else {
         return Ok(0);

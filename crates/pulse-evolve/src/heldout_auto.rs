@@ -1,5 +1,3 @@
-//! Port of internal/evolve/heldout_auto.go.
-
 use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -22,7 +20,6 @@ pub struct GenerateResult {
     pub wrote: bool,
 }
 
-/// Go: func HeldoutMode(s *store.Store) string {
 pub fn heldout_mode(s: &pulse_store::Store) -> String {
     if s.setting("evolve.heldout", "") == "owner" {
         "owner".to_string()
@@ -31,7 +28,6 @@ pub fn heldout_mode(s: &pulse_store::Store) -> String {
     }
 }
 
-/// Go: func DefaultHeldoutDir(s *store.Store) string {
 pub fn default_heldout_dir(s: &pulse_store::Store) -> String {
     Path::new(&s.home)
         .join("private")
@@ -40,12 +36,10 @@ pub fn default_heldout_dir(s: &pulse_store::Store) -> String {
         .to_string()
 }
 
-/// Go: func HeldoutComplete(state HeldoutState) bool {
 pub fn heldout_complete(state: crate::private::HeldoutState) -> bool {
     state.count >= 2 && state.pending == 0 && state.problem.is_empty()
 }
 
-/// Go: func heldoutPromptFor(judge string) string {
 pub(crate) fn heldout_prompt_for(judge: &str) -> String {
     let label = crate::private::JUDGE_LABELS
         .get(judge)
@@ -58,7 +52,6 @@ pub(crate) fn heldout_prompt_for(judge: &str) -> String {
     )
 }
 
-/// Go: func starterRequest(name string) string {
 pub(crate) fn starter_request(name: &str) -> String {
     crate::starter::STARTER_SET
         .iter()
@@ -67,7 +60,6 @@ pub(crate) fn starter_request(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Go: func nextJudge(fixtures []privateFixture) string {
 pub(crate) fn next_judge(fixtures: &[crate::private::PrivateFixture]) -> String {
     let used: std::collections::BTreeSet<String> = fixtures
         .iter()
@@ -82,7 +74,6 @@ pub(crate) fn next_judge(fixtures: &[crate::private::PrivateFixture]) -> String 
     String::new()
 }
 
-/// Go: func generatedRequest(reply, judge string) (string, error) {
 pub(crate) fn generated_request(reply: &str, judge: &str) -> Result<String> {
     let mut text = reply.split_whitespace().collect::<Vec<_>>().join(" ");
     loop {
@@ -130,7 +121,6 @@ pub(crate) fn generated_request(reply: &str, judge: &str) -> Result<String> {
     Ok(text)
 }
 
-/// Go: func Generate(ctx context.Context, s *store.Store, call func(ctx context.Context, prompt string) (string, error), now string) (GenerateResult, error) {
 pub fn generate<F>(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -185,14 +175,14 @@ where
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use anyhow::anyhow;
     use std::path::Path;
 
     #[test]
     fn heldout_prompt_names_the_judge_and_forbids_the_starter() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for j in crate::private::judges() {
             let prompt = heldout_prompt_for(&j.name);
             for want in [
@@ -218,7 +208,7 @@ mod tests {
     #[test]
     fn generated_request_validation() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let public = starter_request("starter-hardstop-history");
         let cases = [
             (
@@ -304,7 +294,7 @@ mod tests {
     #[test]
     fn generate_writes_the_default_set_one_judge_at_a_time() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let reply = "Please rebase our feature branch on main and tidy the last few commit messages before you push.";
@@ -443,7 +433,7 @@ mod tests {
     #[test]
     fn generate_refusals_leave_the_set_pending() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();
@@ -515,7 +505,7 @@ mod tests {
     #[test]
     fn generate_owner_mode_is_a_no_op() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         s.set_setting("human", "evolve.heldout", "owner").unwrap();
@@ -536,7 +526,7 @@ mod tests {
     #[test]
     fn generate_never_overwrites_an_owner_fixture() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();
@@ -662,7 +652,7 @@ mod tests {
     #[test]
     fn ledger_counts_only_ready_stems() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();
@@ -725,7 +715,7 @@ mod tests {
     #[test]
     fn judges_match_starter_rules() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for name in crate::score::STARTER_RULES.keys() {
             assert!(
                 crate::private::JUDGE_LABELS
@@ -752,7 +742,7 @@ mod tests {
     #[test]
     fn heldout_status_counts_only() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let mut view = crate::private::heldout_status(&s);
@@ -788,7 +778,7 @@ mod tests {
     #[test]
     fn write_heldout_fills_pending_then_appends() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();
@@ -919,7 +909,7 @@ mod tests {
     #[test]
     fn write_heldout_refusals() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let refused = |w: crate::private::HeldoutWrite, why: &str| {
@@ -1118,7 +1108,7 @@ mod tests {
     #[test]
     fn written_judge_scores_through_the_measuring_binary() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();

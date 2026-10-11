@@ -309,9 +309,10 @@ pub fn prune_agents(
     Ok(out)
 }
 
-/// Go: `type Scorecard struct { store.Agent; AgentPresence; ... }` — the
-/// embedded fields are promoted, so `card.name` reads through [`Deref`] to
-/// the agent and presence fields through `card.presence`.
+/// An agent's row with its presence and post counts. The agent and presence
+/// fields are flattened into the serialized card; in code, `card.name` reads
+/// through [`Deref`] to the agent and presence fields through
+/// `card.presence`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Scorecard {
     #[serde(flatten)]
@@ -383,10 +384,7 @@ pub fn scorecards(s: &pulse_store::Store, include_pruned: bool) -> Result<Vec<Sc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{
-        TEST_NOW, clone_home, code, count_rows, new_home, no_tty, open_home, oracle,
-        oracle_message, run_cmd, what_any,
-    };
+    use crate::test_helpers::{TEST_NOW, code, count_rows, new_home, no_tty, open_home, run_cmd};
     use rusqlite::params;
 
     #[test]
@@ -419,7 +417,6 @@ mod tests {
             "The name 'alice' belongs to an agent pruned on",
             "UPDATE agents SET name = name WHERE 0",
             "joined alice (copilot/m1); export PULSE_AGENT=alice",
-            "list differs go: py:",
             "pruned alice: no useful output since 2026-08-01T00:00:00Z (limit 30 days)",
             "welcome back alice (copilot/m1); export PULSE_AGENT=alice",
             "would prune alice: no useful output since 2026-08-01T00:00:00Z (limit 14 days)",
@@ -427,7 +424,6 @@ mod tests {
         no_tty();
         let (_dir, home, mut s) = new_home();
         s.close().unwrap();
-        let py_home = clone_home(&home);
         s = open_home(std::path::Path::new(&home));
 
         let (out, err) = run_cmd(
@@ -451,24 +447,6 @@ mod tests {
             out.trim(),
             "joined alice (copilot/m1); export PULSE_AGENT=alice"
         );
-        if let Ok((py_out, _, _)) = oracle(
-            py_home.path(),
-            &[],
-            &[
-                "agent",
-                "join",
-                "--name",
-                "Alice",
-                "--runner",
-                "copilot",
-                "--model",
-                "m1",
-                "--session",
-                "s1",
-            ],
-        ) {
-            assert_eq!(py_out.trim(), out.trim(), "oracle join {py_out:?}");
-        }
         let (out, err) = run_cmd(
             &s,
             None,
@@ -497,18 +475,7 @@ mod tests {
             vec!["agent", "join", "--name", "9lives"],
         ] {
             let (_, err) = run_cmd(&s, None, &args);
-            let py = oracle(py_home.path(), &[], &args);
-            if let Ok((_, py_err, py_code)) = py {
-                assert_eq!(code(err.as_ref().err()), 2, "{args:?}");
-                assert_eq!(py_code, 2, "{args:?}");
-                assert_eq!(
-                    what_any(err.as_ref().unwrap_err()),
-                    oracle_message(&py_err),
-                    "{args:?}"
-                );
-            } else {
-                assert_eq!(code(err.as_ref().err()), 2, "{args:?}");
-            }
+            assert_eq!(code(err.as_ref().err()), 2, "{args:?}");
         }
         for want in ["aurora", "borealis"] {
             let (out, err) = run_cmd(
@@ -526,35 +493,7 @@ mod tests {
         assert_eq!(s.agent("aurora").unwrap().unwrap().kind, "worker");
         let (out, err) = run_cmd(&s, None, &["agent", "list"]);
         assert!(err.is_ok());
-        if oracle(
-            py_home.path(),
-            &[],
-            &["agent", "spawn", "--runner", "copilot", "--model", "m"],
-        )
-        .is_ok()
-            && oracle(
-                py_home.path(),
-                &[],
-                &["agent", "spawn", "--runner", "copilot", "--model", "m"],
-            )
-            .is_ok()
-        {
-            let (py_out, _, _) = oracle(py_home.path(), &[], &["agent", "list"]).unwrap();
-            let strip = |text: &str| {
-                let mut keep: Vec<_> = text
-                    .lines()
-                    .filter(|l| !l.starts_with("human") && !l.is_empty())
-                    .map(|l| l.trim_end().to_string())
-                    .collect();
-                keep.sort();
-                keep.join("\n")
-            };
-            assert_eq!(
-                strip(&out),
-                strip(&py_out),
-                "list differs go: {out}\npy: {py_out}"
-            );
-        }
+        assert!(out.contains("aurora") && out.contains("borealis"), "{out}");
 
         s.conn().unwrap().execute(
             "UPDATE agents SET last_active_at = '2026-08-01T00:00:00Z', last_useful_at = '2026-08-01T00:00:00Z' WHERE name IN ('alice', 'borealis')",

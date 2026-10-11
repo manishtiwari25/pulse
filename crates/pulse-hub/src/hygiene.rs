@@ -148,12 +148,17 @@ mod tests {
     #[test]
     fn hygiene_route() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(true);
-        let h = crate::test_helpers_f3::handler(&s);
+        let s = crate::test_helpers_http::additions_store(true);
+        let h = crate::test_helpers_http::handler(&s);
 
         // Nothing swept yet, no runs ended: an empty but well-formed answer.
-        let (status, result, _) =
-            crate::test_helpers_f3::request(h.clone_for_test(), "GET", "/api/v1/hygiene", "", &[]);
+        let (status, result, _) = crate::test_helpers_http::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/hygiene",
+            "",
+            &[],
+        );
         assert_eq!(status, 200, "{result:#?}");
         assert_eq!(result["available"], true);
         assert!(result["sweep"].is_null(), "{result:#?}");
@@ -224,8 +229,13 @@ mod tests {
         )
         .unwrap();
 
-        let (status, result, _) =
-            crate::test_helpers_f3::request(h.clone_for_test(), "GET", "/api/v1/hygiene", "", &[]);
+        let (status, result, _) = crate::test_helpers_http::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/hygiene",
+            "",
+            &[],
+        );
         assert_eq!(status, 200, "{result:#?}");
         assert_eq!(result["sweep"]["at"], "2026-09-06T11:50:00Z");
         assert_eq!(
@@ -257,7 +267,7 @@ mod tests {
         assert_eq!(agents[1]["runs"], 1);
 
         // Narrowed to one project and to one action.
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/hygiene?project=other&action=agent.cleanup&limit=10",
@@ -273,7 +283,7 @@ mod tests {
         assert_eq!(agents[0]["agent"], "borealis");
 
         // An action outside the cleaning set is ignored, not honoured.
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/hygiene?action=run.finish",
@@ -287,7 +297,7 @@ mod tests {
             "{result:#?}"
         );
 
-        let (status, _, _) = crate::test_helpers_f3::request(
+        let (status, _, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/hygiene/extra",
@@ -295,7 +305,7 @@ mod tests {
             &[],
         );
         assert_eq!(status, 404);
-        let (status, _, _) = crate::test_helpers_f3::request(
+        let (status, _, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "POST",
             "/api/v1/hygiene",
@@ -303,7 +313,7 @@ mod tests {
             &[],
         );
         assert_eq!(status, 405);
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/hygiene?limit=abc",
@@ -311,7 +321,7 @@ mod tests {
             &[],
         );
         assert_eq!(status, 400, "{result:#?}");
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             crate::server::new_handler(None, None),
             "GET",
             "/api/v1/hygiene",

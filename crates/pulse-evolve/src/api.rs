@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::{LazyLock, RwLock};
 
-/// Go: var ErrNotImplemented = errors.New("evolve: not implemented yet")
 pub fn err_not_implemented() -> anyhow::Error {
     anyhow!("evolve: not implemented yet")
 }
@@ -60,7 +59,6 @@ pub struct MeasureOptions<'a> {
     pub out: Option<&'a mut dyn Write>,
 }
 
-/// Go: var Measure = func(ctx context.Context, s *store.Store, project, repo, ref string, opts MeasureOptions) (*Scores, error)
 pub type MeasureFn = dyn for<'a> Fn(
         &pulse_bus::CancellationToken,
         &pulse_store::Store,
@@ -73,11 +71,9 @@ pub type MeasureFn = dyn for<'a> Fn(
     + Sync
     + 'static;
 
-/// Go: var Measure = measure
 pub static MEASURE: LazyLock<RwLock<Box<MeasureFn>>> =
     LazyLock::new(|| RwLock::new(Box::new(crate::measure::measure)));
 
-/// Go: tests replace evolve.Measure and restore it.
 pub fn set_measure(f: Box<MeasureFn>) -> Box<MeasureFn> {
     std::mem::replace(
         &mut *MEASURE.write().expect("evolve Measure lock poisoned"),
@@ -85,7 +81,6 @@ pub fn set_measure(f: Box<MeasureFn>) -> Box<MeasureFn> {
     )
 }
 
-/// Go: var Measure(...)
 pub fn measure(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -99,8 +94,6 @@ pub fn measure(
     )
 }
 
-/// Go: func Keep(baseline, variant *Scores, tolerance float64) (keep bool, reason string)
-///
 /// A variant is kept unless it regresses the score by more than the tolerance:
 /// an improvement is `kept`, a tie `kept (no regression)`. Held-out fixtures are
 /// mostly pass/fail, so a voted change that keeps every fixture green measures
@@ -145,23 +138,18 @@ pub struct ArchiveRow {
     pub note: String,
 }
 
-/// Go: const BaselineHypothesis = "baseline"
 pub const BASELINE_HYPOTHESIS: &str = "baseline";
 
-/// Go: func IsBaselineRow(hypothesis, suggestionPost string) bool
 pub fn is_baseline_row(hypothesis: &str, suggestion_post: &str) -> bool {
     hypothesis == BASELINE_HYPOTHESIS && suggestion_post.is_empty()
 }
 
-/// Go: var Archive = func(s *store.Store, row ArchiveRow) (id string, err error)
 pub type ArchiveFn =
     dyn Fn(&pulse_store::Store, ArchiveRow) -> Result<String> + Send + Sync + 'static;
 
-/// Go: var Archive = archive
 pub static ARCHIVE: LazyLock<RwLock<Box<ArchiveFn>>> =
     LazyLock::new(|| RwLock::new(Box::new(crate::archive::archive)));
 
-/// Go: tests replace evolve.Archive and restore it.
 pub fn set_archive(f: Box<ArchiveFn>) -> Box<ArchiveFn> {
     std::mem::replace(
         &mut *ARCHIVE.write().expect("evolve Archive lock poisoned"),
@@ -169,7 +157,6 @@ pub fn set_archive(f: Box<ArchiveFn>) -> Box<ArchiveFn> {
     )
 }
 
-/// Go: var Archive(...)
 pub fn archive_row(s: &pulse_store::Store, row: ArchiveRow) -> Result<String> {
     (ARCHIVE.read().expect("evolve Archive lock poisoned"))(s, row)
 }

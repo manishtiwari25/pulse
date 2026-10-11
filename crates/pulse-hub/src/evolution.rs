@@ -7,7 +7,6 @@ use crate::privacy::HELDOUT_SETTING;
 const PRIVATE_VALUE: &str = "[owner-private]";
 
 impl Handler {
-    /// Go: func (h *Handler) evolution(project string) (map[string]any, error)
     pub(crate) fn evolution(&self, project: String) -> Result<JsonMap> {
         let store = self
             .store
@@ -144,7 +143,6 @@ impl Handler {
         Ok(result)
     }
 
-    /// Go: func (h *Handler) evolutionGates(project string) (map[string]any, string)
     pub(crate) fn evolution_gates(&self, project: String) -> (JsonMap, String) {
         let Some(store) = self.store.as_deref() else {
             return (JsonMap::new(), "store is not available".to_string());
@@ -161,7 +159,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) evolutionFixtures(project string) ([]map[string]any, error)
     pub(crate) fn evolution_fixtures(&self, project: String) -> Result<Vec<JsonMap>> {
         let store = self
             .store
@@ -198,7 +195,6 @@ impl Handler {
     }
 }
 
-/// Go: func seededRecord(head *store.Record, revision *store.Revision) (bool, string)
 pub(crate) fn seeded_record(
     head: &pulse_store::Record,
     revision: &pulse_store::Revision,
@@ -212,7 +208,6 @@ pub(crate) fn seeded_record(
     (head.current_rev == 1 && !from.is_empty(), from)
 }
 
-/// Go: func draftSummary(s *store.Store, id string, withBody bool) any
 pub(crate) fn draft_summary<S: AsRef<str>>(
     s: &pulse_store::Store,
     id: S,
@@ -238,7 +233,6 @@ pub(crate) fn draft_summary<S: AsRef<str>>(
     Value::Object(out.into_iter().collect())
 }
 
-/// Go: func draftJobRef(s *store.Store, project string) any
 pub(crate) fn draft_job_ref(s: &pulse_store::Store, project: &str) -> Value {
     match pulse_evolve::open_draft_job(s, project) {
         Ok(Some(ref_)) => {
@@ -251,7 +245,6 @@ pub(crate) fn draft_job_ref(s: &pulse_store::Store, project: &str) -> Value {
     }
 }
 
-/// Go: func redactEvolutionPath(value any, private string)
 pub(crate) fn redact_evolution_path(value: &mut Value, private: &str) {
     match value {
         Value::Object(map) => {
@@ -273,7 +266,6 @@ pub(crate) fn redact_evolution_path(value: &mut Value, private: &str) {
     }
 }
 
-/// Go: func evolutionSummary(evolution map[string]any) map[string]any
 pub(crate) fn evolution_summary(evolution: JsonMap) -> JsonMap {
     let loop_doc = as_obj(evolution.get("loop"));
     let archive = as_obj(evolution.get("archive"));
@@ -545,14 +537,14 @@ mod tests {
     #[test]
     fn evolution_sql_contract() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "one");
-        let h = crate::test_helpers_f3::handler(&s);
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "one");
+        let h = crate::test_helpers_http::handler(&s);
         let mut data = h.evolution("one".to_string()).unwrap();
         assert_evolution_shape(&data);
         assert!(data["constitution"].is_null());
         assert!(data["evaluators"].is_null());
-        crate::test_helpers_f3::additions_record(
+        crate::test_helpers_http::additions_record(
             &s,
             "EVO-constitution-one",
             "one",
@@ -560,7 +552,7 @@ mod tests {
             "constitution",
             "## Purpose\nImprove carefully.",
         );
-        crate::test_helpers_f3::additions_record(
+        crate::test_helpers_http::additions_record(
             &s,
             "EVO-evaluators-one",
             "one",
@@ -568,7 +560,7 @@ mod tests {
             "evaluators",
             "Public evaluator descriptions.",
         );
-        crate::test_helpers_f3::additions_record(
+        crate::test_helpers_http::additions_record(
             &s,
             "EVO-archive-one",
             "one",
@@ -589,7 +581,7 @@ mod tests {
     #[test]
     fn evolution_archive_and_heldout_privacy() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let private = tempfile::tempdir().unwrap();
         for (key, value) in [
             ("evolve.heldout_dir", private.path().to_str().unwrap()),
@@ -600,7 +592,7 @@ mod tests {
         ] {
             s.set_setting("human", key, value).unwrap();
         }
-        crate::test_helpers_f3::additions_record(
+        crate::test_helpers_http::additions_record(
             &s,
             "EVO-evaluators-one",
             "one",
@@ -609,7 +601,7 @@ mod tests {
             &format!("Private evaluator location: {}", private.path().display()),
         );
         s.conn().unwrap().execute("INSERT INTO evolution_archive(id,project,baseline_score,variant_score,tolerance,kept,fixtures_json,at,note) VALUES('V-001','one',0.6,0.8,0.02,1,'[\"private-canary.request\"]',?,?)", rusqlite::params![s.now(), format!("Owner directory: {}", private.path().display())]).unwrap();
-        let data = crate::test_helpers_f3::handler(&s)
+        let data = crate::test_helpers_http::handler(&s)
             .evolution("one".to_string())
             .unwrap();
         assert_evolution_shape(&data);
@@ -621,13 +613,13 @@ mod tests {
     #[test]
     fn evolution_heldout_presence_without_reading_fixtures() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("not-a-directory");
         std::fs::write(&file, "").unwrap();
         s.set_setting("human", "evolve.heldout_dir", file.to_str().unwrap())
             .unwrap();
-        let data = crate::test_helpers_f3::handler(&s)
+        let data = crate::test_helpers_http::handler(&s)
             .evolution("one".to_string())
             .unwrap();
         assert_eq!(data["loop"]["heldout_present"], false);
@@ -660,8 +652,8 @@ mod tests {
                 ],
             ),
         ] {
-            let s = crate::test_helpers_f3::additions_store(false);
-            crate::test_helpers_f3::additions_project(&s, "one");
+            let s = crate::test_helpers_http::additions_store(false);
+            crate::test_helpers_http::additions_project(&s, "one");
             for slug in ["constitution", "evaluators"] {
                 s.put_record(
                     pulse_store::Record {
@@ -702,7 +694,7 @@ mod tests {
                  VALUES('B-999', 'another-project', 'baseline', 1, 1, 0.02, 1, ?)",
                 rusqlite::params![s.now()],
             ).unwrap();
-            let data = crate::test_helpers_f3::handler(&s)
+            let data = crate::test_helpers_http::handler(&s)
                 .evolution("one".into())
                 .unwrap();
             let gates = data["gates"]
@@ -790,8 +782,8 @@ mod tests {
             "missing gates",
             "missing product scope",
         ] {
-            let s = crate::test_helpers_f3::additions_store(false);
-            crate::test_helpers_f3::additions_record(
+            let s = crate::test_helpers_http::additions_store(false);
+            crate::test_helpers_http::additions_record(
                 &s,
                 "EVO-evaluators-one",
                 "one",
@@ -800,7 +792,7 @@ mod tests {
                 "Product scope: allowed\n",
             );
             if kind != "unregistered project" {
-                crate::test_helpers_f3::additions_project(&s, "one");
+                crate::test_helpers_http::additions_project(&s, "one");
             }
             if kind == "missing archive table" {
                 s.conn()
@@ -814,7 +806,7 @@ mod tests {
                     .execute("DROP TABLE evolution_fixtures", [])
                     .unwrap();
             }
-            let mut data = crate::test_helpers_f3::handler(&s)
+            let mut data = crate::test_helpers_http::handler(&s)
                 .evolution("one".into())
                 .unwrap();
             if kind == "missing gates" {
@@ -854,9 +846,9 @@ mod tests {
     #[test]
     fn evolution_summary_status_truth_empty_and_query_error() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "one");
-        let h = crate::test_helpers_f3::handler(&s);
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "one");
+        let h = crate::test_helpers_http::handler(&s);
         let data = h.evolution("one".to_string()).unwrap();
         let summary = evolution_summary(data);
         assert_evolution_summary_status_truth_shape(&summary);
@@ -878,9 +870,9 @@ mod tests {
     #[test]
     fn evolution_gates_fail_softly() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let (gates, err) =
-            crate::test_helpers_f3::handler(&s).evolution_gates("missing".to_string());
+            crate::test_helpers_http::handler(&s).evolution_gates("missing".to_string());
         assert!(gates.is_empty());
         assert!(!err.is_empty());
     }
@@ -888,9 +880,9 @@ mod tests {
     #[test]
     fn evolution_gates_and_fixtures_never_expose_texts() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "one");
-        let fixtures = crate::test_helpers_f3::handler(&s)
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "one");
+        let fixtures = crate::test_helpers_http::handler(&s)
             .evolution_fixtures("one".to_string())
             .unwrap();
         let encoded = pulse_store::gojson::to_string(&fixtures).unwrap();
@@ -901,8 +893,8 @@ mod tests {
     #[test]
     fn project_rows_and_evolution_tell_seeded_records_apart() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        let rec = crate::test_helpers_f3::additions_record(
+        let s = crate::test_helpers_http::additions_store(false);
+        let rec = crate::test_helpers_http::additions_record(
             &s,
             "EVO-evaluators-one",
             "one",

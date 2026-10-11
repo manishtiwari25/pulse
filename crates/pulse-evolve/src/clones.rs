@@ -1,5 +1,3 @@
-//! Port of internal/evolve/clones.go.
-
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -24,7 +22,6 @@ pub struct ViolationError {
 }
 
 impl fmt::Display for ViolationError {
-    /// Go: func (e *ViolationError) Error() string { return "evolution constraint violation: " + e.Reason }
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "evolution constraint violation: {}", self.reason)
     }
@@ -32,7 +29,6 @@ impl fmt::Display for ViolationError {
 
 impl Error for ViolationError {}
 
-/// Go: func projectAnswerKeys(s *store.Store, project string) ([]string, error) {
 pub(crate) fn project_answer_keys(s: &pulse_store::Store, project: &str) -> Result<Vec<String>> {
     let fixtures = crate::fixtures::list_fixtures(s, project, false)?;
     let mut seen: BTreeSet<String> = DEFAULT_ANSWER_KEYS.iter().map(|s| s.to_string()).collect();
@@ -47,7 +43,6 @@ pub(crate) fn project_answer_keys(s: &pulse_store::Store, project: &str) -> Resu
     Ok(seen.into_iter().collect())
 }
 
-/// Go: func fleetRoot(s *store.Store, create bool) (string, error) {
 pub(crate) fn fleet_root(s: &pulse_store::Store, create: bool) -> Result<String> {
     let home = crate::private::canonical_path(&s.home)?;
     let root = Path::new(&home).join("fleet").display().to_string();
@@ -91,7 +86,6 @@ pub(crate) fn fleet_root(s: &pulse_store::Store, create: bool) -> Result<String>
     Ok(root)
 }
 
-/// Go: func resolveRevision(ctx context.Context, repo, ref string) (string, string, error) {
 pub(crate) fn resolve_revision(
     cancel: &pulse_bus::CancellationToken,
     repo: &str,
@@ -132,7 +126,6 @@ pub(crate) fn resolve_revision(
     }
 }
 
-/// Go: func strippedClone(ctx context.Context, repo, commit, dest string, keys []string) error {
 pub(crate) fn stripped_clone(
     cancel: &pulse_bus::CancellationToken,
     repo: &str,
@@ -222,7 +215,6 @@ pub(crate) fn stripped_clone(
     check_clone(cancel, dest, keys)
 }
 
-/// Go: func hideStripped(ctx context.Context, dest string, keys []string) error {
 pub(crate) fn hide_stripped(
     cancel: &pulse_bus::CancellationToken,
     dest: &str,
@@ -260,7 +252,6 @@ pub(crate) fn hide_stripped(
     Ok(())
 }
 
-/// Go: func cloneFailure(ctx context.Context, step string) error {
 pub(crate) fn clone_failure(cancel: &pulse_bus::CancellationToken, step: &str) -> anyhow::Error {
     if let Some(err) = cancel.err() {
         return err.into();
@@ -272,7 +263,6 @@ pub(crate) fn clone_failure(cancel: &pulse_bus::CancellationToken, step: &str) -
     )
 }
 
-/// Go: func checkClone(ctx context.Context, dest string, keys []string) error {
 pub(crate) fn check_clone(
     cancel: &pulse_bus::CancellationToken,
     dest: &str,
@@ -422,7 +412,6 @@ pub fn remove_measurement_root(s: &pulse_store::Store, id: &str) -> Result<()> {
     remove_managed(s, id)
 }
 
-/// Go: func removeManaged(s *store.Store, id string) error {
 pub(crate) fn remove_managed(s: &pulse_store::Store, id: &str) -> Result<()> {
     if !crate::fleet::MANAGED_ID.is_match(id) {
         return Err(crate::fixtures::input_error(

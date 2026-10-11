@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangleIcon, ArrowUpRightIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
+import { AlertTriangleIcon, ArrowUpRightIcon, InfoIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -91,7 +91,9 @@ export function ErrorNotice({ error, onRetry, children }: { error?: string; onRe
   );
 }
 
-export function Notice({ tone = "info", children, className }: { tone?: Tone; children: React.ReactNode; className?: string }) {
+// A notice the owner may put away gets an × at its end; dismissLabel names
+// what goes away for screen readers ("Dismiss the goal note for blog").
+export function Notice({ tone = "info", children, className, onDismiss, dismissLabel = "Dismiss" }: { tone?: Tone; children: React.ReactNode; className?: string; onDismiss?: () => void; dismissLabel?: string }) {
   const toneClass: Record<Tone, string> = {
     neutral: "border-border bg-muted/40 text-foreground",
     ok: "border-ok/40 bg-ok/10 text-foreground",
@@ -111,7 +113,12 @@ export function Notice({ tone = "info", children, className }: { tone?: Tone; ch
   return (
     <div className={cn("surface-glass flex items-start gap-2 rounded-xl border px-3.5 py-2.5 text-sm shadow-card anywhere", toneClass[tone], className)}>
       <InfoIcon className={cn("mt-0.5 size-4 shrink-0", iconClass[tone])} />
-      <div className="min-w-0">{children}</div>
+      <div className={cn("min-w-0", onDismiss && "flex-1")}>{children}</div>
+      {onDismiss ? (
+        <Button size="icon-xs" variant="ghost" className="-my-0.5 -mr-1.5 shrink-0 rounded-full text-muted-foreground hover:text-foreground" onClick={onDismiss} aria-label={dismissLabel}>
+          <XIcon />
+        </Button>
+      ) : null}
     </div>
   );
 }

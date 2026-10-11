@@ -32,7 +32,6 @@ impl std::fmt::Display for HandsError {
     }
 }
 impl std::error::Error for HandsError {}
-/// Go: func handsDie(format string, args ...any) error
 pub(crate) fn hands_die(msg: impl Into<String>) -> anyhow::Error {
     anyhow!(HandsError { msg: msg.into() })
 }
@@ -61,7 +60,6 @@ impl std::fmt::Debug for Hands {
             .finish_non_exhaustive()
     }
 }
-/// Go: func handsAllowedWorker(rest []string) bool
 pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
     match rest
         .first()
@@ -79,7 +77,6 @@ pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
         _ => false,
     }
 }
-/// Go: func newHands(stdin io.Reader, stdout, stderr io.Writer) *hands
 pub(crate) fn new_hands<'a>(
     stdin: impl Read + Send + 'a,
     stdout: impl Write + Send + 'a,
@@ -123,14 +120,12 @@ fn erase_write_lifetime<'a>(w: Box<dyn Write + Send + 'a>) -> Box<dyn Write + Se
     unsafe { std::mem::transmute::<Box<dyn Write + Send + 'a>, Box<dyn Write + Send>>(w) }
 }
 impl Hands {
-    /// Go: func (h *hands) jobDir(job string) (string, error)
     pub(crate) fn job_dir(&self, job: &str) -> Result<String> {
         if !HANDS_JOB_RE.is_match(job) || job == "." || job == ".." {
             return Err(hands_die("bad job id"));
         }
         Ok(format!("{}/{}", self.workdir, job))
     }
-    /// Go: func (h *hands) cloneDir(job string) (string, error)
     pub(crate) fn clone_dir(&self, job: &str) -> Result<String> {
         let clone = format!("{}/clone", self.job_dir(job)?);
         if !Path::new(&clone).join(".git").is_dir() {
@@ -138,7 +133,6 @@ impl Hands {
         }
         Ok(clone)
     }
-    /// Go: func (h *hands) withTimeout(budget time.Duration, dir string, argv []string, extra map[string]string) int
     pub(crate) fn with_timeout(
         &mut self,
         budget: Duration,
@@ -148,7 +142,6 @@ impl Hands {
     ) -> i32 {
         self.with_timeout_observed(budget, dir, argv, extra, None)
     }
-    /// Go: func (h *hands) withTimeoutObserved(...)
     pub(crate) fn with_timeout_observed(
         &mut self,
         budget: Duration,
@@ -197,7 +190,6 @@ impl Hands {
             }
         }
     }
-    /// Go: func (h *hands) probe() error
     pub(crate) fn probe(&mut self) -> Result<()> {
         let gitv = Command::new("git")
             .arg("--version")
@@ -333,7 +325,7 @@ impl Hands {
                     .and_then(|l| l.split_whitespace().nth(3).map(ToOwned::to_owned))
             })
             .unwrap_or_else(|| "0".into());
-        // Go: user.Current() - the passwd entry of the real uid, not $USER.
+        // The passwd entry of the real uid, not $USER.
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
             .flatten()
@@ -359,7 +351,6 @@ impl Hands {
         )?;
         Ok(())
     }
-    /// Go: func (h *hands) prepare(job, branch, agent string) error
     pub(crate) fn prepare(&mut self, job: &str, branch: &str, agent: &str) -> Result<()> {
         if !HANDS_JOB_RE.is_match(agent) {
             return Err(hands_die("bad agent name"));
@@ -421,7 +412,6 @@ impl Hands {
         )?;
         Ok(())
     }
-    /// Go: func (h *hands) key(job, executor string) error
     pub(crate) fn key(&mut self, job: &str, executor: &str) -> Result<()> {
         if !HANDS_JOB_RE.is_match(executor) {
             return Err(hands_die("bad executor name"));
@@ -776,7 +766,6 @@ impl Hands {
         }
     }
 }
-/// Go: func handsBudget(budget string) (time.Duration, error)
 pub(crate) fn hands_budget(budget: &str) -> Result<Duration> {
     let (n, secs) = if let Some(s) = budget.strip_suffix('s') {
         (
@@ -801,7 +790,6 @@ pub(crate) static HANDS_KILL_AFTER: LazyLock<RwLock<Duration>> =
 pub(crate) type ProbeVersionFn = fn() -> Result<String>;
 pub(crate) static PROBE_VERSION: LazyLock<RwLock<ProbeVersionFn>> =
     LazyLock::new(|| RwLock::new(copilot_version));
-/// Go: func copilotVersion() (string, error)
 pub(crate) fn copilot_version() -> Result<String> {
     let path = which::which("copilot")?;
     let out = Command::new(path).arg("--version").output();

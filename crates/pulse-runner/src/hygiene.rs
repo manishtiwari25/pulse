@@ -752,7 +752,7 @@ mod tests {
         new_bare_repo(&s);
         crate::board::add_project(
             &s,
-            crate::test_helpers_f3b::simple_repo("other"),
+            crate::test_helpers_sweep::simple_repo("other"),
             "Other".into(),
             String::new(),
             false,

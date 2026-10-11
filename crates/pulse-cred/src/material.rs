@@ -13,7 +13,7 @@ pub struct Material {
 }
 
 impl crate::resolve::Resolver {
-    /// Materialize writes the key under PULSE_HOME/tmp with 0700 dir and 0600 file modes.
+    /// Writes the key under PULSE_HOME/tmp with 0700 dir and 0600 file modes.
     pub fn materialize(&self, secret: &Secret) -> Result<Material> {
         let base = Path::new(&self.home).join("tmp");
         fs::create_dir_all(&base)?;
@@ -61,7 +61,7 @@ pub fn ssh_command(key_path: &str) -> String {
 }
 
 impl Material {
-    /// Cleanup removes the key and its directory. Safe to call twice.
+    /// Removes the key and its directory. Safe to call twice.
     pub fn cleanup(&self) {
         if self.dir.is_empty() {
             return;

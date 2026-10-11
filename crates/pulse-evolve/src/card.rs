@@ -10,14 +10,12 @@ pub(crate) struct InstructionStop {
     pub(crate) question: String,
 }
 impl InstructionStop {
-    /// Go: func (st *instructionStop) reason() string
     pub(crate) fn reason(&self) -> String {
         match &self.post {
             Some(p) => format!("{INSTRUCTION_REASON} ({})", p.id),
             None => String::new(),
         }
     }
-    /// Go: func (st *instructionStop) questionBody() string
     pub(crate) fn question_body(&self) -> String {
         let Some(p) = &self.post else {
             return String::new();
@@ -29,11 +27,9 @@ impl InstructionStop {
         )
     }
 }
-/// Go: var instructionPattern = regexp.MustCompile(...)
 pub(crate) static INSTRUCTION_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)\b(ignore|bypass|override|skip|disable)\s+(?:(?:the|all|any|every|these|those|this|that|your|our|my|its|their|previous|prior|earlier|above|existing|current|remaining|other|further|usual|normal|safety|verification|human|owner|maintainer|pulse|constitutional|[a-z]+'s)\s+){0,3}(instructions?|checks?|constitution|stop(?:\s+rules?)?|safety|policy|policies|guards?|guardrails?|sandbox)\b|\b(merge|push|deploy|publish|reset)\s+(now|immediately|without)\b|\b(maintainer|owner|human)\s+(has\s+)?(approved|authorized)\b").unwrap()
 });
-/// Go: var negatedInstruction = regexp.MustCompile(...)
 pub(crate) static NEGATED_INSTRUCTION: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)^(do not|don't|never|must not|cannot|won't|refuse|not authorized)\b")
         .unwrap()
@@ -44,10 +40,8 @@ pub(crate) static NEGATED_INSTRUCTION: LazyLock<regex::Regex> = LazyLock::new(||
 /// a word between them: "skip the checks", "skip all guards", "skip verification checks".
 static SKIP_NOUN: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?i)^skip (checks?|guards?)$").unwrap());
-/// Go: var instructionCache sync.Map
 pub(crate) static INSTRUCTION_CACHE: LazyLock<Mutex<BTreeMap<String, bool>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
-/// Go: func InstructionShaped(text string) bool
 pub fn instruction_shaped(text: &str) -> bool {
     let cache = INSTRUCTION_CACHE
         .lock()
@@ -63,7 +57,6 @@ pub fn instruction_shaped(text: &str) -> bool {
         .insert(text.to_string(), out);
     out
 }
-/// Go: func instructionShapedSlow(text string) bool
 pub(crate) fn instruction_shaped_slow(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim();
@@ -80,10 +73,8 @@ pub(crate) fn instruction_shaped_slow(text: &str) -> bool {
     }
     false
 }
-/// Go: const instructionReason = "an instruction-shaped post was detected; its instructions were not followed"
 pub(crate) const INSTRUCTION_REASON: &str =
     "an instruction-shaped post was detected; its instructions were not followed";
-/// Go: func undecidedStopQuestion(s *store.Store, project, postID string) (string, error)
 pub(crate) fn undecided_stop_question(
     s: &pulse_store::Store,
     project: &str,
@@ -101,7 +92,6 @@ pub(crate) fn undecided_stop_question(
         .optional()?
         .unwrap_or_default())
 }
-/// Go: func instructionPostFor(s *store.Store, project string) (*tally.Post, string, error)
 pub(crate) fn instruction_post_for(
     s: &pulse_store::Store,
     project: &str,
@@ -184,7 +174,6 @@ ORDER BY p.date, p.id",
     }
     Ok((None, String::new()))
 }
-/// Go: func clearedInstructionPosts(s *store.Store, project string) (map[string]bool, error)
 pub(crate) fn cleared_instruction_posts(
     s: &pulse_store::Store,
     project: &str,
@@ -227,7 +216,6 @@ pub struct ExperimentCard {
     #[serde(rename = "body")]
     pub body: String,
 }
-/// Go: const cardNeeded = "Suggestion needs an experiment card"
 pub const CARD_NEEDED: &str = "Suggestion needs an experiment card";
 
 /// A card the loop refuses to act on as written - a credential-shaped value in
@@ -251,7 +239,6 @@ impl std::fmt::Display for RefusedCardError {
 }
 
 impl std::error::Error for RefusedCardError {}
-/// Go: func cardFields(body string) map[string]string
 pub(crate) fn card_fields(body: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for line in body.lines() {
@@ -272,7 +259,6 @@ pub(crate) fn card_fields(body: &str) -> BTreeMap<String, String> {
     }
     out
 }
-/// Go: func firstText(items ...string) string
 pub(crate) fn first_text(items: &[&str]) -> String {
     items
         .iter()
@@ -281,11 +267,9 @@ pub(crate) fn first_text(items: &[&str]) -> String {
         .unwrap_or("")
         .to_string()
 }
-/// Go: func productPost(p tally.Post) bool
 pub(crate) fn product_post(p: &pulse_tally::Post) -> bool {
     pulse_tally::card_class(&p.summary, &p.body) == pulse_tally::CARD_CLASS_PRODUCT
 }
-/// Go: func orderedSuggestions(s *store.Store, result *tally.Result, productFirst bool) []tally.Suggestion
 pub(crate) fn ordered_suggestions(
     s: &pulse_store::Store,
     result: &pulse_tally::TallyResult,
@@ -314,10 +298,8 @@ pub(crate) fn ordered_suggestions(
     });
     out
 }
-/// Go: var backtickPath = regexp.MustCompile("`([^`]+)`")
 pub(crate) static BACKTICK_PATH: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"`([^`]+)`").unwrap());
-/// Go: func pathPatterns(cell string) []string
 pub(crate) fn path_patterns(cell: &str) -> Vec<String> {
     let matches: Vec<String> = BACKTICK_PATH
         .captures_iter(cell)
@@ -332,7 +314,6 @@ pub(crate) fn path_patterns(cell: &str) -> Vec<String> {
         .map(ToString::to_string)
         .collect()
 }
-/// Go: func matchesScope(file, pattern string) bool
 pub(crate) fn matches_scope(file: &str, pattern: &str) -> bool {
     let pattern = pattern.trim().trim_start_matches("./");
     if pattern.ends_with("/**") || pattern.ends_with('/') {
@@ -344,7 +325,6 @@ pub(crate) fn matches_scope(file: &str, pattern: &str) -> bool {
         Err(_) => false,
     }
 }
-/// Go: func immutablePaths(body string) []string
 pub(crate) fn immutable_paths(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -372,7 +352,6 @@ pub(crate) fn immutable_paths(body: &str) -> Vec<String> {
     }
     out
 }
-/// Go: func scopeHeading(line string) bool
 pub(crate) fn scope_heading(line: &str) -> bool {
     let mut rest = line.trim_start_matches("## ").trim();
     if rest.len() < "Editable scope".len()
@@ -395,12 +374,10 @@ pub struct ScopeClass {
     pub autonomy: String,
 }
 impl ScopeClass {
-    /// Go: func (c ScopeClass) Editable(product bool) bool
     pub fn editable(&self, product: bool) -> bool {
         self.stage >= 2 && (!product || self.stage >= 4)
     }
 }
-/// Go: func scopeClasses(body string) []ScopeClass
 pub(crate) fn scope_classes(body: &str) -> Vec<ScopeClass> {
     let mut out = Vec::new();
     let mut inside = false;
@@ -455,7 +432,6 @@ pub(crate) fn scope_classes(body: &str) -> Vec<ScopeClass> {
     }
     out
 }
-/// Go: func editablePath(body, file string, product bool) bool
 pub(crate) fn editable_path(body: &str, file: &str, product: bool) -> bool {
     scope_classes(body).iter().any(|class| {
         class.editable(product)
@@ -547,7 +523,6 @@ pub(crate) fn card_scope_gate(s: &pulse_store::Store, p: &pulse_tally::Post) -> 
     ))
 }
 
-/// Go: func makeCard(s *store.Store, p *tally.Post, status *LoopStatus) (*ExperimentCard, error)
 pub(crate) fn make_card(
     s: &pulse_store::Store,
     p: &pulse_tally::Post,

@@ -1,5 +1,3 @@
-//! Port of internal/evolve/draft.go.
-
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
@@ -7,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 pub const DRAFT_SOURCE_PREFIX: &str = "draft:";
 
-/// Go: func DraftHours(s *store.Store) int {
 pub fn draft_hours(s: &pulse_store::Store) -> i64 {
     let default = pulse_store::EVOLVE_SETTINGS
         .get("evolve.draft_hours")
@@ -37,7 +34,6 @@ pub struct LoopRecordState {
     pub(crate) body: String,
 }
 
-/// Go: func LoopRecords(s *store.Store, project string) ([]LoopRecordState, error) {
 pub fn loop_records(s: &pulse_store::Store, project: &str) -> Result<Vec<LoopRecordState>> {
     let mut out = Vec::new();
     for name in ["constitution", "evaluators"] {
@@ -62,7 +58,6 @@ pub fn loop_records(s: &pulse_store::Store, project: &str) -> Result<Vec<LoopRec
     Ok(out)
 }
 
-/// Go: func OpenDraftJob(s *store.Store, project string) (*JobRef, error) {
 pub fn open_draft_job(
     s: &pulse_store::Store,
     project: &str,
@@ -77,7 +72,6 @@ pub fn open_draft_job(
         .optional()?)
 }
 
-/// Go: func PlanDraftJob(s *store.Store, project, actor, now string, force bool) (job *board.Job, created bool, reason string, err error) {
 pub fn plan_draft_job(
     s: &pulse_store::Store,
     project: &str,
@@ -186,7 +180,6 @@ pub fn plan_draft_job(
     Ok((Some(job), created, String::new()))
 }
 
-/// Go: func loopRecordsPhrase(states []LoopRecordState) string {
 pub(crate) fn loop_records_phrase(states: &[LoopRecordState]) -> String {
     if states.is_empty() {
         return "no loop records yet (pulse evolve seed)".to_string();
@@ -206,7 +199,6 @@ pub(crate) fn loop_records_phrase(states: &[LoopRecordState]) -> String {
         .join("; ")
 }
 
-/// Go: func draftBrief(s *store.Store, p *store.Project, seeded []LoopRecordState) string {
 pub(crate) fn draft_brief(
     _s: &pulse_store::Store,
     p: &pulse_store::Project,
@@ -287,7 +279,6 @@ pub(crate) fn draft_brief(
     b
 }
 
-/// Go: func tail(from string) string {
 pub(crate) fn tail(from: &str) -> String {
     from.rsplit('/').next().unwrap_or(from).to_string()
 }
@@ -296,12 +287,12 @@ pub(crate) fn tail(from: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::{count_rows, test_project, test_store};
-    use crate::test_helpers_e1::*;
+    use crate::test_helpers_plan::*;
 
     #[test]
     fn plan_draft_job_queues_one_job_for_seeded_records_and_waits() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = test_store();
         crate::starter::init();
         seed_templates(&s);
@@ -428,7 +419,7 @@ mod tests {
     #[test]
     fn plan_draft_job_stops_once_drafts_wait_or_the_text_is_the_projects_own() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = test_store();
         crate::starter::init();
         seed_templates(&s);

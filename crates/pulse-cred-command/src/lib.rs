@@ -1,4 +1,4 @@
-//! PULSE: the pulse cred command (port of Go package internal/cred/command).
+//! PULSE: the pulse cred command.
 
 mod command;
 

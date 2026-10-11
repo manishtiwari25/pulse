@@ -1,5 +1,3 @@
-//! Test helpers ported from the Go test files owned by slice F2 (see files/RUNNER_TEST_WAVE.txt).
-//! Other slices call these as `crate::test_helpers_f2::<go_name_in_snake_case>`.
 #![allow(dead_code)]
 
 use crate::test_helpers::*;
@@ -129,7 +127,7 @@ impl Drop for Scratch {
 /// tests there, and a special file in that tree fails the read-only scorer.
 /// Bind the guard for as long as the directory is in use; a temporary drops,
 /// and removes the directory, at the end of its statement.
-pub(crate) fn f2_temp_dir() -> Scratch {
+pub(crate) fn heartbeat_temp_dir() -> Scratch {
     let dir = std::env::temp_dir()
         .join("pulse-runner-f2")
         .join(uuid::Uuid::new_v4().to_string());
@@ -211,7 +209,7 @@ fn release_fifo_reader(path: &Path) {
 /// Whatever is left when the test binary exits is released and removed by the
 /// FIFO janitor, so a failed test never leaves a worker behind.
 pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
-    let path = f2_temp_dir().keep().join("finish");
+    let path = heartbeat_temp_dir().keep().join("finish");
     let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
     let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
     if rc != 0 {
@@ -257,7 +255,6 @@ pub(crate) struct LifecycleGate {
     pipe: std::fs::File,
 }
 
-/// Go: func newLifecycleGate(t *testing.T, name string) *lifecycleGate
 pub(crate) fn new_lifecycle_gate(name: &str) -> LifecycleGate {
     let (path, _) = heartbeat_fifo();
     let pipe = std::fs::OpenOptions::new()
@@ -317,7 +314,6 @@ impl Drop for LifecycleGate {
     }
 }
 
-/// Go: func waitLifecycleRun(t *testing.T, done <-chan struct{})
 pub(crate) fn wait_lifecycle_run(done: &Receiver<()>) {
     done.recv_timeout(LIFECYCLE_WAIT_TIMEOUT)
         .unwrap_or_else(|_| {
@@ -387,7 +383,7 @@ pub(crate) fn runner_heartbeat_fixture(
         &id.agent,
         &mut log,
     );
-    let scratch = f2_temp_dir();
+    let scratch = heartbeat_temp_dir();
     e.clone_dir = scratch.display().to_string();
     if let Some(parent) = Path::new(&e.key).parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -427,7 +423,6 @@ pub(crate) fn heartbeat_ssh_args(argv: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Go: func assertLifecycleSuggestion(t *testing.T, s *store.Store, id, now, status string, onBallotWant, inQueueWant bool)
 pub(crate) fn assert_lifecycle_suggestion(
     s: &pulse_store::Store,
     id: &str,
@@ -467,7 +462,6 @@ pub(crate) fn assert_lifecycle_suggestion(
     );
 }
 
-/// Go: func assertLifecyclePresence(t *testing.T, s *store.Store, now time.Time, want string)
 pub(crate) fn assert_lifecycle_presence(
     s: &pulse_store::Store,
     now: chrono::DateTime<Utc>,
@@ -479,7 +473,6 @@ pub(crate) fn assert_lifecycle_presence(
     assert_eq!(got.presence, want, "presence = {got:?}");
 }
 
-/// Go: func daemonRetryFixture(t *testing.T) (*store.Store, row)
 pub(crate) fn daemon_retry_fixture() -> (crate::test_helpers::TestStore, crate::util::Row) {
     pulse_bus::reset_default();
     let s = new_store();

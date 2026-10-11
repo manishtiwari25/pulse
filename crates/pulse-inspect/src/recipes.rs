@@ -11,7 +11,7 @@ mod tests {
     use crate::test_helpers::*;
 
     #[test]
-    fn recipe_placement_parity() {
+    fn an_invalid_recipe_holds_dispatch_on_every_executor() {
         let (_dir, s) = temporary_store();
         let root = tempfile::tempdir().unwrap();
         fixture_command(root.path(), "", "git", &["init", "--quiet"]);
@@ -19,14 +19,14 @@ mod tests {
             .unwrap()
             .execute(
                 "INSERT INTO projects(slug,name,path,default_branch,added_at) VALUES ('recipe-project','Recipe',?,'main',?)",
-                (root.path().to_str().unwrap(), PARITY_NOW),
+                (root.path().to_str().unwrap(), TEST_NOW),
             )
             .unwrap();
         s.conn()
             .unwrap()
             .execute(
                 "INSERT INTO executors(name,status,created_at) VALUES ('remote','active',?)",
-                [PARITY_NOW],
+                [TEST_NOW],
             )
             .unwrap();
         let cases: Vec<(&str, String, &str, &str)> = vec![
@@ -52,44 +52,44 @@ mod tests {
             (
                 "bad-inline-list",
                 "---\nrecipe: 1\nservices: [postgres]\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "duplicate-key",
                 "---\nrecipe: 1\nservices:\n  - postgres\nservices: []\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "unknown-key",
                 "---\nrecipe: 1\nother: 1\nservices:\n  - postgres\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "bad-version",
                 "---\nrecipe: 2\nservices:\n  - postgres\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "secret-env-name",
                 "---\nrecipe: 1\nenv:\n  TOKEN: refused\nservices:\n  - postgres\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "lowercase-env",
                 "---\nrecipe: 1\nenv:\n  ci: '1'\nservices:\n  - postgres\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "bad-quote",
                 "---\nrecipe: 1\nservices:\n  - 'postgres\n---\n".into(),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
             (
                 "tool-plugin-name",
@@ -103,8 +103,8 @@ mod tests {
                     "---\nrecipe: 1\ntools:\n{}services:\n  - postgres\n---\n",
                     "  - node@22\n".repeat(13)
                 ),
-                "",
-                "",
+                "recipe invalid",
+                "recipe invalid",
             ),
         ];
         for (name, text, local, remote) in cases {
@@ -151,10 +151,6 @@ mod tests {
                     "{executor} {name}: {blocks:?}"
                 );
             }
-            assert_parity(
-                invoke(Some(s.clone()), false, "", "status", &[]),
-                oracle(&s.home, true, &["status"]),
-            );
         }
     }
 
@@ -171,8 +167,8 @@ mod tests {
             kind: "context".into(),
             slug: "environment".into(),
             title: "Environment".into(),
-            created_at: PARITY_NOW.into(),
-            updated_at: PARITY_NOW.into(),
+            created_at: TEST_NOW.into(),
+            updated_at: TEST_NOW.into(),
             origin: "store".into(),
             ..Default::default()
         };

@@ -1,5 +1,3 @@
-//! Port of internal/runner/daemon_watchdog.go.
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +21,6 @@ type NowFn = Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>;
 type DumpFn = Arc<dyn Fn() -> Vec<u8> + Send + Sync>;
 
 /// daemonStallBound is how long the loop may go without a heartbeat before the watchdog acts.
-///
-/// Go: func daemonStallBound(interval int) time.Duration
 pub(crate) fn daemon_stall_bound(interval: i32) -> Duration {
     let d = Duration::from_secs(interval.max(0) as u64) * DAEMON_STALL_FACTOR;
     if d < DAEMON_STALL_FLOOR {
@@ -33,7 +29,6 @@ pub(crate) fn daemon_stall_bound(interval: i32) -> Duration {
     d
 }
 
-/// Go: the fields daemonWatchdog guards with mu.
 pub(crate) struct WatchdogState {
     pub(crate) beat_at: chrono::DateTime<chrono::Utc>,
     pub(crate) fired: bool,
@@ -45,10 +40,7 @@ pub(crate) struct WatchdogState {
 /// dump under logs/, a note in the heartbeat row - the runs in flight are cancelled, and the process exits
 /// 3, the code the service launcher restarts on (ADR-035). SIGUSR1 writes the same dump without exiting,
 /// for looking at a slow loop while it runs.
-///
-/// Go: type daemonWatchdog struct
 pub(crate) struct DaemonWatchdog {
-    /// Go: mu, beatAt, fired
     pub(crate) state: parking_lot::Mutex<WatchdogState>,
     pub(crate) bound: Duration,
     pub(crate) logs: String,
@@ -65,7 +57,6 @@ pub(crate) struct DaemonWatchdog {
     pub(crate) grace: Duration,
 }
 
-/// Go: func newDaemonWatchdog(bound time.Duration, logs string, say func(string, ...any), note func(note, dump string), kill func()) *daemonWatchdog
 pub(crate) fn new_daemon_watchdog(
     bound: Duration,
     logs: String,
@@ -92,15 +83,11 @@ pub(crate) fn new_daemon_watchdog(
 
 impl DaemonWatchdog {
     /// beat is called by the loop each time it writes its heartbeat.
-    ///
-    /// Go: func (w *daemonWatchdog) beat()
     pub(crate) fn beat(&self) {
         self.state.lock().beat_at = (self.now)();
     }
 
     /// stalled reports how long the loop has been silent past its bound, or 0.
-    ///
-    /// Go: func (w *daemonWatchdog) stalled() time.Duration
     pub(crate) fn stalled(&self) -> Duration {
         let state = self.state.lock();
         let since = (self.now)()
@@ -113,9 +100,7 @@ impl DaemonWatchdog {
         Duration::ZERO
     }
 
-    /// run checks the beat every tick until ctx ends; on a stall it dumps, notes, kills and exits once.
-    ///
-    /// Go: func (w *daemonWatchdog) run(ctx context.Context, tick time.Duration)
+    /// run checks the beat every tick until the token is cancelled; on a stall it dumps, notes, kills and exits once.
     pub(crate) fn run(&self, cancel: &pulse_bus::CancellationToken, tick: Duration) {
         let timer = crossbeam_channel::tick(tick);
         let usr1 = Usr1::notify();
@@ -138,7 +123,6 @@ impl DaemonWatchdog {
         }
     }
 
-    /// Go: func (w *daemonWatchdog) fire(since time.Duration)
     pub(crate) fn fire(&self, since: Duration) {
         {
             let mut state = self.state.lock();
@@ -168,8 +152,6 @@ impl DaemonWatchdog {
     }
 
     /// writeDump writes every thread's stack to logs/daemon-<why>-<utc>.log and prunes old dumps.
-    ///
-    /// Go: func (w *daemonWatchdog) writeDump(why string) (string, error)
     pub(crate) fn write_dump(&self, why: &str) -> std::io::Result<String> {
         create_dir_all_0700(Path::new(&self.logs))?;
         let name = format!("daemon-{why}-{}.log", (self.now)().format("%Y%m%dT%H%M%SZ"));
@@ -187,8 +169,8 @@ impl DaemonWatchdog {
     }
 }
 
-/// Go: signal.Notify(usr1, syscall.SIGUSR1) with `defer signal.Stop(usr1)` - the handler is
-/// unregistered when the watchdog's run ends.
+/// The SIGUSR1 subscription: dropped when the watchdog's run ends, which
+/// unregisters the handler.
 struct Usr1 {
     signals: crossbeam_channel::Receiver<()>,
     handle: Option<signal_hook::iterator::Handle>,
@@ -234,7 +216,6 @@ impl Drop for Usr1 {
     }
 }
 
-/// Go: since.Round(time.Second) - the nearest whole second, halves rounding away from zero.
 fn round_seconds(d: Duration) -> Duration {
     let nanos = d.as_nanos();
     let rem = nanos % 1_000_000_000;
@@ -246,7 +227,6 @@ fn round_seconds(d: Duration) -> Duration {
     }
 }
 
-/// Go: os.MkdirAll(w.logs, 0o700)
 fn create_dir_all_0700(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -258,7 +238,6 @@ fn create_dir_all_0700(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-/// Go: os.WriteFile(path, body, 0o600)
 fn write_file_0600(path: &Path, body: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
@@ -271,8 +250,8 @@ fn write_file_0600(path: &Path, body: &[u8]) -> std::io::Result<()> {
     options.open(path)?.write_all(body)
 }
 
-/// Go: func goroutineDump() []byte - Rust has no all-threads stack dump; the watchdog's own stack and
-/// the process's thread count are what the port can record.
+/// std has no all-threads stack dump, so the dump records the watchdog's
+/// own stack.
 pub(crate) fn goroutine_dump() -> Vec<u8> {
     let backtrace = std::backtrace::Backtrace::force_capture();
     format!(
@@ -283,8 +262,6 @@ pub(crate) fn goroutine_dump() -> Vec<u8> {
 }
 
 /// pruneStallDumps keeps the newest `keep` daemon-*.log dumps; names sort by their UTC stamp.
-///
-/// Go: func pruneStallDumps(logs string, keep int)
 pub(crate) fn prune_stall_dumps(logs: &str, keep: usize) {
     let Ok(entries) = std::fs::read_dir(logs) else {
         return;
@@ -309,7 +286,6 @@ pub(crate) fn prune_stall_dumps(logs: &str, keep: usize) {
     }
 }
 
-/// Go: func dumpStamp(name string) string
 pub(crate) fn dump_stamp(name: &str) -> String {
     match name.rfind('-') {
         None => name.to_string(),
@@ -323,13 +299,13 @@ mod tests {
     use chrono::TimeZone;
     use std::sync::Mutex;
 
-    use crate::test_helpers_f5::test_wait;
+    use crate::test_helpers_daemon::test_wait;
 
     type Calls = Arc<Mutex<Vec<String>>>;
     type Clock = Arc<Mutex<chrono::DateTime<chrono::Utc>>>;
 
     /// newTestWatchdog: a watchdog with a fake clock and a captured exit; returns it and the recorded calls
-    /// (and Go's t.TempDir(), which lives as long as the test).
+    /// (and the temp dir, which lives as long as the test).
     fn new_test_watchdog(
         bound: Duration,
     ) -> (Arc<DaemonWatchdog>, Calls, Clock, tempfile::TempDir) {

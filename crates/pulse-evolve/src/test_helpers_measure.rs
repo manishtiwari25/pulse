@@ -8,11 +8,11 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-pub(crate) static E3_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+pub(crate) static MEASURE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static TEST_EXECUTABLE: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
-pub(crate) fn e3_test_lock() -> MutexGuard<'static, ()> {
-    E3_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+pub(crate) fn measure_test_lock() -> MutexGuard<'static, ()> {
+    MEASURE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(crate) fn disable_project_hook() {

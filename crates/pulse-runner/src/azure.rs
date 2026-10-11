@@ -48,7 +48,6 @@ pub(crate) fn init() {
     crate::provider::register_provider(AzureProvider {});
 }
 
-/// Go: func azureSettings(s *store.Store, size string) (azureConfig, error)
 pub(crate) fn azure_settings(s: &pulse_store::Store, size: String) -> anyhow::Result<AzureConfig> {
     let mut cfg = AzureConfig {
         subscription: s.setting("compute.azure.subscription", "").trim().into(),
@@ -82,12 +81,10 @@ pub(crate) fn azure_settings(s: &pulse_store::Store, size: String) -> anyhow::Re
     Ok(cfg)
 }
 
-/// Go: func azureVMName(requestID string) string
 pub(crate) fn azure_vm_name(request_id: String) -> String {
     crate::provider::machine_name(request_id)
 }
 
-/// Go: func azErr(what string, rc int, stdout, stderr string, err error) error
 pub(crate) fn az_err(
     what: String,
     rc: i32,
@@ -99,15 +96,12 @@ pub(crate) fn az_err(
 }
 
 impl AzureProvider {
-    /// Go: func (azureProvider) Name() string
     pub(crate) fn name(&self) -> String {
         "azure".into()
     }
-    /// Go: func (azureProvider) Kind() string
     pub(crate) fn kind(&self) -> String {
         "Azure VM".into()
     }
-    /// Go: func (p azureProvider) Provision(ctx context.Context, req ProvisionRequest) (*Machine, error)
     pub(crate) fn provision(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -359,7 +353,6 @@ impl AzureProvider {
         crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
         Ok(m)
     }
-    /// Go: func (p azureProvider) config(m *Machine) azureConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> AzureConfig {
         AzureConfig {
             subscription: m.detail.get("subscription").cloned().unwrap_or_default(),
@@ -368,7 +361,6 @@ impl AzureProvider {
             ..Default::default()
         }
     }
-    /// Go: func (p azureProvider) Release(ctx context.Context, m *Machine) error
     pub(crate) fn release(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -422,7 +414,6 @@ impl AzureProvider {
         }
         Ok(())
     }
-    /// Go: func (p azureProvider) Probe(ctx context.Context, m *Machine) error
     pub(crate) fn probe(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -467,7 +458,6 @@ impl AzureProvider {
         }
         Ok(())
     }
-    /// Go: func (p azureProvider) Find(ctx context.Context, _ *store.Store, executor, host string) (*Machine, error)
     pub(crate) fn find(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -521,7 +511,6 @@ impl AzureProvider {
             ..Default::default()
         }))
     }
-    /// Go: func (p azureProvider) Stop(ctx context.Context, m *Machine) error
     pub(crate) fn stop(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -552,11 +541,9 @@ impl AzureProvider {
         }
         Ok(())
     }
-    /// Go: func (p azureProvider) Place(m *Machine) string
     pub(crate) fn place(&self, m: &crate::provider::Machine) -> String {
         m.detail.get("resource_group").cloned().unwrap_or_default()
     }
-    /// Go: func (p azureProvider) StartHint(m *Machine) string
     pub(crate) fn start_hint(&self, m: &crate::provider::Machine) -> String {
         format!(
             "az vm start -g {} -n {}",
@@ -564,7 +551,6 @@ impl AzureProvider {
             m.name
         )
     }
-    /// Go: func (p azureProvider) Delete(ctx context.Context, m *Machine) (bool, []string, error)
     pub(crate) fn delete(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -623,7 +609,6 @@ impl AzureProvider {
 }
 
 impl AzureConfig {
-    /// Go: func (c azureConfig) args(a ...string) []string
     pub(crate) fn args(&self, a: &[String]) -> Vec<String> {
         let mut out = a.to_vec();
         if !self.subscription.is_empty() {

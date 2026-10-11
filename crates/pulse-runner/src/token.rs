@@ -11,7 +11,6 @@ pub(crate) const LOGIN_SOURCE_TOKEN: &str = "executor token";
 pub(crate) const LOGIN_SOURCE_HUB_LOGIN: &str = "hub login";
 pub(crate) const LOGIN_SOURCE_PROVIDER: &str = "provider login";
 pub(crate) const LOGIN_SOURCE_NONE: &str = "none";
-/// Go: func executorTokenPath(s *store.Store) string
 pub(crate) fn executor_token_path(s: &pulse_store::Store) -> String {
     std::path::Path::new(&s.home)
         .join("private")
@@ -20,7 +19,7 @@ pub(crate) fn executor_token_path(s: &pulse_store::Store) -> String {
         .to_string()
 }
 pub(crate) type GhAuthTokenFn = fn() -> Result<String>;
-/// Go: var ghAuthToken = func() (string, error) - asks the hub's gh for its token; tests stub it.
+/// Asks the hub's gh for its token; tests stub it.
 /// "" with no error means gh has no login.
 pub(crate) static GH_AUTH_TOKEN: LazyLock<RwLock<GhAuthTokenFn>> =
     LazyLock::new(|| RwLock::new(gh_auth_token_default));
@@ -38,7 +37,6 @@ fn gh_auth_token_default() -> Result<String> {
         Ok(out) => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
     }
 }
-/// Go: func checkExecutorToken(token string) (tokenFacts, error)
 pub(crate) fn check_executor_token(token: &str) -> Result<crate::executor::TokenFacts> {
     classify_executor_token(token)?;
     let facts = crate::executor::github_token_facts(token, "");
@@ -53,7 +51,6 @@ pub(crate) fn check_executor_token(token: &str) -> Result<crate::executor::Token
     }
     Ok(facts)
 }
-/// Go: func executorTokenSet(s *store.Store, now string, token io.Reader, isTTY bool, actor string) ([]string, error)
 pub(crate) fn executor_token_set(
     s: &pulse_store::Store,
     now: &str,
@@ -135,7 +132,6 @@ pub(crate) fn executor_token_set(
     }
     Ok(lines)
 }
-/// Go: func executorTokenRemove(s *store.Store, now, actor string) ([]string, error)
 pub(crate) fn executor_token_remove(
     s: &pulse_store::Store,
     now: &str,
@@ -163,7 +159,6 @@ pub(crate) fn executor_token_remove(
         Err(e) => Err(e.into()),
     }
 }
-/// Go: func executorTokenReport(s *store.Store, now string) []string
 pub(crate) fn executor_token_report(s: &pulse_store::Store, now: &str) -> Vec<String> {
     let path = executor_token_path(s);
     if !Path::new(&path).exists() {
@@ -193,11 +188,9 @@ pub(crate) fn executor_token_report(s: &pulse_store::Store, now: &str) -> Vec<St
     }
     lines
 }
-/// Go: func orDash(s string) string
 pub(crate) fn or_dash(s: &str) -> String {
     if s.is_empty() { "-".into() } else { s.into() }
 }
-/// Go: func expiresText(expires string) string
 pub(crate) fn expires_text(expires: &str) -> String {
     if expires.is_empty() {
         String::new()
@@ -205,7 +198,6 @@ pub(crate) fn expires_text(expires: &str) -> String {
         format!(", expires {expires}")
     }
 }
-/// Go: func findingProject(s *store.Store) string
 pub(crate) fn finding_project(s: &pulse_store::Store) -> String {
     let Ok(conn) = s.conn() else {
         return String::new();
@@ -242,11 +234,9 @@ pub(crate) static GH_SOURCE: LazyLock<Mutex<GhSourceCache>> =
 pub(crate) static PROVIDER_SOURCE: LazyLock<Mutex<GhSourceCache>> =
     LazyLock::new(|| Mutex::new(GhSourceCache::default()));
 impl GhSourceCache {
-    /// Go: func (c *ghSourceCache) forget()
     pub(crate) fn forget(&mut self) {
         *self = Self::default()
     }
-    /// Go: func (c *ghSourceCache) fetch() (string, error)
     pub(crate) fn fetch(&mut self) -> Result<String> {
         let now = (*crate::run::WALL_CLOCK.read().expect("wall clock"))();
         if self.fetched_at.is_some_and(|t| {
@@ -260,8 +250,6 @@ impl GhSourceCache {
         self.fetched_at = Some(now);
         Ok(tok)
     }
-    /// Go: func (c *ghSourceCache) passes(tok string) bool
-    ///
     /// Says whether tok is an acceptable source, asking GitHub only when the cache is cold or stale.
     pub(crate) fn passes(&mut self, tok: &str) -> bool {
         let now = (*crate::run::WALL_CLOCK.read().expect("wall clock"))();
@@ -280,8 +268,6 @@ impl GhSourceCache {
         self.ok
     }
 }
-/// Go: func loginSource(s *store.Store) ([]byte, string, error)
-///
 /// ADR-034 rule 2: the executor token on file, else (native) the stored provider login or (legacy)
 /// the hub's `gh auth token` when the source reaches no repository, else none. The file is trusted
 /// after classifyToken alone (it was checked when placed); borrowed sources are checked against
@@ -327,17 +313,14 @@ pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> 
     }
     Ok((Vec::new(), LOGIN_SOURCE_NONE.into()))
 }
-/// Go: func isNoStoredLogin(err error) bool
 pub(crate) fn is_no_stored_login(err: &anyhow::Error) -> bool {
     err.chain()
         .filter_map(|e| e.downcast_ref::<pulse_provider::ProviderError>())
         .any(|perr| perr.code == "no_stored_login")
 }
-/// Go: func hasLoginSource(s *store.Store) bool
 pub(crate) fn has_login_source(s: &pulse_store::Store) -> bool {
     login_source(s).map(|(t, _)| !t.is_empty()).unwrap_or(false)
 }
-/// Go: func tokenReader(tok []byte) io.Reader
 pub(crate) fn token_reader(tok: Vec<u8>) -> Cursor<Vec<u8>> {
     Cursor::new(tok)
 }
@@ -361,9 +344,9 @@ fn classify_executor_token(token: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store, serial};
-    use crate::test_helpers_f1b::{TEST_EXECUTOR_TOKEN, write_executor_token};
-    use crate::test_helpers_f5::{must_one, must_rows, set_setting};
-    use crate::test_helpers_f6::{invoke, invoke_ok, stub_gh, with_stdin};
+    use crate::test_helpers_daemon::{must_one, must_rows, set_setting};
+    use crate::test_helpers_hands::{TEST_EXECUTOR_TOKEN, write_executor_token};
+    use crate::test_helpers_provider::{invoke, invoke_ok, stub_gh, with_stdin};
     use crate::test_helpers_token::{
         FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
     };

@@ -103,7 +103,7 @@ pub fn render(harness: &str, bin: &str, existing: &[u8]) -> Result<(String, bool
                     Value::Object(m) => m,
                     _ => {
                         return Err(anyhow!(
-                            "existing settings are not a JSON object: json: cannot unmarshal non-object into Go value of type map[string]interface {{}}"
+                            "existing settings are not a JSON object: the top-level value is not an object"
                         ));
                     }
                 }
@@ -181,7 +181,7 @@ fn render_removal(existing: &[u8]) -> Result<(String, bool)> {
         Value::Object(m) => m,
         _ => {
             return Err(anyhow!(
-                "existing settings are not a JSON object: json: cannot unmarshal non-object into Go value of type map[string]interface {{}}"
+                "existing settings are not a JSON object: the top-level value is not an object"
             ));
         }
     };

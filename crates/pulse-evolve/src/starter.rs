@@ -1,5 +1,3 @@
-//! Port of internal/evolve/starter.go.
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -13,7 +11,6 @@ pub(crate) struct StarterFixture {
     pub(crate) expected: String,
 }
 
-/// Go: var starterSet = []starterFixture{
 pub(crate) static STARTER_SET: LazyLock<Vec<StarterFixture>> = LazyLock::new(|| {
     vec![
         StarterFixture {
@@ -49,12 +46,10 @@ pub(crate) static STARTER_SET: LazyLock<Vec<StarterFixture>> = LazyLock::new(|| 
     ]
 });
 
-/// Go: func init() { board.OnProjectCreated = seedOnCreate }
 pub(crate) fn init() {
     pulse_board::set_on_project_created(Some(seed_on_create_hook));
 }
 
-/// Go: func seedOnCreate(s *store.Store, p *store.Project, actor string) error {
 pub(crate) fn seed_on_create(
     s: &pulse_store::Store,
     p: Option<&pulse_store::Project>,
@@ -113,12 +108,10 @@ pub(crate) fn seed_on_create(
     }
 }
 
-/// Go: func IsStarter(name string) bool { return strings.HasPrefix(name, StarterPrefix) }
 pub fn is_starter(name: &str) -> bool {
     name.starts_with(STARTER_PREFIX)
 }
 
-/// Go: func StarterFixtures() []FixtureInput {
 pub fn starter_fixtures() -> Vec<crate::fixtures::FixtureInput> {
     STARTER_SET
         .iter()
@@ -133,7 +126,6 @@ pub fn starter_fixtures() -> Vec<crate::fixtures::FixtureInput> {
         .collect()
 }
 
-/// Go: func SeedStarterFixtures(s *store.Store, project, actor string) (int, error) {
 pub fn seed_starter_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Result<i64> {
     crate::fixtures::valid_project(s, project)?;
     let existing = crate::fixtures::list_fixtures(s, project, false)?;
@@ -178,7 +170,7 @@ pub(crate) fn seed_on_create_hook(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_e2::*;
+    use crate::test_helpers_cycle::*;
     use std::path::Path;
 
     #[test]
@@ -211,7 +203,7 @@ mod tests {
     #[test]
     fn seed_starter_fixtures_is_idempotent_and_keeps_owner_choices() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         disable_project_hook();
         test_project(&s, "demo");
@@ -274,7 +266,7 @@ mod tests {
     #[test]
     fn registering_a_project_seeds_the_starter_set_once() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         init();
         let repo = crate::test_helpers::temp_path();
@@ -315,7 +307,7 @@ mod tests {
     #[test]
     fn seed_failure_is_recorded_not_fatal() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         seed_on_create(
             &s,
@@ -336,7 +328,7 @@ mod tests {
     #[test]
     fn starter_scores_judge_effects_only() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let _env = pulse_testutil::env_lock();
         let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
@@ -484,7 +476,7 @@ mod tests {
     #[test]
     fn starter_score_finds_the_measured_commit_without_the_variable() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let _env = pulse_testutil::env_lock();
         let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
@@ -520,7 +512,7 @@ mod tests {
     #[test]
     fn starter_tier0_checks_the_isolated_store_for_records() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         let (repo, commit) = score_repo();
         let cancel = pulse_bus::CancellationToken::new();
@@ -553,7 +545,7 @@ mod tests {
     #[test]
     fn starter_scores_leave_the_frozen_tree_untouched() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let _env = pulse_testutil::env_lock();
         let home = crate::test_helpers::temp_path();
         set_env("PULSE_HOME", home.to_str().unwrap());
@@ -574,7 +566,7 @@ mod tests {
     #[test]
     fn score_command_prints_one_line() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         crate::register::register();
         let s = test_store();
         disable_project_hook();
@@ -656,7 +648,7 @@ mod tests {
     #[test]
     fn measure_runs_starter_scorers_through_this_executable() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         disable_project_hook();
         let repo = test_project(&s, "demo");
@@ -736,7 +728,7 @@ mod tests {
     #[test]
     fn status_offers_the_starter_seed_first() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         disable_project_hook();
         test_project(&s, "demo");
@@ -765,7 +757,7 @@ mod tests {
     #[test]
     fn fixture_seed_command() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         crate::register::register();
         let s = test_store();
         disable_project_hook();
@@ -803,7 +795,7 @@ mod tests {
     #[test]
     fn stripped_tracked_answer_keys_leave_the_clone_clean_for_starter_rules() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         disable_project_hook();
         let repo = test_project(&s, "demo");
@@ -868,7 +860,7 @@ mod tests {
     #[test]
     fn measure_progress_shows_public_scorer_reasons_only() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         disable_project_hook();
         let repo = test_project(&s, "demo");

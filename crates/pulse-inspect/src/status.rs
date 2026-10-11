@@ -806,9 +806,9 @@ mod tests {
             "INSERT INTO projects(slug,name,path,status,brain,added_at) VALUES ('active','Active','/missing-active','active',0,'2026-09-06T19:00:00Z'),('inactive','Inactive','/missing-inactive','inactive',0,'2026-09-06T19:00:00Z')",
         );
         for (id, mode, status, at) in [
-            ("today", "real", "done", PARITY_NOW),
-            ("dry", "dry-run", "done", PARITY_NOW),
-            ("error", "real", "error", PARITY_NOW),
+            ("today", "real", "done", TEST_NOW),
+            ("dry", "dry-run", "done", TEST_NOW),
+            ("error", "real", "error", TEST_NOW),
             ("yesterday", "real", "done", "2026-09-05T23:59:59Z"),
             ("running", "real", "running", "2026-09-06T18:50:00Z"),
             ("stale-running", "real", "running", "2026-09-06T01:00:00Z"),
@@ -865,7 +865,7 @@ mod tests {
             capacity_disk(&s).unwrap(),
             "disk: 252 MB free, needs 1024; 6 projects waiting"
         );
-        // Back to the starved note so the CLI parity check below still sees it.
+        // Back to the starved note so the CLI check below still sees it.
         exec_sql(
             &s,
             "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":2,\"starved_since\":\"2026-09-06T18:29:01Z\"}' WHERE key = 'capacity'",
@@ -876,10 +876,6 @@ mod tests {
             report
                 .text()
                 .contains(&format!("\nharness    {}\n", report.harness))
-        );
-        assert_parity(
-            invoke(Some(s.clone()), false, "", "status", &[]),
-            oracle(&s.home, true, &["status"]),
         );
         let as_json = invoke(Some(s.clone()), true, "", "status", &[]);
         let decoded: StatusReport = serde_json::from_str(&as_json.out).unwrap();

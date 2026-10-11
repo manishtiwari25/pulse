@@ -47,26 +47,21 @@ pub struct FixtureInput {
     pub answer_keys: Vec<String>,
 }
 
-/// Go: var fixtureName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$`)
 pub(crate) static FIXTURE_NAME: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$").unwrap());
 
-/// Go: func finite(v float64) bool
 pub(crate) fn finite(v: f64) -> bool {
     !v.is_nan() && !v.is_infinite()
 }
 
-/// Go: func scoreValue(v float64) bool
 pub(crate) fn score_value(v: f64) -> bool {
     finite(v) && (0.0..=1.0).contains(&v)
 }
 
-/// Go: func inputError(what, why, fix string) error
 pub(crate) fn input_error(what: &str, why: &str, fix: &str) -> anyhow::Error {
     anyhow!(pulse_cli::errorf(2, what, why, fix))
 }
 
-/// Go: func validProject(s *store.Store, slug string) (*store.Project, error)
 pub(crate) fn valid_project(s: &pulse_store::Store, slug: &str) -> Result<pulse_store::Project> {
     let p = s.project(slug)?;
     match p {
@@ -79,7 +74,6 @@ pub(crate) fn valid_project(s: &pulse_store::Store, slug: &str) -> Result<pulse_
     }
 }
 
-/// Go: func relativePath(value string) (string, error)
 pub(crate) fn relative_path(value: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty()
@@ -107,7 +101,6 @@ pub(crate) fn relative_path(value: &str) -> Result<String> {
     Ok(clean)
 }
 
-/// Go: func AddFixture(s *store.Store, in FixtureInput) (*Fixture, error)
 pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixture> {
     let mut input = input;
     valid_project(s, &input.project)?;
@@ -246,7 +239,6 @@ pub fn add_fixture(s: &pulse_store::Store, input: FixtureInput) -> Result<Fixtur
     Ok(f)
 }
 
-/// Go: func ListFixtures(s *store.Store, project string, enabledOnly bool) ([]Fixture, error)
 pub fn list_fixtures(
     s: &pulse_store::Store,
     project: &str,
@@ -294,7 +286,6 @@ pub fn list_fixtures(
     Ok(out)
 }
 
-/// Go: func SetFixtureEnabled(s *store.Store, project, name string, enabled bool, actor string) error
 pub fn set_fixture_enabled(
     s: &pulse_store::Store,
     project: &str,
@@ -323,7 +314,6 @@ pub fn set_fixture_enabled(
     tx.commit()
 }
 
-/// Go: path.Clean
 fn path_clean(value: &str) -> String {
     pulse_store::filepath::clean(value)
 }

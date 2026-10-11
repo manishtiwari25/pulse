@@ -1,5 +1,3 @@
-//! Port of internal/evolve/plan.go.
-
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -29,7 +27,6 @@ pub struct PlanResult {
 pub(crate) type ReadPlanPreflight =
     fn(&pulse_store::Store, &str) -> Result<crate::status::LoopStatus>;
 
-/// Go: var readPlanPreflight = loopStatus
 pub(crate) static READ_PLAN_PREFLIGHT: LazyLock<RwLock<Option<ReadPlanPreflight>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -40,7 +37,6 @@ pub(crate) fn set_read_plan_preflight(f: Option<ReadPlanPreflight>) {
         .expect("read plan preflight poisoned") = f;
 }
 
-/// Go: func PlanExperiment(s *store.Store, project string, opts PlanOptions) (PlanResult, error) {
 pub fn plan_experiment(
     s: &pulse_store::Store,
     project: &str,
@@ -49,12 +45,10 @@ pub fn plan_experiment(
     plan_experiment_inner(s, project, opts, None)
 }
 
-/// Go: func LoopPick(s *store.Store, project string) (suggestionID string, reason string, err error) {
 pub fn loop_pick(s: &pulse_store::Store, project: &str) -> Result<(String, String)> {
     loop_pick_for_agent(s, project, "daemon")
 }
 
-/// Go: func LoopPickForAgent(s *store.Store, project, agent string) (suggestionID string, reason string, err error) {
 pub fn loop_pick_for_agent(
     s: &pulse_store::Store,
     project: &str,
@@ -68,7 +62,6 @@ pub fn loop_pick_for_agent(
     }
 }
 
-/// Go: func LoopClaims(s *store.Store, project, agent string) (claims map[string]bool, reason string, err error) {
 pub fn loop_claims_public(
     s: &pulse_store::Store,
     project: &str,
@@ -78,7 +71,6 @@ pub fn loop_claims_public(
     Ok((ordered.into_iter().map(|id| (id, true)).collect(), reason))
 }
 
-/// Go: func loopClaims(s *store.Store, project, agent string) (claims []string, reason string, err error) {
 pub(crate) fn loop_claims(
     s: &pulse_store::Store,
     project: &str,
@@ -153,7 +145,6 @@ pub(crate) fn loop_claims(
     Ok((claims, reason))
 }
 
-/// Go: func planExperiment(s *store.Store, project string, opts PlanOptions, seen map[string]bool) (PlanResult, error) {
 pub(crate) fn plan_experiment_inner(
     s: &pulse_store::Store,
     project: &str,
@@ -192,7 +183,6 @@ pub(crate) fn plan_experiment_inner(
     plan_experiment_inner(s, project, opts, seen)
 }
 
-/// Go: func planExperimentLocked(s *store.Store, tx *board.WriteTransaction, project string, opts PlanOptions, seen map[string]bool) (PlanResult, error) {
 pub(crate) fn plan_experiment_locked(
     s: &pulse_store::Store,
     tx: &pulse_board::WriteTransaction<'_>,
@@ -228,6 +218,34 @@ pub(crate) fn plan_experiment_locked(
                 session: opts.session.clone(),
                 summary: crate::cycle::STOP_SUMMARY.to_string(),
                 body: format!("{reason}\nThe workflow was not bypassed."),
+                ..Default::default()
+            })?;
+            q = post.id;
+        }
+        return Ok(PlanResult {
+            reason,
+            question: q,
+            ..Default::default()
+        });
+    }
+    // Fixtures that never move cannot pick a variant: one owner question,
+    // then the loop waits for a fixture that does or for the owner's answer.
+    if let (question, reason) = crate::flat_gate::flat_fixture_gate(s, project)?
+        && !reason.is_empty()
+    {
+        let mut q = question;
+        if q.is_empty() {
+            let post = create_gate_post(pulse_board::PostInput {
+                kind: "question".to_string(),
+                project: project.to_string(),
+                area: "evolution".to_string(),
+                thread: "loop-gate".to_string(),
+                for_owner: true,
+                agent: opts.agent.clone(),
+                agent_row: opts.agent_row.clone(),
+                session: opts.session.clone(),
+                summary: crate::flat_gate::FLAT_SUMMARY.to_string(),
+                body: crate::flat_gate::flat_fixture_question_body(s, project)?,
                 ..Default::default()
             })?;
             q = post.id;
@@ -477,7 +495,6 @@ fn parent_block(s: &pulse_store::Store, project: &str, seed: &str) -> Result<Opt
     )))
 }
 
-/// Go: func cardJobSuggestion(job *board.Job) string { return strings.TrimPrefix(job.Source, "suggestion:") }
 pub(crate) fn card_job_suggestion(job: &pulse_board::Job) -> String {
     job.source
         .strip_prefix("suggestion:")
@@ -485,7 +502,6 @@ pub(crate) fn card_job_suggestion(job: &pulse_board::Job) -> String {
         .to_string()
 }
 
-/// Go: func cardJobReason(job *board.Job) string {
 pub(crate) fn card_job_reason(job: &pulse_board::Job) -> String {
     format!(
         "suggestion {} has no experiment card; card job {} ({}) writes one as a new suggestion on its thread",
@@ -495,7 +511,6 @@ pub(crate) fn card_job_reason(job: &pulse_board::Job) -> String {
     )
 }
 
-/// Go: func fixAlreadyLanded(s *store.Store, project, file, commit string) (bool, error) {
 pub(crate) fn fix_already_landed(
     s: &pulse_store::Store,
     project: &str,
@@ -547,7 +562,6 @@ pub(crate) fn fix_already_landed(
         .any(|line| line.to_ascii_lowercase().contains(&needle)))
 }
 
-/// Go: func experimentCarrierReason(job *board.Job) string {
 pub(crate) fn experiment_carrier_reason(job: &pulse_board::Job) -> String {
     if job.status == "blocked" {
         format!(
@@ -586,7 +600,6 @@ pub(crate) fn scope_closed_note(closed: &[ScopeClosed]) -> String {
     )
 }
 
-/// Go: func experimentCandidates(s *store.Store, project string, status *LoopStatus, result *tally.Result, agent string, requirePositiveScore bool, seen map[string]bool) ([]experimentCandidate, error) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn experiment_candidates(
     s: &pulse_store::Store,
@@ -680,7 +693,6 @@ pub(crate) fn experiment_candidates(
     Ok(out)
 }
 
-/// Go: func heldByAnotherJob(s *store.Store, sg tally.Suggestion) (bool, error) {
 pub(crate) fn held_by_another_job(
     s: &pulse_store::Store,
     sg: pulse_tally::Suggestion,
@@ -697,7 +709,6 @@ pub(crate) fn held_by_another_job(
     Ok(kind.is_some_and(|k| k != "experiment"))
 }
 
-/// Go: func openExperimentForSuggestion(s *store.Store, project, suggestionID string) (*board.Job, error) {
 pub(crate) fn open_experiment_for_suggestion(
     s: &pulse_store::Store,
     project: &str,
@@ -717,7 +728,6 @@ pub(crate) fn open_experiment_for_suggestion(
         .map(Option::flatten)
 }
 
-/// Go: func inFlightExperiment(s *store.Store, project string, includeLanding bool) (string, bool, error) {
 pub(crate) fn in_flight_experiment(
     s: &pulse_store::Store,
     project: &str,
@@ -738,7 +748,6 @@ pub(crate) fn in_flight_experiment(
     Ok(conn.query_row(&q, [project], |r| r.get(0)).optional()?)
 }
 
-/// Go: func threadHasCard(s *store.Store, project string, p *tally.Post, status *LoopStatus) (bool, error) {
 pub(crate) fn thread_has_card(
     s: &pulse_store::Store,
     project: &str,
@@ -762,7 +771,6 @@ pub(crate) fn thread_has_card(
     Ok(false)
 }
 
-/// Go: func questionOpenOnPost(s *store.Store, project string, p *tally.Post, agent string) bool {
 pub(crate) fn question_open_on_post(
     s: &pulse_store::Store,
     project: &str,
@@ -808,7 +816,7 @@ mod tests {
     use crate::test_helpers::{
         count_rows, join_test_agent, put_file, test_git, test_project, test_store,
     };
-    use crate::test_helpers_e1::*;
+    use crate::test_helpers_plan::*;
     use std::path::Path;
     use std::sync::mpsc;
     use std::sync::{Arc, Condvar, LazyLock, Mutex};
@@ -825,7 +833,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_for_owner() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         set_read_plan_preflight(None);
         let s = cycle_ready();
         let owner = voted_post_with_votes(
@@ -880,7 +888,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_card_whose_tree_is_gone() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         set_read_plan_preflight(None);
         let s = cycle_ready();
         // A staged class whose paths predate a port: the constitution still lists it.
@@ -946,7 +954,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_card_whose_target_is_immutable() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         set_read_plan_preflight(None);
         let s = cycle_ready();
         put_record(
@@ -1027,7 +1035,7 @@ mod tests {
     #[test]
     fn plan_experiment_level_gate_has_no_side_effects() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = test_store();
         test_project(&s, "demo");
         join_test_agent(&s, "tester");
@@ -1055,7 +1063,7 @@ mod tests {
     #[test]
     fn plan_experiment_queues_top_eligible_suggestion() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let low =
             voted_suggestion_with_votes(&s, "lower", "operating-layer", "README.md", &["up", "up"]);
@@ -1107,7 +1115,7 @@ mod tests {
     #[test]
     fn plan_experiment_agent_row_does_not_need_stored_agent() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let high = voted_suggestion_with_votes(
             &s,
@@ -1146,7 +1154,7 @@ mod tests {
     #[test]
     fn plan_experiment_tie_needs_another_vote() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         voted_suggestion_with_votes(&s, "zero", "operating-layer", "README.md", &["up", "down"]);
         let result = plan_experiment(
@@ -1182,7 +1190,7 @@ mod tests {
     #[test]
     fn plan_experiment_in_flight_experiment() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let (job, created) = pulse_board::add_job(
             &s,
@@ -1258,7 +1266,7 @@ mod tests {
     #[test]
     fn plan_experiment_uses_daemon_hard_stop_gate() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         voted_suggestion_with_votes(&s, "next", "operating-layer", "README.md", &["up", "up"]);
         let (job, _) = pulse_board::add_job(
@@ -1371,9 +1379,133 @@ mod tests {
         );
     }
     #[test]
+    fn plan_experiment_pauses_on_flat_fixtures() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        let s = cycle_ready();
+        voted_suggestion_with_votes(&s, "next", "operating-layer", "README.md", &["up", "up"]);
+        s.set_setting("human", "evolve.flat_cycles", "3").unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        let stamp = |offset: i64| {
+            (now + chrono::Duration::seconds(offset))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "UPDATE evolution_fixtures SET at = ? WHERE project = 'demo'",
+            [stamp(-100)],
+        )
+        .unwrap();
+        // The ready store's one archived cycle moved and is dated now; the
+        // tied cycles share that second and sort after it by rowid.
+        for id in ["B-002", "B-003", "B-004"] {
+            conn.execute(
+                "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+				VALUES (?, 'demo', 'S-1', 'one constant', '', 0.5, 0.5, 0.02, 1, '{}', ?)",
+                rusqlite::params![id, stamp(0)],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let mut question = String::new();
+        for _ in 0..2 {
+            let planned = plan_experiment(
+                &s,
+                "demo",
+                PlanOptions {
+                    agent: "tester".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                !planned.created
+                    && planned.job_id.is_empty()
+                    && !planned.question.is_empty()
+                    && planned
+                        .reason
+                        .contains("the last 3 experiment cycles all tied")
+                    && planned.reason.contains("B-002, B-003, B-004"),
+                "planner ran on fixtures that never moved: {planned:?}"
+            );
+            if !question.is_empty() {
+                assert_eq!(planned.question, question, "flat question was duplicated");
+            }
+            question = planned.question;
+        }
+        assert_eq!(count_rows(&s, "jobs WHERE kind = 'experiment'"), 0);
+        assert_eq!(
+            count_rows(
+                &s,
+                &format!(
+                    "posts WHERE kind = 'question' AND summary = '{}'",
+                    crate::flat_gate::FLAT_SUMMARY
+                )
+            ),
+            1
+        );
+        let post = pulse_board::post_by_id(&s, &question).unwrap().unwrap();
+        assert!(
+            post.for_owner
+                && post.area == "evolution"
+                && post.thread == "loop-gate"
+                && post.body.contains("- B-002: 0.5000 -> 0.5000, ")
+                && post.body.contains("- F01: public, metric no, weight 1")
+                && post
+                    .body
+                    .contains("pulse evolve fixture add --project demo --name NAME --metric"),
+            "{post:?}"
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(
+            status.planning.state, "blocked",
+            "status disagrees with the flat gate: {status:?}"
+        );
+        assert_eq!(status.planning.question, question);
+        assert!(
+            status
+                .next_human_step
+                .contains(&format!("answer question {question}")),
+            "{status:?}"
+        );
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                kind: "answer".into(),
+                area: "evolution".into(),
+                thread: "loop-gate".into(),
+                on: question.clone(),
+                agent: "tester".into(),
+                summary: "Reviewed: run 3 more cycles".into(),
+                date: stamp(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let planned = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            planned.created && planned.question.is_empty(),
+            "answered flat gate did not resume: {planned:?}"
+        );
+        assert_eq!(
+            crate::status::status(&s, "demo").unwrap().planning.state,
+            "queued"
+        );
+    }
+    #[test]
     fn plan_experiment_skips_archived_suggestion() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let archived = voted_suggestion_with_votes(
             &s,
@@ -1422,7 +1554,7 @@ mod tests {
     #[test]
     fn plan_experiment_adds_lineage_parent_block() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         s.set_setting("human", "evolve.parent_rate", "1").unwrap();
         let patch = Path::new(&s.home)
@@ -1479,7 +1611,7 @@ mod tests {
     #[test]
     fn plan_experiment_respects_product_scope() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         s.put_record(
             pulse_store::Record {
@@ -1521,7 +1653,7 @@ mod tests {
     #[test]
     fn plan_experiment_asks_owner_once_per_flagged_post() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let _env = pulse_testutil::env_lock();
         let s = cycle_ready();
         let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
@@ -1645,7 +1777,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_card_question_when_thread_has_card() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let no_card = voted_post_with_votes(
             &s,
@@ -1680,7 +1812,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_landed_fix() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = s.project("demo").unwrap().unwrap();
         put_file(Path::new(&p.path).join("README.md"), "landed fix\n", 0o644);
@@ -1714,7 +1846,7 @@ mod tests {
     #[test]
     fn plan_experiment_skips_landed_fix_by_sha() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = s.project("demo").unwrap().unwrap();
         put_file(
@@ -1769,7 +1901,7 @@ mod tests {
     #[test]
     fn plan_experiment_does_not_skip_unlanded_fix() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = s.project("demo").unwrap().unwrap();
         put_file(Path::new(&p.path).join("README.md"), "landed fix\n", 0o644);
@@ -1796,7 +1928,7 @@ mod tests {
     #[test]
     fn loop_pick_requires_loop_on_and_level_d() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         voted_suggestion_with_votes(&s, "ready", "operating-layer", "README.md", &["up", "up"]);
         s.set_setting("human", "evolve.loop", "0").unwrap();
@@ -1812,7 +1944,7 @@ mod tests {
     #[test]
     fn loop_pick_returns_top_positive_untried_suggestion() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let low =
             voted_suggestion_with_votes(&s, "lower", "operating-layer", "README.md", &["up", "up"]);
@@ -1836,7 +1968,7 @@ mod tests {
     #[test]
     fn loop_pick_returns_in_flight_experiment_suggestion() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         for status in ["queued", "leased"] {
             let s = cycle_ready();
             let suggestion = voted_suggestion_with_votes(
@@ -1877,7 +2009,7 @@ mod tests {
     #[test]
     fn loop_pick_skips_archived_suggestion() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let archived = voted_suggestion_with_votes(
             &s,
@@ -1975,7 +2107,7 @@ mod tests {
     #[test]
     fn plan_experiment_proceeds_after_the_owner_decides_the_stop_question() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = voted_suggestion_with_votes(&s, "candidate", "product", "value.txt", &["up", "up"]);
         let flagged = pulse_board::create_post(
@@ -2127,7 +2259,7 @@ mod tests {
     #[test]
     fn loop_claims_holds_only_the_flagged_post_while_stopped() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = voted_suggestion_with_votes(&s, "candidate", "product", "value.txt", &["up", "up"]);
         let other =
@@ -2195,7 +2327,7 @@ mod tests {
     #[test]
     fn plan_experiment_keeps_the_stop_after_a_no() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let p = voted_suggestion_with_votes(&s, "candidate", "product", "value.txt", &["up", "up"]);
         pulse_board::create_post(
@@ -2241,7 +2373,7 @@ mod tests {
     #[test]
     fn admission_rechecks_after_final_archive() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         for kind in ["experiment", "feedback"] {
             for close_gate in ["last-cycle", "stop", "evaluator"] {
                 let s = cycle_ready();
@@ -2326,7 +2458,7 @@ mod tests {
     #[test]
     fn admission_serializes_experiment_callers() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let candidate = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         s.set_setting("human", "evolve.limits", "cycles=1").unwrap();
@@ -2431,7 +2563,7 @@ mod tests {
     #[test]
     fn admission_gate_posts_do_not_probe_git() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let _env = pulse_testutil::env_lock();
         for gate in ["failed-experiment", "instruction"] {
             let s = cycle_ready();
@@ -2510,7 +2642,7 @@ mod tests {
     #[test]
     fn admission_rolls_back_card_and_events() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         s.conn()

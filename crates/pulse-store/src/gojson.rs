@@ -1,20 +1,27 @@
-//! JSON encoding with Go's `encoding/json` number and string formatting.
+//! JSON encoding in the exact byte form PULSE stores, hashes and prints.
 //!
-//! serde_json prints every f64 with a fractional part (`0.0`, `1.0`) and
-//! exponents as `1e21`; Go prints the shortest round-trip form (`0`, `1`,
-//! `2.5`), switches to exponent form only below 1e-6 or from 1e21 (`1e+21`,
-//! `1e-7`), and rejects NaN/Inf. Go also escapes `<`, `>` and `&` as
-//! `\u003c`, `\u003e`, `\u0026` (json.Marshal; an Encoder with
-//! `SetEscapeHTML(false)` does not), always escapes U+2028/U+2029, and writes
-//! backspace and form feed as `\u0008`/`\u000c` rather than `\b`/`\f`.
-//! Everything PULSE stores or prints as JSON went through Go's encoder, so the
-//! Rust side must match byte for byte.
+//! The contract, which serde_json's own formatters do not meet:
+//!
+//! * Floats print in the shortest form that round-trips (`0`, `1`, `2.5`,
+//!   never `0.0` or `1.0`); exponent form is used only below 1e-6 or from
+//!   1e21, with an explicit sign and no zero padding (`1e-7`, `1e+21`); NaN
+//!   and the infinities are rejected as unsupported values.
+//! * Strings escape `<`, `>` and `&` as `\u003c`, `\u003e`, `\u0026` (the
+//!   `_no_html` variants leave them bare), always escape U+2028 and U+2029,
+//!   and write backspace and form feed as `\u0008` and `\u000c` rather than
+//!   `\b` and `\f`.
+//! * Indented output uses two spaces per level and no trailing newline.
+//!
+//! Stored records, cache keys and hashes depend on this exact form, so it
+//! must not change.
 
 use serde::Serialize;
 use serde_json::ser::{CharEscape, Formatter, PrettyFormatter};
 use std::io::{self, Write};
 
-/// Go's strconv.AppendFloat as used by encoding/json (bits = 64).
+/// The shortest round-trip decimal form of `f`: plain digits between 1e-6
+/// and 1e21 (`0`, `2.5`, `100000000000000000000`), otherwise mantissa and
+/// signed exponent (`1e-7`, `1.5e+22`). None for NaN and the infinities.
 pub fn format_f64(f: f64) -> Option<String> {
     if f.is_nan() || f.is_infinite() {
         return None;
@@ -42,8 +49,8 @@ fn write_go_float<W: ?Sized + Write>(writer: &mut W, value: f64) -> io::Result<(
     }
 }
 
-/// Go's encodeState.string for the bytes serde_json leaves unescaped:
-/// `<`, `>`, `&` when escapeHTML, and U+2028/U+2029 always.
+/// Escapes the bytes serde_json leaves unescaped: `<`, `>`, `&` when
+/// `escape_html`, and U+2028/U+2029 always.
 fn write_go_fragment<W: ?Sized + Write>(
     writer: &mut W,
     fragment: &str,
@@ -79,7 +86,7 @@ fn write_go_fragment<W: ?Sized + Write>(
     writer.write_all(&bytes[start..])
 }
 
-/// Go writes `\u0008` and `\u000c` where serde_json writes `\b` and `\f`.
+/// Writes `\u0008` and `\u000c` where serde_json writes `\b` and `\f`.
 fn write_go_char_escape<W: ?Sized + Write>(
     writer: &mut W,
     char_escape: CharEscape,
@@ -94,8 +101,8 @@ fn write_go_char_escape<W: ?Sized + Write>(
     }
 }
 
-/// Compact output, like json.Marshal (`escape_html: true`) or
-/// json.NewEncoder + SetEscapeHTML(false) (`escape_html: false`).
+/// Compact output; `escape_html` selects whether `<`, `>` and `&` are
+/// written as `\u003c`, `\u003e`, `\u0026`.
 #[derive(Clone, Debug)]
 pub struct GoCompact {
     pub escape_html: bool,
@@ -133,9 +140,8 @@ impl Formatter for GoCompact {
     }
 }
 
-/// Indented output, like json.MarshalIndent(v, "", "  ") (`escape_html:
-/// true`) or json.NewEncoder + SetIndent("", "  ") + SetEscapeHTML(false)
-/// (`escape_html: false`).
+/// Output indented by two spaces per level; `escape_html` as for
+/// [`GoCompact`].
 #[derive(Clone, Debug)]
 pub struct GoPretty<'a> {
     inner: PrettyFormatter<'a>,
@@ -230,40 +236,40 @@ impl Formatter for GoPretty<'_> {
     }
 }
 
-/// json.Marshal
+/// Compact, HTML-escaped, as bytes.
 pub fn to_vec<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(128);
     to_writer(&mut out, value)?;
     Ok(out)
 }
 
-/// json.Marshal as a String.
+/// Compact, HTML-escaped, as a String.
 pub fn to_string<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<String> {
     let v = to_vec(value)?;
     // serde_json only ever writes valid UTF-8.
     Ok(unsafe { String::from_utf8_unchecked(v) })
 }
 
-/// json.MarshalIndent(v, "", "  ")
+/// Indented, HTML-escaped, as bytes.
 pub fn to_vec_pretty<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(128);
     to_writer_pretty(&mut out, value)?;
     Ok(out)
 }
 
-/// json.MarshalIndent(v, "", "  ") as a String.
+/// Indented, HTML-escaped, as a String.
 pub fn to_string_pretty<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<String> {
     let v = to_vec_pretty(value)?;
     Ok(unsafe { String::from_utf8_unchecked(v) })
 }
 
-/// json.NewEncoder(w).Encode(v) minus the trailing newline (escapes HTML).
+/// Compact, HTML-escaped, to a writer (no trailing newline).
 pub fn to_writer<W: Write, T: ?Sized + Serialize>(writer: W, value: &T) -> serde_json::Result<()> {
     let mut ser = serde_json::Serializer::with_formatter(writer, GoCompact::default());
     value.serialize(&mut ser)
 }
 
-/// json.MarshalIndent(v, "", "  ") to a writer (escapes HTML).
+/// Indented, HTML-escaped, to a writer.
 pub fn to_writer_pretty<W: Write, T: ?Sized + Serialize>(
     writer: W,
     value: &T,
@@ -272,7 +278,7 @@ pub fn to_writer_pretty<W: Write, T: ?Sized + Serialize>(
     value.serialize(&mut ser)
 }
 
-/// json.NewEncoder + SetEscapeHTML(false), compact, no trailing newline.
+/// Compact, `<>&` left bare, as bytes (no trailing newline).
 pub fn to_vec_no_html<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(128);
     let mut ser =
@@ -281,14 +287,13 @@ pub fn to_vec_no_html<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<Ve
     Ok(out)
 }
 
-/// json.NewEncoder + SetEscapeHTML(false), compact, as a String.
+/// Compact, `<>&` left bare, as a String.
 pub fn to_string_no_html<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<String> {
     let v = to_vec_no_html(value)?;
     Ok(unsafe { String::from_utf8_unchecked(v) })
 }
 
-/// json.NewEncoder + SetIndent("", "  ") + SetEscapeHTML(false), no trailing
-/// newline.
+/// Indented, `<>&` left bare, to a writer (no trailing newline).
 pub fn to_writer_pretty_no_html<W: Write, T: ?Sized + Serialize>(
     writer: W,
     value: &T,
@@ -297,23 +302,23 @@ pub fn to_writer_pretty_no_html<W: Write, T: ?Sized + Serialize>(
     value.serialize(&mut ser)
 }
 
-/// json.NewEncoder + SetIndent("", "  ") + SetEscapeHTML(false) as bytes.
+/// Indented, `<>&` left bare, as bytes.
 pub fn to_vec_pretty_no_html<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(128);
     to_writer_pretty_no_html(&mut out, value)?;
     Ok(out)
 }
 
-/// json.NewEncoder + SetIndent("", "  ") + SetEscapeHTML(false) as a String.
+/// Indented, `<>&` left bare, as a String.
 pub fn to_string_pretty_no_html<T: ?Sized + Serialize>(value: &T) -> serde_json::Result<String> {
     let v = to_vec_pretty_no_html(value)?;
     Ok(unsafe { String::from_utf8_unchecked(v) })
 }
 
-/// Go `map[string]any{...}` whose values may be structs: keys sort bytewise
-/// like Go's map encoding while each value keeps its own field order (a
-/// `serde_json::json!` literal would convert struct values into sorted-key
-/// maps). Build one with [`gomap!`](crate::gomap).
+/// An object literal whose values may be structs: keys sort bytewise while
+/// each value keeps its own field order (a `serde_json::json!` literal would
+/// convert struct values into sorted-key maps). Build one with
+/// [`gomap!`](crate::gomap).
 pub struct GoMap<'a>(pub Vec<(&'a str, &'a dyn erased_serde::Serialize)>);
 
 impl Serialize for GoMap<'_> {
@@ -329,8 +334,8 @@ impl Serialize for GoMap<'_> {
     }
 }
 
-/// `gomap!{"project": slug, "goal": goal}` = Go `map[string]any{"project":
-/// slug, "goal": goal}`: sorted keys, struct values in declaration order.
+/// `gomap!{"project": slug, "goal": goal}` builds a [`GoMap`]: sorted keys,
+/// struct values in declaration order.
 /// Values are borrowed for the duration of the enclosing statement, so use it
 /// inline (`write_json(out, &gomap!{...})`) or bind the values first.
 #[macro_export]
@@ -340,12 +345,12 @@ macro_rules! gomap {
     };
 }
 
-/// A Go slice whose nil-ness reaches JSON: `var out []T` (nil, encodes as
-/// `null`) versus `[]T{}` / `make([]T, 0)` (empty, encodes as `[]`). Use it
-/// for fields that can carry either on some code path; fields that are nil
-/// whenever empty can stay `Vec<T>` with [`nil_slice`]. It derefs to
-/// `Vec<T>`, so reads and pushes look like any vector; only an *empty* nil
-/// slice encodes as `null`, exactly like Go.
+/// A vector that distinguishes "never assigned" (nil, encodes as `null`)
+/// from "assigned but empty" (encodes as `[]`). Stored and printed JSON
+/// keeps that distinction, so use it for fields that can carry either on
+/// some code path; fields that are nil whenever empty can stay `Vec<T>` with
+/// [`nil_slice`]. It derefs to `Vec<T>`, so reads and pushes look like any
+/// vector; only an *empty* nil slice encodes as `null`.
 #[derive(Clone, Debug)]
 pub struct GoSlice<T> {
     vec: Vec<T>,
@@ -353,7 +358,7 @@ pub struct GoSlice<T> {
 }
 
 impl<T> GoSlice<T> {
-    /// `var out []T`.
+    /// Never assigned: encodes as `null` until something is pushed.
     pub const fn nil() -> Self {
         Self {
             vec: Vec::new(),
@@ -361,7 +366,7 @@ impl<T> GoSlice<T> {
         }
     }
 
-    /// `[]T{}` / `make([]T, 0)`.
+    /// Assigned but empty: encodes as `[]`.
     pub const fn empty() -> Self {
         Self {
             vec: Vec::new(),
@@ -369,8 +374,8 @@ impl<T> GoSlice<T> {
         }
     }
 
-    /// The result of `append`-building onto `var out []T`: nil when nothing
-    /// was appended.
+    /// A slice built by pushing onto [`nil`](Self::nil): nil when nothing
+    /// was pushed.
     pub fn appended(vec: Vec<T>) -> Self {
         Self { vec, nil: true }
     }
@@ -403,7 +408,8 @@ impl<T> From<GoSlice<T>> for Vec<T> {
 }
 
 impl<T> FromIterator<T> for GoSlice<T> {
-    /// Collecting mirrors an `append` loop over `var out []T`.
+    /// Collecting behaves like pushing onto [`GoSlice::nil`]: nil when the
+    /// iterator was empty.
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self::appended(iter.into_iter().collect())
     }
@@ -489,10 +495,10 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for GoSlice<T> {
     }
 }
 
-/// Go slices that are only ever `append`ed to (or scanned from rows) stay
-/// nil when empty and marshal as `null`, never `[]`. Mark such fields with
+/// For list fields that are only ever pushed to (or scanned from rows) and
+/// so are stored as `null`, never `[]`, when empty. Mark such fields with
 /// `#[serde(with = "pulse_store::gojson::nil_slice")]`: an empty Vec writes
-/// `null`, and `null` (as Go wrote it) reads back as an empty Vec.
+/// `null`, and a stored `null` reads back as an empty Vec.
 pub mod nil_slice {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -674,9 +680,10 @@ mod tests {
     }
 }
 
-/// Go: fmt.Sprint(v) for a value decoded from JSON into `any` (nil, bool,
-/// float64, string, []any, map[string]any): `<nil>`, `true`, `%g`-shortest
-/// floats, the bare string, `[a b]` and `map[k:v]` with sorted keys.
+/// The plain-text rendering of a decoded JSON value, as it appears in
+/// messages and reports: `<nil>` for null, `true`/`false`, floats as
+/// `sprint_float` prints them, the bare string, arrays as `[a b]` and
+/// objects as `map[k:v k2:v2]` with sorted keys.
 pub fn sprint(value: &serde_json::Value) -> String {
     use serde_json::Value;
     match value {
@@ -702,9 +709,10 @@ pub fn sprint(value: &serde_json::Value) -> String {
     }
 }
 
-/// Go: fmt.Sprint(f) for a float64 - %v is %g with the shortest digits, in
-/// exponent form when the decimal exponent is below -4 or at least 6
-/// (strconv's eprec for the shortest precision), e.g. 1e+06 but 100000.
+/// Shortest round-trip digits, in exponent form (two-digit, signed exponent)
+/// when the decimal exponent is below -4 or at least 6: `1e+06` but
+/// `100000`, `1e-05` but `0.0001`. NaN and the infinities print as `NaN`,
+/// `+Inf` and `-Inf`.
 fn sprint_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();

@@ -1,4 +1,4 @@
-//! A tiny HTTP/1.1 test server, the Rust stand-in for Go's `httptest.NewServer`.
+//! A tiny HTTP/1.1 test server for exercising HTTP clients in tests.
 //!
 //! ```ignore
 //! let srv = httptest::Server::new(|req| {
@@ -146,12 +146,12 @@ impl Server {
         }
     }
 
-    /// Base URL without a trailing slash, like Go's `srv.URL`.
+    /// Base URL without a trailing slash.
     pub fn url(&self) -> String {
         self.addr.clone()
     }
 
-    /// Stops accepting connections (like Go's `srv.Close()`).
+    /// Stops accepting connections and joins the accept thread; `Drop` calls it too.
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.lock().expect("server handle").take() {

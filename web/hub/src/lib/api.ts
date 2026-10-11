@@ -1,7 +1,7 @@
 // The API client. Every route is same-origin JSON under /api/v1/ (the pulse hub
 // serves the export and the API from one origin; `next dev` proxies /api to a
-// running `pulse hub`). Shapes of the existing routes come from what the
-// Python dashboard returned (legacy/dashboard/src/api.ts); the new routes
+// running `pulse hub`). The older routes keep the shapes the original
+// dashboard returned; the new routes
 // (tasks, messages, compute, records, constitution, events) follow the
 // "API v1 additions" contract - the pulse hub is checked against these types.
 
@@ -58,7 +58,7 @@ export function apiHref(path: string): string {
 }
 
 // The decide/settings routes kept their explicit intent headers from the
-// Python server (ADR-017, ADR-025); the newer write routes need only JSON.
+// original dashboard (ADR-017, ADR-025); the newer write routes need only JSON.
 // The held-out writes (ADR-032) take the same guard: a `.score` file is a
 // program the daemon runs, so the intent is stated in a header too; so does
 // the push key (ADR-042), which decides what the daemon may push with.
@@ -104,7 +104,7 @@ export function errorText(e: unknown): { error: string; why: string; fix: string
   return { error: String(e), why: "", fix: "" };
 }
 
-// ----- existing shapes (Python-compatible bodies) -----------------------
+// ----- existing shapes (original dashboard bodies) -----------------------
 
 export interface Who {
   agent?: string;
@@ -361,6 +361,11 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   evolution_present: boolean;
   loop: string;
   stop_present: boolean;
+  // Whose direction the lead works toward: the owner's goal or the generated
+  // default (ADR-040). Only project rows carry it - the shared board has no
+  // goal - and a hub that predates the field sends neither.
+  goal_source?: GoalSource;
+  goal_preview?: string; // the first line of the goal, at most ~120 characters; "" when nothing is stored
   last_post: PostRef | null;
   active_claims: Claim[];
   present: boolean;
@@ -473,7 +478,6 @@ export interface Notices {
 export interface Org {
   generated_at: string;
   registry: string;
-  tally_mode: string;
   can_decide: boolean;
   owner_presence?: "present" | "away";
   commons_dir: string;
@@ -485,7 +489,7 @@ export interface Org {
   active_claims: Claim[];
   proposals: Proposal[];
   questions?: OwnerQuestion[];
-  // pulse hub metadata (absent on the Python server).
+  // pulse hub metadata (added after the original dashboard; may be absent).
   store?: string;
   schema_version?: string;
   records_version?: string;
@@ -531,6 +535,9 @@ export interface RegisteredProject extends Partial<EvolveGate> {
   added_by: string;
   last_seen: string;
   present: boolean;
+  // ADR-040: the same goal fields the org row carries (see ProjectCardData).
+  goal_source?: GoalSource;
+  goal_preview?: string;
 }
 
 export interface ProjectsPayload {
@@ -546,9 +553,13 @@ export interface RegisterProjectInput {
 
 export const MAX_PROJECT_GOAL_CHARS = 4000;
 
+// "owner" when the owner set or edited the goal; "generated" for the default
+// PULSE composes from the project (also after the owner resets to it).
+export type GoalSource = "owner" | "generated";
+
 export interface ProjectGoal {
   text: string;
-  source: "owner" | "generated";
+  source: GoalSource;
   updated_at: string;
   updated_by: string;
 }
@@ -1014,7 +1025,7 @@ export interface HarnessSessionResponse {
 
 // GET /api/v1/running (ADR-035): which pulse runs where, against the brain's
 // HEAD. `state` is one word: off, no-daemon, no-brain, current, unstamped,
-// behind, waiting (see internal/hub/running.go). `daemon` comes from the
+// behind, waiting (see crates/pulse-hub/src/running.rs). `daemon` comes from the
 // heartbeat and is null until the daemon has run once; `last` is the newest
 // rebuild the daemon recorded, null when it never rebuilt.
 export type RunningState = "off" | "no-store" | "no-daemon" | "no-brain" | "current" | "unstamped" | "behind" | "waiting";
@@ -1687,7 +1698,7 @@ export const writes = {
   adoptDraft: (id: string, words: string) => post<{ record: RecordRow }>("records/" + enc(id) + "/adopt", words ? { words } : {}),
   discardDraft: (id: string, words: string) => post<{ record: RecordRow; discarded: boolean }>("records/" + enc(id) + "/discard", words ? { words } : {}),
   draftJob: (id: string) => post<{ job: JobRef; created: boolean; reason: string }>("records/" + enc(id) + "/draft-job", {}),
-  // `id` is the contract field; `post_id` is what the Python hub read - the pulse hub accepts both.
+  // `id` is the contract field; `post_id` is what the original dashboard sent - the pulse hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),
   harnessLogin: () => post<HarnessDeviceFlow>("harness/login", {}),

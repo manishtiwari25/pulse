@@ -75,32 +75,25 @@ pub trait Provider: Send + Sync {
 
 pub(crate) static PROVIDER_SET: LazyLock<RwLock<BTreeMap<String, Arc<dyn Provider>>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
-/// Go: func init() { tasks.LoginSourceCheck = hasLoginSource }
 pub(crate) fn init() {
     *pulse_tasks::LOGIN_SOURCE_CHECK.write().unwrap() = Some(crate::token::has_login_source);
     *pulse_tasks::COMPUTE_PROVIDERS.write().unwrap() = Some(crate::commands::cmd_compute_providers);
 }
-/// Go: func RegisterProvider(p Provider)
 pub fn register_provider<P: Provider + 'static>(p: P) {
     PROVIDER_SET.write().unwrap().insert(p.name(), Arc::new(p));
 }
-/// Go: func providers() []Provider
 pub(crate) fn providers() -> Vec<Arc<dyn Provider>> {
     PROVIDER_SET.read().unwrap().values().cloned().collect()
 }
-/// Go: func providerNamed(name string) Provider
 pub(crate) fn provider_named(name: &str) -> Option<Arc<dyn Provider>> {
     PROVIDER_SET.read().unwrap().get(name).cloned()
 }
-/// Go: func ProviderNames() []string
 pub fn provider_names() -> Vec<String> {
     PROVIDER_SET.read().unwrap().keys().cloned().collect()
 }
-/// Go: func computeExecutorName(requestID string) string
 pub(crate) fn compute_executor_name(request_id: &str) -> String {
     crate::util::slugify(&format!("hands-{}", request_id.to_lowercase()), 40)
 }
-/// Go: func redactSecrets(text string) string
 pub(crate) fn redact_secrets(text: &str) -> String {
     static WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
     static STAR_SECRET_RE: LazyLock<regex::Regex> =
@@ -119,7 +112,6 @@ pub(crate) fn redact_secrets(text: &str) -> String {
         })
         .to_string()
 }
-/// Go: func saveMachine(s *store.Store, requestID string, m *Machine, now string)
 pub(crate) fn save_machine(s: &pulse_store::Store, request_id: &str, m: &Machine, now: &str) {
     let detail =
         pulse_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
@@ -138,7 +130,6 @@ pub(crate) fn save_machine(s: &pulse_store::Store, request_id: &str, m: &Machine
         ],
     );
 }
-/// Go: func loadMachine(s *store.Store, requestID string) (*Machine, row)
 pub(crate) fn load_machine(s: &pulse_store::Store, request_id: &str) -> (Option<Machine>, Row) {
     let conn = s.conn().unwrap();
     let r = crate::util::must_one(
@@ -167,7 +158,6 @@ pub(crate) fn load_machine(s: &pulse_store::Store, request_id: &str) -> (Option<
         r,
     )
 }
-/// Go: func machineReleased(s *store.Store, requestID, now string)
 pub(crate) fn machine_released(s: &pulse_store::Store, request_id: &str, now: &str) {
     let conn = s.conn().unwrap();
     crate::util::exec1(
@@ -176,7 +166,6 @@ pub(crate) fn machine_released(s: &pulse_store::Store, request_id: &str, now: &s
         &[&now, &request_id],
     );
 }
-/// Go: func machineReleaseFailed(s *store.Store, requestID, note string) int
 pub(crate) fn machine_release_failed(s: &pulse_store::Store, request_id: &str, note: &str) -> i32 {
     let conn = s.conn().unwrap();
     let note = crate::util::trunc(note, 500);
@@ -209,7 +198,6 @@ pub(crate) struct ComputeWorker {
     lines_tx: crossbeam_channel::Sender<String>,
     lines_rx: crossbeam_channel::Receiver<String>,
 }
-/// Go: func newComputeWorker(ctx context.Context, s *store.Store, o computeOpts) *computeWorker
 pub(crate) fn new_compute_worker(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -295,7 +283,6 @@ impl ComputeWorker {
     pub(crate) fn busy(&self) -> i32 {
         self.inflight.lock().unwrap().len() as i32
     }
-    /// Go: func (w *computeWorker) start(id string, fn func())
     pub(crate) fn start<F: FnOnce() + Send + 'static>(&self, id: &str, fn_: F) {
         if !self.claim(id) {
             return;
@@ -327,7 +314,6 @@ impl ComputeWorker {
             })
             .expect("spawn compute worker");
     }
-    /// Go: func (w *computeWorker) wait(grace time.Duration)
     pub(crate) fn wait(&self, grace: Duration) {
         let (mu, cv) = &*self.wg;
         let n = mu.lock().unwrap();
@@ -337,7 +323,6 @@ impl ComputeWorker {
         }
         let _ = cv.wait_timeout_while(n, grace, |n| *n > 0).unwrap();
     }
-    /// Go: func (w *computeWorker) tick(ctx context.Context, now string) []string
     pub(crate) fn tick(&self, cancel: &pulse_bus::CancellationToken, now: &str) -> Vec<String> {
         if cancel.is_cancelled() {
             return self.drain();
@@ -622,7 +607,6 @@ impl ComputeWorker {
         });
     }
 }
-/// Go: func computeFinding(s *store.Store, actor string, req tasks.ComputeRequest, summary, body string) error
 pub(crate) fn compute_finding(
     s: &pulse_store::Store,
     actor: &str,
@@ -647,7 +631,6 @@ pub(crate) fn compute_finding(
     )?;
     Ok(())
 }
-/// Go: func capsAllow(caps tasks.Caps, req tasks.ComputeRequest, now string) string
 pub(crate) fn caps_allow(
     caps: pulse_tasks::Caps,
     req: pulse_tasks::ComputeRequest,
@@ -674,7 +657,6 @@ pub(crate) fn caps_allow(
     }
     String::new()
 }
-/// Go: func releaseCompute(s *store.Store, actor string, req tasks.ComputeRequest, why string, say func(format string, a ...any)) bool
 pub(crate) fn release_compute(
     s: &pulse_store::Store,
     actor: &str,

@@ -17,7 +17,7 @@ pub type ProbeFn = Arc<dyn Fn(&str, &str, &str) -> AnyResult<()> + Send + Sync>;
 /// Key generation seam used by tests.
 pub type KeygenFn = Arc<dyn Fn(&str, &str) -> AnyResult<()> + Send + Sync>;
 
-/// Deps are the seams tests replace; nil fields mean the real thing.
+/// Deps are the seams tests replace; `None` fields mean the real thing.
 #[derive(Clone, Default)]
 pub struct Deps {
     pub probe: Option<ProbeFn>,
@@ -84,10 +84,7 @@ pub struct Result {
     pub landing_push: String,
 }
 
-/// Compatibility alias for the Go exported `Result` type.
-pub type SetupResult = Result;
-
-/// NotAReference is the refusal for a pasted key or token.
+/// The refusal for a pasted key or token.
 pub fn not_a_reference() -> Refusal {
     Refusal {
         code: 2,
@@ -98,7 +95,7 @@ pub fn not_a_reference() -> Refusal {
     }
 }
 
-/// Apply resolves text as a reference, checks the secret, probes upstreams and saves it.
+/// Resolves text as a reference, checks the secret, probes upstreams and saves it.
 pub fn apply(
     s: &pulse_store::Store,
     r: &pulse_cred::Resolver,
@@ -228,7 +225,7 @@ pub struct Report {
     pub fingerprint: String,
 }
 
-/// Status reads the state. The fingerprint comes from the cred.set event; nothing is resolved.
+/// Reads the state. The fingerprint comes from the cred.set event; nothing is resolved.
 pub fn status(s: &pulse_store::Store, r: &pulse_cred::Resolver) -> Report {
     let mut rep = Report {
         reference: s.setting("push.credential", ""),
@@ -276,7 +273,7 @@ pub struct Cleared {
     pub token_removed: Vec<String>,
 }
 
-/// Clear unsets push.credential and optionally removes the stored service-account token.
+/// Unsets push.credential and optionally removes the stored service-account token.
 pub fn clear(
     s: &pulse_store::Store,
     r: &pulse_cred::Resolver,
@@ -315,7 +312,7 @@ pub struct Generated {
     pub existed: bool,
 }
 
-/// Generate mints an ed25519 key under $PULSE_HOME/secrets/push_key.
+/// Mints an ed25519 key under $PULSE_HOME/secrets/push_key.
 pub fn generate(r: &pulse_cred::Resolver, replace: bool, deps: Deps) -> AnyResult<Generated> {
     if r.worker || std::env::var("PULSE_JOB").is_ok_and(|v| !v.is_empty()) {
         return Err(pulse_cred::ErrWorker.into());
@@ -439,7 +436,7 @@ pub struct Item {
     pub reference: String,
 }
 
-/// Vaults lists what the service account can see: `op vault list`.
+/// Lists what the service account can see: `op vault list`.
 pub fn vaults(r: &pulse_cred::Resolver) -> AnyResult<Vec<Vault>> {
     let (out, _) = r.op(&["vault", "list", "--format", "json"])?;
     let vaults: Vec<Vault> = serde_json::from_str(&out)
@@ -447,7 +444,7 @@ pub fn vaults(r: &pulse_cred::Resolver) -> AnyResult<Vec<Vault>> {
     Ok(vaults)
 }
 
-/// Items lists the SSH Key items of one vault.
+/// Lists the SSH Key items of one vault.
 pub fn items(r: &pulse_cred::Resolver, vault: &str) -> AnyResult<Vec<Item>> {
     let vault = vault.trim();
     if vault.is_empty() {
@@ -504,7 +501,7 @@ pub fn items(r: &pulse_cred::Resolver, vault: &str) -> AnyResult<Vec<Item>> {
         .collect())
 }
 
-/// OpReference builds the op:// reference to an SSH Key item's private key.
+/// Builds the op:// reference to an SSH Key item's private key.
 pub fn op_reference(v: &Vault, title: &str, id: &str) -> String {
     let vault = if plain_name(&v.name) { &v.name } else { &v.id };
     let item = if plain_name(title) { title } else { id };
@@ -539,7 +536,7 @@ pub struct Provider {
     pub example: String,
 }
 
-/// Providers lists the providers on this machine, unavailable ones included with the reason.
+/// Lists the providers on this machine, unavailable ones included with the reason.
 pub fn providers(r: &pulse_cred::Resolver) -> Vec<Provider> {
     let mut op = Provider {
         id: "op".into(),
@@ -596,7 +593,7 @@ pub fn providers(r: &pulse_cred::Resolver) -> Vec<Provider> {
     vec![op, keychain, file]
 }
 
-/// DefaultBranch is "main" when a project names none.
+/// "main" when a project names none.
 pub fn default_branch(b: &str) -> String {
     if b.is_empty() {
         "main".into()
@@ -605,7 +602,7 @@ pub fn default_branch(b: &str) -> String {
     }
 }
 
-/// UpstreamRemote is the remote the branch tracks, or "".
+/// The remote the branch tracks, or "".
 pub fn upstream_remote(root: &str, branch: &str) -> String {
     let out = Command::new(pulse_gitenv::git_program())
         .args([
@@ -624,7 +621,7 @@ pub fn upstream_remote(root: &str, branch: &str) -> String {
     }
 }
 
-/// ProbeRemote checks that the key opens the remote for writing without changing it.
+/// Checks that the key opens the remote for writing without changing it.
 pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()> {
     let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.args([

@@ -394,7 +394,6 @@ mod tests {
             assert_eq!(event_count(&s), before + 1);
             let reason = crate::status::runner_stopped(&s).unwrap();
             assert_eq!(!reason.is_empty(), value == "1");
-            assert_parity(got, oracle(&s.home, false, &[name]));
         }
         let (daemon_after, _) = s.meta("daemon").unwrap();
         assert_eq!(daemon_after, daemon_before);

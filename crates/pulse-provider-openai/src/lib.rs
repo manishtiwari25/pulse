@@ -1,4 +1,4 @@
-//! PULSE: OpenAI-compatible model provider (port of Go package internal/provider/openai).
+//! PULSE: OpenAI-compatible model provider.
 
 use anyhow::{Result, anyhow};
 use chrono::SecondsFormat;
@@ -27,14 +27,7 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const MODELS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const STATUS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// Go-compatible provider name.
-pub const NAME_OPENAI: &str = NAME;
-/// Go-compatible provider label.
-pub const LABEL_OPENAI: &str = LABEL;
-/// Go-compatible default base URL.
-pub const DEFAULT_BASE_URL_OPENAI: &str = DEFAULT_BASE_URL;
-
-/// New opens the OpenAI-compatible provider using local settings, environment
+/// Opens the OpenAI-compatible provider using local settings, environment
 /// and private provider state.
 pub fn new(mut options: Options) -> Result<Box<dyn Provider>> {
     Ok(Box::new(openai_from_options(&mut options)?))
@@ -75,9 +68,6 @@ fn openai_from_options(options: &mut Options) -> Result<OpenAI> {
     })
 }
 
-/// Go-compatible alias for [`new`].
-pub use new as New;
-
 /// OpenAI-compatible provider.
 pub struct OpenAI {
     home: String,
@@ -89,9 +79,6 @@ pub struct OpenAI {
     retry_after_cap: Duration,
     inner: Mutex<Inner>,
 }
-
-/// Go-compatible alias for the provider type.
-pub type Openai = OpenAI;
 
 #[derive(Default)]
 struct Inner {

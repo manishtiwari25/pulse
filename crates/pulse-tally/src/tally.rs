@@ -229,8 +229,7 @@ pub struct Amendment {
     pub session: String,
 }
 
-/// Go: every slice here is append-built (or `scanPosts`' `var out`), so an
-/// empty one marshals as `null`.
+/// Every list here serializes as `null` when empty, never `[]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TallyResult {
     pub project: String,
@@ -259,7 +258,7 @@ pub struct TallyResult {
     pub amendments: Vec<Amendment>,
 }
 
-// Go's `map` plus an insertion-ordered key slice; the map is only ever indexed,
+// A map that remembers insertion order: the map is only ever indexed,
 // iteration always walks `keys`.
 #[derive(Clone)]
 struct OMap<K: Eq + Hash + Clone, V> {
@@ -578,8 +577,8 @@ impl Tally {
     }
     fn suggestion_records(&self) -> Vec<Suggestion> {
         let mut out = Vec::new();
-        // Go walks every vote for every suggestion; grouping by target keeps the
-        // per-suggestion vote order and drops the quadratic scan.
+        // Group the votes by target once, in vote order, rather than scanning
+        // every vote for every suggestion.
         let mut votes_on: HashMap<&str, Vec<&VoteKey>> = HashMap::new();
         for vk in &self.votes.keys {
             votes_on.entry(vk.on.as_str()).or_default().push(vk);

@@ -1,10 +1,4 @@
-//! Test helpers ported from the Go test files owned by slice F5 (see files/RUNNER_TEST_WAVE.txt).
-//! Other slices call these as `crate::test_helpers_f5::<go_name_in_snake_case>`.
-
-#![allow(
-    dead_code,
-    reason = "shared F5 test helpers are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "shared test helpers; not every one has a caller")]
 
 use crate::test_helpers::*;
 use crate::util::{self, Row};
@@ -15,29 +9,22 @@ use std::time::Duration;
 
 pub(crate) const FAKE_PUSH_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZSBrZXkgZm9yIHRlc3Rz\n-----END OPENSSH PRIVATE KEY-----\n";
 
-/// Go: func setSetting(t *testing.T, s *store.Store, key, value string)
 pub(crate) fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
     if let Err(err) = s.set_setting(util::HUMAN_AGENT, key, value) {
         panic!("setting {key}: {err}");
     }
 }
 
-/// Go: func skipSlow(t *testing.T)
-///
-/// Go skips these worker/daemon tests under `go test -short`; libtest has no -short, so the
-/// full suite always runs them, as Go's does.
+/// A no-op: the worker/daemon tests that call it always run; the suite has no short mode.
 pub(crate) fn skip_slow() {}
 
-/// Go: const defaultTestDeadline = 60 * time.Second
 pub(crate) const DEFAULT_TEST_DEADLINE: Duration = Duration::from_secs(60);
 
-/// Go: func testDeadline(t *testing.T, d time.Duration)
-///
 /// Fails the test with a stack note when it runs past d, so a worker clone whose spawned
 /// git/worker subprocess blocks reports the stuck test by name instead of letting the whole
-/// package hit the harness timeout. Go's version panics from a goroutine, which kills the test
-/// process (exit 2); the guard here does the same once its deadline passes. Hold the returned
-/// guard for the test's life: dropping it is Go's t.Cleanup closing `done`.
+/// test binary hit the harness timeout. Once the deadline passes the guard's thread exits the
+/// test process (exit 2). Hold the returned guard for the test's life: dropping it closes
+/// `done`, which cancels the deadline.
 #[must_use = "bind the guard (`let _deadline = test_deadline(..)`) or the deadline is cancelled at once"]
 pub(crate) fn test_deadline(d: Duration) -> TestDeadline {
     let d = test_wait(d);
@@ -57,15 +44,12 @@ pub(crate) struct TestDeadline {
     _done: crossbeam_channel::Sender<()>,
 }
 
-/// Go: func testWait(d time.Duration) time.Duration
 pub(crate) fn test_wait(d: Duration) -> Duration {
     d.mul_f64(deadline_mult())
 }
 
-/// Go: func deadlineMult() float64
-///
 /// PULSE_TEST_DEADLINE_MULT (a positive float, e.g. "2.5"); unset or invalid means 1. Values
-/// below 1 are clamped to 1 so a budget can only grow. (Go doubles the budget under -short.)
+/// below 1 are clamped to 1 so a budget can only grow.
 pub(crate) fn deadline_mult() -> f64 {
     if let Ok(v) = std::env::var("PULSE_TEST_DEADLINE_MULT")
         && !v.is_empty()
@@ -102,8 +86,8 @@ pub(crate) fn job_row(s: &pulse_store::Store, id: &str) -> Row {
     crate::jobs::job_row(&s.conn().expect("conn"), id.to_string())
 }
 
-/// Go: fakeMeasure stands in for evolve.Measure: one public and one held-out score, or an error; the real Archive
-/// still writes the row.
+/// The fake measure tests install in place of `pulse_evolve`'s: one public and one held-out score,
+/// or an error; the real archive still writes the row.
 #[derive(Default)]
 pub(crate) struct FakeMeasureState {
     pub total: f64,
@@ -114,7 +98,6 @@ pub(crate) struct FakeMeasureState {
 #[derive(Clone)]
 pub(crate) struct FakeMeasure(pub Arc<Mutex<FakeMeasureState>>);
 
-/// Go: t.Cleanup(func() { evolve.Measure = old })
 pub(crate) struct MeasureGuard(Option<Box<pulse_evolve::api::MeasureFn>>);
 
 impl Drop for MeasureGuard {
@@ -126,7 +109,6 @@ impl Drop for MeasureGuard {
 }
 
 impl FakeMeasure {
-    /// Go: &fakeMeasure{total: .75} / &fakeMeasure{err: errors.New("...")}
     pub(crate) fn new(total: f64, err: Option<anyhow::Error>) -> Self {
         FakeMeasure(Arc::new(Mutex::new(FakeMeasureState {
             total,
@@ -135,7 +117,6 @@ impl FakeMeasure {
         })))
     }
 
-    /// Go: func (f *fakeMeasure) install(t *testing.T)
     pub(crate) fn install(&self) -> MeasureGuard {
         let f = self.clone();
         let old =
@@ -174,12 +155,10 @@ impl FakeMeasure {
         MeasureGuard(Some(old))
     }
 
-    /// Go: measure.calls
     pub(crate) fn calls(&self) -> Vec<String> {
         self.0.lock().expect("fake measure").calls.clone()
     }
 
-    /// Go: measure.err = ...
     pub(crate) fn set_err(&self, err: anyhow::Error) {
         self.0.lock().expect("fake measure").err = Some(err);
     }
@@ -420,8 +399,6 @@ pub(crate) fn evolve_plan_ready(s: &pulse_store::Store) {
     s.close().expect("close helper connections");
 }
 
-/// Go: func finishMeasuredExperiment(t *testing.T, s *store.Store, job row, kept bool) string
-/// (evolve_feedback_test.go:12)
 pub(crate) fn finish_measured_experiment(s: &pulse_store::Store, job: Row, kept: bool) -> String {
     let run_id = format!("run-{}", job.str("id"));
     exec1(
@@ -592,7 +569,7 @@ pub(crate) fn measured_keep_fixture() -> (
         &[&project.str("verify_cmd")],
     );
     // The verification is wrapped with the `daemon.min_free_mb` disk prelude (default
-    // 1024 MB); these tests measure landing, not the host's free space, so turn the
+    // 10240 MB); these tests measure landing, not the host's free space, so turn the
     // probe off or they fail spuriously on a nearly full machine.
     set_setting(&s, "daemon.min_free_mb", "0");
     let calls = Arc::new(Mutex::new(0));

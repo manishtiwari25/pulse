@@ -15,9 +15,25 @@ pub(crate) const RECIPE_UNFIT_SERVICES: &str = "services";
 pub(crate) const RECIPE_UNFIT_HANDS: &str = "hands outdated";
 pub(crate) const RECIPE_UNFIT_CHECKOUT: &str = "checkout unreadable";
 pub(crate) const RECIPE_UNFIT_MISE: &str = "mise";
+/// The project's committed recipe (or the store's copy of it) does not parse:
+/// no clone can be set up, so dispatch holds the project's jobs instead of
+/// spending their attempts on runs that end before a worker starts.
+pub(crate) const RECIPE_UNFIT_INVALID: &str = "recipe invalid";
 pub(crate) const MISE_VERSION: &str = "v2026.9.1";
 pub(crate) const SETUP_MINUTES: i32 = 10;
 pub(crate) const UNFIT_HOURS: i32 = 24;
+
+/// A run that stopped because the recipe does not parse. The job keeps its
+/// attempt (run.rs requeues it) and dispatch holds the project until the
+/// recipe parses again, so the same breakage never burns three runs.
+#[derive(Debug, Clone)]
+pub(crate) struct RecipeInvalid(pub String);
+impl std::fmt::Display for RecipeInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for RecipeInvalid {}
 
 static RECIPE_KEYS: &[&str] = &[
     "recipe",
@@ -46,13 +62,11 @@ pub struct Recipe {
     pub has_check: bool,
 }
 impl Recipe {
-    /// Go: func (r *Recipe) envKeys() []string
     pub(crate) fn env_keys(&self) -> Vec<String> {
         self.env.keys().cloned().collect()
     }
 }
 
-/// Go: func recipeScalar(raw string, problems *[]string, where string) string
 pub(crate) fn recipe_scalar(raw: &str, problems: &mut Vec<String>, where_: &str) -> String {
     let mut text = raw.trim().to_string();
     if text.is_empty() {
@@ -100,15 +114,12 @@ pub(crate) fn recipe_scalar(raw: &str, problems: &mut Vec<String>, where_: &str)
     }
     text
 }
-/// Go: func secretShaped(value string) bool
 pub(crate) fn secret_shaped(value: &str) -> bool {
     pulse_store::secret_shaped(value)
 }
-/// Go: func isBlank(s string) bool
 pub(crate) fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
 }
-/// Go: func indented(s string) bool
 pub(crate) fn indented(s: &str) -> bool {
     s.starts_with(' ') || s.starts_with('\t')
 }
@@ -119,7 +130,6 @@ struct BlockLine {
     text: String,
 }
 
-/// Go: func parseRecipe(text string) (*Recipe, []string)
 pub(crate) fn parse_recipe(text: &str) -> (Option<Recipe>, Vec<String>) {
     let mut problems = Vec::new();
     let normalized = text.replace("\r\n", "\n");
@@ -322,7 +332,6 @@ pub(crate) fn parse_recipe(text: &str) -> (Option<Recipe>, Vec<String>) {
     (Some(r), problems)
 }
 
-/// Go: func recipeRecord(s *store.Store, slug string) (*store.Record, *store.Revision)
 pub(crate) fn recipe_record(
     s: &pulse_store::Store,
     slug: &str,
@@ -343,7 +352,6 @@ pub(crate) fn recipe_record(
         Err(_) => (None, None),
     }
 }
-/// Go: func recipeRecordID(s *store.Store, slug string) string
 #[allow(dead_code)]
 pub(crate) fn recipe_record_id(s: &pulse_store::Store, slug: &str) -> String {
     if let (Some(rec), _) = recipe_record(s, slug) {
@@ -362,7 +370,6 @@ pub(crate) fn recipe_record_id(s: &pulse_store::Store, slug: &str) -> String {
     }
     format!("CTX-environment-{slug}")
 }
-/// Go: func recipeText(s *store.Store, slug string) (string, bool)
 pub(crate) fn recipe_text(s: &pulse_store::Store, slug: &str) -> (String, bool) {
     let (text, _, ok) = recipe_text_with_id(s, slug);
     (text, ok)
@@ -384,7 +391,6 @@ pub(crate) fn recipe_text_with_id(s: &pulse_store::Store, slug: &str) -> (String
         true,
     )
 }
-/// Go: func renderRecipeFrontmatter(fm map[string]any) string
 pub(crate) fn render_recipe_frontmatter(fm: &BTreeMap<String, Value>) -> String {
     if fm.is_empty() {
         return "---\n---\n".to_string();
@@ -435,7 +441,6 @@ pub(crate) fn render_recipe_frontmatter(fm: &BTreeMap<String, Value>) -> String 
     b.push_str("---\n");
     b
 }
-/// Go: func recipeScalarText(v any) string
 pub(crate) fn recipe_scalar_text(v: &Value) -> String {
     match v {
         Value::Null => "''".to_string(),
@@ -465,7 +470,6 @@ pub(crate) fn recipe_scalar_text(v: &Value) -> String {
         other => format!("'{}'", other.to_string().replace('\'', "''")),
     }
 }
-/// Go: func indexOf(list []string, s string) int
 #[allow(dead_code)]
 pub(crate) fn index_of(list: &[String], s: &str) -> i32 {
     list.iter().position(|x| x == s).unwrap_or(list.len()) as i32
@@ -478,7 +482,6 @@ pub(crate) enum RecipeSource {
     Git,
 }
 
-/// Go: func readRecipe(s *store.Store, slug, root, rev string) (*Recipe, []string, bool)
 pub(crate) fn read_recipe(
     s: &pulse_store::Store,
     slug: &str,
@@ -512,7 +515,6 @@ pub(crate) fn read_recipe_from(
     let (r, p) = parse_recipe(&shown.stdout);
     (r, p, true, Some(RecipeSource::Git))
 }
-/// Go: func recipeSummary(r *Recipe) string
 pub(crate) fn recipe_summary(r: &Recipe) -> String {
     let mut parts = Vec::new();
     if !r.tools.is_empty() {
@@ -533,7 +535,6 @@ pub(crate) fn recipe_summary(r: &Recipe) -> String {
         parts.join("; ")
     }
 }
-/// Go: func recipeEnvExports(r *Recipe) string
 pub(crate) fn recipe_env_exports(r: &Recipe) -> String {
     if r.env.is_empty() {
         return String::new();
@@ -545,7 +546,6 @@ pub(crate) fn recipe_env_exports(r: &Recipe) -> String {
         .collect();
     format!("export {}; ", parts.join(" "))
 }
-/// Go: func recipeBlock(r *Recipe, remote bool) string
 pub(crate) fn recipe_block(r: &Recipe, remote: bool) -> String {
     if !r.services.is_empty() {
         return RECIPE_UNFIT_SERVICES.to_string();
@@ -555,14 +555,12 @@ pub(crate) fn recipe_block(r: &Recipe, remote: bool) -> String {
     }
     String::new()
 }
-/// Go: func miseEnv(clone string) [][2]string
 pub(crate) fn mise_env(clone: &str) -> Vec<[String; 2]> {
     vec![
         ["MISE_IGNORED_CONFIG_PATHS".into(), clone.into()],
         ["MISE_YES".into(), "1".into()],
     ]
 }
-/// Go: func miseExports(clone string) string
 pub(crate) fn mise_exports(clone: &str) -> String {
     mise_env(clone)
         .into_iter()
@@ -570,7 +568,6 @@ pub(crate) fn mise_exports(clone: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// Go: func miseExecArgv(pins []string) []string
 pub(crate) fn mise_exec_argv(pins: &[String]) -> Vec<String> {
     if pins.is_empty() {
         Vec::new()
@@ -583,7 +580,6 @@ pub(crate) fn mise_exec_argv(pins: &[String]) -> Vec<String> {
         .concat()
     }
 }
-/// Go: func miseWrapShell(pins []string, cmd, clone string) string
 pub(crate) fn mise_wrap_shell(pins: &[String], cmd: &str, clone: &str) -> String {
     if pins.is_empty() || cmd.is_empty() {
         return cmd.to_string();
@@ -596,7 +592,6 @@ pub(crate) fn mise_wrap_shell(pins: &[String], cmd: &str, clone: &str) -> String
         crate::util::shell_join(&argv)
     )
 }
-/// Go: func miseInstallCommand(pins []string, clone string) string
 pub(crate) fn mise_install_command(pins: &[String], clone: &str) -> String {
     let mut argv = vec!["mise".to_string(), "install".to_string()];
     argv.extend_from_slice(pins);
@@ -606,7 +601,6 @@ pub(crate) fn mise_install_command(pins: &[String], clone: &str) -> String {
         crate::util::shell_join(&argv)
     )
 }
-/// Go: func miseFailedPin(pins []string, output string) string
 pub(crate) fn mise_failed_pin(pins: &[String], output: &str) -> String {
     for pin in pins {
         let name = pin.split_once('@').map(|(n, _)| n).unwrap_or(pin);
@@ -713,7 +707,6 @@ static SETUP_ENV: &[(&str, &str)] = &[
     ("npm_config_update_notifier", "false"),
     ("npm_config_fund", "false"),
 ];
-/// Go: func setupExports() string
 pub(crate) fn setup_exports() -> String {
     SETUP_ENV
         .iter()
@@ -721,7 +714,6 @@ pub(crate) fn setup_exports() -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// Go: func setupCommand(root, rev string) (string, []string)
 pub(crate) fn setup_command(root: &str, rev: &str) -> (String, Vec<String>) {
     let listed = crate::util::git_timeout(
         root,
@@ -752,7 +744,6 @@ pub(crate) fn setup_command(root: &str, rev: &str) -> (String, Vec<String>) {
         files,
     )
 }
-/// Go: func notFoundRe(tool string) (*regexp.Regexp, *regexp.Regexp)
 pub(crate) fn not_found_re(tool: &str) -> (Regex, Regex) {
     (
         Regex::new(&format!(
@@ -777,7 +768,6 @@ fn broken_tool_res(tool: &str) -> Vec<Regex> {
         _ => Vec::new(),
     }
 }
-/// Go: func missingTool(setupCmd string, rc int, output string) string
 pub(crate) fn missing_tool(setup_cmd: &str, rc: i32, output: &str) -> String {
     let mut tools = Vec::new();
     for rule in SETUP_RULES.iter() {
@@ -801,15 +791,12 @@ pub(crate) fn missing_tool(setup_cmd: &str, rc: i32, output: &str) -> String {
     }
     String::new()
 }
-/// Go: func setupUnfitTool(files []string) string
 pub(crate) fn setup_unfit_tool(files: &[String]) -> String {
     format!("setup:{}", files.join(","))
 }
-/// Go: func setupUnfitFiles(tool string) string
 pub(crate) fn setup_unfit_files(tool: &str) -> String {
     tool.strip_prefix("setup:").unwrap_or(tool).to_string()
 }
-/// Go: func setupUnfitCommands(tool string) string
 pub(crate) fn setup_unfit_commands(tool: &str) -> String {
     let files: Vec<String> = setup_unfit_files(tool)
         .split(',')
@@ -833,7 +820,6 @@ pub(crate) fn setup_unfit_commands(tool: &str) -> String {
         .collect::<Vec<_>>()
         .join(" && ")
 }
-/// Go: func setupFailureSummary(executor string, rc int, detail string) string
 pub(crate) fn setup_failure_summary(executor: &str, rc: i32, detail: &str) -> String {
     format!("setup failed on {executor} (exit {rc}): {detail}")
 }
@@ -920,7 +906,6 @@ fn failure_signature_transient(reason: &str) -> String {
     }
     format!("transient:{head}")
 }
-/// Go: func repeatedSetupFailure(q querier, now, project, executor, summary string) bool
 pub(crate) fn repeated_setup_failure(
     q: &impl Querier,
     now: &str,
@@ -948,7 +933,6 @@ pub(crate) fn repeated_setup_failure(
     prev.starts_with("setup failed on ")
         && failure_signature_transient(&prev) == failure_signature_transient(summary)
 }
-/// Go: func checkToolMissing(verifyCmd string, rc int, output string) string
 pub(crate) fn check_tool_missing(verify_cmd: &str, rc: i32, output: &str) -> String {
     let tokens: Vec<String> = crate::util::split_shell(verify_cmd)
         .into_iter()
@@ -977,7 +961,6 @@ pub(crate) fn check_tool_missing(verify_cmd: &str, rc: i32, output: &str) -> Str
     }
     String::new()
 }
-/// Go: func projectSetup(root, rev string, r *Recipe, clone string) (string, []string, string)
 pub(crate) fn project_setup(
     root: &str,
     rev: &str,
@@ -1024,7 +1007,6 @@ pub(crate) fn project_setup(
     }
     (cmd, files, shown)
 }
-/// Go: func unfitPhrase(tool string) string
 pub(crate) fn unfit_phrase(tool: &str) -> String {
     if let Some(x) = tool.strip_prefix("environment:") {
         return format!("has environment issue {x}");
@@ -1036,6 +1018,7 @@ pub(crate) fn unfit_phrase(tool: &str) -> String {
         RECIPE_UNFIT_SERVICES => "needs services".to_string(),
         RECIPE_UNFIT_HANDS => RECIPE_UNFIT_HANDS.to_string(),
         RECIPE_UNFIT_CHECKOUT => "cannot read the checkout".to_string(),
+        RECIPE_UNFIT_INVALID => "has an environment recipe that does not parse".to_string(),
         _ if tool.starts_with("setup:") => format!("cannot set up {}", setup_unfit_files(tool)),
         _ => format!("lacks {}", tool.strip_prefix("tool:").unwrap_or(tool)),
     }
@@ -1082,7 +1065,6 @@ static TOOL_HINTS: LazyLock<BTreeMap<&'static str, &'static str>> = LazyLock::ne
         ),
     ])
 });
-/// Go: func toolHint(tool string) string
 pub(crate) fn tool_hint(tool: &str) -> String {
     if let Some(x) = tool.strip_prefix("environment:") {
         return format!(
@@ -1111,29 +1093,59 @@ pub(crate) fn tool_hint(tool: &str) -> String {
     if tool == RECIPE_UNFIT_CHECKOUT {
         return "the project's path did not answer: a macOS permission dialog for pulse, an unmounted volume, or a moved checkout (pulse projects)".to_string();
     }
+    if tool == RECIPE_UNFIT_INVALID {
+        return format!(
+            "fix {RECIPE_PATH} and commit it alone - the owner question on the project's runner/recipe thread and `pulse env check --project <slug>` list what does not parse; if the committed file is right, `pulse env import --project <slug>` copies it into the store again; the jobs wait with their attempts and run on their own once it parses"
+        );
+    }
     format!("install {tool} on the machine")
 }
-/// Go: func recipeAtHead(s *store.Store, project row) (*Recipe, []string, bool)
 pub(crate) fn recipe_at_head(
     s: &pulse_store::Store,
     project: Row,
 ) -> (Option<Recipe>, Vec<String>, bool) {
+    let (r, p, found, _, _) = recipe_at_head_from(s, project);
+    (r, p, found)
+}
+
+/// The recipe the next job of a project would read - the store's copy, else
+/// the committed file at the default branch's head - with where it came from
+/// and the commit it was read at, for the owner's question when it does not
+/// parse.
+pub(crate) fn recipe_at_head_from(
+    s: &pulse_store::Store,
+    project: Row,
+) -> (
+    Option<Recipe>,
+    Vec<String>,
+    bool,
+    Option<RecipeSource>,
+    String,
+) {
     let root = project.str("path");
-    let (text, ok) = recipe_text(s, &project.str("slug"));
+    let (text, id, ok) = recipe_text_with_id(s, &project.str("slug"));
     if ok {
         let (r, p) = parse_recipe(&text);
-        return (r, p, true);
+        return (r, p, true, Some(RecipeSource::Store(id)), String::new());
     }
     if !crate::util::file_exists(&Path::new(&root).join(".git").display().to_string()) {
-        return (None, Vec::new(), false);
+        return (None, Vec::new(), false, None, String::new());
     }
     let mut def = project.str("default_branch");
     if def.is_empty() {
         def = "main".to_string();
     }
-    read_recipe(s, "", &root, &format!("refs/heads/{def}"))
+    let rev = format!("refs/heads/{def}");
+    let (r, p, found, source) = read_recipe_from(s, "", &root, &rev);
+    let mut base = rev;
+    if found {
+        let sha = crate::util::git(&root, &["rev-parse", "--verify", "--quiet", &base]);
+        if sha.ok() && !sha.stdout.trim().is_empty() {
+            base = sha.stdout.trim().to_string();
+        }
+    }
+    (r, p, found, source, base)
 }
-/// Go: func RecipeBlocks(s *store.Store, executor string, projects []string) map[string]string
 pub fn recipe_blocks(
     s: &pulse_store::Store,
     executor: &str,
@@ -1141,7 +1153,14 @@ pub fn recipe_blocks(
 ) -> BTreeMap<String, String> {
     recipe_blocks_inner(s, executor, projects)
 }
-/// Go: func recipeBlocks(s *store.Store, executor string, projects []string) map[string]string
+/// Projects dispatch is holding because their recipe does not parse, so the
+/// release can answer the owner's question without a posts scan per tick.
+static RECIPE_INVALID_HELD: LazyLock<std::sync::RwLock<std::collections::BTreeSet<String>>> =
+    LazyLock::new(|| std::sync::RwLock::new(std::collections::BTreeSet::new()));
+fn recipe_hold_key(s: &pulse_store::Store, slug: &str) -> String {
+    format!("{}\0{slug}", s.home)
+}
+
 pub(crate) fn recipe_blocks_inner(
     s: &pulse_store::Store,
     executor: &str,
@@ -1162,11 +1181,35 @@ pub(crate) fn recipe_blocks_inner(
             out.insert(p.str("slug"), RECIPE_UNFIT_CHECKOUT.to_string());
             continue;
         }
-        let (r, problems, found) = recipe_at_head(s, p.clone());
-        if !found || !problems.is_empty() {
+        let (r, problems, found, source, base) = recipe_at_head_from(s, p.clone());
+        if !found {
             continue;
         }
+        if !problems.is_empty() {
+            // A recipe that does not parse is a structural failure of the
+            // project, not of one run: hold its jobs here, before a slot is
+            // spent, and ask the owner once (coalesced on the breakage).
+            let now = s.now();
+            recipe_blocker(s, p.clone(), &problems, &base, source.as_ref(), &now);
+            RECIPE_INVALID_HELD
+                .write()
+                .expect("recipe holds")
+                .insert(recipe_hold_key(s, &p.str("slug")));
+            out.insert(p.str("slug"), RECIPE_UNFIT_INVALID.to_string());
+            continue;
+        }
+        // Only the hold's own release answers the question here; a project
+        // that was never held leaves the posts table alone each tick (the
+        // next run closes a stale question anyway).
+        if RECIPE_INVALID_HELD
+            .write()
+            .expect("recipe holds")
+            .remove(&recipe_hold_key(s, &p.str("slug")))
+        {
+            recipe_unblocked(s, &p, &base, source.as_ref(), &s.now());
+        }
         if let Some(r) = r {
+            adopt_suggested_check(s, &p, &r, source.as_ref(), &s.now());
             let why = recipe_block(&r, remote);
             if !why.is_empty() {
                 out.insert(p.str("slug"), why);
@@ -1175,7 +1218,6 @@ pub(crate) fn recipe_blocks_inner(
     }
     out
 }
-/// Go: func unfitMarks(q querier) map[string]map[string]map[string]string
 pub(crate) fn unfit_marks(
     q: &impl Querier,
 ) -> BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>> {
@@ -1230,7 +1272,6 @@ pub(crate) fn unfit_marks(
     }
     out
 }
-/// Go: func saveUnfitMarks(q querier, marks map[string]map[string]map[string]string) error
 pub(crate) fn save_unfit_marks(
     q: &impl Querier,
     marks: &BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
@@ -1238,7 +1279,6 @@ pub(crate) fn save_unfit_marks(
     q.conn().execute("INSERT INTO meta (key, value) VALUES ('unfit', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [&crate::util::py_json(marks)])?;
     Ok(())
 }
-/// Go: func markUnfit(q querier, now, executor, project, tool string)
 pub(crate) fn mark_unfit(q: &impl Querier, now: &str, executor: &str, project: &str, tool: &str) {
     let mut marks = unfit_marks(q);
     let n = marks
@@ -1278,7 +1318,6 @@ pub(crate) fn mark_unfit(q: &impl Querier, now: &str, executor: &str, project: &
         json!({"project": project, "tool": tool}),
     );
 }
-/// Go: func unfitProjects(q querier, executor, now string) map[string]string
 pub(crate) fn unfit_projects(
     q: &impl Querier,
     executor: &str,
@@ -1334,7 +1373,6 @@ pub(crate) fn bump_unfit_probe(q: &impl Querier, now: &str, executor: &str, proj
     mark.insert("at".to_string(), now.to_string());
     let _ = save_unfit_marks(q, &marks);
 }
-/// Go: func clearUnfit(q querier, now, executor string)
 pub(crate) fn clear_unfit(q: &impl Querier, now: &str, executor: &str) {
     let mut marks = unfit_marks(q);
     if marks.remove(executor).is_some() {
@@ -1377,7 +1415,6 @@ pub(crate) fn clear_unfit_project(
         );
     }
 }
-/// Go: func toolsWanted(s *store.Store, brain row, executor, tool, project, detail, now, actor string) row
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tools_wanted(
     s: &pulse_store::Store,
@@ -1526,8 +1563,6 @@ pub(crate) fn recipe_problem_line(
     }
 }
 
-/// Go: func recipeFinding(s *store.Store, project row, why []string, base, now, actor string) row
-///
 /// Asks the owner once while the recipe stays broken: a `question` with
 /// `for_owner` on runner/recipe, coalesced on its substance so the same
 /// breakage never posts twice; an older open ask with other substance is
@@ -1551,25 +1586,25 @@ pub(crate) fn recipe_blocker(
         Some(RecipeSource::Store(id)) if !id.is_empty() => (
             crate::util::trunc(
                 &format!(
-                    "environment recipe: the store's copy ({id}) does not parse; every job of {slug} errors before a worker starts ({joined})"
+                    "environment recipe: the store's copy ({id}) does not parse; every job of {slug} waits before a worker starts ({joined})"
                 ),
                 230,
             ),
             format!(
-                "`{id}`, the store's copy of `{RECIPE_PATH}` for {slug}, does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs and starts no worker:\n\n{}\n\nThe runner reads the store's copy, not the committed file. If the committed file is right, `pulse env import --project {slug}` copies it into the store again (a one-line `setup:` or `tools:` is often an import that lost its `- item` lines); if the file itself is wrong, fix it and commit it alone, then import. Jobs resume on their own once the copy parses.\n",
+                "`{id}`, the store's copy of `{RECIPE_PATH}` for {slug}, does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs; dispatch holds the project's jobs with their attempts intact and starts no worker:\n\n{}\n\nThe runner reads the store's copy, not the committed file. If the committed file is right, `pulse env import --project {slug}` copies it into the store again (a one-line `setup:` or `tools:` is often an import that lost its `- item` lines); if the file itself is wrong, fix it and commit it alone, then import. Jobs resume on their own once the copy parses.\n",
                 bullets.join("\n")
             ),
         ),
         _ => (
             crate::util::trunc(
                 &format!(
-                    "environment recipe at {} does not parse; every job of {slug} errors before a worker starts ({joined})",
+                    "environment recipe at {} does not parse; every job of {slug} waits before a worker starts ({joined})",
                     short(base, 12)
                 ),
                 230,
             ),
             format!(
-                "`{RECIPE_PATH}` at the base commit {} does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs and starts no worker for {slug}:\n\n{}\n\nThe file is the project's; whoever fixes it commits it alone, and the branch waits for a human landing. Jobs resume on their own once it parses.\n",
+                "`{RECIPE_PATH}` at the base commit {} does not parse as a recipe (ADR-026), so the runner cannot know what a clone needs; dispatch holds the jobs of {slug} with their attempts intact and starts no worker:\n\n{}\n\nThe file is the project's; whoever fixes it commits it alone, and the branch waits for a human landing. Jobs resume on their own once it parses.\n",
                 short(base, 12),
                 bullets.join("\n")
             ),
@@ -1653,6 +1688,77 @@ pub(crate) fn recipe_unblocked(
     n
 }
 
+/// Thread of the daemon's note that a project's verify command came from
+/// its recipe.
+pub(crate) const VERIFY_THREAD: &str = "verify";
+
+/// Fills an empty `projects.verify_cmd` from the recipe's `suggested_check`,
+/// once, so a project whose owner never passed `--verify` lands checked work
+/// instead of unchecked work; returns the adopted command. An owner's own
+/// verify command is never replaced (`pulse init PATH --verify CMD` sets it),
+/// and the conditional update makes the note post once however many ticks
+/// and runs see the same recipe.
+pub(crate) fn adopt_suggested_check(
+    s: &pulse_store::Store,
+    project: &Row,
+    recipe: &Recipe,
+    source: Option<&RecipeSource>,
+    now: &str,
+) -> Option<String> {
+    let cmd = recipe.suggested_check.trim().to_string();
+    if cmd.is_empty() || !project.str("verify_cmd").trim().is_empty() {
+        return None;
+    }
+    let slug = project.str("slug");
+    let conn = s.conn().ok()?;
+    let changed = conn
+        .execute(
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ? AND TRIM(verify_cmd) = ''",
+            rusqlite::params![cmd, slug],
+        )
+        .unwrap_or(0);
+    if changed == 0 {
+        return None;
+    }
+    let (from, source_text) = match source {
+        Some(RecipeSource::Store(id)) if !id.is_empty() => {
+            (format!("the store's copy ({id})"), id.clone())
+        }
+        _ => (format!("the committed {RECIPE_PATH}"), "git".to_string()),
+    };
+    let post = crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "finding".into(),
+            project: slug.clone(),
+            area: "runner".into(),
+            thread: VERIFY_THREAD.into(),
+            summary: crate::util::trunc(
+                &format!("verify command adopted from the environment recipe: `{cmd}`"),
+                230,
+            ),
+            body: format!(
+                "{slug} had no verify command, so its runs landed without a check. The recipe's `suggested_check` in {from} is the project's verify command from now on: a run's commits must pass `{cmd}` before they land, and the daemon reports a base that fails it instead of landing onto it.\n\nTo use another check, re-register the project with its own: `pulse init {} --verify 'CMD'` (everything else about the project is kept). `pulse env status` shows both.\n",
+                project.str("path")
+            ),
+            agent: crate::board::actor_agent(s, RECIPE_ACTOR.to_string()),
+            date: now.to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_default();
+    crate::util::event_at(
+        &conn,
+        now,
+        RECIPE_ACTOR,
+        "verify.adopted",
+        &slug,
+        json!({"cmd": cmd, "source": source_text, "post": post.str("id")}),
+    );
+    Some(cmd)
+}
+
 fn close_recipe_questions(
     s: &pulse_store::Store,
     slug: &str,
@@ -1691,7 +1797,6 @@ fn close_recipe_questions(
     }
     closed
 }
-/// Go: func short(s string, n int) string
 pub(crate) fn short(s: &str, n: usize) -> String {
     if s.len() > n {
         String::from_utf8_lossy(&s.as_bytes()[..n]).to_string()
@@ -1699,7 +1804,6 @@ pub(crate) fn short(s: &str, n: usize) -> String {
         s.to_string()
     }
 }
-/// Go: func recipePulseCLI(r *Recipe) string
 pub(crate) fn recipe_pulse_cli(r: &Recipe) -> String {
     r.env
         .get("PULSE_CLI")
@@ -2270,6 +2374,155 @@ mod tests {
         assert_eq!(
             recipe_unblocked(&s, &proj, "abc123", source.as_ref(), &after),
             0
+        );
+    }
+
+    #[test]
+    fn a_recipe_that_does_not_parse_holds_the_project_at_dispatch_and_asks_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        let id = flattened_environment_record(&s, "proj");
+        let open_questions = "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'question' AND thread = ?";
+        // Every executor holds the project before a slot is spent, and the
+        // owner hears about it once, however many ticks ask.
+        for executor in [
+            crate::executor::LOCAL_EXECUTOR,
+            "hands-1",
+            crate::executor::LOCAL_EXECUTOR,
+        ] {
+            let b = recipe_blocks(&s, executor, &[]);
+            assert_eq!(
+                b.get("proj").map(String::as_str),
+                Some(RECIPE_UNFIT_INVALID),
+                "{executor}: {b:?}"
+            );
+        }
+        assert_eq!(
+            crate::test_helpers::count(&s, open_questions, &[&RECIPE_THREAD]),
+            1,
+            "one owner question for the breakage"
+        );
+        assert!(
+            unfit_phrase(RECIPE_UNFIT_INVALID).contains("does not parse")
+                && tool_hint(RECIPE_UNFIT_INVALID).contains("pulse env import --project <slug>"),
+            "the idle line must say what holds the project and what clears it"
+        );
+        // The store's copy is repaired: the hold lifts on the next tick and
+        // the daemon answers its own question.
+        let fixed = crate::test_helpers::recipe_with(Some(&[]), None, None, None, "make test");
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            fixed,
+            crate::util::HUMAN_AGENT.into(),
+            format!("markdown:{RECIPE_PATH}"),
+            "imported again".into(),
+        )
+        .unwrap();
+        let b = recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]);
+        assert!(b.is_empty(), "a parsing recipe still held: {b:?}");
+        assert!(
+            crate::hygiene::open_daemon_questions_of_kind(&s, "proj", RECIPE_ASK_KIND).is_empty(),
+            "the release did not answer the question"
+        );
+        let answer = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE project = 'proj' AND kind = 'answer' AND thread = ? ORDER BY date DESC LIMIT 1",
+            &[&RECIPE_THREAD],
+        );
+        assert!(
+            answer.str("summary").contains("parses again") && answer.str("summary").contains(&id),
+            "{answer:?}"
+        );
+        // The release is answered once; later ticks leave the posts alone.
+        let b = recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]);
+        assert!(b.is_empty(), "{b:?}");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'answer' AND thread = ?",
+                &[&RECIPE_THREAD]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_project_without_a_verify_command_adopts_the_recipes_suggested_check_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "UPDATE projects SET verify_cmd = '' WHERE slug = 'proj'",
+            [],
+        )
+        .unwrap();
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            crate::test_helpers::recipe_with(Some(&[]), None, None, None, "make test"),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "with a check".into(),
+        )
+        .unwrap();
+        let findings = "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'finding' AND thread = ?";
+        // The first tick adopts the check and says so once.
+        assert!(recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]).is_empty());
+        let verify = || {
+            crate::util::must_one(&conn, "SELECT * FROM projects WHERE slug = 'proj'", &[])
+                .str("verify_cmd")
+        };
+        assert_eq!(verify(), "make test");
+        assert_eq!(
+            crate::test_helpers::count(&s, findings, &[&VERIFY_THREAD]),
+            1
+        );
+        let note = crate::util::must_one(
+            &conn,
+            "SELECT * FROM posts WHERE project = 'proj' AND kind = 'finding' AND thread = ? ORDER BY date DESC LIMIT 1",
+            &[&VERIFY_THREAD],
+        );
+        assert!(
+            note.str("summary")
+                .contains("adopted from the environment recipe: `make test`")
+                && note.str("body").contains("--verify 'CMD'"),
+            "{note:?}"
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'verify.adopted' AND subject = 'proj' AND json_extract(detail, '$.cmd') = 'make test'",
+                &[]
+            ),
+            1
+        );
+        // Later ticks and runs leave it alone, and so does a changed recipe:
+        // the owner's command, once set, is never replaced.
+        assert!(recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]).is_empty());
+        let (recipe, _, _, source) = read_recipe_from(&s, "proj", &_root, "HEAD");
+        assert!(
+            adopt_suggested_check(
+                &s,
+                &crate::util::must_one(&conn, "SELECT * FROM projects WHERE slug = 'proj'", &[]),
+                &recipe.unwrap(),
+                source.as_ref(),
+                crate::test_helpers::TEST_NOW,
+            )
+            .is_none()
+        );
+        conn.execute(
+            "UPDATE projects SET verify_cmd = 'cargo test' WHERE slug = 'proj'",
+            [],
+        )
+        .unwrap();
+        assert!(recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]).is_empty());
+        assert_eq!(verify(), "cargo test");
+        assert_eq!(
+            crate::test_helpers::count(&s, findings, &[&VERIFY_THREAD]),
+            1
         );
     }
 

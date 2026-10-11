@@ -81,7 +81,6 @@ pub(crate) struct PostOpts {
     pub for_owner: bool,
 }
 
-/// Go: func projectRows(q querier, includeInactive bool) []row
 pub(crate) fn project_rows(
     q: &dyn crate::util::Querier,
     include_inactive: bool,
@@ -94,12 +93,10 @@ pub(crate) fn project_rows(
     query_rows_dyn(q, &sql, &[]).unwrap()
 }
 
-/// Go: func projectBySlug(q querier, slug string) row
 pub(crate) fn project_by_slug(q: &dyn crate::util::Querier, slug: String) -> crate::util::Row {
     one_dyn(q, "SELECT * FROM projects WHERE slug = ?", &[&slug])
 }
 
-/// Go: func brainProject(q querier) row
 pub(crate) fn brain_project(q: &dyn crate::util::Querier) -> crate::util::Row {
     one_dyn(
         q,
@@ -108,7 +105,6 @@ pub(crate) fn brain_project(q: &dyn crate::util::Querier) -> crate::util::Row {
     )
 }
 
-/// Go: func projectForPath(q querier, path string) row
 pub(crate) fn project_for_path(q: &dyn crate::util::Querier, path: String) -> crate::util::Row {
     let target = std::fs::canonicalize(&path).unwrap_or_else(|_| {
         let p = std::path::PathBuf::from(&path);
@@ -131,7 +127,6 @@ pub(crate) fn project_for_path(q: &dyn crate::util::Querier, path: String) -> cr
     best
 }
 
-/// Go: func uniqueSlug(q querier, base, table, column string) string
 pub(crate) fn unique_slug(
     q: &dyn crate::util::Querier,
     base: String,
@@ -154,7 +149,6 @@ pub(crate) fn unique_slug(
     slug
 }
 
-/// Go: func addProject(s *store.Store, path, name, remote string, brain bool, verifyCmd, actor, slug string) (row, bool, error)
 pub(crate) fn add_project(
     s: &pulse_store::Store,
     path: String,
@@ -171,7 +165,6 @@ pub(crate) fn add_project(
     Ok((project_by_slug(&conn, p.slug), created))
 }
 
-/// Go: func expandUser(p string) string
 pub(crate) fn expand_user(p: String) -> String {
     if p == "~" || p.starts_with("~/") {
         std::path::Path::new(&crate::util::home_dir())
@@ -183,12 +176,10 @@ pub(crate) fn expand_user(p: String) -> String {
     }
 }
 
-/// Go: func agentRow(q querier, name string) row
 pub(crate) fn agent_row(q: &dyn crate::util::Querier, name: String) -> crate::util::Row {
     one_dyn(q, "SELECT * FROM agents WHERE name = ?", &[&name])
 }
 
-/// Go: func agentSession(a row) string
 pub(crate) fn agent_session(a: crate::util::Row) -> String {
     if let Ok(v) = std::env::var("PULSE_SESSION")
         && !v.is_empty()
@@ -204,7 +195,6 @@ pub(crate) fn agent_session(a: crate::util::Row) -> String {
         .unwrap_or_default()
 }
 
-/// Go: func resolveAgent(s *store.Store, name string, required bool) (*store.Agent, error)
 pub(crate) fn resolve_agent(
     s: &pulse_store::Store,
     name: String,
@@ -213,12 +203,10 @@ pub(crate) fn resolve_agent(
     Ok(pulse_board::resolve_agent(s, &name, required)?.map(Box::new))
 }
 
-/// Go: func pyRepr(s string) string
 pub(crate) fn py_repr(s: String) -> String {
     pulse_board::py_repr(&s)
 }
 
-/// Go: func joinAgent(s *store.Store, name, runner, model, session, display, kind, legacyID string) (row, bool, error)
 pub(crate) fn join_agent(
     s: &pulse_store::Store,
     name: String,
@@ -245,7 +233,6 @@ pub(crate) fn join_agent(
     Ok((agent_row(&conn, a.name), created))
 }
 
-/// Go: func spawnAgent(s *store.Store, runner, model, kind string) (row, error)
 pub(crate) fn spawn_agent(
     s: &pulse_store::Store,
     runner: String,
@@ -257,12 +244,10 @@ pub(crate) fn spawn_agent(
     Ok(agent_row(&conn, a.name))
 }
 
-/// Go: func touchAgent(s *store.Store, name string, useful bool, when string)
 pub(crate) fn touch_agent(s: &pulse_store::Store, name: String, useful: bool, when: String) -> () {
     let _ = pulse_board::touch_agent(s, &name, useful, &when);
 }
 
-/// Go: func pruneAgents(s *store.Store, now string, days int, actor string, dryRun bool) ([]board.Pruned, error)
 pub(crate) fn prune_agents(
     s: &pulse_store::Store,
     now: String,
@@ -273,7 +258,6 @@ pub(crate) fn prune_agents(
     pulse_board::prune_agents(s, &now, days as i64, &actor, dry_run)
 }
 
-/// Go: func actorAgent(s *store.Store, name string) *store.Agent
 pub(crate) fn actor_agent(s: &pulse_store::Store, name: String) -> Option<Box<pulse_store::Agent>> {
     if let Ok(Some(a)) = s.agent(&name) {
         return Some(Box::new(a));
@@ -286,12 +270,10 @@ pub(crate) fn actor_agent(s: &pulse_store::Store, name: String) -> Option<Box<pu
     }))
 }
 
-/// Go: func postRow(q querier, id string) row
 pub(crate) fn post_row(q: &dyn crate::util::Querier, id: String) -> crate::util::Row {
     parse_post_row(one_dyn(q, "SELECT * FROM posts WHERE id = ?", &[&id]))
 }
 
-/// Go: func parsePostRow(p row) row
 pub(crate) fn parse_post_row(p: crate::util::Row) -> crate::util::Row {
     if p.0.is_empty() {
         return p;
@@ -305,7 +287,6 @@ pub(crate) fn parse_post_row(p: crate::util::Row) -> crate::util::Row {
     p
 }
 
-/// Go: func createPost(s *store.Store, now string, o postOpts) (row, error)
 pub(crate) fn create_post(
     s: &pulse_store::Store,
     now: String,

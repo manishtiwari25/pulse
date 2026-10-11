@@ -7,6 +7,7 @@ import { ActivityIcon, ArrowUpRightIcon, BotIcon, ChevronDownIcon, ChevronRightI
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
+import { GoalNudge, useGoalNudges } from "@/components/home/goal-nudge";
 import { HomeHero } from "@/components/home/hero";
 import { CommonsLine, commonsLive, MachinePanel, ProjectCard, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
 import { ComputeInboxCard } from "@/components/compute/compute";
@@ -44,6 +45,11 @@ export default function HubPage() {
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
   const [allQuestions, setAllQuestions] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // The shared board is not a project: it gets one row under the grid, and
+  // only while something is live on it.
+  const projects = registeredProjects(org.data);
+  // Projects whose lead still works toward the generated goal (ADR-040), minus the notes the owner put away.
+  const goalNotes = useGoalNudges(projects);
 
   useEffect(() => {
     const openFromHash = () => {
@@ -72,9 +78,6 @@ export default function HubPage() {
   if (!org.data) return <SkeletonPage rows={4} />;
 
   const o = org.data;
-  // The shared board is not a project: it gets one row under the grid, and
-  // only while something is live on it.
-  const projects = registeredProjects(o);
   const commons = o.commons;
   const { decisions: adrs, proposals: awaiting, questions, compute: pendingCompute, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
   // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
@@ -175,13 +178,16 @@ export default function HubPage() {
             No project registered yet. Add one with the button above or run <Mono>pulse init</Mono> in a checkout.
           </EmptyState>
         )}
-        {attention.length ? (
+        {attention.length || goalNotes.rows.length ? (
           <div className="mt-4 grid gap-2" aria-label="Needs attention">
             {attention.map((p) => (
               <Notice key={p.slug} tone="warn">
                 <ProjectLink slug={p.slug} />{" "}
                 <span className="text-muted-foreground">{p.stop_present ? "STOP is set - the evolution loop halts until it is removed." : p.missing || !p.present ? "is registered but missing on disk - re-clone it at " + p.path + " or unregister." : !p.board_present ? "has no board yet - run pulse init in its checkout." : p.error}</span>
               </Notice>
+            ))}
+            {goalNotes.rows.map((p) => (
+              <GoalNudge key={"goal/" + p.slug} p={p} onDismiss={() => goalNotes.dismiss(p.slug)} />
             ))}
           </div>
         ) : null}
@@ -266,7 +272,6 @@ export default function HubPage() {
                   rows={[
                     ["projects", plural(o.totals.projects, "project")],
                     ["brain", o.totals.brain ? <Mono key="brain">{o.totals.brain}</Mono> : "not set"],
-                    ["tally", <Mono key="tally">{o.tally_mode}</Mono>],
                     ["pulse", o.binary_version ? <Mono key="pulse">{o.binary_version}</Mono> : "unknown"],
                     ["store", <Mono key="store">{o.store || o.registry}</Mono>],
                   ]}

@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) type JsonMap = BTreeMap<String, serde_json::Value>;
 impl Handler {
-    /// Go: func (h *Handler) additionProjects(w http.ResponseWriter, r *http.Request, parts []string) bool
     pub(crate) fn addition_projects(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -47,7 +46,6 @@ impl Handler {
         }
         true
     }
-    /// Go: func (h *Handler) additionProjectList(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_project_list(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -76,12 +74,14 @@ impl Handler {
                         .enumerate()
                         .map(|(i, p)| {
                             scope.spawn(move || {
+                                let goal = goal_summary(store, &p.slug);
                                 let mut row = json!({
                                     "slug": p.slug, "name": p.name, "path": p.path, "remote": p.remote,
                                     "brain": p.brain, "status": p.status, "verify_cmd": p.verify_cmd,
                                     "default_branch": p.default_branch, "added_at": p.added_at,
                                     "added_by": p.added_by, "last_seen": p.last_seen,
                                     "present": self.present_cached(&p),
+                                    "goal_source": goal.source, "goal_preview": goal.preview,
                                 });
                                 if let Some(obj) = row.as_object_mut() {
                                     for (key, value) in self.project_gates_cached(store, &p.slug) {
@@ -117,7 +117,6 @@ impl Handler {
             ),
         }
     }
-    /// Go: func (h *Handler) additionProjectRegister(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_project_register(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -168,7 +167,6 @@ impl Handler {
             Err(err) => crate::addition_failure(w, err.to_string()),
         }
     }
-    /// Go: func (h *Handler) additionProjectRemove(w http.ResponseWriter, r *http.Request, slug string)
     pub(crate) fn addition_project_remove(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -194,7 +192,6 @@ impl Handler {
             Err(err) => crate::addition_failure(w, err.to_string()),
         }
     }
-    /// Go: func (h *Handler) additionProjectRestore(w http.ResponseWriter, r *http.Request, slug string)
     pub(crate) fn addition_project_restore(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -256,7 +253,6 @@ impl Handler {
             Err(err) => crate::addition_failure(w, err.to_string()),
         }
     }
-    /// Go: func (h *Handler) additionExecutorRemove(w http.ResponseWriter, r *http.Request, name string)
     pub(crate) fn addition_executor_remove(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -288,7 +284,6 @@ impl Handler {
         }
     }
 }
-/// Go: func lifecycleRoute(parts []string) bool
 pub(crate) fn lifecycle_route(parts: Vec<String>) -> bool {
     match parts.len() {
         1 => true,
@@ -296,7 +291,6 @@ pub(crate) fn lifecycle_route(parts: Vec<String>) -> bool {
         _ => false,
     }
 }
-/// Go: func projectGates(s *store.Store, slug string) map[string]any
 pub(crate) fn project_gates(s: &pulse_store::Store, slug: String) -> JsonMap {
     let mut gates = map_from_pairs(vec![
         ("fixtures_enabled", json!(0)),
@@ -335,7 +329,87 @@ pub(crate) fn project_gates(s: &pulse_store::Store, slug: String) -> JsonMap {
     }
     gates
 }
-/// Go: func loopRecordSummary(s *store.Store, slug, name string) any
+
+/// How much of a goal text the registry and organization rows carry.
+pub(crate) const GOAL_PREVIEW_CHARS: usize = 120;
+
+/// Where a project's direction comes from, as the project rows report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GoalSummary {
+    /// `pulse_goals::OWNER` or `pulse_goals::GENERATED`.
+    pub(crate) source: String,
+    /// The head of the goal text, one line, at most [`GOAL_PREVIEW_CHARS`]
+    /// characters; empty when no text is stored.
+    pub(crate) preview: String,
+}
+
+/// Classifies `slug`'s goal from the stored `project.goal.<slug>` setting
+/// alone. `pulse_goals::get` composes the generated text from the checkout's
+/// README on every call, which a row built per project per request must not
+/// pay. No row is the generated default (projects registered before goals
+/// existed); a row says `owner` or `generated` itself, and one that does not
+/// parse falls back to who wrote it.
+pub(crate) fn goal_summary(s: &pulse_store::Store, slug: &str) -> GoalSummary {
+    let generated = GoalSummary {
+        source: pulse_goals::GENERATED.to_string(),
+        preview: String::new(),
+    };
+    let Ok(conn) = s.conn() else {
+        return generated;
+    };
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT value, updated_by FROM settings WHERE name = ?",
+            [format!("{}{slug}", pulse_goals::KEY_PREFIX)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((value, updated_by)) = row else {
+        return generated;
+    };
+    let stored: Option<Map<String, Value>> = serde_json::from_str(&value).ok();
+    let source = match stored
+        .as_ref()
+        .and_then(|m| m.get("source"))
+        .and_then(Value::as_str)
+    {
+        Some(pulse_goals::OWNER) => pulse_goals::OWNER,
+        Some(pulse_goals::GENERATED) => pulse_goals::GENERATED,
+        _ if updated_by == pulse_goals::GENERATED_BY => pulse_goals::GENERATED,
+        _ => pulse_goals::OWNER,
+    };
+    let preview = stored
+        .as_ref()
+        .and_then(|m| m.get("text"))
+        .and_then(Value::as_str)
+        .filter(|text| pulse_goals::normalize(text).is_ok())
+        .map(|text| goal_preview(text, GOAL_PREVIEW_CHARS))
+        .unwrap_or_default();
+    GoalSummary {
+        source: source.to_string(),
+        preview,
+    }
+}
+
+/// The first `max` characters of `text` on one line, cut at a word boundary
+/// and marked with an ellipsis when something was left out.
+pub(crate) fn goal_preview(text: &str, max: usize) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= max {
+        return line;
+    }
+    let head: String = line.chars().take(max).collect();
+    let cut = head
+        .rfind(' ')
+        .filter(|&at| head[..at].chars().count() >= max / 2)
+        .unwrap_or(head.len());
+    let mut clipped = head[..cut]
+        .trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .to_string();
+    clipped.push('…');
+    clipped
+}
+
 pub(crate) fn loop_record_summary(
     s: &pulse_store::Store,
     slug: String,
@@ -366,7 +440,6 @@ pub(crate) fn loop_record_summary(
         ("draft_job", crate::evolution::draft_job_ref(s, &slug)),
     ]))
 }
-/// Go: func additionDryRun(w http.ResponseWriter, payload map[string]any) (bool, bool)
 pub(crate) fn addition_dry_run(
     w: &mut crate::httpx::ResponseWriter,
     payload: JsonMap,
@@ -399,7 +472,7 @@ fn go_value<T: serde::Serialize>(v: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::{Value, json};
     use std::process::Command;
 
@@ -442,9 +515,9 @@ mod tests {
         dir.display().to_string()
     }
 
-    fn starter_store() -> (f2::TestStore, String) {
+    fn starter_store() -> (http::TestStore, String) {
         pulse_evolve::init();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let p = pulse_board::add_project(
             &s,
             &lifecycle_repo(),
@@ -503,9 +576,9 @@ mod tests {
         rows
     }
 
-    fn template_store() -> (f2::TestStore, String) {
+    fn template_store() -> (http::TestStore, String) {
         pulse_evolve::init();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         pulse_board::add_project(
             &s,
             &lifecycle_repo(),
@@ -568,7 +641,7 @@ mod tests {
         body: &str,
         headers: &[(&str, &str)],
     ) -> (u16, String) {
-        let server = crate::test_helpers_f3::server(h);
+        let server = crate::test_helpers_http::server(h);
         let client = crate::test_helpers::client();
         let url = format!("{}{}", server.url, path);
         let mut req = match method {
@@ -590,13 +663,13 @@ mod tests {
     #[test]
     fn lifecycle_register_remove_restore() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = f2::handler(&s);
+        let s = http::additions_store(false);
+        let h = http::handler(&s);
         let repo = lifecycle_repo();
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         assert_eq!(status, 200);
         assert_eq!(result["projects"].as_array().unwrap().len(), 0);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -617,7 +690,7 @@ mod tests {
         let job = result["job"].as_object().unwrap();
         assert_eq!(job["project"], slug);
         assert_ne!(job["id"], "");
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -626,13 +699,13 @@ mod tests {
         assert_eq!(status, 200, "refresh: {result:?}");
         assert_eq!(result["created"], false);
         assert_eq!(result["job_queued"], false);
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         let rows = result["projects"].as_array().unwrap();
         assert_eq!(status, 200);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["slug"], slug);
         assert_eq!(rows[0]["present"], true);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/projects/{slug}/remove"),
@@ -653,7 +726,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/projects/{slug}/remove"),
@@ -690,7 +763,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/projects/{slug}/remove"),
@@ -703,19 +776,19 @@ mod tests {
                 .unwrap()
                 .contains("already inactive")
         );
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         let rows = result["projects"].as_array().unwrap();
         assert_eq!(status, 200);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["status"], "inactive");
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/org", "");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/org", "");
         assert_eq!(status, 200);
         assert!(
             !String::from_utf8(must_json(&result["projects"]))
                 .unwrap()
                 .contains(&format!("\"{slug}\""))
         );
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/projects/{slug}/restore"),
@@ -733,7 +806,7 @@ mod tests {
             .unwrap();
         assert_eq!(state, "active");
         let (status, result) =
-            f2::additions_request(h, "POST", &format!("/api/v1/projects/{slug}/restore"), "{}");
+            http::additions_request(h, "POST", &format!("/api/v1/projects/{slug}/restore"), "{}");
         assert_eq!(status, 400);
         assert!(result["error"].as_str().unwrap().contains("already active"));
     }
@@ -741,10 +814,10 @@ mod tests {
     #[test]
     fn lifecycle_refusals() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        let h = f2::handler(&s);
+        let s = http::additions_store(false);
+        let h = http::handler(&s);
         let repo = lifecycle_repo();
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -758,7 +831,7 @@ mod tests {
                 .contains("Not a directory")
         );
         let plain = tempfile::tempdir().unwrap();
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -774,7 +847,7 @@ mod tests {
                 .unwrap()
                 .contains("Not a git checkout")
         );
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -783,9 +856,9 @@ mod tests {
         assert_eq!(status, 400);
         assert!(result["error"].as_str().unwrap().contains("brain"));
         let (status, _) =
-            f2::additions_request(h.clone(), "POST", "/api/v1/projects", r#"{"path":""}"#);
+            http::additions_request(h.clone(), "POST", "/api/v1/projects", r#"{"path":""}"#);
         assert_eq!(status, 400);
-        let (status, _) = f2::additions_request(
+        let (status, _) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects",
@@ -797,13 +870,13 @@ mod tests {
             .query_row::<i64, _, _>("SELECT count(*) FROM projects", [], |r| r.get(0))
             .unwrap();
         let (status, result) =
-            f2::additions_request(h.clone(), "POST", "/api/v1/projects/nobody/remove", "{}");
+            http::additions_request(h.clone(), "POST", "/api/v1/projects/nobody/remove", "{}");
         assert_eq!(status, 404);
         assert!(result["error"].as_str().unwrap().starts_with("No project "));
         let (status, _) =
-            f2::additions_request(h.clone(), "POST", "/api/v1/projects/nobody/restore", "{}");
+            http::additions_request(h.clone(), "POST", "/api/v1/projects/nobody/restore", "{}");
         assert_eq!(status, 404);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects/nobody/remove",
@@ -818,7 +891,7 @@ mod tests {
                 rusqlite::params![repo, s.now()],
             )
             .unwrap();
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects/brain/remove",
@@ -845,13 +918,13 @@ mod tests {
             &[("Content-Type", "text/plain")],
         );
         assert_eq!(status, 415);
-        let (status, _) = f2::additions_request(h.clone(), "DELETE", "/api/v1/projects", "");
+        let (status, _) = http::additions_request(h.clone(), "DELETE", "/api/v1/projects", "");
         assert_eq!(status, 405);
         let (status, _) =
-            f2::additions_request(h.clone(), "GET", "/api/v1/projects/brain/remove", "");
+            http::additions_request(h.clone(), "GET", "/api/v1/projects/brain/remove", "");
         assert_eq!(status, 405);
         let (status, result) =
-            f2::additions_request(h, "GET", "/api/v1/projects/brain/overview", "");
+            http::additions_request(h, "GET", "/api/v1/projects/brain/overview", "");
         assert_eq!(status, 200);
         assert_eq!(result.get("error"), None);
     }
@@ -859,11 +932,11 @@ mod tests {
     #[test]
     fn lifecycle_executor_remove() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
-        let h = f2::handler(&s);
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let h = http::handler(&s);
         s.conn().unwrap().execute("INSERT INTO executors (name, address, projects, status, created_at) VALUES ('vm-one', 'one@10.0.0.9', 'one', 'active', ?)", [s.now()]).unwrap();
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/compute/executors/vm-one/remove",
@@ -873,7 +946,7 @@ mod tests {
         assert_eq!(result["kind"], "executor");
         assert_eq!(result["dry_run"], true);
         assert_eq!(result["applied"], false);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/compute/executors/vm-one/remove",
@@ -891,7 +964,7 @@ mod tests {
             )
             .unwrap();
         assert_ne!(state, "active");
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/compute/executors/vm-one/remove",
@@ -904,14 +977,14 @@ mod tests {
                 .unwrap()
                 .contains("already removed")
         );
-        let (status, _) = f2::additions_request(
+        let (status, _) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/compute/executors/nobody/remove",
             "{}",
         );
         assert_eq!(status, 404);
-        let (status, result) = f2::additions_request(
+        let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/compute/executors/local/remove",
@@ -920,7 +993,7 @@ mod tests {
         assert_eq!(status, 400);
         assert!(result["error"].as_str().unwrap().contains("local executor"));
         let (status, _) =
-            f2::additions_request(h, "GET", "/api/v1/compute/executors/vm-one/remove", "");
+            http::additions_request(h, "GET", "/api/v1/compute/executors/vm-one/remove", "");
         assert_eq!(status, 405);
     }
 
@@ -944,9 +1017,9 @@ mod tests {
         .unwrap();
         pulse_evolve::set_fixture_enabled(&s, &slug, "starter-hardstop-publish", false, "human")
             .unwrap();
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let (status, data) =
-            f2::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
+            http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
         assert_eq!(status, 200, "evolution: {data:?}");
         assert_evolution_shape(&data.clone().into_iter().collect());
         assert!(data.get("gates_error").is_none());
@@ -1016,7 +1089,7 @@ mod tests {
         for forbidden in [
             "OWNER_REQUEST_TEXT",
             "OWNER_SCORER_TEXT",
-            "pulse evolve score",
+            "pulse evolve score starter-",
             "recieve",
             "squash every commit",
         ] {
@@ -1030,13 +1103,13 @@ mod tests {
     #[test]
     fn evolution_gates_fail_softly() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "raw");
-        let data = f2::handler(&s).evolution("raw".into()).unwrap();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "raw");
+        let data = http::handler(&s).evolution("raw".into()).unwrap();
         assert_evolution_shape(&data);
         assert_eq!(data["fixtures"].as_array().unwrap().len(), 0);
         let (s2, slug) = starter_store();
-        let data = f2::handler(&s2).evolution(slug).unwrap();
+        let data = http::handler(&s2).evolution(slug).unwrap();
         assert_evolution_shape(&data);
         let gates = data["gates"].as_object().unwrap();
         assert_eq!(gates["constitution"], true);
@@ -1051,7 +1124,7 @@ mod tests {
                 .unwrap()
                 .contains("evolve.loop")
         );
-        let data = f2::handler(&s2)
+        let data = http::handler(&s2)
             .evolution(pulse_store::COMMONS_SLUG.into())
             .unwrap();
         assert_evolution_shape(&data);
@@ -1063,9 +1136,9 @@ mod tests {
     fn project_rows_carry_the_loop_position() {
         let _serial = crate::test_helpers::serial();
         let (s, slug) = starter_store();
-        f2::additions_project(&s, "raw");
-        let h = f2::handler(&s);
-        let (status, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        http::additions_project(&s, "raw");
+        let h = http::handler(&s);
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         assert_eq!(status, 200, "projects: {result:?}");
         let rows = result["projects"]
             .as_array()
@@ -1129,7 +1202,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let (_, result) = f2::additions_request(h, "GET", "/api/v1/projects", "");
+        let (_, result) = http::additions_request(h, "GET", "/api/v1/projects", "");
         for item in result["projects"].as_array().unwrap() {
             let row = item.as_object().unwrap();
             match row["slug"].as_str().unwrap() {
@@ -1145,12 +1218,165 @@ mod tests {
     }
 
     #[test]
+    fn project_rows_carry_the_goal_source() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let p =
+            pulse_board::add_project(&s, &lifecycle_repo(), "My App", "", false, "", "human", "")
+                .unwrap();
+        let slug = p.slug.clone();
+        http::additions_project(&s, "raw");
+        let h = http::handler(&s);
+        let registry_row = |slug: &str| {
+            let (status, result) =
+                http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+            assert_eq!(status, 200, "projects: {result:?}");
+            result["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["slug"] == slug)
+                .cloned()
+                .unwrap_or_else(|| panic!("no registry row for {slug}: {result:?}"))
+        };
+        let org_row = |slug: &str| {
+            let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/org", "");
+            assert_eq!(status, 200, "org: {result:?}");
+            result["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["slug"] == slug)
+                .cloned()
+                .unwrap_or_else(|| panic!("no org row for {slug}: {result:?}"))
+        };
+
+        // Registration stored the generated default; "raw" predates goals and
+        // has no row at all. Both run on a generated goal.
+        let fresh = registry_row(&slug);
+        assert_eq!(fresh["goal_source"], pulse_goals::GENERATED);
+        let preview = fresh["goal_preview"].as_str().unwrap();
+        assert!(
+            preview.starts_with("Make My App more useful"),
+            "generated preview: {preview}"
+        );
+        assert!(preview.chars().count() <= GOAL_PREVIEW_CHARS + 1);
+        assert!(!preview.contains('\n'));
+        let raw = registry_row("raw");
+        assert_eq!(raw["goal_source"], pulse_goals::GENERATED);
+        assert_eq!(raw["goal_preview"], "");
+        let org = org_row(&slug);
+        assert_eq!(org["present"], true);
+        assert_eq!(org["goal_source"], pulse_goals::GENERATED);
+        assert_eq!(org["goal_preview"], preview);
+        // The shared board and a checkout missing on disk carry no goal.
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/org", "");
+        assert!(result["commons"].get("goal_source").is_none());
+        assert!(org_row("raw").get("goal_source").is_none());
+        assert_eq!(org_row("raw")["present"], false);
+
+        let want = "Keep search useful, correct and reliable.";
+        pulse_goals::set(&s, &slug, want, "human").unwrap();
+        let owned = registry_row(&slug);
+        assert_eq!(owned["goal_source"], pulse_goals::OWNER);
+        assert_eq!(owned["goal_preview"], want);
+        let org = org_row(&slug);
+        assert_eq!(org["goal_source"], pulse_goals::OWNER);
+        assert_eq!(org["goal_preview"], want);
+
+        // A long owner goal is cut at a word, on one line, with an ellipsis.
+        let long = format!(
+            "Ship the {} release to every user.",
+            "very ".repeat(40).trim()
+        );
+        pulse_goals::set(&s, &slug, &long, "human").unwrap();
+        let preview = registry_row(&slug)["goal_preview"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(preview.ends_with("very…"), "clipped preview: {preview}");
+        assert!(preview.chars().count() <= GOAL_PREVIEW_CHARS + 1);
+        assert!(long.starts_with(preview.trim_end_matches('…')));
+
+        // The owner's reset is a decision too, but it hands the lead back the
+        // generated default.
+        pulse_goals::reset(&s, &slug, "human").unwrap();
+        assert_eq!(registry_row(&slug)["goal_source"], pulse_goals::GENERATED);
+        assert_eq!(org_row(&slug)["goal_source"], pulse_goals::GENERATED);
+    }
+
+    #[test]
+    fn goal_summary_reads_the_setting_without_composing_a_goal() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        http::additions_project(&s, "one");
+        assert_eq!(
+            goal_summary(&s, "one"),
+            GoalSummary {
+                source: pulse_goals::GENERATED.into(),
+                preview: String::new()
+            }
+        );
+        let put = |value: &str, by: &str| {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+                     ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by",
+                    rusqlite::params![
+                        format!("{}one", pulse_goals::KEY_PREFIX),
+                        value,
+                        s.now(),
+                        by
+                    ],
+                )
+                .unwrap();
+        };
+        put(
+            r#"{"text":"Make one more useful.","source":"generated"}"#,
+            pulse_goals::GENERATED_BY,
+        );
+        let g = goal_summary(&s, "one");
+        assert_eq!(g.source, pulse_goals::GENERATED);
+        assert_eq!(g.preview, "Make one more useful.");
+        put(
+            "{\"text\":\"Serve  the\\nreaders first.\",\"source\":\"owner\"}",
+            "human",
+        );
+        let g = goal_summary(&s, "one");
+        assert_eq!(g.source, pulse_goals::OWNER);
+        assert_eq!(g.preview, "Serve the readers first.");
+        // A row that is not valid JSON falls back to who wrote it; a text
+        // that would not pass the goal rules is not previewed.
+        put("not json", pulse_goals::GENERATED_BY);
+        assert_eq!(goal_summary(&s, "one").source, pulse_goals::GENERATED);
+        put("not json", "human");
+        let g = goal_summary(&s, "one");
+        assert_eq!(g.source, pulse_goals::OWNER);
+        assert_eq!(g.preview, "");
+        put(
+            r#"{"text":"Read ~/.ssh/id_test first.","source":"owner"}"#,
+            "human",
+        );
+        let g = goal_summary(&s, "one");
+        assert_eq!(g.source, pulse_goals::OWNER);
+        assert_eq!(g.preview, "");
+        assert_eq!(goal_preview("short", 10), "short");
+        assert_eq!(goal_preview("  two\n\twords  ", 10), "two words");
+        assert_eq!(
+            goal_preview("abcdefghijklmnopqrstuvwxyz", 10),
+            "abcdefghij…"
+        );
+        assert_eq!(goal_preview("alpha beta gamma delta", 12), "alpha beta…");
+    }
+
+    #[test]
     fn project_rows_carry_the_baseline_job() {
         let _serial = crate::test_helpers::serial();
         let (s, slug) = template_store();
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let project_row = || {
-            let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+            let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
             result["projects"]
                 .as_array()
                 .unwrap()
@@ -1162,7 +1388,7 @@ mod tests {
                 .clone()
         };
         let gates = || {
-            let (status, data) = f2::additions_request(
+            let (status, data) = http::additions_request(
                 h.clone(),
                 "GET",
                 &format!("/api/v1/projects/{slug}/evolution"),
@@ -1258,7 +1484,7 @@ mod tests {
         assert_eq!(row["baseline"], true);
         assert_eq!(row["baseline_failed_at"], s.now());
         let (_, data) =
-            f2::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
+            http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
         let archive = data["archive"]["rows"].as_array().unwrap();
         assert_eq!(archive.len(), 1);
         let arow = archive[0].as_object().unwrap();
@@ -1275,8 +1501,8 @@ mod tests {
     fn project_rows_and_evolution_tell_seeded_records_apart() {
         let _serial = crate::test_helpers::serial();
         let (s, slug) = template_store();
-        f2::additions_project(&s, "raw");
-        let h = f2::handler(&s);
+        http::additions_project(&s, "raw");
+        let h = http::handler(&s);
         let loop_record = |row: &serde_json::Map<String, Value>, name: &str| {
             let value = row[name].as_object().unwrap();
             let keys = value.keys().cloned().collect::<Vec<_>>();
@@ -1286,7 +1512,7 @@ mod tests {
             );
             value.clone()
         };
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         let rows = result["projects"]
             .as_array()
             .unwrap()
@@ -1323,7 +1549,7 @@ mod tests {
         assert_eq!(rows["brain"]["constitution"], Value::Null);
         let next = rows[&slug]["evolve_next"].as_str().unwrap();
         assert!(!next.contains("evolve seed") && !next.contains("record new"));
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "GET",
             &format!("/api/v1/projects/{slug}/evolution"),
@@ -1360,7 +1586,7 @@ mod tests {
             "shaped",
         )
         .unwrap();
-        let (_, result) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         for item in result["projects"].as_array().unwrap() {
             let row = item.as_object().unwrap();
             if row["slug"] != slug {
@@ -1380,7 +1606,7 @@ mod tests {
             assert_eq!(evaluators["seeded"], true);
         }
         let (_, data) =
-            f2::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
+            http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/evolution"), "");
         let doc = data["constitution"].as_object().unwrap();
         assert_eq!(doc["seeded"], false);
         assert_eq!(
@@ -1390,7 +1616,7 @@ mod tests {
                 pulse_store::COMMONS_SLUG
             )
         );
-        f2::additions_record(
+        http::additions_record(
             &s,
             "EVO-constitution-raw",
             "raw",
@@ -1398,7 +1624,7 @@ mod tests {
             "constitution",
             "# Raw\n",
         );
-        let data = f2::handler(&s).evolution("raw".into()).unwrap();
+        let data = http::handler(&s).evolution("raw".into()).unwrap();
         let doc = data["constitution"].as_object().unwrap();
         assert_eq!(doc["seeded"], false);
         assert_eq!(doc["seeded_from"], "");
@@ -1408,9 +1634,9 @@ mod tests {
     fn console_adopts_or_discards_a_draft_and_queues_the_drafting_job() {
         let _serial = crate::test_helpers::serial();
         let (s, slug) = template_store();
-        let h = f2::handler(&s);
+        let h = http::handler(&s);
         let id = format!("EVO-constitution-{slug}");
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/draft-job"),
@@ -1440,7 +1666,7 @@ mod tests {
         assert_eq!(kind, "reflect");
         assert!(source.starts_with(&format!("draft:{slug}:")));
         assert_eq!(created_by, pulse_store::HUMAN_AGENT);
-        let (status, again) = f2::additions_request(
+        let (status, again) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/draft-job"),
@@ -1455,7 +1681,7 @@ mod tests {
                 .unwrap()
                 .contains("a draft job is queued")
         );
-        let (_, rows) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (_, rows) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         for item in rows["projects"].as_array().unwrap() {
             let row = item.as_object().unwrap();
             if row["slug"] != slug {
@@ -1486,7 +1712,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (_, rows) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (_, rows) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         for item in rows["projects"].as_array().unwrap() {
             let row = item.as_object().unwrap();
             if row["slug"] != slug {
@@ -1502,7 +1728,7 @@ mod tests {
             assert_eq!(c["draft_job"], Value::Null);
             assert_eq!(c["seeded"], true);
         }
-        let (_, doc) = f2::additions_request(
+        let (_, doc) = http::additions_request(
             h.clone(),
             "GET",
             &format!("/api/v1/projects/{slug}/evolution"),
@@ -1512,11 +1738,11 @@ mod tests {
         assert_eq!(draft["body"], body);
         assert_eq!(draft["author"], "aurora");
         let (status, rec) =
-            f2::additions_request(h.clone(), "GET", &format!("/api/v1/records/{id}"), "");
+            http::additions_request(h.clone(), "GET", &format!("/api/v1/records/{id}"), "");
         assert_eq!(status, 200);
         assert_eq!(rec["draft"]["body"], body);
         assert_ne!(rec["body"], body);
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/draft-job"),
@@ -1555,7 +1781,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/draft-job"),
@@ -1563,7 +1789,7 @@ mod tests {
         );
         assert_eq!(status, 409);
         assert!(data["why"].as_str().unwrap().contains("draft waiting"));
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/discard"),
@@ -1582,7 +1808,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (status, data) = f2::additions_request(
+        let (status, data) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/adopt"),
@@ -1599,7 +1825,7 @@ mod tests {
             "adopted the draft by aurora: paths checked (via console)"
         );
         assert_eq!(head.current_rev, 2);
-        let (_, rows) = f2::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        let (_, rows) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         for item in rows["projects"].as_array().unwrap() {
             let row = item.as_object().unwrap();
             if row["slug"] != slug {
@@ -1610,7 +1836,7 @@ mod tests {
             assert_eq!(c["rev"], 2);
             assert_eq!(c["draft"], Value::Null);
         }
-        let (status, _) = f2::additions_request(
+        let (status, _) = http::additions_request(
             h.clone(),
             "POST",
             &format!("/api/v1/records/{id}/adopt"),
@@ -1618,7 +1844,7 @@ mod tests {
         );
         assert_ne!(status, 200);
         let (status, _) =
-            f2::additions_request(h, "GET", &format!("/api/v1/records/{id}/adopt"), "");
+            http::additions_request(h, "GET", &format!("/api/v1/records/{id}/adopt"), "");
         assert_eq!(status, 405);
     }
 }

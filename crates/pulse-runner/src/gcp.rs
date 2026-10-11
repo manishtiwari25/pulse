@@ -76,7 +76,6 @@ pub(crate) fn init() {
     crate::provider::register_provider(GcpProvider {});
 }
 
-/// Go: func gcpSettings(s *store.Store, size string) gcpConfig
 pub(crate) fn gcp_settings(s: &pulse_store::Store, size: String) -> GcpConfig {
     let mut cfg = GcpConfig {
         project: s.setting("compute.gcp.project", "").trim().into(),
@@ -103,7 +102,6 @@ pub(crate) fn gcp_settings(s: &pulse_store::Store, size: String) -> GcpConfig {
     cfg
 }
 
-/// Go: func gcpErr(what string, rc int, stdout, stderr string, err error) error
 pub(crate) fn gcp_err(
     what: String,
     rc: i32,
@@ -114,7 +112,6 @@ pub(crate) fn gcp_err(
     crate::provider::cli_err(what, rc, stdout, stderr, err)
 }
 
-/// Go: func gcpJSON(ctx context.Context, what string, args []string, timeout time.Duration, v any) error
 pub(crate) fn gcp_json(
     ctx: &pulse_bus::CancellationToken,
     what: String,
@@ -136,7 +133,6 @@ pub(crate) fn gcp_json(
     Ok(())
 }
 
-/// Go: func gcpLabel(v string) string
 pub(crate) fn gcp_label(v: String) -> String {
     let mut out = String::new();
     for ch in v.to_lowercase().chars() {
@@ -152,7 +148,6 @@ pub(crate) fn gcp_label(v: String) -> String {
     out
 }
 
-/// Go: func gcpMachine(cfg gcpConfig, i gcpInstance) *Machine
 pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<crate::provider::Machine> {
     let mt = i
         .machine_type
@@ -180,7 +175,6 @@ pub(crate) fn gcp_machine(cfg: GcpConfig, i: GcpInstance) -> Option<crate::provi
     })
 }
 
-/// Go: func gcpDescribe(ctx context.Context, cfg gcpConfig, name string) (*gcpInstance, error)
 pub(crate) fn gcp_describe(
     ctx: &pulse_bus::CancellationToken,
     cfg: GcpConfig,
@@ -218,7 +212,6 @@ pub(crate) fn gcp_describe(
     Ok(Some(Box::new(i)))
 }
 
-/// Go: func gcpFirewallRule(ctx context.Context, cfg gcpConfig, log func(string, ...any)) error
 pub(crate) fn gcp_firewall_rule(
     ctx: &pulse_bus::CancellationToken,
     cfg: GcpConfig,
@@ -286,15 +279,12 @@ pub(crate) fn gcp_firewall_rule(
 }
 
 impl GcpProvider {
-    /// Go: func (gcpProvider) Name() string
     pub(crate) fn name(&self) -> String {
         "gcp".into()
     }
-    /// Go: func (gcpProvider) Kind() string
     pub(crate) fn kind(&self) -> String {
         "Compute Engine instance".into()
     }
-    /// Go: func (p gcpProvider) Provision(ctx context.Context, req ProvisionRequest) (*Machine, error)
     pub(crate) fn provision(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -485,7 +475,6 @@ impl GcpProvider {
         crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
         Ok(m)
     }
-    /// Go: func (p gcpProvider) config(m *Machine) gcpConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> GcpConfig {
         GcpConfig {
             project: m.detail.get("project").cloned().unwrap_or_default(),
@@ -493,7 +482,6 @@ impl GcpProvider {
             ..Default::default()
         }
     }
-    /// Go: func (p gcpProvider) Release(ctx context.Context, m *Machine) error
     pub(crate) fn release(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -533,7 +521,6 @@ impl GcpProvider {
         }
         Ok(())
     }
-    /// Go: func (p gcpProvider) Probe(ctx context.Context, m *Machine) error
     pub(crate) fn probe(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -555,7 +542,6 @@ impl GcpProvider {
         }
         Ok(())
     }
-    /// Go: func (p gcpProvider) Find(ctx context.Context, s *store.Store, executor, host string) (*Machine, error)
     pub(crate) fn find(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -602,7 +588,6 @@ impl GcpProvider {
         }
         Ok(None)
     }
-    /// Go: func (p gcpProvider) Stop(ctx context.Context, m *Machine) error
     pub(crate) fn stop(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -633,11 +618,9 @@ impl GcpProvider {
         }
         Ok(())
     }
-    /// Go: func (p gcpProvider) Place(m *Machine) string
     pub(crate) fn place(&self, m: &crate::provider::Machine) -> String {
         m.detail.get("zone").cloned().unwrap_or_default()
     }
-    /// Go: func (p gcpProvider) StartHint(m *Machine) string
     pub(crate) fn start_hint(&self, m: &crate::provider::Machine) -> String {
         let mut hint = format!(
             "gcloud compute instances start {} --zone {}",
@@ -649,7 +632,6 @@ impl GcpProvider {
         }
         hint
     }
-    /// Go: func (p gcpProvider) Delete(ctx context.Context, m *Machine) (bool, []string, error)
     pub(crate) fn delete(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -693,13 +675,11 @@ impl GcpProvider {
 }
 
 impl GcpConfig {
-    /// Go: func (c gcpConfig) args(a ...string) []string
     pub(crate) fn args(&self, a: &[String]) -> Vec<String> {
         let mut out = self.scope(a.to_vec());
         out.extend(["--format".into(), "json".into()]);
         out
     }
-    /// Go: func (c gcpConfig) scope(a []string) []string
     pub(crate) fn scope(&self, a: Vec<String>) -> Vec<String> {
         let mut out = a;
         if !self.project.is_empty() {
@@ -707,7 +687,6 @@ impl GcpConfig {
         }
         out
     }
-    /// Go: func (c gcpConfig) imageArgs() []string
     pub(crate) fn image_args(&self) -> Vec<String> {
         if self.image.contains('/') {
             vec!["--image".into(), self.image.clone()]
@@ -723,7 +702,6 @@ impl GcpConfig {
 }
 
 impl GcpInstance {
-    /// Go: func (i gcpInstance) publicIP() string
     pub(crate) fn public_ip(&self) -> String {
         for n in &self.network_interfaces {
             for a in &n.access_configs {
@@ -734,7 +712,6 @@ impl GcpInstance {
         }
         String::new()
     }
-    /// Go: func (i gcpInstance) zoneName() string
     pub(crate) fn zone_name(&self) -> String {
         self.zone
             .rsplit('/')

@@ -1,4 +1,4 @@
-//! Test helpers ported from internal/runner/token_test.go: the fake GitHub API every token test
+//! Test helpers for the token tests: the fake GitHub API every token test
 //! answers from, and the wall-clock swap those tests use to age the source caches.
 #![allow(dead_code)]
 
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
-/// Go: type fakeGitHub struct - answers GET /user and GET /user/repos; repos says how many
+/// Answers GET /user and GET /user/repos; repos says how many
 /// repositories the token reaches and status overrides the /user answer.
 #[derive(Default)]
 pub(crate) struct FakeGitHubState {
@@ -17,8 +17,8 @@ pub(crate) struct FakeGitHubState {
     pub(crate) tokens: Vec<String>,
 }
 
-/// Go: `gh := &fakeGitHub{login: "hands-bot"}` - the state sits behind Go's `mu`, so tests read
-/// `gh.lock().calls` where Go read `gh.calls`.
+/// The fake GitHub API, shared with the transport closure; the state sits
+/// behind a mutex, so tests read `gh.lock().calls`.
 #[derive(Clone, Default)]
 pub(crate) struct FakeGitHub {
     state: Arc<Mutex<FakeGitHubState>>,
@@ -35,21 +35,19 @@ impl FakeGitHub {
         self.state.lock().unwrap()
     }
 
-    /// Go: func (g *fakeGitHub) install(t *testing.T)
-    ///
-    /// Swaps githubHTTP for the fake transport; dropping the guard is Go's t.Cleanup (the old
-    /// transport back, the gh source cache forgotten).
+    /// Swaps the GitHub transport for the fake; dropping the guard puts the old transport back
+    /// and forgets the gh source cache.
     #[must_use = "hold the guard for the test's life; dropping it restores the GitHub transport"]
     pub(crate) fn install(&self) -> FakeGitHubInstall {
         let g = self.state.clone();
         let fake: Box<crate::executor::GithubHttpFn> = Box::new(move |token: &str, url: &str| {
             let mut g = g.lock().unwrap();
-            // Go saw r.URL.Path and r.URL.RawQuery; the transport here gets the whole URL.
+            // The transport gets the whole URL; the calls record only its path and query.
             let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
             let path_query = rest.find('/').map(|i| &rest[i..]).unwrap_or("/");
             let (path, raw_query) = path_query.split_once('?').unwrap_or((path_query, ""));
             g.calls.push(format!("{path}?{raw_query}"));
-            // The Authorization header Go trimmed "Bearer " from carries exactly this token.
+            // The transport receives the bare token, without the "Bearer " the header carries.
             g.tokens.push(token.to_string());
             let (mut body, mut status) = (String::new(), 200u16);
             match path {
@@ -83,7 +81,6 @@ impl FakeGitHub {
         FakeGitHubInstall { old: Some(old) }
     }
 
-    /// Go: func (g *fakeGitHub) count() int
     pub(crate) fn count(&self) -> usize {
         self.state.lock().unwrap().calls.len()
     }
@@ -102,8 +99,8 @@ impl Drop for FakeGitHubInstall {
     }
 }
 
-/// The instant Go's swapped `wallClock` closure returns; `WALL_CLOCK` is a fn pointer, so the
-/// test's `clock` variable lives here and `advance_wall_clock` is Go's `clock = clock.Add(d)`.
+/// The instant `test_wall_clock` returns; `WALL_CLOCK` is a fn pointer, so the test's clock
+/// lives here and `advance_wall_clock` moves it.
 static TEST_CLOCK: LazyLock<Mutex<SystemTime>> =
     LazyLock::new(|| Mutex::new(SystemTime::UNIX_EPOCH));
 
@@ -111,7 +108,6 @@ fn test_wall_clock() -> SystemTime {
     *TEST_CLOCK.lock().unwrap()
 }
 
-/// Go: `oldClock := wallClock; t.Cleanup(func() { wallClock = oldClock }); wallClock = func() time.Time { return clock }`
 #[must_use = "hold the guard for the test's life; dropping it restores the wall clock"]
 pub(crate) fn fixed_wall_clock(clock: SystemTime) -> WallClockGuard {
     let old = *crate::run::WALL_CLOCK.read().expect("wall clock");
@@ -120,7 +116,6 @@ pub(crate) fn fixed_wall_clock(clock: SystemTime) -> WallClockGuard {
     WallClockGuard { old }
 }
 
-/// Go: `clock = clock.Add(d)`
 pub(crate) fn advance_wall_clock(d: Duration) {
     *TEST_CLOCK.lock().unwrap() += d;
 }
@@ -135,7 +130,6 @@ impl Drop for WallClockGuard {
     }
 }
 
-/// Go: time.Date(year, month, day, hour, min, sec, 0, time.UTC)
 pub(crate) fn time_date(
     year: i32,
     month: u32,

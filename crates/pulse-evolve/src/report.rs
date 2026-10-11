@@ -1,5 +1,3 @@
-//! Port of internal/evolve/report.go.
-
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::params;
@@ -181,7 +179,6 @@ pub fn is_improver_path(path: &str) -> bool {
     IMPROVER_PREFIXES.iter().any(|p| path.starts_with(p))
 }
 
-/// Go: func BuildReport(s *store.Store, project string, days int) (*Report, error) {
 pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<Report> {
     let days = if days <= 0 { 7 } else { days };
     let now = s.now();
@@ -216,7 +213,6 @@ pub fn build_report(s: &pulse_store::Store, project: &str, days: i64) -> Result<
     })
 }
 
-/// Go: func postCounts(s *store.Store, project, since string) ([]KindCount, error) {
 pub(crate) fn post_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -233,7 +229,6 @@ pub(crate) fn post_counts(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Go: func suggestionFunnel(s *store.Store, project, since string, status *LoopStatus) (Funnel, error) {
 pub(crate) fn suggestion_funnel(
     s: &pulse_store::Store,
     project: &str,
@@ -289,7 +284,6 @@ pub(crate) fn suggestion_funnel(
     Ok(f)
 }
 
-/// Go: func cardJobCounts(s *store.Store, project, since string) (CardJobCount, error) {
 pub(crate) fn card_job_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -324,7 +318,6 @@ pub(crate) fn card_job_counts(
 
 pub(crate) const RESEARCH_JOB_SQL: &str = "(j.kind = 'reflect' AND j.source LIKE 'research:%')";
 
-/// Go: func jobCounts(s *store.Store, project, since string) ([]JobCount, error) {
 pub(crate) fn job_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -358,7 +351,6 @@ pub(crate) fn job_counts(
     Ok(by_kind.into_values().collect())
 }
 
-/// Go: func researchCounts(s *store.Store, project, since string) (Research, error) {
 pub(crate) fn research_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -402,7 +394,6 @@ pub(crate) fn research_counts(
     Ok(out)
 }
 
-/// Go: func landingCounts(s *store.Store, project, since string) (Landings, error) {
 pub(crate) fn landing_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -451,7 +442,6 @@ pub(crate) fn landing_counts(
     Ok(l)
 }
 
-/// Go: func experimentCounts(s *store.Store, project, since string, status *LoopStatus) (Experiments, error) {
 pub(crate) fn experiment_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -693,7 +683,6 @@ fn asks_per_landing(w: &ImproverWindow) -> f64 {
     w.owner_asks as f64 / w.landed as f64
 }
 
-/// Go: func ownerInbox(s *store.Store, project string) (OwnerInbox, error) {
 pub(crate) fn owner_inbox(s: &pulse_store::Store, project: &str) -> Result<OwnerInbox> {
     let mut o = OwnerInbox::default();
     let conn = s.conn()?;
@@ -719,7 +708,6 @@ pub(crate) fn owner_inbox(s: &pulse_store::Store, project: &str) -> Result<Owner
     Ok(o)
 }
 
-/// Go: func reportRows(r *Report) [][]string {
 pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
     let mut posts: Vec<String> = r
         .posts
@@ -848,12 +836,12 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
 mod tests {
     use super::*;
     use crate::test_helpers::join_test_agent;
-    use crate::test_helpers_e2::*;
+    use crate::test_helpers_cycle::*;
 
     #[test]
     fn build_report_counts_what_the_loop_and_the_operating_layer_did() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         join_test_agent(&s, "card-writer");
         let cardless = cardless_suggestion(&s, "shape", "Shorten the daily brief", &["up", "up"]);
@@ -1059,7 +1047,7 @@ mod tests {
     #[test]
     fn improver_window_measures_the_loop_against_the_window_before() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         join_test_agent(&s, "card-writer");
         let now = DateTime::parse_from_rfc3339(&s.now())
@@ -1212,7 +1200,7 @@ mod tests {
     #[test]
     fn build_report_window_excludes_older_work() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         join_test_agent(&s, "card-writer");
         report_job(&s, "improve", "Improve: old", "board", "done", 1);
@@ -1246,7 +1234,7 @@ mod tests {
     #[test]
     fn build_report_counts_what_research_left_behind() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         join_test_agent(&s, "card-writer");
         let research = report_job(

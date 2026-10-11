@@ -1,4 +1,3 @@
-//! Port of internal/runner/idle.go.
 #![allow(dead_code)]
 
 use chrono::TimeDelta;
@@ -8,7 +7,6 @@ use std::collections::BTreeMap;
 
 use crate::util::Row;
 
-/// Go: func idleNote(s *store.Store, slug, now string) string
 pub(crate) fn idle_note(s: &pulse_store::Store, slug: String, now: String) -> String {
     let suggestions = pulse_tally::compute_light(
         s,
@@ -79,7 +77,6 @@ pub(crate) fn idle_note_from_parts(
     parts.join("; ")
 }
 
-/// Go: func suggestionIdlePart(s *store.Store, slug, now string) string
 pub(crate) fn suggestion_idle_part(s: &pulse_store::Store, slug: String, now: String) -> String {
     let res = pulse_tally::compute_light(
         s,
@@ -229,7 +226,6 @@ pub(crate) fn suggestion_idle_part_with_tally(
     }
 }
 
-/// Go: func handoffIdlePart(s *store.Store, handoffs []tally.Post) string
 pub(crate) fn handoff_idle_part(
     s: &pulse_store::Store,
     handoffs: Vec<pulse_tally::Post>,
@@ -248,7 +244,6 @@ pub(crate) fn handoff_idle_part(
     }
 }
 
-/// Go: func questionIdlePart(s *store.Store, slug, now string) string
 pub(crate) fn question_idle_part(s: &pulse_store::Store, slug: String, now: String) -> String {
     let questions = crate::plan::open_questions(s, slug, now);
     if questions.is_empty() {
@@ -265,7 +260,6 @@ pub(crate) fn question_idle_part(s: &pulse_store::Store, slug: String, now: Stri
     }
 }
 
-/// Go: func ballotIdlePart(s *store.Store, slug, now string, suggestions []tally.Suggestion) string
 pub(crate) fn ballot_idle_part(
     s: &pulse_store::Store,
     slug: String,
@@ -304,7 +298,6 @@ pub(crate) fn ballot_idle_part(
     format!("ballot in {}{suffix}", crate::util::format_minutes(minutes))
 }
 
-/// Go: func reflectIdlePart(s *store.Store, slug, now string) string
 pub(crate) fn reflect_idle_part(s: &pulse_store::Store, slug: String, now: String) -> String {
     let source = format!("reflect:{}:{}", slug, &now[..10.min(now.len())]);
     let day = format!("{}%", &now[..10.min(now.len())]);
@@ -323,7 +316,6 @@ pub(crate) fn reflect_idle_part(s: &pulse_store::Store, slug: String, now: Strin
     "reflect due".into()
 }
 
-/// Go: func researchIdlePart(s *store.Store, slug, now string) string
 pub(crate) fn research_idle_part(s: &pulse_store::Store, slug: String, now: String) -> String {
     let shallow = crate::research::shallow_research_share(s, &slug);
     let (focus, reason, ok) = crate::research::research_due(s, slug, now);
@@ -339,7 +331,6 @@ pub(crate) fn research_idle_part(s: &pulse_store::Store, slug: String, now: Stri
     line
 }
 
-/// Go: func jobSourceCount(s *store.Store, source string) int
 pub(crate) fn job_source_count(s: &pulse_store::Store, source: String) -> i32 {
     let Ok(conn) = s.conn() else {
         return 0;
@@ -352,7 +343,6 @@ pub(crate) fn job_source_count(s: &pulse_store::Store, source: String) -> i32 {
     .int("n")
 }
 
-/// Go: func recordIdleNotes(s *store.Store, notes map[string]string, now string)
 pub(crate) fn record_idle_notes(
     s: &pulse_store::Store,
     notes: BTreeMap<String, String>,
@@ -385,7 +375,6 @@ pub(crate) fn record_idle_notes(
     }
 }
 
-/// Go: func idleNotesChanged(prev, cur map[string]string) []string
 pub(crate) fn idle_notes_changed(
     prev: BTreeMap<String, String>,
     cur: BTreeMap<String, String>,
@@ -405,7 +394,7 @@ pub(crate) fn idle_notes_changed(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f3::{row_agent, status_truth_project};
+    use crate::test_helpers_environment::{row_agent, status_truth_project};
 
     #[test]
     fn idle_note_empty_project() {

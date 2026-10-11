@@ -1,8 +1,5 @@
-//! Port of internal/runner/tally.go.
-
 use serde_json::json;
 
-/// Go: func suggestionRecords(s *store.Store, slug, now string) []tally.Suggestion
 #[allow(dead_code)]
 pub(crate) fn suggestion_records(
     s: &pulse_store::Store,
@@ -44,7 +41,6 @@ pub(crate) fn amendment_records(
     }
 }
 
-/// Go: func ballotItemsFor(s *store.Store, slug, agent, now, session string) []ballotItem
 pub(crate) fn ballot_items_for(
     s: &pulse_store::Store,
     slug: String,

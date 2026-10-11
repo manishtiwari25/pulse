@@ -182,7 +182,7 @@ pub fn proposals(
     } else {
         vec![project.to_string()]
     };
-    // Go: var out []Proposal — nil (JSON null) when nothing was appended.
+    // JSON null, not [], when nothing was appended.
     let mut out = pulse_store::gojson::GoSlice::nil();
     for slug in slugs {
         out.extend(compute(s, &slug, "", Thresholds::default())?.proposals);

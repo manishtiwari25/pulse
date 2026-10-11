@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub const PARITY_NOW: &str = "2026-09-06T19:00:00Z";
+pub const TEST_NOW: &str = "2026-09-06T19:00:00Z";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandResult {
@@ -19,7 +19,7 @@ pub fn temporary_store() -> (tempfile::TempDir, pulse_store::Store) {
     let s = pulse_store::Store::open(pulse_store::Options {
         home: dir.path().display().to_string(),
         create: true,
-        now: PARITY_NOW.into(),
+        now: TEST_NOW.into(),
         ..Default::default()
     })
     .unwrap();
@@ -56,7 +56,7 @@ pub fn invoke(
         agent: String::new(),
         project: project.into(),
         session: String::new(),
-        now: PARITY_NOW.into(),
+        now: TEST_NOW.into(),
         args: vec![],
     };
     let run_err = (cmd.run)(&mut c, &fs, fs.args());
@@ -118,7 +118,7 @@ pub fn invoke_agent(
         agent: agent.into(),
         project: project.into(),
         session: String::new(),
-        now: PARITY_NOW.into(),
+        now: TEST_NOW.into(),
         args: vec![],
     };
     let run_err = (cmd.run)(&mut c, &fs, fs.args());
@@ -160,81 +160,6 @@ pub fn event_count(s: &pulse_store::Store) -> i64 {
         .unwrap()
 }
 
-pub fn snapshot_store() -> Option<pulse_store::Store> {
-    let home = "/tmp/pulse-parity";
-    let path = Path::new(home).join(pulse_store::STORE_NAME);
-    if !path.exists() {
-        eprintln!("skipped: optional parity snapshot is absent");
-        return None;
-    }
-    Some(
-        pulse_store::Store::open(pulse_store::Options {
-            home: home.into(),
-            read_only: true,
-            skip_records: true,
-            now: PARITY_NOW.into(),
-            ..Default::default()
-        })
-        .unwrap(),
-    )
-}
-
-pub fn oracle(home: &str, _read_only: bool, args: &[&str]) -> Option<CommandResult> {
-    let oracle = match std::env::var("PULSE_GO_ORACLE") {
-        Ok(path) if Path::new(&path).is_file() => path,
-        _ => {
-            eprintln!("skipped: PULSE_GO_ORACLE unset");
-            return None;
-        }
-    };
-    let out = Command::new(oracle)
-        .args(args)
-        .env("PULSE_HOME", home)
-        .env("PULSE_NOW", PARITY_NOW)
-        .env("PULSE_AGENT", "")
-        .env("PULSE_PROJECT", "")
-        .env("PULSE_JOB", "inspect-parity")
-        .output()
-        .unwrap();
-    Some(CommandResult {
-        out: String::from_utf8_lossy(&out.stdout).into_owned(),
-        err: String::from_utf8_lossy(&out.stderr).into_owned(),
-        code: out.status.code().unwrap_or(1),
-    })
-}
-
-pub fn trim_trailing_spaces(text: &str) -> String {
-    text.split('\n')
-        .map(|line| line.trim_end_matches([' ', '\t']))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub fn assert_parity(got: CommandResult, want: Option<CommandResult>) {
-    let Some(mut want) = want else {
-        return;
-    };
-    want.out = pulse_parity::expected(&want.out);
-    want.err = pulse_parity::expected(&want.err);
-    assert_eq!(
-        (
-            got.code,
-            trim_trailing_spaces(&got.out),
-            trim_trailing_spaces(&got.err)
-        ),
-        (
-            want.code,
-            trim_trailing_spaces(&want.out),
-            trim_trailing_spaces(&want.err)
-        ),
-        "Rust stdout:\n{}\nRust stderr:\n{}\nOracle stdout:\n{}\nOracle stderr:\n{}",
-        got.out,
-        got.err,
-        want.out,
-        want.err
-    );
-}
-
 pub fn check_setting_event(s: &pulse_store::Store, name: &str, value: &str, actor: &str) {
     let (at, got_actor, action, subject, detail): (String, String, String, String, String) = s
         .conn()
@@ -253,7 +178,7 @@ pub fn check_setting_event(s: &pulse_store::Store, name: &str, value: &str, acto
             subject.as_str(),
             detail.as_str()
         ),
-        (PARITY_NOW, actor, "setting", name, value)
+        (TEST_NOW, actor, "setting", name, value)
     );
 }
 
@@ -274,8 +199,8 @@ pub fn fixture_command(dir: &Path, input: &str, program: &str, args: &[&str]) ->
         .env("GIT_AUTHOR_EMAIL", "worker@pulse.local")
         .env("GIT_COMMITTER_NAME", "worker")
         .env("GIT_COMMITTER_EMAIL", "worker@pulse.local")
-        .env("GIT_AUTHOR_DATE", PARITY_NOW)
-        .env("GIT_COMMITTER_DATE", PARITY_NOW);
+        .env("GIT_AUTHOR_DATE", TEST_NOW)
+        .env("GIT_COMMITTER_DATE", TEST_NOW);
     let mut child = cmd.spawn().unwrap();
     if !input.is_empty() {
         child

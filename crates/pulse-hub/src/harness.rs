@@ -9,7 +9,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Go: type harnessSessionRow struct {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct HarnessSessionRow {
     #[serde(flatten)]
@@ -18,7 +17,6 @@ pub(crate) struct HarnessSessionRow {
 }
 
 impl Handler {
-    /// Go: func (h *Handler) additionHarness(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_harness(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
         if parts.is_empty() || parts[0] != "harness" || parts.len() > 4 {
             crate::addition_not_found(w);
@@ -87,7 +85,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessStatus(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_status(&self, w: &mut ResponseWriter, r: &Request) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -158,7 +155,6 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    /// Go: func (h *Handler) additionHarnessPrompt(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_prompt(&self, w: &mut ResponseWriter, _r: &Request) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -200,7 +196,6 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    /// Go: func (h *Handler) additionHarnessModels(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_models(&self, w: &mut ResponseWriter, _r: &Request) {
         let p = match self.harness_provider(String::new()) {
             Ok(p) => p,
@@ -234,7 +229,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessLogin(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_login(&self, w: &mut ResponseWriter, r: &Request) {
         let (payload, ok) = crate::read_payload(w, r);
         if !ok {
@@ -279,7 +273,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessLoginPoll(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_login_poll(&self, w: &mut ResponseWriter, r: &Request) {
         let (payload, ok) = crate::read_payload(w, r);
         if !ok {
@@ -351,7 +344,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessTokenLogin(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_token_login(&self, w: &mut ResponseWriter, r: &Request) {
         let (payload, ok) = crate::read_payload(w, r);
         if !ok {
@@ -411,7 +403,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessLogout(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_logout(&self, w: &mut ResponseWriter, r: &Request) {
         if !crate::read_payload(w, r).1 {
             return;
@@ -461,7 +452,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) additionHarnessSessions(w http.ResponseWriter, r *http.Request)
     pub(crate) fn addition_harness_sessions(&self, w: &mut ResponseWriter, r: &Request) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -528,7 +518,6 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(payload.into_iter().collect()));
     }
 
-    /// Go: func (h *Handler) additionHarnessSession(w http.ResponseWriter, r *http.Request, id string)
     pub(crate) fn addition_harness_session(&self, w: &mut ResponseWriter, r: &Request, id: String) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -607,7 +596,6 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    /// Go: func (h *Handler) additionHarnessCancel(w http.ResponseWriter, r *http.Request, id string)
     pub(crate) fn addition_harness_cancel(&self, w: &mut ResponseWriter, _r: &Request, id: String) {
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
@@ -680,7 +668,6 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    /// Go: func (h *Handler) additionHarnessTrajectory(w http.ResponseWriter, r *http.Request, id string)
     pub(crate) fn addition_harness_trajectory(
         &self,
         w: &mut ResponseWriter,
@@ -727,7 +714,6 @@ impl Handler {
         let _ = w.write(&data);
     }
 
-    /// Go: func (h *Handler) safeHarnessTrajectory(path string) (string, bool)
     pub(crate) fn safe_harness_trajectory(&self, path: String) -> (String, bool) {
         let Some(store) = self.store.as_deref() else {
             return (String::new(), false);
@@ -744,7 +730,6 @@ impl Handler {
         (abs.display().to_string(), true)
     }
 
-    /// Go: func (h *Handler) harnessProvider(name string) (provider.Provider, error)
     pub(crate) fn harness_provider(
         &self,
         name: String,
@@ -787,7 +772,6 @@ impl Handler {
         Ok(p)
     }
 
-    /// Go: func (h *Handler) invalidateHarnessProvider(name string)
     pub(crate) fn invalidate_harness_provider(&self, name: String) {
         let name = name.trim();
         let prefix = format!("{name}\0");
@@ -798,7 +782,6 @@ impl Handler {
         cache.retain(|key, _| key != name && !key.starts_with(&prefix));
     }
 
-    /// Go: func (h *Handler) harnessProviderStatus(ctx context.Context, p provider.Provider, timeout time.Duration) provider.Login
     pub(crate) fn harness_provider_status(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -819,7 +802,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) harnessProviderSummary(p provider.Provider, login provider.Login) map[string]any
     pub(crate) fn harness_provider_summary(
         &self,
         p: Arc<dyn pulse_provider::Provider>,
@@ -837,7 +819,6 @@ impl Handler {
         out
     }
 
-    /// Go: func (h *Handler) harnessProviderSummaries() []map[string]any
     pub(crate) fn harness_provider_summaries(&self) -> Vec<JsonMap> {
         pulse_provider::names()
             .into_iter()
@@ -868,7 +849,6 @@ impl Handler {
             .collect()
     }
 
-    /// Go: func (h *Handler) harnessSettings() []map[string]any
     pub(crate) fn harness_settings(&self) -> Vec<JsonMap> {
         let Some(store) = self.store.as_deref() else {
             return Vec::new();
@@ -899,7 +879,7 @@ impl Handler {
             row.insert("name".into(), Value::String(name.to_string()));
             row.insert("value".into(), Value::String(store.setting(name, "")));
             row.insert("kind".into(), Value::String(rule.kind));
-            // Go: rule.Choices is a nil slice for rules without choices.
+            // `choices` is null for a rule without choices, never [].
             row.insert(
                 "choices".into(),
                 if rule.choices.is_empty() {
@@ -914,7 +894,6 @@ impl Handler {
         .collect()
     }
 
-    /// Go: func (h *Handler) harnessJobTitle(ctx context.Context, jobID string) (string, error)
     pub(crate) fn harness_job_title(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -937,7 +916,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) harnessJobTitles(ctx context.Context, sessions []store.HarnessSession) (map[string]string, error)
     pub(crate) fn harness_job_titles(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -974,7 +952,6 @@ impl Handler {
         Ok(Value::Object(titles.into_iter().collect()))
     }
 
-    /// Go: func (h *Handler) redactedProviderError(err error, secrets ...string) string
     pub(crate) fn redacted_provider_error(&self, err: String, secrets: Vec<String>) -> String {
         let mut message = err.split_whitespace().collect::<Vec<_>>().join(" ");
         if message.is_empty() {
@@ -1000,7 +977,6 @@ fn harness_not_found(w: &mut ResponseWriter) {
     );
 }
 
-/// Go: func providerSettingsFingerprint(settings map[string]string) string
 pub(crate) fn provider_settings_fingerprint(settings: BTreeMap<String, String>) -> String {
     settings
         .into_iter()
@@ -1009,12 +985,10 @@ pub(crate) fn provider_settings_fingerprint(settings: BTreeMap<String, String>) 
         .join("\0")
 }
 
-/// Go: func implementsDeviceLogin(p provider.Provider) bool
 pub(crate) fn implements_device_login(p: Arc<dyn pulse_provider::Provider>) -> bool {
     p.as_device_login().is_some()
 }
 
-/// Go: func implementsTokenLogin(p provider.Provider) bool
 pub(crate) fn implements_token_login(p: Arc<dyn pulse_provider::Provider>) -> bool {
     p.as_token_login().is_some()
 }
@@ -1206,9 +1180,9 @@ mod tests {
         });
     }
 
-    fn harness_store() -> crate::test_helpers_f3::TestStore {
+    fn harness_store() -> crate::test_helpers_http::TestStore {
         register_hub_fake_provider();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         s.conn()
             .unwrap()
             .execute(
@@ -1249,8 +1223,8 @@ mod tests {
             "",
         )
         .unwrap();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness",
             "",
@@ -1288,8 +1262,8 @@ mod tests {
                 "{name} missing from /harness settings: {settings:?}"
             );
         }
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/settings",
             "",
@@ -1310,7 +1284,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         pulse_provider_openai::register();
         let s = harness_store();
-        let providers = crate::test_helpers_f3::handler(&s).harness_provider_summaries();
+        let providers = crate::test_helpers_http::handler(&s).harness_provider_summaries();
         let row = providers
             .iter()
             .find(|row| row["name"] == "openai")
@@ -1324,7 +1298,7 @@ mod tests {
     fn harness_provider_cache_uses_provider_settings_fingerprint() {
         let _serial = crate::test_helpers::serial();
         let s = harness_store();
-        let h = crate::test_helpers_f3::handler(&s);
+        let h = crate::test_helpers_http::handler(&s);
         assert!(
             provider_settings_fingerprint(s.provider_settings())
                 .contains("provider.openai.base_url=https://api.openai.com/v1")
@@ -1359,8 +1333,8 @@ mod tests {
     fn addition_harness_models() {
         let _serial = crate::test_helpers::serial();
         let s = harness_store();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/models",
             "",
@@ -1375,8 +1349,8 @@ mod tests {
     fn addition_harness_login_flow_token_and_logout() {
         let _serial = crate::test_helpers::serial();
         let s = harness_store();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/login",
             r#"{"provider":"hubfake"}"#,
@@ -1384,8 +1358,8 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         assert_eq!(result["device_code"], "device-1");
-        let (status, result, _) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, _) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/login/poll",
             "{}",
@@ -1393,8 +1367,8 @@ mod tests {
         );
         assert_eq!(status, 400);
         assert_eq!(result["error"], "missing device_code");
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/login/token",
             r#"{"token":"good-token"}"#,
@@ -1402,8 +1376,8 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         assert_eq!(result["login"]["source"], "token login");
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/logout",
             "{}",
@@ -1448,8 +1422,8 @@ mod tests {
             "trajectory",
         )
         .unwrap();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions?project=demo&agent=alice&status=failed&job=JOB-1&limit=5",
             "",
@@ -1464,8 +1438,8 @@ mod tests {
             result["sessions"][0]["submission"].as_str().unwrap().len(),
             2000
         );
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions/HS-1",
             "",
@@ -1479,8 +1453,8 @@ mod tests {
         );
         assert_eq!(result["steps"].as_array().unwrap().len(), 1);
         assert_eq!(result["steps"][0]["kind"], "assistant");
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions/missing",
             "",
@@ -1507,8 +1481,8 @@ mod tests {
             })
             .unwrap();
         }
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions?limit=2",
             "",
@@ -1528,8 +1502,8 @@ mod tests {
             ..pulse_store::HarnessSession::default()
         })
         .unwrap();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/sessions/HS-run/cancel",
             "{}",
@@ -1550,8 +1524,8 @@ mod tests {
         let event: Value = serde_json::from_str(&detail).unwrap();
         assert_eq!(event["session"], "HS-run");
         assert_eq!(event["job"], "JOB-1");
-        let (status, result, _) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, _) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/sessions/HS-run/cancel",
             "{}",
@@ -1575,8 +1549,8 @@ mod tests {
             "",
         )
         .unwrap();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/sessions/HS-run/cancel",
             "{}",
@@ -1584,8 +1558,8 @@ mod tests {
         );
         assert_eq!(status, 409, "{raw}");
         assert_eq!(result["error"], "session is not running");
-        let (status, _, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, _, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/harness/sessions/missing/cancel",
             "{}",
@@ -1598,8 +1572,8 @@ mod tests {
     fn addition_harness_prompt() {
         let _serial = crate::test_helpers::serial();
         let s = harness_store();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/prompt",
             "",
@@ -1614,8 +1588,8 @@ mod tests {
             "Hello {{.Cwd}} {{.Provider}}",
         )
         .unwrap();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/prompt",
             "",
@@ -1639,7 +1613,7 @@ mod tests {
             ..pulse_store::HarnessSession::default()
         })
         .unwrap();
-        let srv = crate::test_helpers_f3::server(crate::test_helpers_f3::handler(&s));
+        let srv = crate::test_helpers_http::server(crate::test_helpers_http::handler(&s));
         let resp = crate::test_helpers::client()
             .get(format!(
                 "{}/api/v1/harness/sessions/HS-traj/trajectory",
@@ -1672,8 +1646,8 @@ mod tests {
             ..pulse_store::HarnessSession::default()
         })
         .unwrap();
-        let (status, _, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, _, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions/HS-outside/trajectory",
             "",
@@ -1707,8 +1681,8 @@ mod tests {
             })
             .unwrap();
         }
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/harness/sessions/HS-after?after=1",
             "",
@@ -1727,8 +1701,8 @@ mod tests {
             "/api/v1/harness/models",
             "/api/v1/harness/sessions",
         ] {
-            let (status, _, raw) = crate::test_helpers_f3::request(
-                crate::test_helpers_f3::handler(&s),
+            let (status, _, raw) = crate::test_helpers_http::request(
+                crate::test_helpers_http::handler(&s),
                 "POST",
                 path,
                 "{}",
@@ -1742,8 +1716,8 @@ mod tests {
             "/api/v1/harness/login/token",
             "/api/v1/harness/logout",
         ] {
-            let (status, _, raw) = crate::test_helpers_f3::request(
-                crate::test_helpers_f3::handler(&s),
+            let (status, _, raw) = crate::test_helpers_http::request(
+                crate::test_helpers_http::handler(&s),
                 "GET",
                 path,
                 "",

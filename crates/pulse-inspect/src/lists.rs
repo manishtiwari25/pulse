@@ -528,17 +528,9 @@ mod tests {
             },
         )
         .unwrap();
-        s.conn().unwrap().execute("INSERT INTO jobs(id,project,kind,title,status,created_at,lease_agent,lease_until) VALUES('job-1','proj','task','Do it','leased',?,'aurora','2026-09-06T20:00:00Z')", [&PARITY_NOW]).unwrap();
+        s.conn().unwrap().execute("INSERT INTO jobs(id,project,kind,title,status,created_at,lease_agent,lease_until) VALUES('job-1','proj','task','Do it','leased',?,'aurora','2026-09-06T20:00:00Z')", [&TEST_NOW]).unwrap();
         let text = invoke(Some(s), false, "", "agents", &[]);
         assert!(text.out.contains("now job-1 task"), "{text:?}");
-    }
-
-    #[test]
-    fn legacy_agent_parity_only_removes_added_columns() {
-        let old = "presence         pruned  worker   posts 99   jobs 2/5  last useful old  r/m\n";
-        let current = "presence         pruned  worker   presence pruned  now -                                    posts 99   findings 0   suggestions 0   votes 0   jobs 2/5  last heartbeat 2026-09-06T19:00:00Z  last useful old\n";
-        assert_ne!(pulse_parity::legacy_agent_listing(current), current);
-        assert_eq!(pulse_parity::legacy_agent_listing(old), old);
     }
 
     #[test]
@@ -562,7 +554,7 @@ mod tests {
             events(&s, "one", "2026-09-06T18:59:59Z", 40).unwrap().len(),
             4
         );
-        assert_eq!(events(&s, "one", PARITY_NOW, 40).unwrap().len(), 0);
+        assert_eq!(events(&s, "one", TEST_NOW, 40).unwrap().len(), 0);
         assert!(events(&s, "", "2026-99-99T19:00:00Z", 40).is_err());
         assert!(events(&s, "", "yesterday", 40).is_err());
     }

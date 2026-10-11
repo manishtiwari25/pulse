@@ -8,16 +8,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
-/// Go: var restartPoll = 30 * time.Second - how often a service-run hub looks at its own binary; tests shorten it.
 pub(crate) static RESTART_POLL: std::sync::LazyLock<Mutex<Duration>> =
     std::sync::LazyLock::new(|| Mutex::new(Duration::from_secs(30)));
-/// Go: var handoverDelay = 300 * time.Millisecond - how long a foreground hub keeps serving after it answers
+/// How long a foreground hub keeps serving after it answers
 /// the service-install request, so the page receives the response before the port moves.
 pub(crate) static HANDOVER_DELAY: std::sync::LazyLock<Mutex<Duration>> =
     std::sync::LazyLock::new(|| Mutex::new(Duration::from_millis(300)));
 
-/// Go: signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) - SIGTERM/SIGINT cancel the
-/// token while the guard lives; dropping it (Go's `cancel`) unregisters the handlers again.
+/// SIGTERM and SIGINT cancel the token while the guard lives; dropping it
+/// unregisters the handlers again.
 struct SignalStop {
     handle: signal_hook::iterator::Handle,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -54,7 +53,6 @@ impl Drop for SignalStop {
     }
 }
 
-/// Go: func watchBinary(ctx context.Context, stamp string, onChange func())
 pub(crate) fn watch_binary(
     ctx: &pulse_bus::CancellationToken,
     stamp: String,
@@ -77,7 +75,6 @@ pub(crate) fn watch_binary(
     }
 }
 static REGISTER_ONCE: std::sync::Once = std::sync::Once::new();
-/// Go: func init()
 pub fn register() {
     REGISTER_ONCE.call_once(|| {
         for name in ["hub", "serve"] {
@@ -97,9 +94,9 @@ pub fn register() {
     })
 }
 
-/// Go: the text of the *net.OpError net.Listen("tcp4", host:port) returns -
-/// "listen tcp4 127.0.0.1:8765: bind: address already in use". Go spells the
-/// errno as libc's strerror with a lower-case initial and no "(os error N)".
+/// The bind failure as the hub reports it, "listen tcp4 127.0.0.1:8765: bind:
+/// address already in use": the errno spelled as libc's strerror, with a
+/// lower-case initial and without the "(os error N)" suffix.
 fn listen_error(host: &str, port: i64, err: &std::io::Error) -> String {
     let text = err.to_string();
     let text = match text.rfind(" (os error ") {
@@ -247,8 +244,9 @@ fn run_command(
             .name("hub-evict".into())
             .spawn(move || crate::view_cache::evict_loop(&evict_ctx, &views, ttl))?;
     }
-    // Go's watcher and handover goroutines print to c.Err/c.Out themselves right before they cancel;
-    // nothing else reaches either stream until Serve returns, so the same lines are written after it here.
+    // The watcher and handover threads only flag what happened; their report
+    // lines are written once `serve` returns, the first point at which
+    // `c.out`/`c.err` are used again.
     let changed = Arc::new(AtomicBool::new(false));
     if fs.get_bool("restart-on-change") {
         let watch_ctx = ctx.clone();
@@ -283,7 +281,7 @@ fn run_command(
     }
     let handler: HandlerFn =
         Arc::new(move |w: &mut ResponseWriter, r: &Request| h.serve_http(w, r));
-    // serve owns the listener, so it is closed by the time it returns (Go: listener.Close()).
+    // serve owns the listener, so it is closed by the time it returns.
     let served = serve(&ctx, listener, handler);
     let load_hub = handover.lock().expect("handover lock poisoned").take();
     if let Some(load_hub) = load_hub {

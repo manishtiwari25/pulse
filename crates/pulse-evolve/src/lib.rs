@@ -1,7 +1,7 @@
-//! PULSE: the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage (port of Go package internal/evolve).
+//! PULSE: the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage.
 //!
-//! One module per Go file. `process` folds process_unix.go / process_other.go behind #[cfg]. Every module
-//! re-exports its public items here so callers write `pulse_evolve::foo` like Go callers wrote `evolve.Foo`.
+//! `process` folds the Unix and non-Unix process handling behind #[cfg]. Every module
+//! re-exports its public items here so callers write `pulse_evolve::foo`.
 
 pub mod api;
 pub mod archive;
@@ -11,12 +11,12 @@ pub mod card_job;
 pub mod clones;
 pub mod commands;
 pub mod cycle;
-pub mod doc; // crate-private items only; not re-exported
 pub mod draft;
 pub mod failed_gate;
 pub mod feedback;
 pub mod finalization; // crate-private items only; not re-exported
 pub mod fixtures;
+pub mod flat_gate;
 pub mod fleet;
 pub mod format; // crate-private items only; not re-exported
 pub(crate) mod gopath;
@@ -50,6 +50,7 @@ pub use draft::*;
 pub use failed_gate::*;
 pub use feedback::*;
 pub use fixtures::*;
+pub use flat_gate::*;
 pub use fleet::*;
 pub use heldout_auto::*;
 pub use lineage::*;
@@ -68,17 +69,17 @@ pub use usage::*;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 #[cfg(test)]
-pub(crate) mod test_helpers_e1;
+pub(crate) mod test_helpers_cycle;
 #[cfg(test)]
-pub(crate) mod test_helpers_e2;
+pub(crate) mod test_helpers_measure;
 #[cfg(test)]
-pub(crate) mod test_helpers_e3;
+pub(crate) mod test_helpers_plan;
 
-/// The Go package's `init()` side effects that are not command registration:
-/// evolve seeds a project's starter records when the board registers one
-/// (`starter.go: board.OnProjectCreated = seedOnCreate`). The binary calls this
-/// once at start-up, after [`register`]. `Measure`/`Archive` need no wiring: the
-/// statics in [`api`] default to the real implementations.
+/// Start-up wiring that is not command registration: installs the board's
+/// project-created hook so a project's starter records are seeded when the
+/// board registers it (`pulse_board::set_on_project_created`). The binary
+/// calls this once at start-up, after [`register`]. `Measure`/`Archive` need
+/// no wiring: the statics in [`api`] default to the real implementations.
 pub fn init() {
     starter::init();
 }

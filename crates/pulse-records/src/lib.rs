@@ -1,4 +1,4 @@
-//! PULSE: typed records, Markdown import, guide, export, lead time, seed bundle (port of Go package internal/records).
+//! PULSE: typed records, Markdown import, guide, export, lead time, seed bundle.
 
 pub mod bundle;
 pub mod drafts;

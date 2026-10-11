@@ -1,4 +1,4 @@
-//! PULSE: GitHub Copilot model provider (port of Go package internal/provider/copilot).
+//! PULSE: GitHub Copilot model provider.
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
@@ -96,14 +96,6 @@ pub fn register() {
     });
 }
 
-/// Go-compatible constructor for the Copilot provider.
-pub fn new(options: Options) -> Result<Copilot> {
-    Copilot::new(options)
-}
-
-/// Go-compatible alias for [`new`].
-pub use new as New;
-
 pub struct Copilot {
     home: String,
     http: Client,
@@ -112,9 +104,6 @@ pub struct Copilot {
     retry_after_cap: Duration,
     inner: Mutex<Inner>,
 }
-
-/// Go-compatible alias for the provider type.
-pub type ProviderCopilot = Copilot;
 
 #[derive(Debug, Default)]
 struct Inner {

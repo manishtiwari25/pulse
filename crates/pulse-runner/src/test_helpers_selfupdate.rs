@@ -2,9 +2,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::selfupdate::{SELF_UPDATE_STATE, SelfUpdateEnv, SelfUpdateState};
-use crate::test_helpers_f5::test_wait;
+use crate::test_helpers_daemon::test_wait;
 
-/// Go: const fakeGo = `...` (cargo-shaped for the Rust daemon self-update).
 pub(crate) fn fake_cargo() -> &'static str {
     r#"#!/bin/sh
 if [ -n "$FAKE_CARGO_FAIL" ]; then
@@ -54,7 +53,6 @@ pub(crate) struct SelfUpdateFixtureGuards {
     _reset: ResetSelfUpdateGuard,
 }
 
-/// Go: func waitSelfUpdateIdle(t *testing.T)
 pub(crate) fn wait_self_update_idle() {
     let deadline = Instant::now() + test_wait(Duration::from_secs(20));
     while Instant::now() < deadline {
@@ -70,7 +68,6 @@ pub(crate) fn wait_self_update_idle() {
     panic!("the build did not finish");
 }
 
-/// Go: func selfUpdateFixture(t *testing.T) (*store.Store, string, selfUpdateEnv)
 pub(crate) fn self_update_fixture() -> (
     crate::test_helpers::TestStore,
     String,
@@ -109,9 +106,9 @@ pub(crate) fn self_update_fixture() -> (
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    crate::test_helpers_f3b::set_setting(&s, "daemon.self_update", "on");
+    crate::test_helpers_daemon::set_setting(&s, "daemon.self_update", "on");
     // The fixtures build as soon as HEAD differs; the settle time has its own test.
-    crate::test_helpers_f3b::set_setting(&s, "daemon.self_update_settle_minutes", "0");
+    crate::test_helpers_daemon::set_setting(&s, "daemon.self_update_settle_minutes", "0");
     let path = format!(
         "{}{}{}",
         tools.display(),
@@ -145,14 +142,12 @@ pub(crate) fn self_update_fixture() -> (
     )
 }
 
-/// Go: func headOf(t *testing.T, repo string) string
 pub(crate) fn head_of(repo: &str) -> String {
     crate::test_helpers::run(repo, &["git", "rev-parse", "HEAD"])
         .trim()
         .to_string()
 }
 
-/// Go: os.CopyFS(other, os.DirFS(templateRepo(t))) - copies a fixture tree recursively.
 pub(crate) fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {

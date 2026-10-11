@@ -1,4 +1,4 @@
-//! PULSE: the model-provider contract and registry (port of Go package internal/provider).
+//! PULSE: the model-provider contract and registry.
 
 use anyhow::{Result, anyhow};
 use chrono::DateTime;
@@ -19,9 +19,6 @@ use thiserror::Error;
 /// The provider a fresh install uses.
 pub const DEFAULT: &str = "copilot";
 
-/// Go-compatible alias for [`DEFAULT`].
-pub const DEFAULT_PROVIDER: &str = DEFAULT;
-
 /// Device login poll answer: the login is not ready yet.
 pub const DEVICE_PENDING: &str = "pending";
 /// Device login poll answer: the login completed.
@@ -37,7 +34,8 @@ pub const ROLE_USER: Role = Role::User;
 pub const ROLE_ASSISTANT: Role = Role::Assistant;
 pub const ROLE_TOOL: Role = Role::Tool;
 
-/// A cancellation token standing in for Go's context.Context cancellation.
+/// A cancellation token: a shared cancelled flag plus an optional deadline,
+/// handed down through a request so the provider can stop early.
 #[derive(Clone, Debug, Default)]
 pub struct CancelToken {
     cancelled: Arc<AtomicBool>,
@@ -50,8 +48,8 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Go: context.WithTimeout(parent, d) - a token that is also cancelled
-    /// once `d` has elapsed; an earlier parent deadline wins.
+    /// A child token that shares this one's cancelled flag and is also
+    /// cancelled once `d` has elapsed; an earlier parent deadline wins.
     pub fn with_timeout(&self, d: Duration) -> Self {
         let at = std::time::Instant::now() + d;
         Self {
@@ -63,7 +61,7 @@ impl CancelToken {
         }
     }
 
-    /// Go: ctx.Deadline().
+    /// The deadline, if one was set.
     pub fn deadline(&self) -> Option<std::time::Instant> {
         self.deadline
     }
@@ -410,9 +408,6 @@ impl ProviderError {
     }
 }
 
-/// Go-compatible alias for the provider error type.
-pub type Error = ProviderError;
-
 /// Returns the first [`ProviderError`] in an anyhow error chain.
 pub fn provider_error(err: &anyhow::Error) -> Option<&ProviderError> {
     err.chain().find_map(|e| e.downcast_ref::<ProviderError>())
@@ -634,9 +629,6 @@ pub fn register(name: &str, label: &str, f: Factory) {
         .insert(name.to_string(), label.to_string());
 }
 
-/// Go-compatible alias for [`register`].
-pub use register as Register;
-
 /// Looks up a provider factory by name.
 pub fn lookup(name: &str) -> Option<Factory> {
     REGISTRY
@@ -676,22 +668,13 @@ pub fn open(name: &str, options: Options) -> Result<Box<dyn Provider>> {
     factory(options)
 }
 
-/// Go-compatible alias for [`open`].
-pub fn new_by_name(name: &str, options: Options) -> Result<Box<dyn Provider>> {
-    open(name, options)
-}
-
-/// Go-compatible alias for [`open`].
-pub use open as Open;
-
-/// Go: &http.Client{Timeout: 120 * time.Second}. Go's net/http sends
-/// `User-Agent: Go-http-client/1.1` on every request that sets none, and
-/// GitHub's REST API refuses a request without one ("Request forbidden by
-/// administrative rules"), so the client carries the same default; a request
-/// that sets its own User-Agent still wins.
+/// The User-Agent sent on every request that sets none. GitHub's REST API
+/// refuses a request without one ("Request forbidden by administrative
+/// rules"); a request that sets its own User-Agent still wins.
 pub const DEFAULT_USER_AGENT: &str = "Go-http-client/1.1";
 
-/// Builds the default blocking HTTP client with the Go provider timeout.
+/// Builds the default blocking HTTP client: a 120 s whole-request timeout
+/// and [`DEFAULT_USER_AGENT`].
 pub fn default_http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -788,7 +771,8 @@ pub fn redact(s: &str) -> String {
     out
 }
 
-/// Collapses whitespace and truncates to at most `n` bytes, matching the Go helper's ASCII behavior.
+/// Collapses runs of whitespace to one space and truncates to at most `n`
+/// bytes, ending in `...` when something was cut (cut on a char boundary).
 pub fn squeeze(s: &str, n: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.len() <= n {

@@ -325,10 +325,8 @@ impl Hook {
     }
 }
 
-/// Go: func Fire(ctx context.Context, s *store.Store, h Hook, e bus.Event) (string, error)
-///
-/// Returns Go's pair: the recorded status text is meaningful even when the
-/// fire failed (`hook test --json` prints both).
+/// Returns the status text alongside the result: the recorded status is
+/// meaningful even when the fire failed (`hook test --json` prints both).
 pub fn fire(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> (String, Result<()>) {
     let (status, mut fire_err) = run_fire(ctx, s, h, e);
     let final_status = if fire_err.is_ok() { "ok" } else { "error" };
@@ -461,11 +459,11 @@ fn fire_once(ctx: &CancellationToken, home: &str, h: &Hook, e: &Event) -> Result
                 .spawn()
                 .with_context(|| h.target.clone())?;
             if let Some(mut stdin) = child.stdin.take() {
-                // Like Go's cmd.Stdin reader: a script that never reads is not an error.
+                // A script that never reads its stdin is not an error.
                 let _ = stdin.write_all(&body);
             }
-            // Go's cmd.Run drains both pipes concurrently, so a chatty script
-            // cannot block on a full pipe while we wait for it to exit.
+            // Drain both pipes concurrently so a chatty script cannot block
+            // on a full pipe while we wait for it to exit.
             let stdout = drain(child.stdout.take());
             let stderr = drain(child.stderr.take());
             let collect = |stdout: JoinHandle<Vec<u8>>, stderr: JoinHandle<Vec<u8>>| {
@@ -482,7 +480,7 @@ fn fire_once(ctx: &CancellationToken, home: &str, h: &Hook, e: &Event) -> Result
                     return Ok("ok".to_string());
                 }
                 if ctx.is_cancelled() {
-                    // Go: exec.CommandContext kills the process once ctx is done.
+                    // The deadline passed or the caller cancelled: kill the process.
                     let _ = child.kill();
                     let _ = child.wait();
                     let out = collect(stdout, stderr);
@@ -526,7 +524,8 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
     })
 }
 
-/// Go's (*exec.ExitError).Error(): "exit status N" or "signal: <name>".
+/// The recorded text of a script's exit: "exit status N", or "signal: <name>"
+/// with the signal's conventional description.
 pub fn exit_text(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit status {code}");

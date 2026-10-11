@@ -1,11 +1,8 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 #![allow(
     clippy::too_many_arguments,
     clippy::unused_unit,
-    reason = "Go-port signatures intentionally mirror internal/runner"
+    reason = "signatures intentionally mirror the original runner"
 )]
 
 use serde::{Deserialize, Serialize};
@@ -52,7 +49,6 @@ pub(crate) struct LandResult {
     pub note: String,
 }
 
-/// Go: func setupLockfiles() []string
 pub(crate) fn setup_lockfiles() -> Vec<String> {
     [
         "uv.lock",
@@ -73,7 +69,6 @@ pub(crate) fn setup_lockfiles() -> Vec<String> {
     .collect()
 }
 
-/// Go: func branchFiles(root, base, branch string) []string
 pub(crate) fn branch_files(root: String, base: String, branch: String) -> Vec<String> {
     let spec = format!("{base}..{branch}");
     let out = crate::util::git_timeout(
@@ -95,7 +90,6 @@ pub(crate) fn branch_files(root: String, base: String, branch: String) -> Vec<St
     files
 }
 
-/// Go: func refusedPaths(files []string, branch string) []string
 pub(crate) fn refused_paths(files: Vec<String>, branch: String) -> Vec<String> {
     let mut guarded = LAND_REFUSED_PATHS
         .iter()
@@ -114,7 +108,6 @@ pub(crate) fn refused_paths(files: Vec<String>, branch: String) -> Vec<String> {
     out
 }
 
-/// Go: func checkDefinitionFiles(verifyCmd string, files []string, root string) []string
 pub(crate) fn check_definition_files(
     verify_cmd: String,
     files: Vec<String>,
@@ -150,7 +143,6 @@ pub(crate) fn check_definition_files(
     out
 }
 
-/// Go: func runBaseCheckFiles(worktree, before string, files []string)
 pub(crate) fn run_base_check_files(worktree: String, before: String, files: Vec<String>) -> () {
     for f in files {
         let spec = format!("{before}:{f}");
@@ -172,7 +164,6 @@ pub(crate) fn run_base_check_files(worktree: String, before: String, files: Vec<
     }
 }
 
-/// Go: func checkoutState(root, defaultBranch string) (onDefault, clean bool)
 pub(crate) fn checkout_state(root: String, default_branch: String) -> Option<bool> {
     let head = crate::util::git_timeout(
         &root,
@@ -192,7 +183,6 @@ pub(crate) fn checkout_state(root: String, default_branch: String) -> Option<boo
     )
 }
 
-/// Go: func landingLock(root, now string) string
 pub(crate) fn landing_lock(root: String, now: String) -> String {
     let path = Path::new(&root).join(".git").join("pulse-land.lock");
     for _ in 0..2 {
@@ -223,7 +213,6 @@ pub(crate) fn landing_lock(root: String, now: String) -> String {
     String::new()
 }
 
-/// Go: func saveBranchPatch(root, base, branch, home, slug string) string
 pub(crate) fn save_branch_patch(
     root: String,
     base: String,
@@ -244,7 +233,6 @@ pub(crate) fn save_branch_patch(
     path.display().to_string()
 }
 
-/// Go: func requeueJob(s *store.Store, now string, job row, actor, why, patch string) string
 pub(crate) fn requeue_job(
     s: &pulse_store::Store,
     now: String,
@@ -318,12 +306,10 @@ pub(crate) fn requeue_job(
     "queued".to_string()
 }
 
-/// Go: func jobIDOf(job row) string
 pub(crate) fn job_id_of(job: crate::util::Row) -> String {
     job.str("id")
 }
 
-/// Go: func holdRecipeBranch(s *store.Store, project row, root, base, branch, actor string, job row, now string) (string, string)
 pub(crate) fn hold_recipe_branch(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -397,7 +383,7 @@ pub(crate) fn hold_recipe_branch(
                 diff_text = "(no diff text)".to_string();
             }
             let body = format!(
-                "`{}` changed alone on `{}`{} (ADR-026). The runner lands no recipe change by itself in this slice: read the diff, then land it with\n\n    {}\n\nor delete the branch (`git branch -D {}`) to drop it.{}\n\n```diff\n{}\n```\n",
+                "`{}` changed alone on `{}`{} (ADR-026). The runner never lands a recipe change by itself: read the diff, then land it with\n\n    {}\n\nor delete the branch (`git branch -D {}`) to drop it.{}\n\n```diff\n{}\n```\n",
                 crate::recipe::RECIPE_PATH,
                 branch,
                 for_job,
@@ -444,7 +430,6 @@ pub(crate) fn hold_recipe_branch(
     )
 }
 
-/// Go: func refuseBranch(s *store.Store, now, root, base, branch, actor string, job row, home, slug, why string) (string, string)
 pub(crate) fn refuse_branch(
     s: &pulse_store::Store,
     now: String,
@@ -498,7 +483,6 @@ pub(crate) fn refuse_branch(
     )
 }
 
-/// Go: func shWithTimeout(dir, cmd string, budget time.Duration) (rc *int, stdout, stderr string)
 pub(crate) fn sh_with_timeout(
     dir: String,
     cmd: String,
@@ -576,7 +560,6 @@ fn record_verify_memo_event(
     }
 }
 
-/// Go: func landBranch(s *store.Store, project row, branch, actor, now string, o landOpts) (state, note string, err error)
 pub(crate) fn land_branch(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -1112,6 +1095,11 @@ pub(crate) fn land_branch(
                         );
                     }
                     set_landing_retry(s, &slug, &retry_at, &note);
+                    if base_red == Some(true) {
+                        let row =
+                            crate::board::project_by_slug(&s.conn().expect("conn"), slug.clone());
+                        crate::redbase::mark_red_base(s, &row, &before, -1, &base_tail, &now);
+                    }
                     return Ok(("deferred".into(), note));
                 }
             }
@@ -1452,7 +1440,6 @@ pub(crate) fn result_post_failed_warning(
     )
 }
 
-/// Go: func pendingLandings(q querier, slug string) []row
 pub(crate) fn pending_landings<Q, S>(q: &Q, slug: S) -> Vec<crate::util::Row>
 where
     Q: PendingQuerier + ?Sized,
@@ -1548,7 +1535,6 @@ fn pending_landings_row(q: &dyn crate::util::Querier, slug: &str) -> Vec<crate::
     .unwrap_or_default()
 }
 
-/// Go: func landPending(s *store.Store, project row, actor, now string, verify bool, limit int, force bool) []landResult
 pub(crate) fn land_pending(
     s: &pulse_store::Store,
     project: impl IntoLandProject,
@@ -1572,7 +1558,6 @@ pub(crate) fn land_pending(
     )
 }
 
-/// Go: func landPendingContext(ctx context.Context, s *store.Store, project row, actor, now string, verify bool, limit int, force bool) []landResult
 pub(crate) fn land_pending_context(
     ctx: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -1710,7 +1695,6 @@ pub(crate) fn land_job_context(
     LandResult { state, note }
 }
 
-/// Go: func branchExists(root, branch string) (exists bool, unreadable string)
 pub(crate) fn branch_exists(root: String, branch: String) -> (bool, String) {
     match std::fs::metadata(&root) {
         Ok(fi) if fi.is_dir() => {}
@@ -1761,7 +1745,6 @@ pub(crate) fn branch_exists(root: String, branch: String) -> (bool, String) {
     (false, String::new())
 }
 
-/// Go: func gitFailure(g gitResult) string
 pub(crate) fn git_failure(g: serde_json::Value) -> String {
     if let Some(e) = g.get("err").and_then(|v| v.as_str())
         && !e.is_empty()
@@ -1783,13 +1766,11 @@ pub(crate) fn git_failure(g: serde_json::Value) -> String {
     }
 }
 
-/// Go: func errText(err error, fallback string) string
 pub(crate) fn err_text(err: anyhow::Error, fallback: String) -> String {
     let s = err.to_string();
     if s.is_empty() { fallback } else { s }
 }
 
-/// Go: func heldLandings(q querier, slug, root string) []string
 pub(crate) fn held_landings(
     q: &dyn crate::util::Querier,
     slug: String,
@@ -2239,8 +2220,10 @@ impl Drop for LandingCleanup {
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_f4::{completion_worker_command, new_completion_job, run_completion};
-    use crate::test_helpers_f5::{
+    use crate::test_helpers_completion::{
+        completion_worker_command, new_completion_job, run_completion,
+    };
+    use crate::test_helpers_daemon::{
         bare_ref, exec1, job_row, must_rows, push_branch, push_fixture, ref_of, set_setting,
     };
     use crate::{commands, test_helpers};
@@ -3194,7 +3177,7 @@ mod tests {
 #[cfg(test)]
 mod auto_stash_tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::{exec1, set_setting};
+    use crate::test_helpers_daemon::{exec1, set_setting};
     use std::collections::BTreeMap;
 
     /// A landing that fails after the owner's uncommitted work was auto-stashed pops

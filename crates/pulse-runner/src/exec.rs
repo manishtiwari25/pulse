@@ -9,7 +9,6 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-/// Go: type executor interface {...}
 pub(crate) trait Executor {
     fn name(&self) -> String;
     fn remote(&self) -> bool;
@@ -53,15 +52,12 @@ pub(crate) trait Executor {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RunLog(Arc<Mutex<Vec<String>>>);
 impl RunLog {
-    /// Go: func (l *runLog) add(format string, args ...any)
     pub(crate) fn add(&self, line: impl Into<String>) {
         self.0.lock().expect("run log").push(line.into())
     }
-    /// Go: func (l *runLog) put(line string)
     pub(crate) fn put(&self, line: &str) {
         self.0.lock().expect("run log").push(line.into())
     }
-    /// Go: func (l *runLog) text() string
     pub(crate) fn text(&self) -> String {
         self.0
             .lock()
@@ -87,7 +83,6 @@ impl Write for RunLog {
         Ok(())
     }
 }
-/// Go: func tailStr(s string, n int) string
 pub(crate) fn tail_str(s: &str, n: usize) -> String {
     crate::executor::tail(s, n)
 }
@@ -121,7 +116,6 @@ pub(crate) struct LocalExec {
     pub(crate) begun: bool,
     pub(crate) last_out: Option<String>,
 }
-/// Go: func newLocalExec(r row, s *store.Store, home string, job, project row, agent string, log *runLog) *localExec
 pub(crate) fn new_local_exec(
     r: Row,
     s: &pulse_store::Store,
@@ -385,7 +379,6 @@ impl Executor for LocalExec {
         left
     }
 }
-/// Go: func preflightRunKey(path string) error
 pub(crate) fn preflight_run_key(path: &str) -> Result<()> {
     let meta = std::fs::metadata(path).map_err(|e| crate::util::fail(1, format!("setup-error: the run's signing key {path} is missing ({e}); the worker was not started so no work is lost (ADR-022)")))?;
     if meta.len() == 0 {
@@ -401,7 +394,6 @@ pub(crate) struct SshExec {
 }
 static SHA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{40,64}$").unwrap());
 
-/// Go: func newSSHExec(r row, s *store.Store, home string, job, project row, agent string, log *runLog) *sshExec
 pub(crate) fn new_ssh_exec(
     r: Row,
     s: &pulse_store::Store,
@@ -438,7 +430,6 @@ impl SshExec {
     pub(crate) fn name(&self) -> String {
         self.local.name()
     }
-    /// Go: func (e *sshExec) call(args []string, stdin []byte, timeout time.Duration) (int, string, string, error)
     pub(crate) fn call(
         &self,
         args: &[String],
@@ -842,7 +833,6 @@ impl Executor for SshExec {
         }
     }
 }
-/// Go: func remoteKeyCheckResult(path, host, when string, rc int, out, errText string) error
 pub(crate) fn remote_key_check_result(
     path: &str,
     host: &str,
@@ -857,15 +847,12 @@ pub(crate) fn remote_key_check_result(
     let src = if err_text.is_empty() { out } else { err_text };
     Err(crate::util::fail(1, format!("setup-error: the run's signing key {path} on {host} is missing or empty {when} (exit {rc}): {}; the worker was not started so no work is lost (ADR-022)", tail_str(&src.split_whitespace().collect::<Vec<_>>().join(" "), 300))).into())
 }
-/// Go: func remoteKeyCheckCmd(path string) string
 pub(crate) fn remote_key_check_cmd(path: &str) -> String {
     format!("test -s {}", crate::util::shell_quote(path))
 }
-/// Go: func remoteCLICheckCmd(path string) string
 pub(crate) fn remote_cli_check_cmd(path: &str) -> String {
     format!("test -x {}", crate::util::shell_quote(path))
 }
-/// Go: func remoteCLICheckResult(path, host string, rc int, out, errText string) error
 pub(crate) fn remote_cli_check_result(
     path: &str,
     host: &str,
@@ -879,7 +866,6 @@ pub(crate) fn remote_cli_check_result(
     let src = if err_text.is_empty() { out } else { err_text };
     Err(crate::util::fail(1, format!("setup-error: PULSE_CLI {path} on {host} is missing or not executable (exit {rc}): {}; the worker was not started so no work is lost - stage the pulse binary there or fix the recipe's PULSE_CLI", tail_str(&src.split_whitespace().collect::<Vec<_>>().join(" "), 300))).into())
 }
-/// Go: func makeExecutor(r row, s *store.Store, home string, job, project row, agent string, log *runLog) (executor, error)
 pub(crate) fn make_executor(
     r: Row,
     s: &pulse_store::Store,
@@ -907,7 +893,6 @@ pub(crate) fn make_executor(
     )
     .into())
 }
-/// Go: func workerDirs(home string) []string
 pub(crate) fn worker_dirs(home: &str) -> Vec<String> {
     let mut dirs = vec![home.to_string()];
     if let Some(parent) = std::env::current_exe()
@@ -928,7 +913,6 @@ pub(crate) fn worker_dirs(home: &str) -> Vec<String> {
     }
     out
 }
-/// Go: func workerCommand(s *store.Store, kind, briefText, clone, workerCmd string, dirs []string, remote bool) ([]string, bool)
 pub(crate) fn worker_command(
     s: &pulse_store::Store,
     kind: &str,
@@ -1009,7 +993,6 @@ pub(crate) fn worker_command(
     }
     (cmd, false)
 }
-/// Go: func localCLI(home string) string
 pub(crate) fn local_cli(home: &str) -> String {
     std::env::current_exe()
         .ok()
@@ -1017,7 +1000,6 @@ pub(crate) fn local_cli(home: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| local_cli_fallback(home))
 }
-/// Go: func localCLIFallback(home string) string
 pub(crate) fn local_cli_fallback(home: &str) -> String {
     for cand in [
         std::env::var("PULSE_CLI").unwrap_or_default(),
@@ -1042,7 +1024,6 @@ pub(crate) fn local_cli_fallback(home: &str) -> String {
     }
     String::new()
 }
-/// Go: func workerEnvWithCLIPath(base []string, extra map[string]string) []string
 pub(crate) fn worker_env_with_cli_path(
     base: &[String],
     extra: &BTreeMap<String, String>,
@@ -1119,7 +1100,8 @@ mod tests {
     #[test]
     fn preflight_run_key_remote_check_cmd() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
+        let _deadline =
+            crate::test_helpers_daemon::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
         let key = dir.path().join("run.key");
         if std::process::Command::new("/bin/sh")
@@ -1201,7 +1183,8 @@ mod tests {
     #[test]
     fn preflight_remote_cli_check_cmd() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
+        let _deadline =
+            crate::test_helpers_daemon::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
         let cli = dir.path().join("pulse");
         if std::process::Command::new("/bin/sh")

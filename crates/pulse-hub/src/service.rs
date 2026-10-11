@@ -9,7 +9,6 @@ use std::time::Duration;
 pub(crate) type JsonMap = BTreeMap<String, serde_json::Value>;
 pub(crate) const SERVICE_HUB_PORT: i64 = 8765;
 impl Handler {
-    /// Go: func (h *Handler) additionService(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_service(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -147,7 +146,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let home = tempfile::tempdir().expect("home");
         let _home = pulse_testutil::setenv("HOME", home.path().to_str().unwrap());
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let mut h = crate::server::new_handler(Some(Arc::new((*s).clone())), None);
         h.port = 8765;
         let handovers = Arc::new(AtomicUsize::new(0));
@@ -156,8 +155,13 @@ mod tests {
             handovers_for_hook.fetch_add(1, Ordering::SeqCst);
         }));
 
-        let (status, result, _) =
-            crate::test_helpers_f3::request(h.clone_for_test(), "GET", "/api/v1/service", "", &[]);
+        let (status, result, _) = crate::test_helpers_http::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/service",
+            "",
+            &[],
+        );
         assert_eq!(status, 200, "GET service: {result:#?}");
         assert_eq!(result["hub_is_service"], false);
         assert_eq!(result["hub_port"], 8765);
@@ -180,7 +184,7 @@ mod tests {
             );
         }
 
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "POST",
             "/api/v1/service",
@@ -203,14 +207,19 @@ mod tests {
                 .contains("pulse"),
             "preview paths: {result:#?}"
         );
-        let (status, result, _) =
-            crate::test_helpers_f3::request(h.clone_for_test(), "GET", "/api/v1/service", "", &[]);
+        let (status, result, _) = crate::test_helpers_http::request(
+            h.clone_for_test(),
+            "GET",
+            "/api/v1/service",
+            "",
+            &[],
+        );
         assert_eq!(status, 200);
         assert_eq!(
             result["service"]["installed"], false,
             "a preview installed something: {result:#?}"
         );
-        let (status, _, _) = crate::test_helpers_f3::request(
+        let (status, _, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "GET",
             "/api/v1/service/extra",
@@ -218,7 +227,7 @@ mod tests {
             &[],
         );
         assert_eq!(status, 404);
-        let (status, _, _) = crate::test_helpers_f3::request(
+        let (status, _, _) = crate::test_helpers_http::request(
             h.clone_for_test(),
             "DELETE",
             "/api/v1/service",
@@ -226,7 +235,7 @@ mod tests {
             &[],
         );
         assert_eq!(status, 405);
-        let (status, result, _) = crate::test_helpers_f3::request(
+        let (status, result, _) = crate::test_helpers_http::request(
             crate::server::new_handler(None, None),
             "GET",
             "/api/v1/service",

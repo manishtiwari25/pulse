@@ -1,9 +1,17 @@
-//! Go `path/filepath` semantics (Unix separator) for ports that must agree
-//! with `filepath.Clean`, `filepath.Rel` and the `within`/`isInside` checks
-//! built on them; `std::path` neither cleans `..` nor rejects mixed
-//! absolute/relative arguments the way Go does.
+//! Lexical path cleaning and relativisation with Unix separators, used by
+//! the containment checks (`within`, `is_inside`) and by paths stored as
+//! text; `std::path` neither collapses `..` nor rejects mixing an absolute
+//! path with a relative one.
+//!
+//! `clean` applies these rules in order until none applies: collapse
+//! repeated separators, drop `.` elements, drop `..` together with the
+//! element before it, drop leading `..` from a rooted path; the result has
+//! no trailing separator, and an empty result becomes `.`. `rel` returns the
+//! cleaned path that leads from `basepath` to `targpath` (`.` when equal),
+//! failing when exactly one argument is rooted or when the first element of
+//! `basepath` that `targpath` does not share is `..` (the answer would then
+//! depend on the working directory).
 
-/// Go: `filepath.Clean` (and `path.Clean`, identical on Unix).
 pub fn clean(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
@@ -26,7 +34,8 @@ pub fn clean(path: &str) -> String {
         } else if p[r] == b'.' && p[r + 1] == b'.' && (r + 2 == n || p[r + 2] == b'/') {
             r += 2;
             if out.len() > dotdot {
-                // Go: out.w--; for out.w > dotdot && out.index(out.w) != '/' { out.w-- }
+                // Back up over the previous element: pop its bytes until the
+                // separator before it goes too (or the root/`..` prefix is hit).
                 let mut dropped = out.pop();
                 while out.len() > dotdot && dropped != Some(b'/') {
                     dropped = out.pop();
@@ -54,8 +63,8 @@ pub fn clean(path: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
-/// Go: `filepath.Abs` - joins a relative path onto the working directory and
-/// cleans it; the path need not exist.
+/// Joins a relative path onto the working directory and cleans it; the
+/// path need not exist.
 pub fn abs(path: &str) -> std::io::Result<String> {
     if path.starts_with('/') {
         return Ok(clean(path));
@@ -64,7 +73,6 @@ pub fn abs(path: &str) -> std::io::Result<String> {
     Ok(clean(&format!("{}/{}", cwd.display(), path)))
 }
 
-/// Go: `filepath.Rel(basepath, targpath)`; `Err` carries Go's message.
 pub fn rel(basepath: &str, targpath: &str) -> Result<String, String> {
     let base = clean(basepath);
     let targ = clean(targpath);
@@ -119,7 +127,7 @@ pub fn rel(basepath: &str, targpath: &str) -> Result<String, String> {
     Ok(targ[t0..].to_string())
 }
 
-/// Go (internal/evolve): `within(child, parent)` - child is parent or below it.
+/// Whether `child` is `parent` or below it (lexically, after cleaning).
 pub fn within(child: &str, parent: &str) -> bool {
     match rel(parent, child) {
         Ok(r) => r != ".." && !r.starts_with("../") && !r.starts_with('/'),

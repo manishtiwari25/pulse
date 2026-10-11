@@ -305,8 +305,8 @@ mod tests {
     use crate::{help_command, suggest};
     use std::sync::{Mutex, MutexGuard};
 
-    /// Go runs a package's tests one at a time; the registry is process-global,
-    /// so tests that reset it hold this lock.
+    /// The registry is process-global and the test harness runs tests in
+    /// parallel, so tests that reset it hold this lock.
     static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn registry_lock() -> MutexGuard<'static, ()> {

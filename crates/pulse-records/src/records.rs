@@ -514,15 +514,6 @@ pub struct JsonRecords {
     pub records: Vec<store::Record>,
 }
 
-// Go-recognizable aliases.
-pub use accept as Accept;
-pub use amend as Amend;
-pub use get as Get;
-pub use list as List;
-pub use new_record as New;
-pub use status as Status;
-pub use status_note as StatusNote;
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -301,7 +301,7 @@ mod tests {
     use std::fmt::Write as _;
 
     #[test]
-    fn settings_validation_parity() {
+    fn settings_set_refuses_bad_input() {
         let (_dir, s) = temporary_store();
         for args in [
             vec!["set"],
@@ -431,7 +431,7 @@ mod tests {
             agent: "proj-lead".into(),
             project: String::new(),
             session: String::new(),
-            now: PARITY_NOW.into(),
+            now: TEST_NOW.into(),
             args: vec![],
         };
         let fs = FlagSet::new("settings");
@@ -513,7 +513,7 @@ mod tests {
         assert!(got.out.starts_with(&prefix), "{}", got.out);
         let needle = format!(
             "{:<18} {:<40} {} {}\n",
-            "compute.max_vms", "2", PARITY_NOW, "owner"
+            "compute.max_vms", "2", TEST_NOW, "owner"
         );
         assert!(got.out.contains(&needle), "{}", got.out);
         assert_eq!(got.out.matches("compute.max_vms").count(), 1);
@@ -543,63 +543,6 @@ mod tests {
             assert!(got.out.contains("[owner-private]"), "{name}: {got:?}");
         }
         assert_eq!(s.setting("evolve.heldout_dir", ""), private_path);
-    }
-
-    #[test]
-    fn snapshot_parity() {
-        let Some(s) = snapshot_store() else {
-            return;
-        };
-        let projects = s.projects(true).unwrap();
-        assert_eq!(projects.len(), 3);
-        let mut cases: Vec<(&str, String, Vec<&str>)> = vec![
-            ("status", String::new(), vec![]),
-            ("projects", String::new(), vec![]),
-            ("jobs", String::new(), vec![]),
-            ("jobs", String::new(), vec!["--all"]),
-            ("agents", String::new(), vec![]),
-            ("agents", String::new(), vec!["--all"]),
-            ("events", String::new(), vec![]),
-            ("events", String::new(), vec!["--limit", "0"]),
-            ("events", String::new(), vec!["--limit", "3"]),
-            ("settings", String::new(), vec![]),
-            ("settings", String::new(), vec!["list"]),
-            ("settings", String::new(), vec!["get"]),
-            ("settings", String::new(), vec!["get", "jobs_per_day"]),
-            ("settings", String::new(), vec!["get", "not-a-setting"]),
-            ("schema", String::new(), vec![]),
-            ("signers", String::new(), vec![]),
-        ];
-        for p in projects {
-            cases.push(("jobs", p.slug.clone(), vec!["--all"]));
-            cases.push(("signers", p.slug, vec![]));
-        }
-        for (name, project, args) in cases {
-            let mut oracle_args = vec![name];
-            oracle_args.extend(args.iter().copied());
-            if !project.is_empty() {
-                oracle_args.push("--project");
-                oracle_args.push(&project);
-            }
-            let mut got = invoke(Some(s.clone()), false, &project, name, &args);
-            if name == "agents" {
-                assert_eq!(got.code, 0, "{got:?}");
-                assert!(got.out.contains("now -"), "{got:?}");
-                continue;
-            }
-            if name == "settings" && args.len() <= 1 {
-                let Some(want) = oracle(&s.home, true, &oracle_args) else {
-                    return;
-                };
-                let legacy_lines = want.out.matches('\n').count();
-                let lines: Vec<_> = got.out.split_inclusive('\n').collect();
-                assert!(lines.len() > legacy_lines);
-                got.out = lines[..legacy_lines].join("");
-                assert_parity(got, Some(want));
-            } else {
-                assert_parity(got, oracle(&s.home, true, &oracle_args));
-            }
-        }
     }
 
     #[test]

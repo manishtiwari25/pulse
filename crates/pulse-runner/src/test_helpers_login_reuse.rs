@@ -1,4 +1,4 @@
-//! Test helpers ported from internal/runner/login_reuse_test.go: a fake provider whose exported
+//! Test helpers for the login-reuse tests: a fake provider whose exported
 //! login the executor login path reuses, registered once and steered per PULSE home.
 #![allow(dead_code)]
 
@@ -10,13 +10,12 @@ pub(crate) const LOGIN_REUSE_PROVIDER_NAME: &str = "loginreusefake";
 pub(crate) const LOGIN_REUSE_PROVIDER_TOKEN: &str = "gho_provider000000000000000000000000";
 pub(crate) const LOGIN_REUSE_GH_TOKEN: &str = "gho_hubtoken00000000000000000000000000";
 
-/// Go: type loginReuseProvider struct{ state *loginReuseState }
 struct LoginReuseProvider {
     state: Arc<LoginReuseState>,
 }
 
-/// Go: type loginReuseState struct - the fields sit behind Go's `mu`, so tests write
-/// `state.lock().token = ...` where Go wrote `state.token = ...`.
+/// The fake provider's state, shared with the test that steers it; the
+/// fields sit behind a mutex, so tests write `state.lock().token = ...`.
 #[derive(Default)]
 pub(crate) struct LoginReuseState(Mutex<LoginReuseFields>);
 
@@ -37,7 +36,6 @@ static LOGIN_REUSE_ONCE: Once = Once::new();
 static LOGIN_REUSE_STATES: LazyLock<Mutex<HashMap<String, Arc<LoginReuseState>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Go: loginReuseStates.LoadOrStore(home, &loginReuseState{})
 fn load_or_store(home: &str) -> Arc<LoginReuseState> {
     LOGIN_REUSE_STATES
         .lock()
@@ -73,7 +71,6 @@ impl pulse_provider::Provider for LoginReuseProvider {
 }
 
 impl pulse_provider::LoginExporter for LoginReuseProvider {
-    /// Go: func (p *loginReuseProvider) ExportLogin() (string, provider.Login, error)
     fn export_login(&self) -> Result<(String, pulse_provider::Login)> {
         let st = self.state.lock();
         if let Some(err) = &st.err {
@@ -89,10 +86,8 @@ fn login_reuse_factory(o: pulse_provider::Options) -> Result<Box<dyn pulse_provi
     }))
 }
 
-/// Go: func loginReuseStore(t *testing.T) (*store.Store, *loginReuseState)
-///
-/// The third value is Go's t.Cleanup: drop it last so the home's state is deleted and both source
-/// caches are forgotten after the test.
+/// Drop the third value last: it deletes the home's state and forgets both source caches
+/// after the test.
 pub(crate) fn login_reuse_store() -> (
     crate::test_helpers::TestStore,
     Arc<LoginReuseState>,

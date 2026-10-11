@@ -1,9 +1,6 @@
-//! Port of internal/evolve/failed_gate.go.
-
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-/// Go: func FailedExperimentGate(s *store.Store, project string) (job, question, reason string, err error) {
 pub fn failed_experiment_gate(
     s: &pulse_store::Store,
     project: &str,

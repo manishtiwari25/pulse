@@ -1,12 +1,9 @@
-//! Port of internal/evolve/feedback.go.
-
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use serde_json::json;
 
 type FeedbackArchiveRow = (String, String, String, String, String, f64, f64, f64, bool);
 
-/// Go: func PlanFeedback(s *store.Store, project, actor string) (*board.Job, error) {
 pub fn plan_feedback(
     s: &pulse_store::Store,
     project: &str,
@@ -127,13 +124,13 @@ If evidence supports another hypothesis, use `pulse post suggestion --project {}
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use std::time::Duration;
 
     #[test]
     fn feedback_queue_is_atomic_and_durable() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         let planned = crate::plan::plan_experiment(
@@ -183,7 +180,7 @@ mod tests {
     #[test]
     fn finalized_feedback_supports_both_classes_and_outcomes() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for class in ["operating-layer", "product"] {
             for outcome in ["kept", "discarded"] {
                 let s = cycle_ready();

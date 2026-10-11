@@ -504,7 +504,7 @@ fn existing_tables(conn: &rusqlite::Connection, names: &[&str]) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f3 as f3;
+    use crate::test_helpers_http as f3;
 
     fn repo() -> String {
         let dir = crate::test_helpers::hold_tempdir(tempfile::tempdir().expect("temp repo"));

@@ -21,7 +21,7 @@ pub fn env_lock() -> EnvGuard {
     ENV_LOCK.get_or_init(|| ReentrantMutex::new(())).lock()
 }
 
-/// Go: `t.Setenv(key, value)` - the variable holds `value` while the guard lives and reverts to its
+/// The variable holds `value` while the guard lives and reverts to its
 /// previous state (set or unset) when the guard drops. Callers hold [`env_lock`] (or run serially).
 #[must_use = "the variable reverts as soon as the guard drops"]
 pub struct SetenvGuard {
@@ -39,7 +39,6 @@ pub fn setenv(key: &str, value: impl AsRef<std::ffi::OsStr>) -> SetenvGuard {
     }
 }
 
-/// Go: `t.Setenv` followed by `os.Unsetenv` - unset for the guard's lifetime, restored on drop.
 pub fn unsetenv(key: &str) -> SetenvGuard {
     let prev = std::env::var_os(key);
     // SAFETY: as in setenv.

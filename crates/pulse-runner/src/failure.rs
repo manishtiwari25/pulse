@@ -1,5 +1,3 @@
-//! Port of internal/runner/failure.go.
-
 use chrono::Duration as ChronoDuration;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -40,6 +38,7 @@ static STRUCTURAL_MARKS: &[&str] = &[
     "the bundle does not verify",
 ];
 static TRANSIENT_MARKS: &[&str] = &[
+    "already red before this job",
     "the runner stopped while",
     "runner error",
     "daemon error",
@@ -133,7 +132,6 @@ fn hard_stop_text(text: &str) -> bool {
     text.contains("violation") || text.contains("hard stop") || text.contains("applyerror")
 }
 
-/// Go: func environmentFailureReason(result, runSummary string) string
 #[allow(dead_code)]
 pub(crate) fn environment_failure_reason(result: String, run_summary: String) -> String {
     let text = format!("{result}\n{run_summary}").to_lowercase();
@@ -154,7 +152,6 @@ pub(crate) fn environment_failure_reason(result: String, run_summary: String) ->
     }
 }
 
-/// Go: func classifyFailure(result, runStatus, runSummary string, askedOwner bool) failure
 pub(crate) fn classify_failure(
     result: String,
     run_status: String,
@@ -211,13 +208,11 @@ pub(crate) fn is_transient_reason(reason: &str) -> bool {
     f.class.0 == FAILURE_TRANSIENT
 }
 
-/// Go: func containsAny(text string, marks []string) bool
 #[allow(dead_code)]
 pub(crate) fn contains_any(text: String, marks: &[String]) -> bool {
     marks.iter().any(|m| text.contains(m))
 }
 
-/// Go: func failureSignature(class failureClass, reason string) string
 pub(crate) fn failure_signature(class: crate::failure::FailureClass, reason: String) -> String {
     let mut head = reason.trim().to_lowercase();
     head = head.trim_matches(|c| c == ';' || c == ' ').to_string();
@@ -239,7 +234,6 @@ pub(crate) fn failure_signature(class: crate::failure::FailureClass, reason: Str
     format!("{}:{head}", class.0)
 }
 
-/// Go: func recoverBackoff(n int) time.Duration
 pub(crate) fn recover_backoff(n: i32) -> std::time::Duration {
     let mut n = n;
     if n < 0 {
@@ -256,7 +250,6 @@ pub(crate) fn recover_backoff(n: i32) -> std::time::Duration {
     d
 }
 
-/// Go: func recoverDue(finishedAt string, n int) string
 pub(crate) fn recover_due(finished_at: String, n: i32) -> String {
     let d = recover_backoff(n);
     crate::util::format_iso(

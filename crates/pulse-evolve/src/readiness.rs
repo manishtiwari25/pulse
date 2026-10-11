@@ -1,5 +1,3 @@
-//! Port of internal/evolve/readiness.go.
-
 use anyhow::{Result, anyhow};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -16,7 +14,6 @@ pub struct PlanningStatus {
     pub question: String,
 }
 
-/// Go: func planningStatus(s *store.Store, status *LoopStatus) (PlanningStatus, error) {
 pub(crate) fn planning_status(
     s: &pulse_store::Store,
     status: &crate::status::LoopStatus,
@@ -35,6 +32,18 @@ pub(crate) fn planning_status(
             state: "blocked".to_string(),
             reason,
             job,
+            question,
+            ..Default::default()
+        });
+    }
+    let (question, reason) = crate::flat_gate::flat_fixture_gate(s, project)?;
+    if !reason.is_empty() {
+        return Ok(PlanningStatus {
+            state: "blocked".to_string(),
+            reason: format!(
+                "{reason}; owner: {}",
+                crate::flat_gate::flat_owner_step(project, &question)
+            ),
             question,
             ..Default::default()
         });
@@ -256,7 +265,6 @@ pub(crate) fn stop_question_open(
         .optional()?)
 }
 
-/// Go: func experimentFinalizing(s *store.Store, job *board.Job) (bool, error) {
 pub(crate) fn experiment_finalizing(
     s: &pulse_store::Store,
     job: &pulse_board::Job,
@@ -276,13 +284,13 @@ pub(crate) fn experiment_finalizing(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use std::time::Duration;
 
     #[test]
     fn readiness_ignores_pre_adr044_card_questions() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         join_test_agent(&s, "card-writer");
         let idea = cardless_suggestion(&s, "idea", "Shorten the README intro", &["up", "up"]);
@@ -327,7 +335,7 @@ mod tests {
     #[test]
     fn status_distinguishes_readiness_from_progress() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for scenario in [
             "no-eligible",
             "product-gate",
@@ -448,7 +456,7 @@ mod tests {
     #[test]
     fn reflect_does_not_recommend_unready_cycle() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         let cancel = pulse_bus::CancellationToken::new();
         for ready in [false, true] {
@@ -469,7 +477,7 @@ mod tests {
     #[test]
     fn stop_question_open_verdicts_match_planning_status() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         let ask = |thread: &str| {
             pulse_board::create_post(
@@ -538,7 +546,7 @@ mod tests {
     #[test]
     fn owner_decision_clears_the_hard_stop_gate() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         voted_suggestion(&s, "next", "operating-layer", "README.md", 2);
         let (job, _) = pulse_board::add_job(
@@ -617,7 +625,7 @@ mod tests {
     #[test]
     fn refused_card_is_passed_over_not_fatal() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         // The top voted card carries a credential-shaped token: the loop
         // refuses it as written, without a stop or a card job, and neither
@@ -680,7 +688,7 @@ mod tests {
     #[test]
     fn owner_decision_or_closing_post_clears_the_review_stop() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for how in ["decide", "close"] {
             let s = cycle_ready();
             join_test_agent(&s, "daemon");
@@ -741,7 +749,7 @@ mod tests {
     #[test]
     fn readiness_matches_blocked_experiment_carrier() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = cycle_ready();
         let suggestion = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         let (job, _) = pulse_board::add_job(

@@ -1,5 +1,3 @@
-//! Port of internal/evolve/cycle.go.
-
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
@@ -32,7 +30,6 @@ pub struct CycleResult {
     pub question: String,
 }
 
-/// Go: func cycleLease(s *store.Store, project, owner string, acquire bool) error {
 pub(crate) fn cycle_lease(
     s: &pulse_store::Store,
     project: &str,
@@ -67,7 +64,6 @@ pub(crate) fn cycle_lease(
     Ok(())
 }
 
-/// Go: func emitCycle(opts CycleOptions, result CycleResult) error {
 pub(crate) fn emit_cycle(opts: &mut CycleOptions, result: CycleResult) -> Result<()> {
     let Some(out) = opts.out.as_mut() else {
         return Ok(());
@@ -89,7 +85,6 @@ pub(crate) fn emit_cycle(opts: &mut CycleOptions, result: CycleResult) -> Result
 pub const STOP_SUMMARY: &str = pulse_store::EVOLUTION_STOP_SUMMARY;
 pub const GATE_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
-/// Go: func ownerQuestion(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string) (string, error) {
 pub(crate) fn owner_question(
     s: &pulse_store::Store,
     project: &str,
@@ -111,7 +106,6 @@ pub(crate) fn owner_question(
     )
 }
 
-/// Go: func ownerQuestionWith(s *store.Store, project string, target *tally.Post, agent string, agentRow *store.Agent, session, reason string,
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn owner_question_with<F>(
     s: &pulse_store::Store,
@@ -140,7 +134,6 @@ where
     )
 }
 
-/// Go: func ownerQuestionOn(s *store.Store, project, area, thread, on, agent string, agentRow *store.Agent, session, reason string,
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn owner_question_on<F>(
     s: &pulse_store::Store,
@@ -184,7 +177,6 @@ where
     Ok(post.id)
 }
 
-/// Go: func openStopQuestion(s *store.Store, project, area, thread, on string) (string, error) {
 pub(crate) fn open_stop_question(
     s: &pulse_store::Store,
     project: &str,
@@ -208,7 +200,6 @@ pub(crate) fn open_stop_question(
         .unwrap_or_default())
 }
 
-/// Go: func recentlyAnsweredStopQuestion(s *store.Store, project, area, thread, on string) (string, error) {
 pub(crate) fn recently_answered_stop_question(
     s: &pulse_store::Store,
     project: &str,
@@ -236,7 +227,6 @@ pub(crate) fn recently_answered_stop_question(
         .unwrap_or_default())
 }
 
-/// Go: func stopCycle(s *store.Store, project string, target *tally.Post, opts CycleOptions, job, reason string) error {
 pub(crate) fn stop_cycle(
     s: &pulse_store::Store,
     project: &str,
@@ -259,7 +249,6 @@ pub(crate) fn stop_cycle(
     )
 }
 
-/// Go: func Cycle(ctx context.Context, s *store.Store, project string, opts CycleOptions) (retErr error) {
 pub fn cycle(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -556,13 +545,13 @@ pub fn cycle(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_e2::*;
+    use crate::test_helpers_cycle::*;
     use std::time::Duration;
 
     #[test]
     fn cycle_product_first_bus_completion_and_no_cli_archive() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let (bus, _hold) = pulse_bus::exclusive_default();
         voted_suggestion(&s, "operating", "operating-layer", "README.md", 3);
@@ -625,7 +614,7 @@ mod tests {
     #[test]
     fn cycle_instruction_and_scope_violations_ask_owner() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         for scenario in ["instruction", "result instruction", "stop", "cap"] {
             let s = cycle_ready();
             let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
@@ -703,7 +692,7 @@ mod tests {
     #[test]
     fn cycle_skips_cards_the_constitution_closes_without_stopping() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         for (scenario, file) in [("immutable", "protected.txt"), ("outside", "unlisted.txt")] {
             let s = cycle_ready();
             // A voted proposal for a closed file is passed over, not a violation: nobody
@@ -758,7 +747,7 @@ mod tests {
     #[test]
     fn cycle_continuous_cap_stops_after_runner_archive() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let (bus, _hold) = pulse_bus::exclusive_default();
         voted_suggestion(&s, "candidate", "product", "value.txt", 2);
@@ -802,7 +791,7 @@ mod tests {
     #[test]
     fn cycle_cancellation_releases_only_its_queued_job() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         voted_suggestion(&s, "candidate", "product", "value.txt", 2);
         let cancel = pulse_bus::CancellationToken::new().with_timeout(Duration::from_millis(250));
@@ -841,7 +830,7 @@ mod tests {
     #[test]
     fn cycle_budget_does_not_hide_other_gates_or_wait_for_an_unarchived_job() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         for archived in [false, true] {
             let s = cycle_ready();
             let (bus, _hold) = pulse_bus::exclusive_default();
@@ -912,7 +901,7 @@ mod tests {
     #[test]
     fn cycle_cancellation_preserves_a_deduplicated_job() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
         let (job, created) = pulse_board::add_job(
@@ -975,7 +964,7 @@ mod tests {
     #[test]
     fn cycle_waits_for_runner_and_landing_finalization() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let (bus, _hold) = pulse_bus::exclusive_default();
         voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
@@ -1027,7 +1016,7 @@ mod tests {
     #[test]
     fn cycle_failed_archive_is_not_emitted_as_success() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let (bus, _hold) = pulse_bus::exclusive_default();
         voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
@@ -1072,7 +1061,7 @@ mod tests {
     #[test]
     fn cycle_finished_without_current_archive_stops() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         for prior_archive in [false, true] {
             let s = cycle_ready();
             let (bus, _hold) = pulse_bus::exclusive_default();
@@ -1131,7 +1120,7 @@ mod tests {
     #[test]
     fn recently_answered_stop_question_matches_gate_target() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let _env = pulse_testutil::env_lock();
         let s = test_store();
         disable_project_hook();
@@ -1207,7 +1196,7 @@ mod tests {
     #[test]
     fn recently_answered_stop_question_holds_loop_gate() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let _env = pulse_testutil::env_lock();
         let s = test_store();
         disable_project_hook();
@@ -1256,7 +1245,7 @@ mod tests {
     #[test]
     fn stop_question_lookups_report_errors() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = test_store();
         s.close().unwrap();
         let db = std::path::Path::new(&s.home).join(pulse_store::STORE_NAME);
@@ -1295,7 +1284,7 @@ mod tests {
     #[test]
     fn cycle_requires_current_finalization_evidence() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         for evidence in [
             "missing",
             "legacy",

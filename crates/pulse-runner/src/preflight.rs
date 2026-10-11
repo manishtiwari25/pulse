@@ -1,8 +1,5 @@
-//! Port of internal/runner/preflight.go.
-
 use std::path::Path;
 
-/// Go: func pulseOnPath(env []string) string
 pub(crate) fn pulse_on_path(env: &[String]) -> String {
     let mut path_env = "";
     for kv in env {
@@ -22,7 +19,6 @@ pub(crate) fn pulse_on_path(env: &[String]) -> String {
     String::new()
 }
 
-/// Go: func preflightLine(found, cli string) string
 pub(crate) fn preflight_line(found: String, cli: String) -> String {
     if !found.is_empty() {
         format!("preflight: pulse on worker PATH: {found}")
@@ -33,7 +29,6 @@ pub(crate) fn preflight_line(found: String, cli: String) -> String {
     }
 }
 
-/// Go: func preflightPulseCLI(found, cli string) error
 pub(crate) fn preflight_pulse_cli(found: String, cli: String) -> anyhow::Result<()> {
     if !found.is_empty() {
         return Ok(());

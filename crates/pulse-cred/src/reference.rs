@@ -18,7 +18,7 @@ pub struct Ref {
 /// Shapes lists the accepted reference shapes for errors and help.
 pub const SHAPES: &str = "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH";
 
-/// Parse validates a reference. An empty reference is an error.
+/// Validates a reference. An empty reference is an error.
 pub fn parse(text: &str) -> Result<Ref> {
     let raw = text.trim();
     let mut r = Ref {

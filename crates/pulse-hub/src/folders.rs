@@ -289,7 +289,7 @@ fn value_from<T: Serialize>(v: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers_f2 as f2;
+    use crate::test_helpers_http as http;
     use serde_json::Value;
     use std::fs;
     use std::process::Command;
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn folders_listing() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
+        let s = http::additions_store(false);
         let repo = repo();
         pulse_board::add_project(
             &s,
@@ -365,7 +365,7 @@ mod tests {
         std::os::unix::fs::symlink(repo.path(), root.path().join("linked")).unwrap();
         let root_text = root.path().to_string_lossy().to_string();
         let (status, result) = folders_request(
-            f2::handler(&s),
+            http::handler(&s),
             "GET",
             &format!(
                 "/api/v1/folders?path={}",
@@ -404,7 +404,7 @@ mod tests {
             })
             .unwrap();
         let (status, result) = folders_request(
-            f2::handler(&s),
+            http::handler(&s),
             "GET",
             &format!(
                 "/api/v1/folders?path={}",
@@ -420,7 +420,7 @@ mod tests {
         fs::create_dir_all(&inside_path).unwrap();
         let inside = inside_path.to_string_lossy().to_string();
         let (status, result) = folders_request(
-            f2::handler(&s),
+            http::handler(&s),
             "GET",
             &format!(
                 "/api/v1/folders?path={}",
@@ -435,8 +435,8 @@ mod tests {
     #[test]
     fn folders_refusals() {
         let _serial = crate::test_helpers::serial();
-        let s = f2::additions_store(false);
-        f2::additions_project(&s, "one");
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("file.txt"), b"x").unwrap();
         for (path, code, what) in [
@@ -463,7 +463,7 @@ mod tests {
             ),
         ] {
             let (status, result) = folders_request(
-                f2::handler(&s),
+                http::handler(&s),
                 "GET",
                 &format!("/api/v1/folders{path}"),
                 "127.0.0.1:8765",
@@ -471,11 +471,15 @@ mod tests {
             assert_eq!(status, code, "{path}");
             assert_eq!(result["error"], what);
         }
-        let (status, _) =
-            folders_request(f2::handler(&s), "POST", "/api/v1/folders", "127.0.0.1:8765");
+        let (status, _) = folders_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/folders",
+            "127.0.0.1:8765",
+        );
         assert_eq!(status, 405);
         let (status, _) = folders_request(
-            f2::handler(&s),
+            http::handler(&s),
             "GET",
             "/api/v1/folders/x",
             "127.0.0.1:8765",
@@ -483,7 +487,7 @@ mod tests {
         assert_eq!(status, 404);
         let root_q = root.path().to_string_lossy();
         let (status, _) = folders_request(
-            f2::handler(&s),
+            http::handler(&s),
             "GET",
             &format!("/api/v1/folders?path={root_q}"),
             "evil.example:8765",
@@ -496,7 +500,7 @@ mod tests {
             "LOCALHOST",
         ] {
             let (status, _) = folders_request(
-                f2::handler(&s),
+                http::handler(&s),
                 "GET",
                 &format!("/api/v1/folders?path={root_q}"),
                 host,

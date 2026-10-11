@@ -115,8 +115,9 @@ struct SuggestionPost {
     summary: String,
 }
 
-/// Go: Recent(ctx, s, project, limit, before) - bounded to two seconds and
-/// abandoned with ctx.Err() as soon as the caller's context is done.
+/// Builds the recent code-delivery report for `project`. Bounded to two
+/// seconds and abandoned with the token's cause as soon as the caller's token
+/// is cancelled.
 pub fn recent(
     ctx: &CancellationToken,
     s: &pulse_store::Store,

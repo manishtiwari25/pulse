@@ -84,7 +84,6 @@ pub(crate) fn init() {
     crate::provider::register_provider(AwsProvider {});
 }
 
-/// Go: func awsSettings(s *store.Store, size string) awsConfig
 pub(crate) fn aws_settings(s: &pulse_store::Store, size: String) -> AwsConfig {
     let mut cfg = AwsConfig {
         profile: s.setting("compute.aws.profile", "").trim().into(),
@@ -109,7 +108,6 @@ pub(crate) fn aws_settings(s: &pulse_store::Store, size: String) -> AwsConfig {
     cfg
 }
 
-/// Go: func awsErr(what string, rc int, stdout, stderr string, err error) error
 pub(crate) fn aws_err(
     what: String,
     rc: i32,
@@ -120,7 +118,6 @@ pub(crate) fn aws_err(
     crate::provider::cli_err(what, rc, stdout, stderr, err)
 }
 
-/// Go: func awsJSON(ctx context.Context, what string, args []string, timeout time.Duration, v any) error
 pub(crate) fn aws_json(
     ctx: &pulse_bus::CancellationToken,
     what: String,
@@ -142,7 +139,6 @@ pub(crate) fn aws_json(
     Ok(())
 }
 
-/// Go: func awsDescribe(ctx context.Context, cfg awsConfig, filters ...string) ([]awsInstance, error)
 pub(crate) fn aws_describe(
     ctx: &pulse_bus::CancellationToken,
     cfg: AwsConfig,
@@ -188,7 +184,6 @@ pub(crate) fn aws_describe(
         .collect())
 }
 
-/// Go: func awsMachine(cfg awsConfig, i awsInstance) *Machine
 pub(crate) fn aws_machine(cfg: AwsConfig, i: AwsInstance) -> Option<crate::provider::Machine> {
     let mut name = i.tag("Name".into());
     if name.is_empty() {
@@ -221,7 +216,6 @@ pub(crate) fn aws_machine(cfg: AwsConfig, i: AwsInstance) -> Option<crate::provi
     })
 }
 
-/// Go: func awsNetwork(ctx context.Context, cfg awsConfig, log func(string, ...any)) (subnet, group string, err error)
 pub(crate) fn aws_network(
     ctx: &pulse_bus::CancellationToken,
     cfg: AwsConfig,
@@ -454,15 +448,12 @@ pub(crate) fn aws_network(
 }
 
 impl AwsProvider {
-    /// Go: func (awsProvider) Name() string
     pub(crate) fn name(&self) -> String {
         "aws".into()
     }
-    /// Go: func (awsProvider) Kind() string
     pub(crate) fn kind(&self) -> String {
         "EC2 instance".into()
     }
-    /// Go: func (p awsProvider) Provision(ctx context.Context, req ProvisionRequest) (*Machine, error)
     pub(crate) fn provision(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -660,7 +651,6 @@ impl AwsProvider {
         crate::provider::provision_finish(ctx, req, &mut m, hub_home, ip, hostkeys, log)?;
         Ok(m)
     }
-    /// Go: func (p awsProvider) config(m *Machine) awsConfig
     pub(crate) fn config(&self, m: &crate::provider::Machine) -> AwsConfig {
         AwsConfig {
             profile: m.detail.get("profile").cloned().unwrap_or_default(),
@@ -668,7 +658,6 @@ impl AwsProvider {
             ..Default::default()
         }
     }
-    /// Go: func (p awsProvider) Release(ctx context.Context, m *Machine) error
     pub(crate) fn release(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -701,7 +690,6 @@ impl AwsProvider {
         }
         Ok(())
     }
-    /// Go: func (p awsProvider) Probe(ctx context.Context, m *Machine) error
     pub(crate) fn probe(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -728,7 +716,6 @@ impl AwsProvider {
         }
         Ok(())
     }
-    /// Go: func (p awsProvider) Find(ctx context.Context, s *store.Store, executor, host string) (*Machine, error)
     pub(crate) fn find(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -758,7 +745,6 @@ impl AwsProvider {
         }
         Ok(None)
     }
-    /// Go: func (p awsProvider) Stop(ctx context.Context, m *Machine) error
     pub(crate) fn stop(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -782,11 +768,9 @@ impl AwsProvider {
         }
         Ok(())
     }
-    /// Go: func (p awsProvider) Place(m *Machine) string
     pub(crate) fn place(&self, m: &crate::provider::Machine) -> String {
         m.detail.get("region").cloned().unwrap_or_default()
     }
-    /// Go: func (p awsProvider) StartHint(m *Machine) string
     pub(crate) fn start_hint(&self, m: &crate::provider::Machine) -> String {
         let mut hint = format!(
             "aws ec2 start-instances --instance-ids {}",
@@ -800,7 +784,6 @@ impl AwsProvider {
         }
         hint
     }
-    /// Go: func (p awsProvider) Delete(ctx context.Context, m *Machine) (bool, []string, error)
     pub(crate) fn delete(
         &self,
         ctx: &pulse_bus::CancellationToken,
@@ -842,7 +825,6 @@ impl AwsProvider {
 }
 
 impl AwsConfig {
-    /// Go: func (c awsConfig) scope(a []string) []string
     pub(crate) fn scope(&self, a: Vec<String>) -> Vec<String> {
         let mut out = a;
         if !self.profile.is_empty() {
@@ -853,7 +835,6 @@ impl AwsConfig {
         }
         out
     }
-    /// Go: func (c awsConfig) args(a ...string) []string
     pub(crate) fn args(&self, a: &[String]) -> Vec<String> {
         let mut out = vec!["ec2".into()];
         out.extend_from_slice(a);
@@ -861,7 +842,6 @@ impl AwsConfig {
         out.extend(["--output".into(), "json".into()]);
         out
     }
-    /// Go: func (c awsConfig) imageArg() string
     pub(crate) fn image_arg(&self) -> String {
         if self.image.starts_with('/') {
             format!("resolve:ssm:{}", self.image)
@@ -872,7 +852,6 @@ impl AwsConfig {
 }
 
 impl AwsInstance {
-    /// Go: func (i awsInstance) tag(key string) string
     pub(crate) fn tag(&self, key: String) -> String {
         self.tags
             .iter()

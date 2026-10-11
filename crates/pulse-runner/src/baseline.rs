@@ -1,11 +1,8 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 #![allow(
     clippy::too_many_arguments,
     clippy::unused_unit,
-    reason = "Go-port signatures intentionally mirror internal/runner"
+    reason = "signatures intentionally mirror the original runner"
 )]
 
 use std::time::Duration;
@@ -14,12 +11,10 @@ pub(crate) const BASELINE_TITLE: &str = "Record baseline";
 pub(crate) const BASELINE_PRIORITY: i32 = 20;
 pub(crate) const BASELINE_THREAD: &str = "baseline";
 
-/// Go: func baselineSource(slug string) string
 pub(crate) fn baseline_source(slug: String) -> String {
     format!("baseline:{slug}")
 }
 
-/// Go: func enabledFixtures(s *store.Store, slug string) int
 pub(crate) fn enabled_fixtures(s: &pulse_store::Store, slug: String) -> i32 {
     let Ok(conn) = s.conn() else { return 0 };
     crate::util::must_one(
@@ -30,7 +25,6 @@ pub(crate) fn enabled_fixtures(s: &pulse_store::Store, slug: String) -> i32 {
     .int("n")
 }
 
-/// Go: func baselineDue(s *store.Store, slug, now string) (due bool, why string)
 pub(crate) fn baseline_due(s: &pulse_store::Store, slug: String, now: String) -> (bool, String) {
     let why = crate::run::runner_stopped(s);
     if !why.is_empty() {
@@ -81,7 +75,6 @@ pub(crate) fn baseline_due(s: &pulse_store::Store, slug: String, now: String) ->
     }
 }
 
-/// Go: func planBaseline(s *store.Store, project row, slug, now, createdBy string) (row, bool, error)
 pub(crate) fn plan_baseline(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -114,13 +107,11 @@ pub(crate) fn plan_baseline(
     )
 }
 
-/// Go: func defaultBranch(project row) string
 pub(crate) fn default_branch(project: crate::util::Row) -> String {
     let d = project.str("default_branch");
     if d.is_empty() { "main".into() } else { d }
 }
 
-/// Go: func baselineBudget(s *store.Store, slug string) time.Duration
 pub(crate) fn baseline_budget(s: &pulse_store::Store, slug: String) -> std::time::Duration {
     let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
     let fixtures = enabled_fixtures(s, slug) + pulse_evolve::heldout_count(s).count as i32;
@@ -135,7 +126,6 @@ pub(crate) fn baseline_budget(s: &pulse_store::Store, slug: String) -> std::time
     budget
 }
 
-/// Go: func jobBudget(s *store.Store, job row) time.Duration
 pub(crate) fn job_budget(s: &pulse_store::Store, job: crate::util::Row) -> std::time::Duration {
     if job.str("kind") == "baseline" {
         baseline_budget(s, job.str("project"))
@@ -144,7 +134,6 @@ pub(crate) fn job_budget(s: &pulse_store::Store, job: crate::util::Row) -> std::
     }
 }
 
-/// Go: func runBaseline(s *store.Store, job, project row, agent, now, runID, logPath string, ex executor, o runOpts) (row, error)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_baseline(
     s: &pulse_store::Store,
@@ -453,7 +442,6 @@ pub(crate) fn run_baseline(
     Ok(run_row())
 }
 
-/// Go: time.Duration.Round(m) for a non-negative d (halves round away from zero).
 fn round_to(d: std::time::Duration, m: std::time::Duration) -> std::time::Duration {
     let (d, m) = (d.as_nanos(), m.as_nanos());
     if m == 0 {
@@ -467,7 +455,6 @@ fn round_to(d: std::time::Duration, m: std::time::Duration) -> std::time::Durati
     }
 }
 
-/// Go: func baselineFinding(s *store.Store, slug, def, cause, logPath, runID, now string, arow *store.Agent, log *runLog)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn baseline_finding(
     s: &pulse_store::Store,
@@ -526,7 +513,7 @@ pub(crate) fn baseline_finding(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
 
     fn set_retry_setting(s: &pulse_store::Store, key: &str, value: &str) {
         exec1(

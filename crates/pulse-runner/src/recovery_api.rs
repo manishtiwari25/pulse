@@ -1,5 +1,3 @@
-//! Port of internal/runner/recovery_api.go.
-
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -207,7 +205,6 @@ fn must_one(q: &Querier, query: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
     query_one(q, query, args).unwrap()
 }
 
-/// Go: func ReadFailedJobs(s *store.Store, in FailedJobsQuery) (out *FailedJobsPage, err error)
 pub fn read_failed_jobs(
     s: &pulse_store::Store,
     mut input: FailedJobsQuery,
@@ -293,7 +290,6 @@ pub fn read_failed_jobs(
     result.map(Some)
 }
 
-/// Go: func decodeFailedJobsCursor(cursor string) (string, string, error)
 pub(crate) fn decode_failed_jobs_cursor(cursor: String) -> anyhow::Result<(String, String)> {
     if cursor.is_empty() {
         return Ok((String::new(), String::new()));
@@ -316,7 +312,6 @@ pub(crate) fn decode_failed_jobs_cursor(cursor: String) -> anyhow::Result<(Strin
     .into())
 }
 
-/// Go: func readRecoveryPolicy(q querier) (recoveryPolicy, error)
 pub(crate) fn read_recovery_policy(q: &Querier) -> anyhow::Result<RecoveryPolicy> {
     let mut values = BTreeMap::from([(
         "stop".to_string(),
@@ -388,7 +383,6 @@ pub(crate) fn read_recovery_policy(q: &Querier) -> anyhow::Result<RecoveryPolicy
     Ok(p)
 }
 
-/// Go: func recoveryStopFile(root string) (bool, error)
 pub(crate) fn recovery_stop_file(root: String) -> anyhow::Result<bool> {
     if root.is_empty() {
         return Err(anyhow!(
@@ -403,7 +397,6 @@ pub(crate) fn recovery_stop_file(root: String) -> anyhow::Result<bool> {
     }
 }
 
-/// Go: func inspectRecoveryFailure(...)
 pub(crate) fn inspect_recovery_failure(
     q: &Querier,
     job: Row,
@@ -713,7 +706,6 @@ pub(crate) fn inspect_recovery_failure(
     Ok((v, f, run))
 }
 
-/// Go: func RepairFailedJobs(s *store.Store, in RepairJobsInput) (out *RepairJobsResult, err error)
 pub fn repair_failed_jobs(
     s: &pulse_store::Store,
     input: RepairJobsInput,
@@ -823,8 +815,8 @@ pub fn repair_failed_jobs(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::exec1;
-    use crate::test_helpers_f7::*;
+    use crate::test_helpers_daemon::exec1;
+    use crate::test_helpers_recover::*;
     use crate::util::Row;
     use std::path::PathBuf;
 

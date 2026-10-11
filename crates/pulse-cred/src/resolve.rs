@@ -63,7 +63,7 @@ impl Default for Resolver {
     }
 }
 
-/// New returns a Resolver with the real runner and environment.
+/// Returns a Resolver with the real runner and environment.
 pub fn new(home: &str) -> Resolver {
     Resolver {
         home: home.to_string(),
@@ -108,7 +108,7 @@ impl Resolver {
         self.goos()
     }
 
-    /// Resolve reads the key the reference names. Errors never carry the secret.
+    /// Reads the key the reference names. Errors never carry the secret.
     pub fn resolve(&self, reference: Ref) -> Result<Secret> {
         if self.worker || !self.getenv("PULSE_JOB").is_empty() {
             return Err(ErrWorker.into());
@@ -230,7 +230,7 @@ impl Resolver {
         Path::new(&self.home).join("secrets").join(TOKEN_FILE_NAME)
     }
 
-    /// Token finds the 1Password service-account token.
+    /// Finds the 1Password service-account token.
     pub fn token(&self) -> Result<(String, String)> {
         let env = self.getenv(TOKEN_ENV).trim().to_string();
         if !env.is_empty() {
@@ -261,7 +261,7 @@ impl Resolver {
         bail!("no service-account token: pulse cred token")
     }
 
-    /// StoreToken keeps a service-account token argv-free.
+    /// Keeps a service-account token argv-free.
     pub fn store_token(&self, token: &str) -> Result<String> {
         static TOKEN_SHAPE: Lazy<Regex> =
             Lazy::new(|| Regex::new(r"^[A-Za-z0-9_.=-]{20,}$").unwrap());
@@ -325,7 +325,7 @@ impl Resolver {
         Ok(removed)
     }
 
-    /// Inspect derives the public key and fingerprint of a materialized key.
+    /// Derives the public key and fingerprint of a materialized key.
     pub fn inspect(&self, key_path: &str) -> Result<(String, String)> {
         let y_args = vec!["-y".to_string(), "-f".to_string(), key_path.to_string()];
         let (pubkey, _) = self.run()("ssh-keygen", &y_args, "", None).map_err(|e| {
@@ -346,7 +346,7 @@ impl Resolver {
     }
 }
 
-/// Exec is the Runner that starts real processes.
+/// The Runner that starts real processes.
 pub fn exec(
     name: &str,
     args: &[String],
@@ -356,7 +356,7 @@ pub fn exec(
     exec_inner(None, name, args, stdin, env)
 }
 
-/// ExecWithDeadline is Exec bounded by the resolver's per-command deadline.
+/// [`exec`] bounded by the resolver's per-command deadline.
 pub fn exec_with_deadline(
     timeout: Duration,
     name: &str,
@@ -502,7 +502,7 @@ static PEM: Lazy<Regex> = Lazy::new(|| {
 });
 static TOKEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bops_[A-Za-z0-9_.=-]{16,}").unwrap());
 
-/// Redact removes private key blocks, service-account tokens and explicit secrets.
+/// Removes private key blocks, service-account tokens and explicit secrets.
 pub fn redact(text: &str, secrets: &[&str]) -> String {
     let mut text = PEM.replace_all(text, "[private key]").to_string();
     text = TOKEN.replace_all(&text, "[token]").to_string();
@@ -625,7 +625,7 @@ mod tests {
     fn resolve_op_uses_service_account_token() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
-        // Like Go's t.Setenv: the resolver must strip these before running op.
+        // Set here and restored on exit: the resolver must strip these before running op.
         let saved: Vec<(&str, Option<String>)> = ["OP_CONNECT_HOST", "OP_CONNECT_TOKEN", TOKEN_ENV]
             .into_iter()
             .map(|k| (k, std::env::var(k).ok()))

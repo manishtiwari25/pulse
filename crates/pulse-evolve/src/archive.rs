@@ -52,7 +52,6 @@ pub struct Archived {
     pub note: String,
 }
 
-/// Go: func publicScores(in *Scores) (*Scores, error)
 pub(crate) fn public_scores(input: Option<&Scores>) -> Result<Scores> {
     let Some(input) = input else {
         return Err(anyhow!("a complete finite measurement is required"));
@@ -83,7 +82,6 @@ pub(crate) fn public_scores(input: Option<&Scores>) -> Result<Scores> {
     Ok(out)
 }
 
-/// Go: func baselineShape(row ArchiveRow, baseline, variant *Scores) bool
 pub(crate) fn baseline_shape(row: &ArchiveRow, baseline: &Scores, variant: &Scores) -> bool {
     if !crate::api::is_baseline_row(&row.hypothesis, &row.suggestion_post)
         || baseline.total != variant.total
@@ -100,7 +98,6 @@ pub(crate) fn baseline_shape(row: &ArchiveRow, baseline: &Scores, variant: &Scor
         })
 }
 
-/// Go: func archive(s *store.Store, row ArchiveRow) (string, error)
 pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String> {
     crate::fixtures::valid_project(s, &row.project)?;
     let baseline = public_scores(row.baseline.as_ref())?;
@@ -199,7 +196,6 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
     Ok(id)
 }
 
-/// Go: func ListArchive(s *store.Store, project string) ([]Archived, error)
 pub fn list_archive(s: &pulse_store::Store, project: &str) -> Result<Vec<Archived>> {
     let conn = s.conn()?;
     let mut stmt = conn.prepare(

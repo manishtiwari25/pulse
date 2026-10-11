@@ -16,7 +16,6 @@ pub(crate) struct CheckoutProbes {
 pub(crate) static CHECKOUT_HOLD: LazyLock<RwLock<BTreeMap<String, String>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
-/// Go: func readDirOnce(path string) error
 pub(crate) fn read_dir_once(path: String) -> anyhow::Result<()> {
     let meta = std::fs::metadata(&path)?;
     if !meta.is_dir() {
@@ -29,7 +28,6 @@ pub(crate) fn read_dir_once(path: String) -> anyhow::Result<()> {
     }
 }
 
-/// Go: func macOSHint(path string) string
 pub(crate) fn mac_os_hint(path: String) -> String {
     if std::env::consts::OS != "macos" {
         return String::new();
@@ -44,12 +42,10 @@ pub(crate) fn mac_os_hint(path: String) -> String {
     String::new()
 }
 
-/// Go: func holdCheckouts(held map[string]string)
 pub(crate) fn hold_checkouts(held: BTreeMap<String, String>) {
     *CHECKOUT_HOLD.write().expect("checkout hold poisoned") = held;
 }
 
-/// Go: func heldCheckouts() map[string]string
 pub(crate) fn held_checkouts() -> BTreeMap<String, String> {
     CHECKOUT_HOLD
         .read()
@@ -58,7 +54,6 @@ pub(crate) fn held_checkouts() -> BTreeMap<String, String> {
 }
 
 impl CheckoutProbes {
-    /// Go: func (p *checkoutProbes) ready(projects []row, timeout time.Duration) (ok []row, held map[string]string, lines []string)
     pub(crate) fn ready(
         &mut self,
         projects: Vec<crate::util::Row>,

@@ -1,5 +1,3 @@
-//! Port of internal/runner/steps_mirror.go.
-
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -90,7 +88,6 @@ struct RemoteStepsHead {
     event: String,
 }
 
-/// Go: func newRemoteStepsMirror(e *sshExec, id string) *remoteStepsMirror
 #[allow(dead_code)]
 pub(crate) fn new_remote_steps_mirror(
     e: Option<crate::exec::SshExec>,
@@ -113,7 +110,6 @@ fn open_store(e: &crate::exec::SshExec) -> Result<pulse_store::Store> {
 
 #[allow(dead_code)]
 impl RemoteStepsMirror {
-    /// Go: func (m *remoteStepsMirror) watch(ctx context.Context)
     pub(crate) fn watch(&mut self, cancel: &pulse_bus::CancellationToken) {
         let mut period = Duration::from_secs(1);
         let (mut ticks, mut stop) = crate::heartbeat::HEARTBEAT_TICKS
@@ -137,7 +133,6 @@ impl RemoteStepsMirror {
             }
         }
     }
-    /// Go: func (m *remoteStepsMirror) fetch(ctx context.Context) bool
     pub(crate) fn fetch(&mut self, cancel: &pulse_bus::CancellationToken) -> bool {
         if self.stopped {
             return false;
@@ -190,7 +185,6 @@ impl RemoteStepsMirror {
         }
         true
     }
-    /// Go: func (m *remoteStepsMirror) apply(chunk []byte) error
     pub(crate) fn apply(&mut self, chunk: Vec<u8>) -> anyhow::Result<()> {
         self.pending.extend(chunk);
         while let Some(i) = self.pending.iter().position(|b| *b == b'\n') {
@@ -287,7 +281,6 @@ impl RemoteStepsMirror {
         }
         Ok(())
     }
-    /// Go: func (m *remoteStepsMirror) finishIfMissing(out outcome, runErr error)
     pub(crate) fn finish_if_missing(
         &mut self,
         out: crate::proc::Outcome,
@@ -325,7 +318,6 @@ impl RemoteStepsMirror {
             self.unavailable(err);
         }
     }
-    /// Go: func (m *remoteStepsMirror) unavailable(err error)
     pub(crate) fn unavailable(&mut self, err: anyhow::Error) {
         if self.reported {
             return;

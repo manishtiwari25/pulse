@@ -52,9 +52,11 @@ pub(crate) struct LeaseOpts {
     pub any_proj: bool,
     /// The project and kind pairs the lease may take; empty takes any.
     pub fits: Vec<(String, String)>,
+    /// Projects whose landing kinds wait behind one source (a red default
+    /// branch and its fix job): `(project, source)` pairs.
+    pub hold_except: Vec<(String, String)>,
 }
 
-/// Go: func queueOnboardingJob(s *store.Store, slug, createdBy string) (row, bool, error)
 pub(crate) fn queue_onboarding_job(
     s: &pulse_store::Store,
     slug: String,
@@ -66,7 +68,6 @@ pub(crate) fn queue_onboarding_job(
     Ok((job_row(&conn, j.id), created))
 }
 
-/// Go: func addJob(s *store.Store, project, kind, title, brief string, tier, priority int, source, createdBy string, dedupe bool) (row, bool, error)
 pub(crate) fn add_job(
     s: &pulse_store::Store,
     project: String,
@@ -98,12 +99,10 @@ pub(crate) fn add_job(
     Ok((job_row(&conn, j.id), created))
 }
 
-/// Go: func jobRow(q querier, id string) row
 pub(crate) fn job_row(q: &Querier, id: String) -> Row {
     one_dyn(q, "SELECT * FROM jobs WHERE id = ?", &[&id])
 }
 
-/// Go: func parallelPerProject(s *store.Store) int
 pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
     let n = crate::util::setting_int(s, "parallel_per_project");
     if n < 1 { 1 } else { n }
@@ -256,7 +255,6 @@ pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
         .unwrap_or(0)
 }
 
-/// Go: func leaseJob(s *store.Store, agent, now string, o leaseOpts) (job row, err error)
 pub(crate) fn lease_job(
     s: &pulse_store::Store,
     agent: String,
@@ -338,6 +336,18 @@ pub(crate) fn lease_job(
                 vals.push(Box::new(format!("{project}/{kind}")));
             }
         }
+        let landing_kinds = crate::redbase::LANDING_KINDS
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for (project, source) in &o.hold_except {
+            sql.push_str(&format!(
+                " AND NOT (j.project = ? AND j.kind IN ({landing_kinds}) AND j.source != ?)"
+            ));
+            vals.push(Box::new(project.clone()));
+            vals.push(Box::new(source.clone()));
+        }
         if is_lead {
             sql.push_str(" AND j.kind = ? AND (j.project || '-lead') = ?");
             vals.push(Box::new(crate::lead::LEAD_KIND.to_string()));
@@ -401,7 +411,6 @@ pub(crate) fn lease_job(
     Ok(leased)
 }
 
-/// Go: func finishJob(s *store.Store, jobID, agent, status, result, branch string, generation int) (row, error)
 pub(crate) fn finish_job(
     s: &pulse_store::Store,
     job_id: String,
@@ -425,7 +434,6 @@ pub(crate) fn finish_job(
     Ok(job_row(&conn, j.id))
 }
 
-/// Go: func renewLease(q querier, now, jobID, agent string, generation, minutes int) bool
 pub(crate) fn renew_lease(
     q: &Querier,
     now: String,
@@ -842,7 +850,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 thread: "plan".into(),
                 summary: "try a measured change".into(),
                 body: "one variable\n".into(),
-                agent: Some(Box::new(crate::test_helpers_f3::row_agent(author))),
+                agent: Some(Box::new(crate::test_helpers_environment::row_agent(author))),
                 ..Default::default()
             },
         )
@@ -857,7 +865,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 thread: "plan".into(),
                 summary: "already voted".into(),
                 body: "already voted\n".into(),
-                agent: Some(Box::new(crate::test_helpers_f3::row_agent(voter.clone()))),
+                agent: Some(Box::new(crate::test_helpers_environment::row_agent(
+                    voter.clone(),
+                ))),
                 on: card.str("id"),
                 vote: "up".into(),
                 ..Default::default()
@@ -868,7 +878,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let got = crate::run::cast_result_votes(
             &s,
             "proj",
-            Some(crate::test_helpers_f3::row_agent(voter.clone())),
+            Some(crate::test_helpers_environment::row_agent(voter.clone())),
             &voter.str("name"),
             crate::test_helpers::TEST_NOW,
             "run-vote",
@@ -1586,8 +1596,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         );
         assert_eq!(std::env::var("PULSE_HANDS_ALLOW_ANY_WORKER").unwrap(), "1");
         assert_eq!(std::env::var("PULSE_HANDS_KEYS_OK").unwrap(), "yes");
-        let out = crate::test_helpers_f1b::CaptureWriter::new();
-        let err = crate::test_helpers_f1b::CaptureWriter::new();
+        let out = crate::test_helpers_hands::CaptureWriter::new();
+        let err = crate::test_helpers_hands::CaptureWriter::new();
         let mut h = crate::hands::new_hands(std::io::empty(), out.boxed(), err.boxed());
         h.probe().unwrap();
         let probe = out.take();
@@ -1639,7 +1649,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 ],
             )
             .unwrap_err();
-        assert_eq!(crate::test_helpers_f1b::hands_exit_code(run_err), 0);
+        assert_eq!(crate::test_helpers_hands::hands_exit_code(run_err), 0);
         assert!(out.take().contains("SUMMARY: noted"));
         h.count("JOB-1", &base).unwrap();
         assert_eq!(out.take().trim(), "1");
@@ -1650,7 +1660,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let verify_err = h
             .verify("JOB-1", "1", &["--".into(), "exit 7".into()])
             .unwrap_err();
-        assert_eq!(crate::test_helpers_f1b::hands_exit_code(verify_err), 7);
+        assert_eq!(crate::test_helpers_hands::hands_exit_code(verify_err), 7);
         let bad_env = h
             .run(
                 "JOB-1",
@@ -1696,8 +1706,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 .trim_start_matches("PATH="),
         );
         let _env_12 = pulse_testutil::unsetenv("PULSE_HANDS_ALLOW_ANY_WORKER");
-        let out = crate::test_helpers_f1b::CaptureWriter::new();
-        let err = crate::test_helpers_f1b::CaptureWriter::new();
+        let out = crate::test_helpers_hands::CaptureWriter::new();
+        let err = crate::test_helpers_hands::CaptureWriter::new();
         let mut h = crate::hands::new_hands(std::io::empty(), out.boxed(), err.boxed());
         let bundle_dir = tempfile::tempdir().unwrap();
         let bundle = bundle_dir.path().join("repo.bundle");
@@ -1722,7 +1732,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 ],
             )
             .unwrap_err();
-        assert_eq!(crate::test_helpers_f1b::hands_exit_code(ok), 0);
+        assert_eq!(crate::test_helpers_hands::hands_exit_code(ok), 0);
         for bad in [vec!["pulse", "hands", "probe"], vec!["bash", "-lc", "true"]] {
             let mut args = vec!["--".to_string()];
             args.extend(bad.iter().map(|s| s.to_string()));
@@ -2815,7 +2825,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             return;
         }
         let bin = crate::test_helpers::build_pulse();
-        let _stage = crate::test_helpers_f1a::stage_local_pulse(&bin);
+        let _stage = crate::test_helpers_staged_pulse::stage_local_pulse(&bin);
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         crate::test_helpers::join(&s, "aurora");
@@ -2826,7 +2836,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let hands_home = tempfile::tempdir().unwrap();
         let fake_path = crate::test_helpers::fake_hands_path(&[]);
         let fake_path = fake_path.trim_start_matches("PATH=").to_string();
-        let _ssh = crate::test_helpers_f1b::install_run_ssh({
+        let _ssh = crate::test_helpers_hands::install_run_ssh({
             let bin = bin.clone();
             let workdir = workdir.clone();
             let hands_home = hands_home.path().to_path_buf();
@@ -3028,8 +3038,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     #[test]
     fn launcher_restores_the_previous_pulse_after_three_early_exits() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
-        crate::test_helpers_f5::skip_slow();
+        let _deadline =
+            crate::test_helpers_daemon::test_deadline(std::time::Duration::from_secs(60));
+        crate::test_helpers_daemon::skip_slow();
         if which::which("sh").is_err() {
             return;
         }
@@ -3121,7 +3132,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_probe_ssh);
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=missing logged_in=no harness=no pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=missing logged_in=no harness=no pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -3143,20 +3154,20 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         for (name, setting, workdir, free_mb, want_ok, want_note) in [
             (
-                "default threshold passes at 1 GiB",
+                "default threshold passes at 10 GiB",
                 "",
                 "/srv/pulse",
-                1024,
+                10240,
                 true,
                 "",
             ),
             (
-                "default threshold fails under 1 GiB",
+                "default threshold fails under 10 GiB",
                 "",
                 "/srv/pulse",
-                1023,
+                10239,
                 false,
-                "under 1 GiB free on /srv/pulse",
+                "under 10 GiB free on /srv/pulse",
             ),
             (
                 "lower threshold passes what the default refused",
@@ -3176,11 +3187,11 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             ),
             (
                 "higher threshold fails what the default passed",
-                "4096",
+                "16384",
                 "/srv/pulse",
-                4000,
+                16000,
                 false,
-                "under 4 GiB free on /srv/pulse",
+                "under 16 GiB free on /srv/pulse",
             ),
             (
                 "problem names the probed mount",
@@ -3195,8 +3206,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             let s = crate::test_helpers::new_store();
             assert_eq!(
                 crate::util::setting_int(&s, "daemon.min_free_mb"),
-                1024,
-                "daemon.min_free_mb default = want 1024"
+                10240,
+                "daemon.min_free_mb default = want 10240"
             );
             if !setting.is_empty() {
                 s.set_setting(crate::util::HUMAN_AGENT, "daemon.min_free_mb", setting)
@@ -3258,7 +3269,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_probe_ssh);
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=present remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=present remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -3275,7 +3286,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 && note.contains("pulse pair <admin@host> --name hands"),
             "doctor note: {note:?}"
         );
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=4096 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -3913,7 +3924,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
-        let am_id = crate::test_helpers_f1b::passed_amendment(&s);
+        let am_id = crate::test_helpers_hands::passed_amendment(&s);
         let th = pulse_tally::load_thresholds(
             &s,
             "proj",
@@ -3993,7 +4004,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
-        let am_id = crate::test_helpers_f1b::passed_amendment(&s);
+        let am_id = crate::test_helpers_hands::passed_amendment(&s);
         s.set_setting(crate::util::HUMAN_AGENT, "stop", "1")
             .unwrap();
         let mut refused = crate::amend::AmendRefusals::new();
@@ -4031,7 +4042,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
     #[test]
     fn daemon_once_compute_approve_to_ready_to_released() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
@@ -4057,17 +4068,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             ("compute.azure.vm_size", "Standard_B2ms"),
             ("minutes_per_job", "1"),
         ] {
-            crate::test_helpers_f5::set_setting(&s, k, v);
+            crate::test_helpers_daemon::set_setting(&s, k, v);
         }
-        let az = crate::test_helpers_f6::new_fake_az();
+        let az = crate::test_helpers_provider::new_fake_az();
         let old_az = crate::azure::set_run_az(Box::new({
             let az = az.clone();
             move |ctx, args, timeout| az.run(ctx, args, timeout)
         }));
         let old_ssh = crate::executor::run_ssh_hook();
         // ADR-034: with an executor token on the hub the machine is born logged in.
-        crate::test_helpers_f1b::write_executor_token(&s);
-        let placed = crate::test_helpers_f3b::stub_place_login(true);
+        crate::test_helpers_hands::write_executor_token(&s);
+        let placed = crate::test_helpers_cloud::stub_place_login(true);
         let ssh_calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         crate::executor::set_run_ssh({
             let ssh_calls = ssh_calls.clone();
@@ -4101,7 +4112,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                     crate::util::HUMAN_AGENT,
                 )?;
                 // the real pairing probes it active
-                crate::test_helpers_f5::exec1(
+                crate::test_helpers_daemon::exec1(
                     st,
                     "UPDATE executors SET status = 'active' WHERE name = ?",
                     &[&name],
@@ -4199,7 +4210,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             calls.len() == 1
                 && calls[0].name == "hands-cr-001"
                 && calls[0].admin == "pulseadmin@203.0.113.5"
-                && calls[0].token == crate::test_helpers_f1b::TEST_EXECUTOR_TOKEN,
+                && calls[0].token == crate::test_helpers_hands::TEST_EXECUTOR_TOKEN,
             "login placement: {calls:?}"
         );
         let known =
@@ -4220,7 +4231,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 && mrow.str("released_at").is_empty(),
             "machine memory: {m:?} {mrow:?}"
         );
-        let findings = crate::test_helpers_f5::must_rows(
+        let findings = crate::test_helpers_daemon::must_rows(
             &s,
             "SELECT * FROM posts WHERE kind = 'finding' AND area = 'runner' AND thread = 'compute'",
             &[],
@@ -4287,7 +4298,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         );
         assert_eq!(n, 1, "release finding: {n}\n{log3}");
         assert!(log3.contains("hour(s) are up"), "log:\n{log3}");
-        let exists = crate::test_helpers_f6::invoke_ok(&s, "compute", "", &["providers"]);
+        let exists = crate::test_helpers_provider::invoke_ok(&s, "compute", "", &["providers"]);
         for want in [
             "azure      Azure VM; auth: az login; size: compute.azure.vm_size  (setting compute.provider)",
             "aws        EC2 instance; auth: aws configure or aws sso login; size: compute.aws.instance_type",
@@ -4905,7 +4916,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "2026-09-06T11:00:00Z",
         );
 
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job: self_job,
             project,
             agent: "aurora".into(),
@@ -4947,7 +4958,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             false,
         )
         .unwrap();
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job,
             project,
             agent: "aurora".into(),
@@ -5022,7 +5033,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "2026-09-06T13:00:00Z",
         );
 
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job,
             project,
             agent: "aurora".into(),
@@ -5071,7 +5082,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             false,
         )
         .unwrap();
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job,
             project,
             agent: "aurora".into(),
@@ -5299,7 +5310,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "",
         );
 
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job: job.clone(),
             project: project.clone(),
             agent: "aurora".into(),
@@ -5325,7 +5336,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 "brief lists {absent:?}, which is answered or not for aurora:\n{brief}"
             );
         }
-        let other = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let other = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             job,
             project,
             agent: "borealis".into(),
@@ -6025,23 +6036,24 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let before = crate::test_helpers::count(&s, "SELECT count(*) AS n FROM events", &[]);
         for job in queued {
             for remote in [false, true] {
-                let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
-                    job: job.clone(),
-                    project: project.clone(),
-                    agent: "reused-worker".into(),
-                    clone: "/clone".into(),
-                    minutes: 10,
-                    remote,
-                    store: Some((*s).clone()),
-                    now: crate::test_helpers::TEST_NOW.into(),
-                    has_ball: true,
-                    ballot: vec![crate::brief::BallotItem {
-                        id: "suggestion-one".into(),
-                        summary: "Improve search error text.".into(),
+                let brief =
+                    crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
+                        job: job.clone(),
+                        project: project.clone(),
+                        agent: "reused-worker".into(),
+                        clone: "/clone".into(),
+                        minutes: 10,
+                        remote,
+                        store: Some((*s).clone()),
+                        now: crate::test_helpers::TEST_NOW.into(),
+                        has_ball: true,
+                        ballot: vec![crate::brief::BallotItem {
+                            id: "suggestion-one".into(),
+                            summary: "Improve search error text.".into(),
+                            ..Default::default()
+                        }],
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                });
+                    });
                 for want in [
                     latest,
                     "Source: owner; updated by human",
@@ -6192,7 +6204,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         job.insert("id", serde_json::json!("job-legacy"));
         job.insert("kind", serde_json::json!("reflect"));
         job.insert("tier", serde_json::json!(0));
-        let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
+        let brief = crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
             store: Some(ro),
             project,
             job,
@@ -6288,15 +6300,16 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let _env = pulse_testutil::setenv("PULSE_HOME", home.path());
         for job in queued {
             for remote in [false, true] {
-                let brief = crate::test_helpers_f4::must_write_brief(crate::brief::BriefOpts {
-                    store: Some((*s).clone()),
-                    project: project.clone(),
-                    job: job.clone(),
-                    agent: "aurora".into(),
-                    clone: "/clone".into(),
-                    remote,
-                    ..Default::default()
-                });
+                let brief =
+                    crate::test_helpers_completion::must_write_brief(crate::brief::BriefOpts {
+                        store: Some((*s).clone()),
+                        project: project.clone(),
+                        job: job.clone(),
+                        agent: "aurora".into(),
+                        clone: "/clone".into(),
+                        remote,
+                        ..Default::default()
+                    });
                 assert!(
                     brief.contains(want)
                         && !brief.contains("Earlier direction")

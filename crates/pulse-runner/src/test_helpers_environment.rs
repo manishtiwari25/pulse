@@ -1,11 +1,8 @@
-//! Test helpers ported from the Go test files owned by slice F3 (see files/RUNNER_TEST_WAVE.txt).
-//! Other slices call these as `crate::test_helpers_f3::<go_name_in_snake_case>`.
 #![allow(dead_code)]
 
 use crate::test_helpers::TEST_NOW;
 use rusqlite::params;
 
-/// Go: func rowAgent(r row) *store.Agent
 pub(crate) fn row_agent(r: crate::util::Row) -> pulse_store::Agent {
     pulse_store::Agent {
         name: r.str("name"),
@@ -16,7 +13,6 @@ pub(crate) fn row_agent(r: crate::util::Row) -> pulse_store::Agent {
     }
 }
 
-/// Go: func statusTruthProject(t *testing.T, s *store.Store) row
 pub(crate) fn status_truth_project(s: &pulse_store::Store) -> crate::util::Row {
     let dir = std::path::Path::new(&s.home).join("status-truth-proj");
     let _ = std::fs::create_dir_all(&dir);
@@ -30,7 +26,6 @@ pub(crate) fn status_truth_project(s: &pulse_store::Store) -> crate::util::Row {
     crate::board::project_by_slug(&*s.conn().unwrap(), "proj".into())
 }
 
-/// Go: func drainedByLogin(t *testing.T, s *store.Store, name, address string)
 pub(crate) fn drained_by_login(s: &pulse_store::Store, name: &str, address: &str) {
     crate::executor::add_executor(
         s,

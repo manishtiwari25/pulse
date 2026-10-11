@@ -6,7 +6,6 @@ pub(crate) const CODE_DELIVERY_DEFAULT_LIMIT: i64 = 100;
 pub(crate) const CODE_DELIVERY_MAX_LIMIT: i64 = 200;
 
 impl Handler {
-    /// Go: func (h *Handler) additionCodeDeliveries(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_code_deliveries(
         &self,
         w: &mut ResponseWriter,
@@ -60,7 +59,6 @@ impl Handler {
         }
     }
 
-    /// Go: func (h *Handler) validCodeDeliveryProject(w http.ResponseWriter, project string) bool
     pub(crate) fn valid_code_delivery_project(
         &self,
         w: &mut ResponseWriter,
@@ -93,7 +91,6 @@ impl Handler {
     }
 }
 
-/// Go: func codeDeliveryPositiveInt(w http.ResponseWriter, value, name string, fallback, maximum int) (int, bool)
 pub(crate) fn code_delivery_positive_int(
     w: &mut ResponseWriter,
     value: String,
@@ -119,7 +116,6 @@ pub(crate) fn code_delivery_positive_int(
     }
 }
 
-/// Go: func codeDeliveryBefore(w http.ResponseWriter, value string) (int64, bool)
 pub(crate) fn code_delivery_before(w: &mut ResponseWriter, value: String) -> (i64, bool) {
     if value.is_empty() {
         return (i64::MAX, true);
@@ -178,8 +174,8 @@ mod tests {
         path: &str,
         s: &pulse_store::Store,
     ) -> (u16, pulse_codedelivery::Report) {
-        let (status, _map, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(s),
+        let (status, _map, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(s),
             "GET",
             path,
             "",
@@ -209,9 +205,9 @@ mod tests {
     #[test]
     fn code_deliveries_api_reports_recent_code_with_provenance_and_coverage() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
-        crate::test_helpers_f3::additions_project(&s, "other");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
+        crate::test_helpers_http::additions_project(&s, "other");
         for agent in [
             ("builder", "builder-session", "worker"),
             ("proposer", "proposer-session", ""),
@@ -465,7 +461,7 @@ mod tests {
         assert_eq!(votes.down, 0);
         assert_eq!(votes.score, 2);
 
-        let before = crate::test_helpers_f3::strconv_int64(page.scope.next_before.unwrap());
+        let before = crate::test_helpers_http::strconv_int64(page.scope.next_before.unwrap());
         let (status, older) = code_delivery_report(
             &format!("/api/v1/code-deliveries?project=demo&limit=4&before={before}"),
             &s,
@@ -490,8 +486,8 @@ mod tests {
     #[test]
     fn code_deliveries_api_unknown_for_truncated_evidence_and_sanitized_reasons() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
         seed_code_delivery_event(
             &s,
             "demo",
@@ -557,9 +553,9 @@ mod tests {
     #[test]
     fn code_deliveries_api_bounds_sparse_project_windows() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
-        crate::test_helpers_f3::additions_project(&s, "other");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
+        crate::test_helpers_http::additions_project(&s, "other");
         seed_code_delivery_event(
             &s,
             "demo",
@@ -585,8 +581,8 @@ mod tests {
     #[test]
     fn code_deliveries_api_cancelled_request_fails_explicitly() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
         let result = pulse_codedelivery::recent(&CancellationToken::new(), &s, "demo", 100, 0);
         assert!(result.is_ok());
     }
@@ -594,7 +590,7 @@ mod tests {
     #[test]
     fn code_delivery_votes_respect_cancellation_while_waiting_for_database() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         s.set_max_open_conns(1);
         let conn = s.conn().unwrap();
         let ctx = CancellationToken::new();
@@ -626,16 +622,16 @@ mod tests {
     #[test]
     fn code_deliveries_api_validation() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
         for path in [
             "/api/v1/code-deliveries?limit=0",
             "/api/v1/code-deliveries?limit=201",
             "/api/v1/code-deliveries?before=0",
             "/api/v1/code-deliveries?before=abc",
         ] {
-            let (status, body, _) = crate::test_helpers_f3::request(
-                crate::test_helpers_f3::handler(&s),
+            let (status, body, _) = crate::test_helpers_http::request(
+                crate::test_helpers_http::handler(&s),
                 "GET",
                 path,
                 "",
@@ -643,8 +639,8 @@ mod tests {
             );
             assert_eq!(status, 400, "{path}: {body:?}");
         }
-        let (status, body, _) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, body, _) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/code-deliveries?project=missing",
             "",
@@ -657,8 +653,8 @@ mod tests {
     #[test]
     fn code_deliveries_do_not_read_unrelated_post_bodies() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        crate::test_helpers_f3::additions_project(&s, "demo");
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
         s.conn().unwrap().execute_batch(
             "INSERT INTO posts(id, project, kind, area, thread, date, agent, summary, body, created_at)
              VALUES ('source', 'demo', 'suggestion', 'code', 'delivery', '2026-09-01', 'author', 'Source work', '', '2026-09-01');
@@ -726,6 +722,6 @@ mod tests {
     #[test]
     fn strconv_int64() {
         let _serial = crate::test_helpers::serial();
-        assert_eq!(crate::test_helpers_f3::strconv_int64(42), "42");
+        assert_eq!(crate::test_helpers_http::strconv_int64(42), "42");
     }
 }

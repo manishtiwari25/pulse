@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub(crate) const HELDOUT_SETTING: &str = "evolve.heldout_dir";
 pub(crate) const PRIVATE_VALUE: &str = pulse_bus::PRIVATE_VALUE;
-/// Go: func hiddenSettingValue(value string) string
 pub(crate) fn hidden_setting_value(value: String) -> String {
     if value.is_empty() {
         String::new()
@@ -15,7 +14,6 @@ pub(crate) fn hidden_setting_value(value: String) -> String {
         PRIVATE_VALUE.to_string()
     }
 }
-/// Go: func privateSettingEvent(event additionEvent) additionEvent
 pub(crate) fn private_setting_event(event: serde_json::Value) -> serde_json::Value {
     let mut event = event;
     let subject = event
@@ -117,9 +115,9 @@ mod tests {
     #[test]
     fn heldout_settings_never_leave_api() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let h = crate::server::new_handler(Some(Arc::new((*s).clone())), None);
-        let server = crate::test_helpers_f3::server(h.clone_for_test());
+        let server = crate::test_helpers_http::server(h.clone_for_test());
         let paths = [
             "/private/old-heldout-canary",
             "/private/\u{263a}-\"quoted\"-heldout-canary",
@@ -236,7 +234,7 @@ mod tests {
         drop(reader);
         for path in ["/api/v1/settings", "/api/v1/events", "/api/v1/timeline"] {
             let (_, payload, raw) =
-                crate::test_helpers_f3::request(h.clone_for_test(), "GET", path, "", &[]);
+                crate::test_helpers_http::request(h.clone_for_test(), "GET", path, "", &[]);
             assert!(!raw.is_empty(), "{path} returned empty body");
             assert_private(&Value::Object(payload.into_iter().collect()), &paths);
         }

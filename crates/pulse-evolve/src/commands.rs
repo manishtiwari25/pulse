@@ -2,25 +2,22 @@ use anyhow::Result;
 use std::io::{Read, Write};
 use std::sync::{LazyLock, Mutex};
 
-/// Go: var Stdin io.Reader = os.Stdin
 pub(crate) static STDIN: LazyLock<Mutex<Option<Box<dyn Read + Send>>>> =
     LazyLock::new(|| Mutex::new(None));
 #[derive(Debug, Clone, Default)]
 pub struct RepeatedStrings(pub Vec<String>);
 impl std::fmt::Display for RepeatedStrings {
-    /// Go: func (s *repeatedStrings) String() string
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0.join(","))
     }
 }
 impl RepeatedStrings {
-    /// Go: func (s *repeatedStrings) Set(value string) error
     pub fn set(&mut self, value: &str) -> Result<()> {
         self.0.push(value.to_string());
         Ok(())
     }
 }
-/// Go command metadata: evolve
+/// Command metadata for `pulse evolve`.
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
 pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
 pub const REFLECT_SUMMARY: &str =
@@ -31,7 +28,6 @@ pub const FLEET_USAGE: &str = "pulse fleet prepare --n N [--ref REV] [--project 
 pub const USAGE_SUMMARY: &str = "best-effort local runner token diagnostics; never a ledger";
 pub const USAGE_USAGE: &str =
     "pulse usage [--runner copilot|claude|codex|opencode] [--days N] [--json]";
-/// Go: func commandFlags(c *cli.Context, name string) (*cli.Context, *flag.FlagSet)
 pub fn command_flags(
     c: &pulse_cli::Context,
     name: &str,
@@ -54,9 +50,8 @@ pub fn command_flags(
     add_common_flags(&mut fs, &copy);
     Ok((copy, fs))
 }
-/// Go: func parseCommandFlags(fs *flag.FlagSet, args []string) error
-/// (the flag set was built with `fs.SetOutput(copy.Err)`, so what Parse
-/// prints reaches the command's error writer).
+/// Parses a command's flags, forwarding whatever the flag set prints (usage,
+/// parse errors) to the command's error writer.
 pub(crate) fn parse_command_flags(
     c: &mut pulse_cli::Context,
     fs: &mut pulse_cli::FlagSet,
@@ -92,8 +87,8 @@ fn parse_command_flag_args(fs: &mut pulse_cli::FlagSet, args: &[String]) -> Resu
             .map_or(arg.trim_start_matches('-'), |x| x.0);
         if fs.lookup(name).is_none() {
             if name == "h" || name == "help" {
-                // Go: return fs.Parse([]string{"-h"}) — prints "Usage of NAME:" and
-                // the defaults on the FlagSet's output, then flag.ErrHelp
+                // Prints "Usage of NAME:" and the defaults on the flag set's
+                // output, then fails with FlagError::Help.
                 return fs.parse(&["-h".to_string()]).map_err(Into::into);
             }
             return Err(crate::fixtures::input_error(
@@ -139,7 +134,6 @@ fn parse_command_flag_args(fs: &mut pulse_cli::FlagSet, args: &[String]) -> Resu
         ),
     })
 }
-/// Go: func withStore(c *cli.Context, readOnly bool, fn func(*store.Store) error) (retErr error)
 pub(crate) fn with_store<F>(c: &mut pulse_cli::Context, read_only: bool, f: F) -> Result<()>
 where
     F: FnOnce(&pulse_store::Store) -> Result<()>,
@@ -158,7 +152,6 @@ where
     let close = s.close();
     result.and(close)
 }
-/// Go: func commandError(err error, command string) error
 pub(crate) fn command_error(err: anyhow::Error, command: &str) -> anyhow::Error {
     if err
         .chain()
@@ -208,11 +201,9 @@ pub(crate) fn command_error(err: anyhow::Error, command: &str) -> anyhow::Error 
     )
     .into()
 }
-/// Go: errors.As(err, &T) - true when a T is anywhere in the chain.
 fn chain_has<T: std::error::Error + 'static>(err: &anyhow::Error) -> bool {
     err.chain().any(|e| e.downcast_ref::<T>().is_some())
 }
-/// Go: func currentProject(s *store.Store, c *cli.Context) (*store.Project, error)
 pub(crate) fn current_project(
     s: &pulse_store::Store,
     c: &pulse_cli::Context,
@@ -227,7 +218,6 @@ pub(crate) fn current_project(
     }
     Ok(p)
 }
-/// Go: func callingActor(s *store.Store, c *cli.Context) (string, error)
 pub(crate) fn calling_actor(s: &pulse_store::Store, c: &pulse_cli::Context) -> Result<String> {
     if c.agent.is_empty() {
         return Ok(pulse_store::HUMAN_AGENT.to_string());
@@ -236,7 +226,6 @@ pub(crate) fn calling_actor(s: &pulse_store::Store, c: &pulse_cli::Context) -> R
         .map(|a| a.name)
         .unwrap_or_default())
 }
-/// Go: func readRequest(s *store.Store, source string) (string, error)
 pub(crate) fn read_request(s: &pulse_store::Store, source: &str) -> Result<String> {
     let mut data = Vec::new();
     if source == "-" {
@@ -296,7 +285,6 @@ pub(crate) fn read_request(s: &pulse_store::Store, source: &str) -> Result<Strin
     }
     Ok(String::from_utf8_lossy(&data).to_string())
 }
-/// Go: func runEvolve(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub fn run_evolve(
     c: &mut pulse_cli::Context,
     _fs: &pulse_cli::FlagSet,
@@ -326,7 +314,6 @@ pub fn run_evolve(
     };
     result.map_err(|e| command_error(e, &format!("evolve {sub}")))
 }
-/// Go: func runFixture(c *cli.Context, args []string) error
 pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
     if args.is_empty() {
         return Err(crate::fixtures::input_error(
@@ -461,7 +448,6 @@ pub(crate) fn run_fixture(c: &mut pulse_cli::Context, args: &[String]) -> Result
         Ok(())
     })
 }
-/// Go: func seedCommand(s *store.Store, c *cli.Context) error
 pub(crate) fn seed_command(s: &pulse_store::Store, c: &mut pulse_cli::Context) -> Result<()> {
     let actor = calling_actor(s, c)?;
     let slugs = seed_targets(s, &c.project)?;
@@ -500,7 +486,6 @@ pub(crate) fn seed_command(s: &pulse_store::Store, c: &mut pulse_cli::Context) -
     }
     Ok(())
 }
-/// Go: func seedTargets(s *store.Store, project string) ([]string, error)
 pub(crate) fn seed_targets(s: &pulse_store::Store, project: &str) -> Result<Vec<String>> {
     if !project.is_empty() {
         return Ok(vec![crate::fixtures::valid_project(s, project)?.slug]);
@@ -511,7 +496,6 @@ pub(crate) fn seed_targets(s: &pulse_store::Store, project: &str) -> Result<Vec<
         .map(|p| p.slug)
         .collect())
 }
-/// Go: func runSeed(c *cli.Context, args []string) error
 pub(crate) fn run_seed(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
     let mut fs = pulse_cli::FlagSet::new("evolve seed");
     add_common_flags(&mut fs, c);
@@ -565,7 +549,6 @@ pub(crate) fn run_seed(c: &mut pulse_cli::Context, args: &[String]) -> Result<()
         Ok(())
     })
 }
-/// Go: func seedWords(slug string, r records.SeedResult) string
 pub(crate) fn seed_words(slug: &str, r: pulse_records::SeedResult) -> String {
     match r.action.as_str() {
         "kept" => format!("{slug} kept ({} r{})", r.id, r.rev),
@@ -576,7 +559,6 @@ pub(crate) fn seed_words(slug: &str, r: pulse_records::SeedResult) -> String {
         _ => format!("{slug} {} from {}", r.action, r.source),
     }
 }
-/// Go: func runScore(c *cli.Context, args []string) error
 pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
     if args.first().is_some_and(|arg| arg == "metric") {
         return run_metric_score(c, &args[1..]);
@@ -645,7 +627,6 @@ fn run_metric_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
         &argv,
     )
 }
-/// Go: func runFleet(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub fn run_fleet(
     c: &mut pulse_cli::Context,
     _fs: &pulse_cli::FlagSet,
@@ -817,7 +798,6 @@ pub fn run_fleet(
     });
     result.map_err(|e| command_error(e, &format!("fleet {sub}")))
 }
-/// Go: func runReflect(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub fn run_reflect(
     c: &mut pulse_cli::Context,
     _fs: &pulse_cli::FlagSet,
@@ -872,7 +852,6 @@ pub fn run_reflect(
     }
     Ok(())
 }
-/// Go: func runUsage(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub fn run_usage(
     c: &mut pulse_cli::Context,
     _fs: &pulse_cli::FlagSet,
@@ -971,7 +950,6 @@ pub fn run_usage(
     writeln!(c.out, "{note}")?;
     Ok(())
 }
-/// Go: func printScores(w io.Writer, color bool, s *Scores)
 pub(crate) fn print_scores(w: &mut dyn Write, color: bool, s: &crate::api::Scores) {
     let rows: Vec<Vec<String>> = s
         .fixtures
@@ -1001,7 +979,6 @@ pub(crate) fn print_scores(w: &mut dyn Write, color: bool, s: &crate::api::Score
         "Boundary: detached local clones; empty worker PULSE_HOME; no OS sandbox. Clones removed."
     );
 }
-/// Go: func printArchive(w io.Writer, color bool, archive []Archived)
 pub(crate) fn print_archive(w: &mut dyn Write, color: bool, archive: &[crate::archive::Archived]) {
     let rows: Vec<Vec<String>> = archive
         .iter()
@@ -1381,13 +1358,13 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use std::io::Read;
 
     #[test]
     fn go_command_registration_and_retired_legacy_names() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         crate::register::register();
         for (name, group) in [
             ("evolve", "agents"),
@@ -1408,7 +1385,7 @@ mod tests {
     #[test]
     fn command_json_and_shadow_finding_never_archive() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         crate::register::register();
         let s = test_store();
         let _repo = test_project(&s, "demo");
@@ -1524,7 +1501,7 @@ mod tests {
     #[test]
     fn reflect_read_only_board_notices_ballot_hygiene_and_health() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         crate::register::register();
         let s = cycle_ready();
         let p = s.project("demo").unwrap().unwrap();
@@ -1576,7 +1553,7 @@ mod tests {
     #[test]
     fn reflect_missing_store_still_observes() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let _env = pulse_testutil::env_lock();
         let home = crate::test_helpers::temp_path();
         unsafe {
@@ -1611,7 +1588,7 @@ mod tests {
     #[test]
     fn usage_cli_without_store_and_stop_reminder() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let _env = pulse_testutil::env_lock();
         let home = crate::test_helpers::temp_path();
         unsafe {
@@ -1661,7 +1638,7 @@ mod tests {
     #[test]
     fn scorer_refuses_escaping_symlink() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let clone = crate::test_helpers::temp_path();
         let outside = crate::test_helpers::temp_path().join("preserve");
         put_file(&outside, "keep", 0o600);

@@ -1,7 +1,5 @@
 #![allow(dead_code, clippy::too_many_arguments)]
 
-//! Port of internal/runner/sweep.go.
-
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -141,7 +139,6 @@ pub(crate) struct Sweeper {
     pub(crate) running: BTreeMap<String, bool>,
 }
 
-/// Go: func sweep(s *store.Store, projects []row, now string, o sweepOpts) *sweepReport
 pub(crate) fn sweep(
     s: &pulse_store::Store,
     projects: Vec<Row>,
@@ -321,7 +318,6 @@ pub(crate) fn sweep_stale_clones(
     (freed, paths)
 }
 
-/// Go: func liveWorktree(path string) (live string, isRepo bool)
 pub(crate) fn live_worktree(path: String) -> (String, bool) {
     fn check(p: &Path) -> Option<(String, bool)> {
         let git = p.join(".git");
@@ -427,7 +423,6 @@ fn first_line(text: &str) -> String {
         .to_string()
 }
 
-/// Go: func processAlive(pid int) bool
 pub(crate) fn process_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -436,7 +431,6 @@ pub(crate) fn process_alive(pid: i32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Go: func diskUsage(path string) int64
 pub(crate) fn disk_usage(path: String) -> i64 {
     fn walk(path: &Path, n: &mut i64) {
         let Ok(meta) = std::fs::symlink_metadata(path) else {
@@ -457,7 +451,6 @@ pub(crate) fn disk_usage(path: String) -> i64 {
     n
 }
 
-/// Go: func roundDuration(d time.Duration) string
 pub(crate) fn round_duration(d: std::time::Duration) -> String {
     if d < Duration::from_secs(60) {
         format!("{}s", d.as_secs())
@@ -470,7 +463,6 @@ pub(crate) fn round_duration(d: std::time::Duration) -> String {
     }
 }
 
-/// Go: func sizeText(n int64) string
 pub(crate) fn size_text(n: i64) -> String {
     if n >= 1 << 30 {
         format!("{:.1} GB", n as f64 / (1 << 30) as f64)
@@ -483,7 +475,6 @@ pub(crate) fn size_text(n: i64) -> String {
     }
 }
 
-/// Go: func sweepLines(rep *sweepReport) []string
 pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
     let Some(rep) = rep else { return Vec::new() };
     let verb = if rep.dry_run { "would sweep" } else { "swept" };
@@ -560,7 +551,6 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
 /// How many swept and held items the hygiene note keeps for the hub.
 pub(crate) const HYGIENE_ITEMS_CAP: usize = 100;
 
-/// Go: func recordSweep(s *store.Store, rep *sweepReport, now, actor string)
 pub(crate) fn record_sweep(
     s: &pulse_store::Store,
     rep: Option<SweepReport>,
@@ -630,7 +620,6 @@ pub(crate) fn record_sweep(
     }
 }
 
-/// Go: func tendSweep(s *store.Store, projects []row, now, actor string, inflight map[string]bool, last *time.Time) []string
 pub(crate) fn tend_sweep(
     s: &pulse_store::Store,
     projects: Vec<Row>,
@@ -705,11 +694,9 @@ pub(crate) fn tend_sweep(
 }
 
 impl SweepReport {
-    /// Go: func (r *sweepReport) bytes() int64
     pub(crate) fn bytes(&mut self) -> i64 {
         self.removed.iter().map(|x| x.bytes).sum()
     }
-    /// Go: func (r *sweepReport) counts(items []swept) map[string]int
     pub(crate) fn counts(&mut self, items: Vec<Swept>) -> BTreeMap<String, i32> {
         let mut out = BTreeMap::new();
         for x in items {
@@ -720,11 +707,9 @@ impl SweepReport {
 }
 
 impl Sweeper {
-    /// Go: func (w *sweeper) kindRank(kind string) int
     pub(crate) fn kind_rank(&mut self, kind: String) -> i32 {
         kind_rank_value(&kind) as i32
     }
-    /// Go: func (w *sweeper) held(kind, path, project, why string)
     pub(crate) fn held(&mut self, kind: String, path: String, project: String, why: String) {
         self.rep.held.push(Swept {
             kind,
@@ -734,7 +719,6 @@ impl Sweeper {
             ..Default::default()
         });
     }
-    /// Go: func (w *sweeper) failed(format string, args ...any)
     pub(crate) fn failed(&mut self, format: String, args: Vec<serde_json::Value>) {
         let mut msg = format;
         for arg in args {
@@ -742,7 +726,6 @@ impl Sweeper {
         }
         self.rep.errors.push(msg);
     }
-    /// Go: func (w *sweeper) remove(kind, path, project, why string) bool
     pub(crate) fn remove(
         &mut self,
         kind: String,
@@ -786,7 +769,6 @@ impl Sweeper {
         self.rep.removed.push(item);
         true
     }
-    /// Go: func (w *sweeper) jobHold(jobID string) string
     pub(crate) fn job_hold(&mut self, job_id: String) -> String {
         if self.o.inflight.get(&job_id).copied().unwrap_or(false) {
             return "run in flight".into();
@@ -820,7 +802,6 @@ impl Sweeper {
             &[&job_id],
         )
     }
-    /// Go: func (w *sweeper) jobKnown(jobID string) (known, lost bool)
     pub(crate) fn job_known(&mut self, job_id: String) -> (bool, bool) {
         let job = self.job_row(&job_id);
         if job.0.is_empty() {
@@ -851,7 +832,6 @@ impl Sweeper {
             })
             .unwrap_or(false)
     }
-    /// Go: func (w *sweeper) age(path string) (time.Duration, bool)
     pub(crate) fn age(&mut self, path: String) -> (std::time::Duration, bool) {
         let Ok(meta) = std::fs::symlink_metadata(path) else {
             return (Duration::ZERO, false);
@@ -940,7 +920,6 @@ impl Sweeper {
         }
     }
 
-    /// Go: func (w *sweeper) sweepWork()
     pub(crate) fn sweep_work(&mut self) {
         let work = Path::new(&self.home).join("work");
         let Ok(entries) = std::fs::read_dir(work) else {
@@ -1032,7 +1011,6 @@ impl Sweeper {
             }
         }
     }
-    /// Go: func (w *sweeper) sweepPushKeys()
     pub(crate) fn sweep_push_keys(&mut self) {
         let tmp = Path::new(&self.home).join("tmp");
         let Ok(entries) = std::fs::read_dir(tmp) else {
@@ -1072,7 +1050,6 @@ impl Sweeper {
             }
         }
     }
-    /// Go: func (w *sweeper) sweepLandWorktree(path, slug, pidText string)
     pub(crate) fn sweep_land_worktree(&mut self, path: String, slug: String, pid_text: String) {
         let pid = pid_text.parse::<i32>().unwrap_or(0);
         if pid > 0 && process_alive(pid) {
@@ -1592,7 +1569,6 @@ impl Sweeper {
             }
         }
     }
-    /// Go: func (w *sweeper) sweepStrayWorktrees()
     pub(crate) fn sweep_stray_worktrees(&mut self) {
         let dir = Path::new(&self.home).join("worktrees");
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1648,7 +1624,6 @@ impl Sweeper {
             }
         }
     }
-    /// Go: func (w *sweeper) sweepCheckout(proj row)
     pub(crate) fn sweep_checkout(&mut self, proj: Row) {
         let root = proj.str("path");
         let slug = proj.str("slug");
@@ -2069,7 +2044,6 @@ impl Sweeper {
         }
         self.rep.removed.push(item);
     }
-    /// Go: func (w *sweeper) branchHold(branch, head string) string
     pub(crate) fn branch_hold(&mut self, branch: String, head: String) -> String {
         if branch == head {
             return "checked out".into();
@@ -2094,7 +2068,6 @@ impl Sweeper {
         }
         String::new()
     }
-    /// Go: func (w *sweeper) sweepBranch(root, slug, def, head, branch, tipUnix, tip string)
     pub(crate) fn sweep_branch(
         &mut self,
         root: String,
@@ -2205,7 +2178,6 @@ impl Sweeper {
         }
         self.rep.removed.push(item);
     }
-    /// Go: func (w *sweeper) sweepFiles(dir, kind string, match func(name string) bool)
     pub(crate) fn sweep_files(&mut self, dir: String, kind: String, _match: serde_json::Value) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -2811,7 +2783,7 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, count, new_bare_repo, run};
-    use crate::test_helpers_f3b::*;
+    use crate::test_helpers_sweep::*;
     use filetime::FileTime;
     use rusqlite::params;
     use std::path::Path;

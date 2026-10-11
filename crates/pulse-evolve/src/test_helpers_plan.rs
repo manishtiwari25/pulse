@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-pub(crate) static E1_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+pub(crate) static PLAN_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-pub(crate) fn e1_test_lock() -> MutexGuard<'static, ()> {
-    E1_TEST_LOCK
+pub(crate) fn plan_test_lock() -> MutexGuard<'static, ()> {
+    PLAN_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

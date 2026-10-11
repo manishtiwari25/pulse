@@ -25,10 +25,9 @@ struct CacheKey {
     th_hash: String,
 }
 
-// Go keeps a *Result in the cache and hands the same pointer to every caller;
-// here callers own their copy, so the cache holds an Arc and the deep clone
-// happens after the lock is released - the hub's parallel snapshots would
-// otherwise queue on this one mutex for the duration of every copy.
+// Callers own their copy of a result, so the cache holds an Arc and the deep
+// clone happens after the lock is released - the hub's parallel snapshots
+// would otherwise queue on this one mutex for the duration of every copy.
 #[derive(Clone)]
 struct CacheValue {
     result: Arc<TallyResult>,

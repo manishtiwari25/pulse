@@ -94,17 +94,14 @@ fn words_joined(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Go: func loginFault(text string) bool
 pub(crate) fn login_fault(text: &str) -> bool {
     LOGIN_FAULT_RE.is_match(text)
 }
 
-/// Go: func redactTokens(text string) string
 pub(crate) fn redact_tokens(text: &str) -> String {
     TOKEN_RE.replace_all(text, "[redacted]").to_string()
 }
 
-/// Go: func faultLine(text string, limit int) string
 pub(crate) fn fault_line(text: &str, limit: usize) -> String {
     let lines = text
         .split('\n')
@@ -122,7 +119,6 @@ pub(crate) fn fault_line(text: &str, limit: usize) -> String {
         .unwrap_or_default()
 }
 
-/// Go: func cut(s string, n int) string
 pub(crate) fn cut(s: &str, n: usize) -> String {
     let mut chars = s.chars();
     let out = chars.by_ref().take(n).collect::<String>();
@@ -133,7 +129,6 @@ pub(crate) fn cut(s: &str, n: usize) -> String {
     }
 }
 
-/// Go: func tail(s string, n int) string
 pub(crate) fn tail(s: &str, n: usize) -> String {
     let chars = s.chars().collect::<Vec<_>>();
     if chars.len() > n {
@@ -143,7 +138,6 @@ pub(crate) fn tail(s: &str, n: usize) -> String {
     }
 }
 
-/// Go: func parseSSHAddress(text string) (string, string, int, error)
 pub(crate) fn parse_ssh_address(text: &str) -> Result<(String, String, i32)> {
     let trimmed = text.trim();
     let Some(caps) = SSH_ADDRESS_RE.captures(trimmed) else {
@@ -166,7 +160,6 @@ pub(crate) fn parse_ssh_address(text: &str) -> Result<(String, String, i32)> {
     Ok((caps[1].to_string(), caps[2].to_string(), port))
 }
 
-/// Go: func normalizeProjects(text string) string
 pub(crate) fn normalize_projects(text: &str) -> String {
     let raw = text.trim();
     if raw.is_empty() || raw == "*" || raw == "all" {
@@ -184,7 +177,6 @@ pub(crate) fn normalize_projects(text: &str) -> String {
     set.into_iter().collect::<Vec<_>>().join(",")
 }
 
-/// Go: func executorAllows(r row, slug string) bool
 #[allow(dead_code)]
 pub(crate) fn executor_allows(r: &Row, slug: &str) -> bool {
     let projects = if is_nil(r) || r.str("projects").is_empty() {
@@ -195,7 +187,6 @@ pub(crate) fn executor_allows(r: &Row, slug: &str) -> bool {
     projects == "*" || projects.split(',').any(|x| x == slug)
 }
 
-/// Go: func executorProjects(r row) []string
 #[allow(dead_code)]
 pub(crate) fn executor_projects(r: &Row) -> Vec<String> {
     if is_nil(r) || r.str("projects").is_empty() || r.str("projects") == "*" {
@@ -207,7 +198,6 @@ pub(crate) fn executor_projects(r: &Row) -> Vec<String> {
         .collect()
 }
 
-/// Go: func localExecutorRow(s *store.Store) row
 pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
     let mut workers = setting_int(s, "workers");
     if workers < 0 {
@@ -237,7 +227,6 @@ pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
     r
 }
 
-/// Go: func executorRows(s *store.Store, includeLocal bool) []row
 pub(crate) fn executor_rows(s: &pulse_store::Store, include_local: bool) -> Vec<Row> {
     let conn = s.conn().unwrap();
     let rows = must_rows(
@@ -254,7 +243,6 @@ pub(crate) fn executor_rows(s: &pulse_store::Store, include_local: bool) -> Vec<
     }
 }
 
-/// Go: func executorRow(s *store.Store, name string) row
 pub(crate) fn executor_row(s: &pulse_store::Store, name: &str) -> Row {
     if name.is_empty() || name == LOCAL_EXECUTOR {
         return local_executor_row(s);
@@ -267,7 +255,6 @@ pub(crate) fn executor_row(s: &pulse_store::Store, name: &str) -> Row {
     )
 }
 
-/// Go: func addExecutor(...)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_executor(
     s: &pulse_store::Store,
@@ -569,8 +556,8 @@ pub(crate) fn ssh_command(r: &Row, args: &[String]) -> Result<Vec<String>> {
     Ok(cmd)
 }
 
-/// Go: `var runSSH = runProcess` — a package variable tests swap for a fake.
-/// Go tests assign closures, so the hook is a shared trait object rather than a
+/// The ssh runner tests swap for a fake. Tests install closures that
+/// capture state, so the hook is a shared trait object rather than a
 /// plain fn pointer.
 pub(crate) type SshRunner = std::sync::Arc<
     dyn Fn(
@@ -617,7 +604,6 @@ pub(crate) fn restore_run_ssh(old: SshRunner) {
     *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()) = old;
 }
 
-/// Go: func runProcess(ctx context.Context, argv []string, stdin []byte, timeout time.Duration) (int, string, string, error)
 pub(crate) fn run_process(
     cancel: &pulse_bus::CancellationToken,
     argv: &[String],
@@ -776,7 +762,6 @@ pub(crate) static LOGIN_PREP_COMMAND: LazyLock<String> =
     LazyLock::new(|| format!("sudo -n -u pulse -H sh -c '{}'", LOGIN_PREP_SCRIPT));
 pub(crate) const LOGIN_COMMAND: &str = "sudo -n -u pulse -H timeout 90 copilot login --with-token";
 
-/// Go: func classifyToken(token string) (string, error)
 pub(crate) fn classify_token(token: &str) -> Result<String> {
     if token.is_empty() {
         return Err(fail(2, "no token on standard input; pipe it, e.g. `op read op://vault/item/field | pulse executor login ...`").into());
@@ -816,7 +801,7 @@ pub(crate) fn github_api_base(api: &str) -> String {
     v.trim_end_matches('/').to_string()
 }
 
-/// Go: githubHTTP - carries every call to the GitHub API; tests point it at a fake transport.
+/// Carries every call to the GitHub API; tests point it at a fake transport.
 /// (token, url) -> (status, lower-cased headers, body).
 pub(crate) type GithubHttpFn =
     dyn Fn(&str, &str) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> + Send + Sync;
@@ -829,7 +814,6 @@ pub(crate) fn set_github_http(f: Box<GithubHttpFn>) -> Box<GithubHttpFn> {
     std::mem::replace(&mut *GITHUB_HTTP.write().expect("github http poisoned"), f)
 }
 
-/// Go: &http.Client{Timeout: 15 * time.Second}
 pub(crate) fn github_http_real(
     token: &str,
     url: &str,
@@ -862,7 +846,6 @@ pub(crate) fn github_http_real(
     Ok((status, headers, body))
 }
 
-/// Go: githubGet - one authenticated GET; the token travels in the header and nowhere else.
 fn github_get_full(token: &str, url: &str) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> {
     (GITHUB_HTTP.read().expect("github http poisoned"))(token, url)
 }

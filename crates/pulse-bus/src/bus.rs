@@ -18,12 +18,12 @@ pub struct Event {
 }
 
 impl Event {
-    /// Project is the project named in the detail JSON.
+    /// The project named in the detail JSON.
     pub fn project(&self) -> String {
         detail_field(&self.detail, "project")
     }
 
-    /// Thread is the "area/thread" the detail names, if any.
+    /// The "area/thread" the detail names, if any.
     pub fn thread(&self) -> String {
         detail_field(&self.detail, "thread")
     }
@@ -77,7 +77,7 @@ impl Filter {
     }
 }
 
-/// Glob matches a dotted action or subject against a pattern.
+/// Matches a dotted action or subject against a pattern.
 pub fn glob(pattern: &str, name: &str) -> bool {
     if pattern.is_empty() || pattern == "*" {
         return true;
@@ -150,7 +150,7 @@ struct Seen {
 
 const SEEN_SIZE: usize = 4096;
 
-/// New returns an empty bus.
+/// Returns an empty bus.
 pub fn new() -> Bus {
     Bus {
         subs: Mutex::new(HashMap::new()),
@@ -172,7 +172,7 @@ impl Default for Bus {
 }
 
 impl Bus {
-    /// Subscribe returns a receiver and idempotent cancel function.
+    /// Returns a receiver and an idempotent cancel function.
     pub fn subscribe(
         self: &Arc<Self>,
         filter: Filter,
@@ -204,7 +204,7 @@ impl Bus {
         (rx, cancel)
     }
 
-    /// Publish delivers e to every matching subscriber without blocking.
+    /// Delivers `e` to every matching subscriber without blocking.
     pub fn publish(&self, e: Event) {
         let subs = self
             .subs
@@ -235,7 +235,7 @@ impl Bus {
         self.subs.lock().len()
     }
 
-    /// PublishOnce publishes e unless an event with the same non-zero ID and content was seen.
+    /// Publishes `e` unless an event with the same non-zero ID and content was seen.
     pub fn publish_once(&self, e: Event) -> bool {
         if e.id != 0 {
             let key = format!("{}|{}|{}|{}", e.id, e.at, e.action, e.subject);
@@ -265,7 +265,7 @@ impl Bus {
 static DEFAULT: OnceLock<Mutex<Arc<Bus>>> = OnceLock::new();
 static STORE_OBSERVER: OnceLock<()> = OnceLock::new();
 
-/// Default is the process-wide bus Emit publishes to.
+/// The process-wide bus that `emit` publishes to.
 pub fn default() -> Arc<Bus> {
     install_store_observer();
     DEFAULT
@@ -274,7 +274,7 @@ pub fn default() -> Arc<Bus> {
         .clone()
 }
 
-/// ResetDefault replaces the process-wide bus with a fresh one and returns it.
+/// Replaces the process-wide bus with a fresh one and returns it.
 /// Tests call it when they build a new store; it waits for any test that holds
 /// [`exclusive_default`], so a parallel fixture never swaps the bus out from
 /// under a subscriber.
@@ -298,11 +298,11 @@ pub struct ExclusiveDefault {
 }
 
 /// exclusive_default gives a test that subscribes to the default bus a fresh
-/// bus that no other test can reset while the guard lives. Go runs a package's
-/// tests one after another, so its fixtures may reset the default bus freely;
-/// Rust runs them in parallel threads, and a subscriber that lost the bus it
-/// subscribed to would wait forever. Call it AFTER the store fixture (fixtures
-/// call `reset_default`, which blocks while the guard is held).
+/// bus that no other test can reset while the guard lives: tests run in
+/// parallel threads, their fixtures reset the default bus, and a subscriber
+/// that lost the bus it subscribed to would wait forever. Call it AFTER the
+/// store fixture (fixtures call `reset_default`, which blocks while the guard
+/// is held).
 pub fn exclusive_default() -> (Arc<Bus>, ExclusiveDefault) {
     let guard = DEFAULT_TESTS.write().unwrap_or_else(|e| e.into_inner());
     (reset_default_unlocked(), ExclusiveDefault { _guard: guard })
@@ -323,7 +323,7 @@ pub fn install_store_observer() {
     });
 }
 
-/// detailField pulls one string field out of a JSON object detail.
+/// Pulls one string field out of a JSON object detail.
 pub fn detail_field(detail: &str, key: &str) -> String {
     if !detail.trim_start().starts_with('{') {
         return String::new();

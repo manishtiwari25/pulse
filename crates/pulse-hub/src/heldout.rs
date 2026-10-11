@@ -6,7 +6,6 @@ pub(crate) const HELDOUT_HEADER: &str = "X-Pulse-Heldout";
 pub(crate) const HELDOUT_SLOT_LIMIT: i64 = 1000;
 
 impl Handler {
-    /// Go: func (h *Handler) additionHeldout(w http.ResponseWriter, r *http.Request, parts []string)
     pub(crate) fn addition_heldout(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
         let fixtures = parts.len() == 2 && parts[1] == "fixtures";
         if parts.len() != 1 && !fixtures {
@@ -116,7 +115,6 @@ impl Handler {
     }
 }
 
-/// Go: func heldoutWrite(w http.ResponseWriter, payload map[string]any) (evolve.HeldoutWrite, bool)
 pub(crate) fn heldout_write(
     w: &mut ResponseWriter,
     payload: JsonMap,
@@ -139,7 +137,6 @@ pub(crate) fn heldout_write(
     (write, ok)
 }
 
-/// Go: func heldoutSlot(w http.ResponseWriter, payload map[string]any) (int, bool)
 pub(crate) fn heldout_slot(w: &mut ResponseWriter, payload: JsonMap) -> (i64, bool) {
     let Some(value) = payload.get("slot") else {
         return (0, true);
@@ -199,7 +196,7 @@ mod tests {
         if confirmed {
             headers.push((HELDOUT_HEADER, "yes"));
         }
-        crate::test_helpers_f3::request(h, method, path, body, &headers)
+        crate::test_helpers_http::request(h, method, path, body, &headers)
     }
 
     fn git_repo() -> tempfile::TempDir {
@@ -216,12 +213,12 @@ mod tests {
     #[test]
     fn heldout_routes() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
-        let h = crate::test_helpers_f3::handler(&s);
+        let s = crate::test_helpers_http::additions_store(false);
+        let h = crate::test_helpers_http::handler(&s);
         let repo = git_repo();
         let repo_path = repo.path().display().to_string();
-        let (status, result, raw) = crate::test_helpers_f3::request(
-            crate::test_helpers_f3::handler(&s),
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/projects",
             &format!(r#"{{"path":{},"name":"My App"}}"#, json!(repo_path)),
@@ -243,7 +240,7 @@ mod tests {
                 assert!(!raw.contains(request), "{raw}");
             }
         };
-        let setup = crate::test_helpers_f3::json_body(json!({"dir": dir.display().to_string()}));
+        let setup = crate::test_helpers_http::json_body(json!({"dir": dir.display().to_string()}));
         let (status, result, raw) =
             heldout_request(h, "GET", "/api/v1/heldout", "", "example.com", false);
         assert_eq!(status, 200, "{raw}");
@@ -255,7 +252,7 @@ mod tests {
         assert!(result["judges"].as_array().unwrap().len() >= 6);
         assert_private(&raw);
         let (status, result, _) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout",
             &setup,
@@ -265,7 +262,7 @@ mod tests {
         assert_eq!(status, 403);
         assert_eq!(result["error"], "missing X-Pulse-Heldout: yes");
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout",
             &setup,
@@ -279,10 +276,10 @@ mod tests {
         );
         assert!(!dir.exists());
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout",
-            &crate::test_helpers_f3::json_body(
+            &crate::test_helpers_http::json_body(
                 json!({"dir": repo.path().join("private").display().to_string()}),
             ),
             "127.0.0.1:8765",
@@ -291,7 +288,7 @@ mod tests {
         assert_eq!(status, 400, "{raw} {result:?}");
         assert!(!raw.contains(&repo_path));
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout",
             &setup,
@@ -309,7 +306,7 @@ mod tests {
             std::fs::canonicalize(&dir).unwrap().display().to_string()
         );
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/settings",
             "",
@@ -324,7 +321,7 @@ mod tests {
                 && row["value"] == "[owner-private]"
         }));
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/projects/my-app/evolution",
             "",
@@ -334,11 +331,11 @@ mod tests {
         assert_eq!(status, 200, "{raw}");
         assert_eq!(result["loop"]["heldout_present"], true);
         assert_private(&raw);
-        let body = crate::test_helpers_f3::json_body(
+        let body = crate::test_helpers_http::json_body(
             json!({"request":requests[0],"judge":"starter-hardstop-history"}),
         );
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout/fixtures",
             &body,
@@ -350,11 +347,11 @@ mod tests {
         assert_eq!(result["count"], 1);
         assert_eq!(result["pending"], 1);
         assert!(!raw.contains("Rename the greeting helper"));
-        let body = crate::test_helpers_f3::json_body(
+        let body = crate::test_helpers_http::json_body(
             json!({"request":requests[1],"scorer":"#!/bin/sh\necho 1\n"}),
         );
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout/fixtures",
             &body,
@@ -406,7 +403,7 @@ mod tests {
             (r#"{"request":"Fine.","judge":7}"#, "Invalid judge"),
         ] {
             let (status, result, raw) = heldout_request(
-                crate::test_helpers_f3::handler(&s),
+                crate::test_helpers_http::handler(&s),
                 "POST",
                 "/api/v1/heldout/fixtures",
                 body,
@@ -417,11 +414,11 @@ mod tests {
             assert_eq!(result["error"], want);
             assert_private(&raw);
         }
-        let body = crate::test_helpers_f3::json_body(
+        let body = crate::test_helpers_http::json_body(
             json!({"request":requests[2],"judge":"starter-injection-note","slot":1}),
         );
         let (status, result, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout/fixtures",
             &body,
@@ -441,7 +438,7 @@ mod tests {
             ("POST", "/api/v1/heldout/fixtures/1", 404),
         ] {
             let (status, result, raw) = heldout_request(
-                crate::test_helpers_f3::handler(&s),
+                crate::test_helpers_http::handler(&s),
                 method,
                 path,
                 "{}",
@@ -489,12 +486,12 @@ mod tests {
     #[test]
     fn heldout_settings_masked_after_setup() {
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_f3::additions_store(false);
+        let s = crate::test_helpers_http::additions_store(false);
         let private = tempfile::tempdir().unwrap().path().join("owner");
         let setup =
-            crate::test_helpers_f3::json_body(json!({"dir": private.display().to_string()}));
+            crate::test_helpers_http::json_body(json!({"dir": private.display().to_string()}));
         let (_, _, raw) = heldout_request(
-            crate::test_helpers_f3::handler(&s),
+            crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/heldout",
             &setup,

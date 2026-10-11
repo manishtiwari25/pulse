@@ -1,5 +1,3 @@
-//! Port of internal/evolve/reflect.go.
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -41,7 +39,6 @@ pub struct Reflection {
     pub problems: Vec<String>,
 }
 
-/// Go: func lines(text string) []string {
 pub(crate) fn lines(text: &str) -> Vec<String> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
@@ -49,7 +46,6 @@ pub(crate) fn lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Go: func workingState(ctx context.Context, repo string) WorkingState {
 pub(crate) fn working_state(cancel: &pulse_bus::CancellationToken, repo: &str) -> WorkingState {
     let mut state = WorkingState {
         changes: Vec::new(),
@@ -92,7 +88,6 @@ pub(crate) fn working_state(cancel: &pulse_bus::CancellationToken, repo: &str) -
     state
 }
 
-/// Go: func hygiene(ctx context.Context, s *store.Store, repo string) Hygiene {
 pub(crate) fn hygiene(
     cancel: &pulse_bus::CancellationToken,
     s: Option<&pulse_store::Store>,
@@ -163,7 +158,6 @@ pub(crate) fn hygiene(
     h
 }
 
-/// Go: func Reflect(ctx context.Context, s *store.Store, project, area, agent, session string) (*Reflection, error) {
 pub fn reflect(
     cancel: &pulse_bus::CancellationToken,
     s: Option<&pulse_store::Store>,
@@ -289,7 +283,6 @@ pub fn reflect(
     Ok(r)
 }
 
-/// Go: func printReflection(w io.Writer, color bool, r *Reflection) {
 pub(crate) fn print_reflection(w: &mut dyn Write, color: bool, r: &Reflection) {
     let _ = writeln!(w, "REFLECT - {}", r.project);
     let _ = writeln!(

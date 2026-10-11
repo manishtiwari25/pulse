@@ -58,7 +58,6 @@ pub(crate) fn set_pair_hands(f: Box<PairHandsFn>) -> Box<PairHandsFn> {
     std::mem::replace(&mut *PAIR_HANDS.write().expect("pair_hands poisoned"), f)
 }
 
-/// Go: func cliCommand(program, missing string, env ...string) cliRunner
 pub(crate) fn cli_command(program: String, missing: String, env: &[String]) -> Box<CliRunner> {
     let env = env.to_vec();
     Box::new(move |cancel, args, timeout| {
@@ -95,7 +94,6 @@ pub(crate) fn cli_command(program: String, missing: String, env: &[String]) -> B
     })
 }
 
-/// Go: func cliErr(what string, rc int, stdout, stderr string, err error) error
 pub(crate) fn cli_err(
     what: String,
     rc: i32,
@@ -124,7 +122,6 @@ pub(crate) fn cli_err(
     ))
 }
 
-/// Go: func notFoundAnswer(stdout, stderr string) bool
 pub(crate) fn not_found_answer(stdout: String, stderr: String) -> bool {
     let low = format!("{stderr}{stdout}").to_lowercase();
     [
@@ -140,7 +137,6 @@ pub(crate) fn not_found_answer(stdout: String, stderr: String) -> bool {
     .any(|w| low.contains(w))
 }
 
-/// Go: func cloudInitConfig(adminKey string, installCopilot bool) string
 pub(crate) fn cloud_init_config(admin_key: String, install_copilot: bool) -> String {
     let mut b = String::from(
         "#cloud-config\n# PULSE compute machine (agents' hands) - Ubuntu 24.04 (ADR-020, D-D). Prepared for `pulse pair`, which\n# adds the pulse user, its forced-command key, the linux pulse binary and the sshd drop-in over the admin session.\npackage_update: true\npackage_upgrade: true\npackages:\n  - git\n  - python3\n  - ca-certificates\n  - curl\n  - gnupg\n  - build-essential\nusers:\n  - default\n",
@@ -163,7 +159,6 @@ pub(crate) fn cloud_init_config(admin_key: String, install_copilot: bool) -> Str
     b
 }
 
-/// Go: func writeCloudInit(adminKey string, installCopilot bool) (string, error)
 pub(crate) fn write_cloud_init(admin_key: String, install_copilot: bool) -> anyhow::Result<String> {
     let mut path = std::env::temp_dir();
     path.push(format!("pulse-cloud-init-{}.yaml", uuid::Uuid::new_v4()));
@@ -171,7 +166,6 @@ pub(crate) fn write_cloud_init(admin_key: String, install_copilot: bool) -> anyh
     Ok(path.to_string_lossy().to_string())
 }
 
-/// Go: func hostKeyLines(text string) []string
 pub(crate) fn host_key_lines(text: String) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -200,7 +194,6 @@ pub(crate) fn host_key_lines(text: String) -> Vec<String> {
     out
 }
 
-/// Go: func provisionStart(provider string, req ProvisionRequest) (*store.Store, string, func(string, ...any), error)
 pub(crate) fn provision_start(
     provider: String,
     req: crate::provider::ProvisionRequest,
@@ -223,7 +216,6 @@ pub(crate) fn provision_start(
     Ok((s, hub_home, Box::new(|_, _| {})))
 }
 
-/// Go: func machineTags(req ProvisionRequest) map[string]string
 pub(crate) fn machine_tags(req: crate::provider::ProvisionRequest) -> BTreeMap<String, String> {
     BTreeMap::from([
         (TAG_HANDS.to_string(), "hands".to_string()),
@@ -232,12 +224,10 @@ pub(crate) fn machine_tags(req: crate::provider::ProvisionRequest) -> BTreeMap<S
     ])
 }
 
-/// Go: func machineName(requestID string) string
 pub(crate) fn machine_name(request_id: String) -> String {
     crate::util::slugify(&format!("pulse-{}", request_id.to_lowercase()), 40)
 }
 
-/// Go: func writeAdminAlias(hubHome, alias, host string) error
 pub(crate) fn write_admin_alias(
     hub_home: String,
     alias: String,
@@ -282,7 +272,6 @@ pub(crate) fn write_admin_alias(
     Ok(())
 }
 
-/// Go: func waitCloudInit(ctx context.Context, admin string, log func(string, ...any)) error
 pub(crate) fn wait_cloud_init(
     ctx: &pulse_bus::CancellationToken,
     admin: String,
@@ -314,7 +303,6 @@ pub(crate) fn wait_cloud_init(
     }
 }
 
-/// Go: func provisionFinish(ctx context.Context, req ProvisionRequest, m *Machine, hubHome, ip string, hostkeys []string, log func(string, ...any)) error
 pub(crate) fn provision_finish(
     ctx: &pulse_bus::CancellationToken,
     req: crate::provider::ProvisionRequest,
@@ -407,7 +395,6 @@ pub(crate) fn provision_finish(
     Ok(())
 }
 
-/// Go: func sleepCtx(ctx context.Context, d time.Duration) bool
 pub(crate) fn sleep_ctx(ctx: &pulse_bus::CancellationToken, d: std::time::Duration) -> bool {
     let step = Duration::from_millis(10);
     let start = std::time::Instant::now();
@@ -420,7 +407,6 @@ pub(crate) fn sleep_ctx(ctx: &pulse_bus::CancellationToken, d: std::time::Durati
     !ctx.is_cancelled()
 }
 
-/// Go: func pollUntil(ctx context.Context, what string, step func() (bool, error)) error
 pub(crate) fn poll_until<F>(
     ctx: &pulse_bus::CancellationToken,
     what: String,
@@ -446,12 +432,10 @@ where
     }
 }
 
-/// Go: func cliList(out string) []string
 pub(crate) fn cli_list(out: String) -> Vec<String> {
     out.split_whitespace().map(ToOwned::to_owned).collect()
 }
 
-/// Go: func machineFromDetail(provider, name, detailJSON, resourceGroup string) *Machine
 pub(crate) fn machine_from_detail(
     provider: String,
     name: String,
@@ -486,10 +470,10 @@ pub(crate) fn machine_from_detail(
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store};
-    use crate::test_helpers_f3::drained_by_login;
-    use crate::test_helpers_f3b::{TEST_DAEMON, install_ssh_hostname};
-    use crate::test_helpers_f5::{exec1, must_one, set_setting};
-    use crate::test_helpers_f6::*;
+    use crate::test_helpers_cloud::{TEST_DAEMON, install_ssh_hostname};
+    use crate::test_helpers_daemon::{exec1, must_one, set_setting};
+    use crate::test_helpers_environment::drained_by_login;
+    use crate::test_helpers_provider::*;
 
     const TEST_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse";
 
@@ -988,7 +972,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         {
             panic!(
                 "delete finding missing: {:?}",
-                crate::test_helpers_f5::must_rows(&s, "SELECT summary FROM posts", &[])
+                crate::test_helpers_daemon::must_rows(&s, "SELECT summary FROM posts", &[])
             );
         }
         if !lines

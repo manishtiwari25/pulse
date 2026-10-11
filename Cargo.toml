@@ -11,7 +11,7 @@ repository = "https://github.com/manishtiwari25/pulse"
 publish = false
 
 [workspace.dependencies]
-# internal crates (one per former Go package)
+# internal crates
 pulse-gitenv = { path = "crates/pulse-gitenv" }
 pulse-cred = { path = "crates/pulse-cred" }
 pulse-provider = { path = "crates/pulse-provider" }
@@ -37,7 +37,6 @@ pulse-hooks = { path = "crates/pulse-hooks" }
 pulse-runner = { path = "crates/pulse-runner" }
 pulse-inspect = { path = "crates/pulse-inspect" }
 pulse-hub = { path = "crates/pulse-hub" }
-pulse-parity = { path = "crates/pulse-parity" }
 
 # errors
 anyhow = "1.0"

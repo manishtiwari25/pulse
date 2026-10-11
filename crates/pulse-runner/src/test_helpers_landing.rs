@@ -1,11 +1,10 @@
-//! Test helpers ported from internal/runner/code_delivery_landing_test.go.
+//! Test helpers for the code-delivery landing tests.
 #![allow(dead_code)]
 
 use std::path::Path;
 
-/// Go: func landedEvidence(t *testing.T, s *store.Store) codedelivery.Evidence
 pub(crate) fn landed_evidence(s: &pulse_store::Store) -> pulse_codedelivery::Evidence {
-    let detail = crate::test_helpers_f5::must_rows(
+    let detail = crate::test_helpers_daemon::must_rows(
         s,
         "SELECT detail FROM events WHERE action = 'land.landed' ORDER BY seq DESC LIMIT 1",
         &[],
@@ -20,7 +19,6 @@ pub(crate) fn landed_evidence(s: &pulse_store::Store) -> pulse_codedelivery::Evi
     evidence
 }
 
-/// Go: func writeFile(t *testing.T, root, rel, text string)
 pub(crate) fn write_file(root: impl AsRef<Path>, rel: &str, text: &str) {
     let path = root.as_ref().join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap_or_else(|err| panic!("{err}"));

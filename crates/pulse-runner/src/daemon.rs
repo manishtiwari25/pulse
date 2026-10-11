@@ -1,12 +1,9 @@
-//! Port of internal/runner/daemon.go.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
 
 type Row = crate::util::Row;
 
-/// Go: const DefaultDaemonIntervalSeconds = 300
 pub const DEFAULT_DAEMON_INTERVAL_SECONDS: i32 = 300;
 pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
@@ -61,10 +58,9 @@ pub(crate) struct Dispatch {
     pub(crate) started_at: String,
 }
 
-/// Go: daemonOpts.Out (io.Writer) - shared with worker/maintenance threads, so it sits behind a
-/// mutex (Go's outMu); None writes to stdout.
+/// Shared with worker/maintenance threads, so it sits behind a
+/// mutex; None writes to stdout.
 pub(crate) type DaemonOut = std::sync::Arc<std::sync::Mutex<dyn std::io::Write + Send>>;
-/// Go: daemonOpts.Sleep - nil = event-aware wait; false interrupts the loop.
 pub(crate) type DaemonSleep = std::sync::Arc<dyn Fn(Duration) -> bool + Send + Sync>;
 
 #[derive(Clone, Default)]
@@ -106,7 +102,7 @@ impl std::fmt::Debug for DaemonOpts {
     }
 }
 
-/// Go: func daemonHeartbeat(s *store.Store, loops, interval int, note string)
+/// Writes the daemon's heartbeat row.
 /// `passes` counts the planning passes among the `loops`
 /// (`daemon.pass_seconds`); the rest were ticks that only reaped, refilled
 /// slots and watched the stop switch.
@@ -164,7 +160,6 @@ fn meta_upsert_result(
     .map_err(|e| e.to_string())
 }
 
-/// Go: func capacityNote(s *store.Store, queued, slots, inflight int, starvedSince, held, now string)
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn capacity_note(
     s: &pulse_store::Store,
@@ -188,7 +183,6 @@ pub(crate) fn capacity_note(
     meta_upsert(s, "capacity", &note);
 }
 
-/// Go: func handsWanted(s *store.Store, brain row, queued, slots, minutes int, now, actor string) row
 pub(crate) fn hands_wanted(
     s: &pulse_store::Store,
     brain: Row,
@@ -293,7 +287,6 @@ pub(crate) fn disk_floor_wanted(
     post
 }
 
-/// Go: func runBudget(s *store.Store) time.Duration
 pub(crate) fn run_budget(s: &pulse_store::Store) -> std::time::Duration {
     let minutes = s.setting_int("minutes_per_job").max(1);
     Duration::from_secs(((2 * minutes + i64::from(crate::recipe::SETUP_MINUTES) + 15) as u64) * 60)
@@ -311,7 +304,6 @@ pub(crate) fn warn_store_unavailable(o: &DaemonOpts, e: &anyhow::Error) {
     );
 }
 
-/// Go: say := func(format string, args ...any) { outMu.Lock(); fmt.Fprintf(out, format+"\n", args...) }
 pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
     use std::io::Write;
     let line = line.as_ref();
@@ -754,7 +746,6 @@ fn dispatch_key(slot: &str, worker: &str, job: &Row) -> String {
     format!("{slot}\0{worker}\0{}", job.str("id"))
 }
 
-/// Go: func daemon(ctx context.Context, s *store.Store, o daemonOpts) string
 pub(crate) fn daemon(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -828,7 +819,7 @@ pub(crate) fn daemon(
         })
         .expect("spawn daemon hooks");
     // The watchdog outlives nothing: a loop that stops beating for daemonStallBound is dumped and restarted.
-    // Go's `loops` is read by the stalled note from the watchdog thread, so it is shared.
+    // The stalled note reads `loops` from the watchdog thread, so it is shared.
     let loops_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let passes_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let dog = (!o.no_watchdog).then(|| {
@@ -870,7 +861,7 @@ pub(crate) fn daemon(
             .expect("spawn daemon watchdog");
         dog
     });
-    // Go: heartbeat(note) - the heartbeat row plus the watchdog's beat.
+    // The heartbeat row plus the watchdog's beat.
     let heartbeat = |loops: i32, passes: i32, note: &str, restart: Option<serde_json::Value>| {
         daemon_heartbeat(s, loops, passes, interval, note.to_string(), restart);
         if let Some(dog) = &dog {
@@ -941,7 +932,7 @@ pub(crate) fn daemon(
         },
     );
     let compute_wake = compute.wake_rx();
-    // Go: wakeEvents = nil once the subscription closes, so a closed channel never wakes the loop again.
+    // Cleared once the subscription closes, so a closed channel never wakes the loop again.
     let mut wake_events = Some(wake_events);
     let never_wake = crossbeam_channel::never::<pulse_bus::Event>();
     // Keep the batch outcome until every slot drains, even across dispatch ticks.
@@ -955,7 +946,6 @@ pub(crate) fn daemon(
     // DISK_FLOOR_REPOST_MINUTES keeps pausing but does not post again.
     let mut disk_floor_last_post = String::new();
     let mut planner_cache: BTreeMap<String, PlannerSnapshot> = BTreeMap::new();
-    // Go: report(d)
     fn report(
         o: &DaemonOpts,
         inflight: &mut BTreeMap<String, Dispatch>,
@@ -984,7 +974,7 @@ pub(crate) fn daemon(
             say(o, format!("idle: {}", d.reason));
         }
     }
-    // Go: sleep waits d, or less when the store wakes the loop; false when ctx ended.
+    // Waits d, or less when the store wakes the loop; false once the loop is cancelled.
     let sleep_wait = |wake_events: &mut Option<crossbeam_channel::Receiver<pulse_bus::Event>>,
                       d: Duration|
      -> bool {
@@ -1046,7 +1036,7 @@ pub(crate) fn daemon(
                 }
             }
         };
-    // Go: leave(result, note) - the loop's exits name their result and the note the say lines carry.
+    // The loop's exits name their result and the note the say lines carry.
     let leave: (&str, &str);
     // Set when the watchdog asks for the restart: the stuck pass has already
     // had `RESTART_DRAIN` since its cancellation, so the exit does not wait
@@ -1055,7 +1045,7 @@ pub(crate) fn daemon(
     loop {
         loops += 1;
         loops_shared.store(loops, std::sync::atomic::Ordering::SeqCst);
-        // Go: reap() - collects the runs whose goroutines ended without waiting.
+        // Collect the runs whose threads ended, without waiting.
         while let Ok(d) = results_rx.try_recv() {
             report(&o, &mut inflight, &mut completed, &mut all_errors, d);
         }
@@ -1209,7 +1199,7 @@ pub(crate) fn daemon(
         // Local slots the load governor closed this tick (machine saturated):
         // like disk_trimmed, not offered and not hands wanted.
         let mut load_held = 0usize;
-        // Go: the tick body runs under recover(); a panic becomes the idle reason, not the daemon's end.
+        // A panic in the tick body becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
                 match crate::board::prune_agents(
@@ -1437,7 +1427,7 @@ pub(crate) fn daemon(
                 *busy.entry(d.slot.clone()).or_insert(0) += 1;
             }
             // The login gate: with the native harness and no sign-in here, this machine's slots stay
-            // closed rather than launching workers that die at once (login_gate.go).
+            // closed rather than launching workers that die at once (see `login_gate`).
             let gate = (crate::login_gate::LOGIN_GATE
                 .read()
                 .expect("login gate poisoned"))(s);
@@ -1860,7 +1850,7 @@ pub(crate) fn daemon(
         for line in compute.drain() {
             say(&o, line);
         }
-        // Go says "idle" twice in two branches; one guard keeps clippy quiet.
+        // One guard covers both idle shapes: nothing started or in flight, or fewer starts than slots.
         // The idle log says a reason when it changes and summarises it hourly
         // while it holds; a started run opens the channel again.
         if !started.is_empty() {
@@ -1952,9 +1942,7 @@ pub(crate) fn daemon(
         }
     }
     let (mut result, note) = leave;
-    // Go: leave(result, note)
     loop_ctx.cancel();
-    // Go: graceFor(result)
     let grace_for = |result: &str| -> Duration {
         if result != "interrupted" && result != "stopped" {
             return Duration::ZERO;
@@ -1976,9 +1964,9 @@ pub(crate) fn daemon(
                 inflight.len()
             ),
         );
-        // Go: waitAll(grace) - results are reported as they arrive; the
-        // caller's cancellation starts the interrupted grace when none is
-        // running; when the grace ends the runs are killed and still awaited.
+        // Results are reported as they arrive; the caller's cancellation
+        // starts the interrupted grace when none is running; when the grace
+        // ends the runs are killed and still awaited.
         let never_tick = crossbeam_channel::never::<std::time::Instant>();
         let never_done = crossbeam_channel::never::<()>();
         let mut timer = (grace > Duration::ZERO).then(|| crossbeam_channel::after(grace));
@@ -2032,11 +2020,10 @@ pub(crate) fn daemon(
             &o,
             format!("{note}: waiting for landing maintenance to finish"),
         );
-        // Go waited without bound. A restart (the binary changed on disk)
-        // cancels the experiment under measurement at once - the next daemon
-        // measures it again - and gives the plain landings RESTART_DRAIN
-        // before cancelling them too, so a self-update is never held for a
-        // ninety-minute measurement.
+        // A restart (the binary changed on disk) cancels the experiment under
+        // measurement at once - the next daemon measures it again - and gives
+        // the plain landings RESTART_DRAIN before cancelling them too, so a
+        // self-update is never held for a ninety-minute measurement.
         let drain = if stuck_pass {
             Duration::from_secs(30)
         } else {
@@ -2087,14 +2074,13 @@ pub(crate) fn daemon(
         "exited"
     };
     daemon_heartbeat(s, loops, passes, interval, beat.to_string(), None);
-    // Go: defer cancelWake() - the wake subscription outlives the heartbeat,
-    // which therefore counts it among the bus subscribers.
+    // The wake subscription outlives the heartbeat, which therefore counts
+    // it among the bus subscribers.
     cancel_wake();
     crate::checkout::hold_checkouts(BTreeMap::new());
     result.into()
 }
 
-/// Go: fmt.Sprintf("%v", recover()) - the panic payload as text.
 fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     panic
         .downcast_ref::<&str>()
@@ -2103,7 +2089,6 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "unknown panic".into())
 }
 
-/// Go: func boolKeys(m map[string]bool) map[string]string
 pub(crate) fn bool_keys(m: BTreeMap<String, bool>) -> BTreeMap<String, String> {
     m.into_keys().map(|k| (k, String::new())).collect()
 }
@@ -2173,8 +2158,8 @@ fn dir_bytes(path: &std::path::Path) -> u64 {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f4::with_closed_login_gate;
-    use crate::test_helpers_f5::{exec1, test_wait};
+    use crate::test_helpers_completion::with_closed_login_gate;
+    use crate::test_helpers_daemon::{exec1, test_wait};
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
 
@@ -2978,7 +2963,7 @@ mod tests {
     #[test]
     fn run_fits_measures_each_kind_of_job_on_its_own() {
         let s = store_with_projects(&["proj"]);
-        crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
         // Ten ballots of a minute, ten improve runs of half an hour, and one
         // lead run of a minute: too few leads to measure, so they borrow the
         // measure of all kinds together.
@@ -3021,7 +3006,7 @@ mod tests {
     #[test]
     fn run_fits_measures_the_ninetieth_percentile_of_recent_real_runs() {
         let s = new_store();
-        crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
         // Fifty runs in the window: forty-five of a minute, five of ten.
         for n in 0..45 {
             let status = if n % 2 == 0 { "done" } else { "failed" };
@@ -3055,7 +3040,7 @@ mod tests {
     #[test]
     fn run_fits_measures_a_project_s_own_runs_before_its_kind_s() {
         let s = store_with_projects(&["brain", "blog", "fresh"]);
-        crate::test_helpers_f5::set_setting(&s, "minutes_per_job", "120");
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
         // Ten improve runs of an hour on the brain, ten of a minute on the
         // blog, and a project with no history of its own.
         for n in 0..10 {
@@ -3965,7 +3950,7 @@ mod tests {
             let _env_guard = pulse_testutil::env_lock();
             let (s, root, binary, _fixture) = self_update_fixture();
             let _login = with_closed_login_gate();
-            crate::test_helpers_f3b::set_setting(&s, "landing", "agents");
+            crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
             run(&root, &["git", "branch", "evolve/draining"]);
             exec1(&s,
                 "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
@@ -4230,9 +4215,9 @@ mod tests {
         )
         .unwrap();
         join(&s, "aurora");
-        crate::test_helpers_f3b::set_setting(&s, "landing", "agents");
-        crate::test_helpers_f3b::set_setting(&s, "daemon.sweep", "off");
-        crate::test_helpers_f3b::set_setting(&s, "minutes_per_job", "1000");
+        crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "1000");
         run(&root, &["git", "branch", "evolve/slow-measurement"]);
         exec1(&s,
             "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)
@@ -4396,7 +4381,7 @@ mod tests {
                 "daemon did not say the self-update waits for the lane: {}",
                 out.string()
             );
-            crate::test_helpers_f3b::set_setting(&s, "stop", "1");
+            crate::test_helpers_daemon::set_setting(&s, "stop", "1");
             match done_rx.recv_timeout(test_wait(Duration::from_secs(60))) {
                 Ok(result) => {
                     joined = true;

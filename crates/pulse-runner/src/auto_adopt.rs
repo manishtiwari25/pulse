@@ -1,4 +1,3 @@
-/// Go: func autoAdoptDrafts(s *store.Store, now, actor string) []string
 pub(crate) fn auto_adopt_drafts(
     s: &pulse_store::Store,
     _now: String,

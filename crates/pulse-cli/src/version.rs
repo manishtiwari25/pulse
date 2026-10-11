@@ -21,8 +21,9 @@ pub struct BuildInfo {
 
 include!(concat!(env!("OUT_DIR"), "/build_info_const.rs"));
 
-/// Go: strconv.Unquote for the double-quoted form strconv.Quote emits (ParseBuildInfo also
-/// accepts back-quoted raw strings). None when the literal is malformed.
+/// Reads back a quoted build setting: a double-quoted literal with the `\a \b \f \n \r \t \v`,
+/// `\\`, `\"`, `\'`, `\xHH`, `\uHHHH`, `\UHHHHHHHH` and three-digit octal escapes, or a
+/// back-quoted raw string (no backtick inside; CRs dropped). None when the literal is malformed.
 fn unquote(raw: &str) -> Option<String> {
     let mut chars = raw.chars();
     let quote = chars.next()?;
@@ -81,7 +82,6 @@ fn hex(it: &mut std::str::Chars<'_>, n: usize) -> Option<u32> {
     Some(v)
 }
 
-/// Go: quoteKey / quoteValue in runtime/debug.
 fn quote_key(key: &str) -> bool {
     key.is_empty() || key.contains(['=', ' ', '\t', '\r', '\n', '"', '`'])
 }
@@ -90,7 +90,6 @@ fn quote_value(value: &str) -> bool {
     value.contains([' ', '\t', '\r', '\n', '"', '`'])
 }
 
-/// Go: strconv.QuotedPrefix — the quoted literal at the start of s.
 fn quoted_prefix(s: &str) -> Option<&str> {
     let quote = s.chars().next()?;
     if quote == '`' {
@@ -123,9 +122,10 @@ fn read_module_line(elem: &[&str]) -> Option<Module> {
     })
 }
 
-/// Go: debug.ParseBuildInfo. The reverse of BuildInfo.String(): every line ends in '\n' (a
-/// trailing fragment is dropped), unknown lines are skipped, and a malformed mod/dep/=>/build
-/// line makes the whole text unreadable (None, where Go returns an error).
+/// Parses the build-info block that `build.rs` embeds (and that the pair-hands inspection greps
+/// out of a remote binary): every line ends in '\n' (a trailing fragment is dropped), unknown
+/// lines are skipped, and a malformed mod/dep/=>/build line makes the whole text unreadable
+/// (None).
 pub fn parse_build_info(text: &str) -> Option<BuildInfo> {
     let mut bi = BuildInfo {
         path: String::new(),

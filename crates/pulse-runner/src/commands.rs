@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-//! Port of internal/runner/commands.go.
-
 use anyhow::{Result, anyhow};
 use pulse_cli::{Command, Context, FlagSet, register as cli_register};
 use serde_json::json;
@@ -13,11 +11,10 @@ use std::sync::{Arc, Mutex};
 
 static REGISTER: Once = Once::new();
 
-/// Go: func init()
 pub fn register() {
     REGISTER.call_once(|| {
-        // Go's import graph ran these packages' init() before ours; the
-        // runner's own init() side effects follow (compute.go, commands.go).
+        // The crates this one builds on register first; the runner's own
+        // side effects (compute providers, the command table) follow.
         pulse_bus::install_store_observer();
         pulse_board::register();
         pulse_tasks::register();
@@ -50,7 +47,7 @@ pub fn register() {
         cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
         cli_register(Command { name:"env".into(), group:"runner".into(), summary:"the environment recipe per project (a CTX-environment record): show, set, import, check".into(), usage:"pulse env show|set|import|check [--project SLUG] [--executor NAME] [--file F] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_env, flags:Some(env_flags) });
         cli_register(Command { name:"hands".into(), group:"runner".into(), summary:"the forced command on a paired machine (probe, prepare, key, run, ...)".into(), usage:"pulse hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)".into(), aliases:vec![], no_store:true, read_only:false, raw:true, run:cmd_hands, flags:None });
-        cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"turn a Linux machine into an executor over its admin ssh session".into(), usage:"pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--install-copilot] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
+        cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--install-copilot] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
         cli_register(Command { name:"onboard".into(), group:"runner".into(), summary:"register a project (init) and queue its onboarding job; prints what stays human".into(), usage:"pulse onboard [PATH] [--name N] [--remote URL] [--verify CMD] [--brain] [--now T]".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:cmd_onboard, flags:Some(onboard_flags) });
     });
 }
@@ -161,7 +158,7 @@ fn pair_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "dry-run",
         false,
-        "inspect and print the scripts; change nothing",
+        "inspect and print the apply, undo and commit scripts; change nothing here or there",
     );
     fs.bool_var("inspect", false, "alias for --dry-run");
 }
@@ -173,7 +170,6 @@ fn onboard_flags(fs: &mut FlagSet) {
     fs.bool_var("brain", false, "this checkout is the brain");
 }
 
-/// Go: func nowOf(c *cli.Context) string
 pub(crate) fn now_of(c: &pulse_cli::Context) -> String {
     if !c.now.is_empty() {
         c.now.clone()
@@ -184,7 +180,6 @@ pub(crate) fn now_of(c: &pulse_cli::Context) -> String {
     }
 }
 
-/// Go: func actorOf(c *cli.Context) string
 pub(crate) fn actor_of(c: &pulse_cli::Context) -> String {
     if c.agent.is_empty() {
         crate::util::HUMAN_AGENT.into()
@@ -193,26 +188,22 @@ pub(crate) fn actor_of(c: &pulse_cli::Context) -> String {
     }
 }
 
-/// Go: func strFlag(fs *flag.FlagSet, name string) string
 pub(crate) fn str_flag(fs: &FlagSet, name: &str) -> String {
     fs.lookup(name)
         .map(|_| fs.get_string(name))
         .unwrap_or_default()
 }
 
-/// Go: func boolFlag(fs *flag.FlagSet, name string) bool
 pub(crate) fn bool_flag(fs: &FlagSet, name: &str) -> bool {
     fs.lookup(name).is_some_and(|_| fs.get_bool(name))
 }
 
-/// Go: func intFlag(fs *flag.FlagSet, name string) int
 pub(crate) fn int_flag(fs: &FlagSet, name: &str) -> i32 {
     fs.lookup(name)
         .map(|_| fs.get_int(name))
         .unwrap_or_default()
 }
 
-/// Go: func cmdPlan(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_plan(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -242,7 +233,6 @@ pub(crate) fn cmd_plan(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> Resu
     Ok(())
 }
 
-/// Go: func cmdWork(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_work(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -288,7 +278,6 @@ pub(crate) fn cmd_work(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
     Ok(())
 }
 
-/// Go: func cmdLand(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -391,7 +380,6 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
     Ok(())
 }
 
-/// Go: func queryOneRow(q querier, sql string, args ...any) row
 pub(crate) fn query_one_row(
     q: &dyn crate::util::Querier,
     sql: &str,
@@ -402,14 +390,13 @@ pub(crate) fn query_one_row(
         .unwrap_or_default()
 }
 
-/// Go: func cmdDaemon(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
     let s = c
         .store
         .clone()
         .ok_or_else(|| anyhow!("daemon: store is needed"))?;
-    // Go: signal.NotifyContext(context.Background(), SIGTERM, SIGINT) - the first signal cancels the loop;
-    // `stop` (the guard) unregisters the handler on return so a second signal terminates the process.
+    // The first SIGTERM/SIGINT cancels the loop; `_stop` (the guard) unregisters the
+    // handler on return so a second signal terminates the process.
     let cancel = pulse_bus::CancellationToken::new();
     let _stop = SignalStop::notify(&cancel)?;
     let loops = if bool_flag(fs, "once") {
@@ -417,7 +404,7 @@ pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Res
     } else {
         int_flag(fs, "max-loops")
     };
-    // Go passes c.Out itself; lend the writer to the daemon for the run and take it back afterwards.
+    // Lend the writer to the daemon for the run and take it back afterwards.
     let lent = Arc::new(Mutex::new(LentWriter(Some(std::mem::replace(
         &mut c.out,
         Box::new(std::io::sink()),
@@ -475,9 +462,9 @@ impl Write for LentWriter {
     }
 }
 
-/// Go: signal.NotifyContext - SIGTERM/SIGINT cancel the token while the guard lives; dropping it
-/// (Go's `stop`) unregisters the handlers, restoring the default (terminating) disposition. Like Go, the
-/// cancel runs on an ordinary thread fed by the signal, never inside the handler itself.
+/// SIGTERM/SIGINT cancel the token while the guard lives; dropping it unregisters the
+/// handlers, restoring the default (terminating) disposition. The cancel runs on an
+/// ordinary thread fed by the signal, never inside the handler itself.
 struct SignalStop {
     handle: signal_hook::iterator::Handle,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -514,7 +501,6 @@ impl Drop for SignalStop {
     }
 }
 
-/// Go: func cmdSweep(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -594,7 +580,6 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
     Ok(())
 }
 
-/// Go: func cmdService(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_service(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("status");
     match action {
@@ -645,7 +630,6 @@ pub(crate) fn cmd_service(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
     Ok(())
 }
 
-/// Go: func executorsText(s *store.Store, now string) string
 pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
     let mut out = Vec::new();
     for r in crate::executor::executor_rows(s, true) {
@@ -738,7 +722,6 @@ pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
     format!("{}\n", out.join("\n"))
 }
 
-/// Go: func cmdExecutor(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -971,7 +954,6 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
     }
 }
 
-/// Go: func cmdEnv(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_env(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -1081,7 +1063,6 @@ pub(crate) fn cmd_env(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<
     }
 }
 
-/// Go: func cmdHands(c *cli.Context, _ *flag.FlagSet, args []string) error
 pub(crate) fn cmd_hands(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {
     let out = std::mem::replace(&mut c.out, Box::new(std::io::sink()));
     let err = std::mem::replace(&mut c.err, Box::new(std::io::sink()));
@@ -1101,7 +1082,6 @@ pub(crate) fn cmd_hands(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Resu
     }
 }
 
-/// Go: func cmdPair(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_pair(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     if args.len() != 1 {
         return Err(crate::util::fail(
@@ -1140,7 +1120,6 @@ pub(crate) fn cmd_pair(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
     Ok(())
 }
 
-/// Go: func cmdOnboard(c *cli.Context, fs *flag.FlagSet, args []string) error
 pub(crate) fn cmd_onboard(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let path = args.first().cloned().unwrap_or_else(|| ".".into());
     let s = pulse_store::Store::open(pulse_store::Options {
@@ -1165,7 +1144,6 @@ pub(crate) fn cmd_onboard(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
     Ok(())
 }
 
-/// Go: func asHandsError(err error, target **handsError) bool
 pub(crate) fn as_hands_error(err: &anyhow::Error, target: &mut serde_json::Value) -> bool {
     if let Some(e) = err.downcast_ref::<crate::hands::HandsError>() {
         *target = json!({"msg": e.msg});
@@ -1175,7 +1153,6 @@ pub(crate) fn as_hands_error(err: &anyhow::Error, target: &mut serde_json::Value
     }
 }
 
-/// Go: func asHandsExit(err error, target **handsExit) bool
 pub(crate) fn as_hands_exit(err: &anyhow::Error, target: &mut serde_json::Value) -> bool {
     if let Some(e) = err.downcast_ref::<crate::hands::HandsExit>() {
         *target = json!({"code": e.code});
@@ -1185,7 +1162,6 @@ pub(crate) fn as_hands_exit(err: &anyhow::Error, target: &mut serde_json::Value)
     }
 }
 
-/// Go: func cmdComputeProviders(c *cli.Context) error
 pub(crate) fn cmd_compute_providers(c: &mut Context) -> Result<()> {
     let names = crate::provider::provider_names();
     let chosen = c
@@ -1243,7 +1219,7 @@ pub(crate) static PROVIDER_AUTH: LazyLock<BTreeMap<&'static str, &'static str>> 
 mod tests {
     use super::*;
     use crate::test_helpers::{join, new_bare_repo, new_store, recipe_with, run};
-    use crate::test_helpers_f6::invoke;
+    use crate::test_helpers_provider::invoke;
 
     #[test]
     fn commands_registered_in_runner_group() {

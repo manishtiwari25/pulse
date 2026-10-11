@@ -9,11 +9,9 @@ use std::process::Command;
 use std::time::Duration;
 pub(crate) static PROVENANCE_TRAILERS: &[&str] = &["Pulse-Agent", "Pulse-Job", "Pulse-Executor"];
 pub(crate) static OWNER_PATHS: &[&str] = pulse_tally::OWNER_PATHS;
-/// Go: func agentEmail(agent string) string
 pub(crate) fn agent_email(agent: &str) -> String {
     format!("{agent}@pulse.local")
 }
-/// Go: func makeRunKey(path, agent, runID string) (string, error)
 pub(crate) fn make_run_key(path: &str, agent: &str, run_id: &str) -> Result<String> {
     let pub_path = format!("{path}.pub");
     let _ = std::fs::remove_file(path);
@@ -74,12 +72,10 @@ pub(crate) fn make_run_key(path: &str, agent: &str, run_id: &str) -> Result<Stri
         .collect::<Vec<_>>();
     Ok(fields.join(" "))
 }
-/// Go: func removeRunKey(path string)
 pub(crate) fn remove_run_key(path: &str) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(format!("{path}.pub"));
 }
-/// Go: func provenanceHook(agent, jobID, executor string) string
 pub(crate) fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> String {
     let values = [agent, job_id, executor];
     let parts = PROVENANCE_TRAILERS
@@ -98,7 +94,6 @@ pub(crate) fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> Stri
     )
 }
 pub(crate) const PRE_COMMIT_HOOK_UNSET: &str = "unset GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE";
-/// Go: func preCommitHookScript(verifyCmd string, recipe *Recipe, pins []string, clone string) string
 pub(crate) fn pre_commit_hook_script(
     verify_cmd: &str,
     recipe: Option<&crate::recipe::Recipe>,
@@ -163,7 +158,6 @@ if [ -n \"$tree\" ]; then
 fi"
     );
 }
-/// Go: func configureCloneIdentity(clone, agent, keyPath, hookText string) error
 pub(crate) fn configure_clone_identity(
     clone: &str,
     agent: &str,
@@ -210,7 +204,6 @@ pub(crate) fn configure_clone_identity(
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
-/// Go: func writePreCommitHook(clone, script string) error
 pub(crate) fn write_pre_commit_hook(clone: &str, script: &str) -> Result<()> {
     let hook = Path::new(clone)
         .join(".git")
@@ -220,7 +213,6 @@ pub(crate) fn write_pre_commit_hook(clone: &str, script: &str) -> Result<()> {
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
-/// Go: func gitConfigSection(key string) string
 pub(crate) fn git_config_section(key: &str) -> String {
     let (section, rest) = key.split_once('.').unwrap_or((key, ""));
     if let Some((sub, _)) = rest.rsplit_once('.') {
@@ -229,7 +221,6 @@ pub(crate) fn git_config_section(key: &str) -> String {
         format!("[{section}]\n")
     }
 }
-/// Go: func gitConfigQuote(v string) string
 pub(crate) fn git_config_quote(v: &str) -> String {
     format!(
         "\"{}\"",
@@ -238,11 +229,9 @@ pub(crate) fn git_config_quote(v: &str) -> String {
             .replace('\n', "\\n")
     )
 }
-/// Go: func SignersLine(agent, pubkey string) string
 pub fn signers_line(agent: &str, pubkey: &str) -> String {
     format!("{} namespaces=\"git\" {}\n", agent_email(agent), pubkey)
 }
-/// Go: func SignersText(s *store.Store) string
 pub fn signers_text(s: &pulse_store::Store) -> String {
     let conn = match s.conn() {
         Ok(c) => c,
@@ -257,7 +246,6 @@ pub fn signers_text(s: &pulse_store::Store) -> String {
     .map(|r| signers_line(&r.str("agent"), &r.str("pubkey")))
     .collect()
 }
-/// Go: func landingProblems(root, base, ref, agent, jobID, pubkey, signersPath string) []string
 pub(crate) fn landing_problems(
     root: &str,
     base: &str,
@@ -343,7 +331,6 @@ pub(crate) fn landing_problems(
     }
     problems
 }
-/// Go: func splitTrailer(s string) []string
 pub(crate) fn split_trailer(s: &str) -> Vec<String> {
     s.split('\x1d')
         .map(str::trim)
@@ -351,7 +338,6 @@ pub(crate) fn split_trailer(s: &str) -> Vec<String> {
         .map(ToOwned::to_owned)
         .collect()
 }
-/// Go: func reprobeDue(s *store.Store, interval int, now string) [][2]string
 pub(crate) fn reprobe_due(s: &pulse_store::Store, interval: i32, now: &str) -> Vec<[String; 2]> {
     let _ = (s, interval, now);
     Vec::new()

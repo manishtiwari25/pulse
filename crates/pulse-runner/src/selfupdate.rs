@@ -61,7 +61,6 @@ pub(crate) struct SelfUpdateOutcome {
     pub(crate) installed: bool,
 }
 
-/// Go: func shortRev(rev string) string
 pub(crate) fn short_rev(rev: String) -> String {
     if rev.len() > 12 {
         rev[..12].to_string()
@@ -83,7 +82,6 @@ pub(crate) fn update_pending() -> bool {
     st.inflight || st.lane_wait || st.build_wait
 }
 
-/// Go: func tendBinary(s *store.Store, now string, env selfUpdateEnv) []string
 pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEnv) -> Vec<String> {
     let mut st = SELF_UPDATE_STATE
         .write()
@@ -300,7 +298,6 @@ fn installed_binary_is(path: &str, rev: &str) -> bool {
         })
 }
 
-/// Go: func buildAndInstall(s *store.Store, repo, rev string, env selfUpdateEnv) selfUpdateOutcome
 pub(crate) fn build_and_install(
     s: &pulse_store::Store,
     repo: String,
@@ -426,7 +423,6 @@ pub(crate) fn build_and_install(
     }
 }
 
-/// Go: func selfUpdateFailure(s *store.Store, rev string, env selfUpdateEnv, stage, output string, err error) selfUpdateOutcome
 pub(crate) fn self_update_failure(
     s: &pulse_store::Store,
     rev: String,
@@ -465,7 +461,6 @@ pub(crate) fn self_update_failure(
     }
 }
 
-/// Go: func selfUpdateFinding(s *store.Store, actor, summary, body string) error
 pub(crate) fn self_update_finding(
     s: &pulse_store::Store,
     actor: String,
@@ -497,8 +492,6 @@ pub(crate) fn self_update_finding(
     Ok(())
 }
 
-/// Go: func runIn(dir string, timeout time.Duration, name string, args ...string) (string, error)
-///
 /// The child runs at nice [`crate::daemon_load::CHILD_NICE`]: it is the
 /// daemon's own build or smoke test, never the owner's work. Its output is
 /// drained while it runs (a build with many warnings once filled the pipe
@@ -626,7 +619,6 @@ impl Drained {
     }
 }
 
-/// Go: func gitReason(results ...gitResult) string
 pub(crate) fn git_reason(results: &[crate::util::GitResult]) -> String {
     for r in results {
         if r.ok() {
@@ -647,7 +639,6 @@ pub(crate) fn git_reason(results: &[crate::util::GitResult]) -> String {
     String::new()
 }
 
-/// Go: func firstNonEmpty(values ...string) string
 pub(crate) fn first_non_empty(values: &[String]) -> String {
     values
         .iter()
@@ -656,7 +647,6 @@ pub(crate) fn first_non_empty(values: &[String]) -> String {
         .unwrap_or_default()
 }
 
-/// Go: func checkRestored(s *store.Store, env selfUpdateEnv) []string
 pub(crate) fn check_restored(s: &pulse_store::Store, env: SelfUpdateEnv) -> Vec<String> {
     let marker = format!("{}{}", env.binary, RESTORED_MARKER);
     let Ok(data) = std::fs::read_to_string(&marker) else {
@@ -705,7 +695,6 @@ pub(crate) fn check_restored(s: &pulse_store::Store, env: SelfUpdateEnv) -> Vec<
     lines
 }
 
-/// Go: func jsonField(text, key string) string
 pub(crate) fn json_field(text: String, key: String) -> String {
     serde_json::from_str::<serde_json::Value>(&text)
         .ok()
@@ -717,8 +706,8 @@ pub(crate) fn json_field(text: String, key: String) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::{TEST_NOW, count, run, serial};
-    use crate::test_helpers_f3b::set_setting;
-    use crate::test_helpers_f5::exec1;
+    use crate::test_helpers_daemon::exec1;
+    use crate::test_helpers_daemon::set_setting;
     use crate::test_helpers_selfupdate::{
         head_of, reset_self_update, self_update_fixture, wait_self_update_idle,
     };

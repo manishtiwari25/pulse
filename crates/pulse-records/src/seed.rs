@@ -338,7 +338,6 @@ mod tests {
             .unwrap();
     }
 
-    /// Go: namedProject
     fn named_project(s: &pulse_store::Store, slug: &str, name: &str, dir: &std::path::Path) {
         s.conn()
             .unwrap()
@@ -349,8 +348,8 @@ mod tests {
             .unwrap();
     }
 
-    /// seedTemplates gives the store a brain and the two template-owned records
-    /// the way pulse migrate imports them; the constitution has two revisions so
+    /// Gives the store a brain and the two template-owned records the way
+    /// pulse migrate imports them; the constitution has two revisions so
     /// tests see that the current one is copied.
     fn seed_templates(s: &pulse_store::Store) -> tempfile::TempDir {
         let brain = tempfile::tempdir().unwrap();
@@ -415,7 +414,6 @@ mod tests {
         brain
     }
 
-    /// Go: eventCount (import_test.go)
     fn event_count(s: &pulse_store::Store, action: &str) -> i64 {
         s.conn()
             .unwrap()
@@ -427,7 +425,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Go: revisionCount
     fn revision_count(s: &pulse_store::Store, id: &str) -> usize {
         s.revisions(id).unwrap().len()
     }

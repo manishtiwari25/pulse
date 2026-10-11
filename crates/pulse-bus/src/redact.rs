@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 pub const PRIVATE_VALUE: &str = "[owner-private]";
 pub const PRIVATE_SETTINGS: &[&str] = &["evolve.heldout_dir"];
 
-/// Redact masks private setting events for agents.
+/// Masks private setting events for agents.
 pub fn redact(mut e: Event) -> Event {
     if e.action == "setting"
         && PRIVATE_SETTINGS.contains(&e.subject.as_str())
@@ -16,7 +16,7 @@ pub fn redact(mut e: Event) -> Event {
     e
 }
 
-/// Redactor returns Redact extended with the store's current and historical private values.
+/// Returns [`redact`] extended with the store's current and historical private values.
 pub fn redactor(s: Option<&pulse_store::Store>) -> impl Fn(Event) -> Event {
     let needles = private_needles(s);
     move |mut e| {

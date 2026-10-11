@@ -1,7 +1,6 @@
-//! PULSE: daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep (port of Go package internal/runner).
+//! PULSE: daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep.
 //!
-//! One module per Go file (`internal/runner/<name>.go` -> `<name>.rs`). Every module re-exports its public items
-//! here so callers write `pulse_runner::foo` like Go callers wrote `runner.Foo`.
+//! Every module re-exports its public items here so callers write `pulse_runner::foo`.
 
 pub mod amend;
 pub mod auto_adopt;
@@ -58,6 +57,7 @@ pub mod provider;
 pub mod recipe;
 pub mod recover;
 pub mod recovery_api;
+pub mod redbase;
 pub mod research;
 pub mod retention;
 pub mod retire;
@@ -89,28 +89,30 @@ pub use service::*;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 #[cfg(test)]
-pub(crate) mod test_helpers_f1a;
+pub(crate) mod test_helpers_cloud;
 #[cfg(test)]
-pub(crate) mod test_helpers_f1b;
+pub(crate) mod test_helpers_completion;
 #[cfg(test)]
-pub(crate) mod test_helpers_f2;
+pub(crate) mod test_helpers_daemon;
 #[cfg(test)]
-pub(crate) mod test_helpers_f3;
+pub(crate) mod test_helpers_environment;
 #[cfg(test)]
-pub(crate) mod test_helpers_f3b;
+pub(crate) mod test_helpers_hands;
 #[cfg(test)]
-pub(crate) mod test_helpers_f4;
-#[cfg(test)]
-pub(crate) mod test_helpers_f5;
-#[cfg(test)]
-pub(crate) mod test_helpers_f6;
-#[cfg(test)]
-pub(crate) mod test_helpers_f7;
+pub(crate) mod test_helpers_heartbeat;
 #[cfg(test)]
 pub(crate) mod test_helpers_landing;
 #[cfg(test)]
 pub(crate) mod test_helpers_login_reuse;
 #[cfg(test)]
+pub(crate) mod test_helpers_provider;
+#[cfg(test)]
+pub(crate) mod test_helpers_recover;
+#[cfg(test)]
 pub(crate) mod test_helpers_selfupdate;
+#[cfg(test)]
+pub(crate) mod test_helpers_staged_pulse;
+#[cfg(test)]
+pub(crate) mod test_helpers_sweep;
 #[cfg(test)]
 pub(crate) mod test_helpers_token;

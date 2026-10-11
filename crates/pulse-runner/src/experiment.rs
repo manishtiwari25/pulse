@@ -1,7 +1,4 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,7 +8,6 @@ use std::time::Duration;
 pub(crate) const EXPERIMENT_MEASURE_BUDGET: Duration = Duration::from_secs(90 * 60);
 pub(crate) const DEFAULT_EVOLVE_TOLERANCE: f64 = 0.02;
 
-/// Go: func briefFields(body string) map[string]string
 pub(crate) fn brief_fields(body: String) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for line in body.lines() {
@@ -28,7 +24,6 @@ pub(crate) fn brief_fields(body: String) -> BTreeMap<String, String> {
     out
 }
 
-/// Go: func evolveTolerance(s *store.Store) float64
 pub(crate) fn evolve_tolerance(s: &pulse_store::Store) -> f64 {
     s.setting("evolve.tolerance", "")
         .trim()
@@ -38,7 +33,6 @@ pub(crate) fn evolve_tolerance(s: &pulse_store::Store) -> f64 {
         .unwrap_or(DEFAULT_EVOLVE_TOLERANCE)
 }
 
-/// Go: func experimentSuggestion(job row) (suggestion, hypothesis string)
 pub(crate) fn experiment_suggestion(job: crate::util::Row) -> (String, String) {
     let f = brief_fields(job.str("brief"));
     let mut suggestion = f.get("suggestion").cloned().unwrap_or_default();
@@ -60,7 +54,6 @@ pub(crate) fn experiment_parent(job: crate::util::Row) -> String {
         .to_string()
 }
 
-/// Go: func experimentThread(s *store.Store, slug, suggestion string) (area, thread, on string)
 pub(crate) fn experiment_thread(
     s: &pulse_store::Store,
     slug: String,
@@ -85,7 +78,6 @@ pub(crate) fn experiment_thread(
     ("evolution".into(), thread, String::new())
 }
 
-/// Go: func lastRunID(s *store.Store, jobID string) string
 pub(crate) fn last_run_id(s: &pulse_store::Store, job_id: String) -> String {
     let Ok(conn) = s.conn() else {
         return String::new();
@@ -98,7 +90,6 @@ pub(crate) fn last_run_id(s: &pulse_store::Store, job_id: String) -> String {
     .str("id")
 }
 
-/// Go: func scoreLine(sc *evolve.Scores) string
 pub(crate) fn score_line(sc: &pulse_evolve::api::Scores) -> String {
     format!(
         "{:.3} over {} fixture(s), {} held out",
@@ -294,7 +285,6 @@ fn log_patch_skip(s: &pulse_store::Store, actor: &str, now: &str, branch: &str, 
     }
 }
 
-/// Go: func landExperiment(s *store.Store, project row, job row, actor, now string, verify bool) (state, note string)
 pub(crate) fn land_experiment(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -307,7 +297,6 @@ pub(crate) fn land_experiment(
     land_experiment_context(&ctx, s, project, job, actor, now, verify)
 }
 
-/// Go: func landExperimentContext(parent context.Context, s *store.Store, project row, job row, actor, now string, verify bool) (state, note string)
 pub(crate) fn land_experiment_context(
     parent: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -781,7 +770,7 @@ pub(crate) fn experiment_result_post_failed_warning(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
 
     #[test]
     fn experiment_result_post_failure_warning_names_branch_and_cause() {

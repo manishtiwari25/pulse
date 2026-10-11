@@ -17,7 +17,6 @@ static TEMPLATE_REPO: OnceLock<(TempDir, String)> = OnceLock::new();
 static TEMPLATE_STORE: OnceLock<TemplateStoreInfo> = OnceLock::new();
 
 #[derive(Debug)]
-/// Go: templateStoreInfo describes the per-binary template store newRepo copies from.
 pub(crate) struct TemplateStoreInfo {
     /// the closed template store file
     pub(crate) path: String,
@@ -25,27 +24,27 @@ pub(crate) struct TemplateStoreInfo {
     pub(crate) root: String,
     /// events.seq before addProject ran; later rows belong to the project
     pub(crate) base_seq: i64,
-    /// Go leaves the MkdirTemp home behind; the guard keeps it for the binary's life.
+    /// the template's home directory; the guard keeps it for the binary's life
     _home: TempDir,
 }
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Go runs a package's tests one at a time; every test here holds this guard for its whole body because the
-/// process-wide state the tests share (PULSE_* env, the working directory, the default bus, the login-gate /
-/// sealed-call / gh-token / GitHub-transport hooks, PULSE_TEST_HANDS helper branches) is not per-test.
+/// Every test here holds this guard for its whole body because the process-wide state the tests share
+/// (PULSE_* env, the working directory, the default bus, the login-gate / sealed-call / gh-token /
+/// GitHub-transport hooks, PULSE_TEST_HANDS helper branches) is not per-test.
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Port of runner_test.go TestMain setup. Rust's built-in harness has no TestMain hook, so tests call this
-/// from helpers (once per process, like TestMain); subprocess hands tests use `std::env::current_exe()`
-/// with `PULSE_TEST_HANDS=1`.
+/// Process-wide test setup. The built-in harness has no setup hook, so tests call this from helpers
+/// (it runs once per process); subprocess hands tests use `std::env::current_exe()` with
+/// `PULSE_TEST_HANDS=1`.
 pub(crate) fn test_main_setup() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Go ran every package init() (tasks.LoginSourceCheck, the compute providers, the command table)
-        // before TestMain; the crate's register() is that init.
+        // register() installs the command table, the compute providers and the task hooks
+        // the tests rely on.
         crate::commands::register();
         // The pre-commit hook runs this suite from inside `git commit`, where git exports GIT_INDEX_FILE and
         // friends; tests that drive git in temp repositories must not inherit the committing repo's index.
@@ -69,8 +68,8 @@ pub(crate) fn test_main_setup() {
     });
 }
 
-/// Go TestMain's githubHTTP transport: `errors.New("no network in tests: " + r.URL.Host)`, as
-/// http.Client wraps it, unless PULSE_GITHUB_API points at a test server.
+/// The GitHub transport tests start with: every request fails with "no network in tests: <host>"
+/// unless PULSE_GITHUB_API points at a test server.
 pub(crate) fn no_network_github_http(
     token: &str,
     url: &str,
@@ -111,8 +110,8 @@ pub(crate) fn maybe_run_hands_helper() {
     }
 }
 
-/// The store newStore hands a test plus the `t.Setenv` state that goes with it: PULSE_HOME and the empty
-/// PULSE_JOB/AGENT/SESSION/PROJECT hold while the fixture lives and revert when it drops (Go's cleanup),
+/// The store `new_store` hands a test plus the environment that goes with it: PULSE_HOME and the empty
+/// PULSE_JOB/AGENT/SESSION/PROJECT hold while the fixture lives and revert when it drops,
 /// so a nested fixture or a later test sees the environment it expects. Derefs to the store.
 #[derive(Clone)]
 pub(crate) struct TestStore {
@@ -156,7 +155,6 @@ impl TestStore {
     }
 }
 
-/// Go: func newStore(t *testing.T) *store.Store
 pub(crate) fn new_store() -> TestStore {
     test_main_setup();
     let dir = tempfile::tempdir().expect("temp home");
@@ -192,7 +190,6 @@ pub(crate) fn new_store() -> TestStore {
     }
 }
 
-/// Go: `var out bytes.Buffer; o.Out = &out; ... out.String()` - a shared byte buffer the daemon writes.
 #[derive(Clone, Default)]
 pub(crate) struct OutBuf(pub(crate) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -206,12 +203,10 @@ impl OutBuf {
         std::sync::Arc::new(std::sync::Mutex::new(OutBufWriter(self.0.clone())))
     }
 
-    /// Go: out.String()
     pub(crate) fn string(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
     }
 
-    /// Go: out.Reset()
     pub(crate) fn reset(&self) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -233,7 +228,6 @@ impl Write for OutBufWriter {
     }
 }
 
-/// Go: func onceDaemon(t *testing.T, s *store.Store, o daemonOpts) string
 pub(crate) fn once_daemon(s: &pulse_store::Store, mut o: crate::daemon::DaemonOpts) -> String {
     let out = OutBuf::new();
     o.out = Some(out.writer());
@@ -246,7 +240,6 @@ pub(crate) fn once_daemon(s: &pulse_store::Store, mut o: crate::daemon::DaemonOp
     out.string()
 }
 
-/// Go: func run(t *testing.T, dir string, argv ...string) string
 pub(crate) fn run(dir: impl AsRef<Path>, argv: &[&str]) -> String {
     let mut cmd = Command::new(argv[0]);
     cmd.args(&argv[1..]).current_dir(dir.as_ref());
@@ -279,7 +272,6 @@ pub(crate) fn run(dir: impl AsRef<Path>, argv: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-/// Go: func newRepo(t *testing.T, s *store.Store) (row, string)
 pub(crate) fn new_repo(s: &pulse_store::Store) -> (Row, String) {
     let dir = test_temp_dir(s).join("proj");
     // Copying the per-binary template repo is a pure file copy: no git subprocess per test.
@@ -326,13 +318,10 @@ pub(crate) fn new_repo(s: &pulse_store::Store) -> (Row, String) {
     (p, path)
 }
 
-/// Go: type templateStoreInfo struct {...}
 pub(crate) fn template_store_info() -> &'static TemplateStoreInfo {
     template_store()
 }
 
-/// Go: func templateStore(t *testing.T) *templateStoreInfo
-///
 /// templateStore builds, once per binary, a store in which addProject registered `proj` at a copy
 /// of the template repo, then closes it so newRepo can ATTACH the file and copy its rows.
 pub(crate) fn template_store() -> &'static TemplateStoreInfo {
@@ -386,7 +375,7 @@ pub(crate) fn template_store() -> &'static TemplateStoreInfo {
     })
 }
 
-/// Go: t.TempDir() for a repo copy. The runner has no per-test cleanup hook, so the directory lives
+/// A scratch directory for a repo copy. The runner has no per-test cleanup hook, so the directory lives
 /// under the test store's home (removed with it) instead of the process temp dir.
 fn test_temp_dir(s: &pulse_store::Store) -> PathBuf {
     let dir = Path::new(&s.home)
@@ -396,8 +385,6 @@ fn test_temp_dir(s: &pulse_store::Store) -> PathBuf {
     dir
 }
 
-/// Go: func newBareRepo(t *testing.T, s *store.Store) (row, string)
-///
 /// newBareRepo is newRepo without the project's seeded records (ADR-029/030) and without the three
 /// git subprocesses RegisterProject runs per call (top-level, remote, branch: ~280ms together). It
 /// copies the template repo and writes the same projects row, generated goal setting and
@@ -424,7 +411,6 @@ pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
     (p, path)
 }
 
-/// Go: func templateRepo(t *testing.T) string
 pub(crate) fn template_repo() -> String {
     TEMPLATE_REPO
         .get_or_init(|| {
@@ -441,7 +427,6 @@ pub(crate) fn template_repo() -> String {
         .clone()
 }
 
-/// Go: func join(t *testing.T, s *store.Store, name string) row
 pub(crate) fn join(s: &pulse_store::Store, name: &str) -> Row {
     let (r, _) = crate::board::join_agent(
         s,
@@ -457,7 +442,6 @@ pub(crate) fn join(s: &pulse_store::Store, name: &str) -> Row {
     r
 }
 
-/// Go: func count(t *testing.T, s *store.Store, sql string, args ...any) int
 pub(crate) fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::ToSql]) -> i32 {
     util::query_one(&s.conn().expect("conn"), sql, args)
         .expect("query")
@@ -491,7 +475,6 @@ pub(crate) fn work_leftovers(home: &str) -> Vec<String> {
     left
 }
 
-/// Go: func recipeWith(...)
 pub(crate) fn recipe_with(
     tools: Option<&[&str]>,
     setup: Option<&[&str]>,
@@ -532,7 +515,6 @@ pub(crate) fn recipe_with(
     lines.join("\n")
 }
 
-/// Go: func buildPulse(t *testing.T) string
 pub(crate) fn build_pulse() -> String {
     std::env::current_exe()
         .expect("current exe")
@@ -540,7 +522,6 @@ pub(crate) fn build_pulse() -> String {
         .to_string()
 }
 
-/// Go: func fakeHandsPath(t *testing.T, extra ...string) string
 pub(crate) fn fake_hands_path(extra: &[String]) -> String {
     static FAKE_HANDS_DIRS: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
     let dir_guard = tempfile::tempdir().expect("fake hands");
@@ -567,7 +548,6 @@ pub(crate) fn fake_hands_path(extra: &[String]) -> String {
     format!("PATH={}", dirs.join(if cfg!(windows) { ";" } else { ":" }))
 }
 
-/// Go: func newTestHands(t *testing.T, workdir string, stdout, stderr io.Writer) *hands
 pub(crate) fn new_test_hands(
     workdir: &str,
     stdout: Option<Box<dyn Write + Send>>,
@@ -587,12 +567,10 @@ pub(crate) fn new_test_hands(
     (h, env)
 }
 
-/// Go: func b64(argv ...string) string
 pub(crate) fn b64(argv: &[&str]) -> String {
     base64::engine::general_purpose::STANDARD.encode(argv.join("\0"))
 }
 
-/// Go: type roundTripFunc func(*http.Request) (*http.Response, error)
 pub(crate) struct RoundTripFunc<F>(pub(crate) F);
 impl<F> RoundTripFunc<F> {
     pub(crate) fn new(f: F) -> Self {

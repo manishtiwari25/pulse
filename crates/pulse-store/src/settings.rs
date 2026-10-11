@@ -136,7 +136,7 @@ pub static COMPUTE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
     m
 });
 pub static EVOLVE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
+    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
 );
 pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -147,6 +147,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "evolve.heldout"=>("choice",None,["auto","owner"],None,"auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"),
         "evolve.draft_hours"=>("count",Some(0),[],None,"hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"),
         "evolve.measure_parallel"=>("count",Some(0),[],None,"fixtures one measurement may run at once; 0 or 1 keeps fixture measurement sequential. Each fixture's build gets the cores divided by this (CARGO_BUILD_JOBS) and every measurement process runs at nice 10"),
+        "evolve.flat_cycles"=>("count",Some(0),[],None,"experiment cycles in a row that all tie (variant score = baseline score) before the loop pauses with one owner question on the project's evolution/loop-gate thread; a fixture enabled since, or an answer or decision on that question, lets it run again; at least 2, and 0 turns the gate off"),
         "evolve.baseline_ttl_hours"=>("count",Some(0),[],None,"hours an experiment lane may reuse a measured default-branch baseline for the same commit and fixture hash; 0 means cached baselines never expire"),
         "evolve.parent_rate"=>("decimal",None,[],Some(1.0),"share of experiments the planner builds on an archived variant (a discarded branch's patch, chosen by its lineage's productivity) instead of the default branch; 0 keeps every experiment on the default branch, 1 always builds on the archive when it has a candidate"),
         "evolve.outcome_hours"=>("count",Some(1),[],None,"hours after a landing that changed the improver's own crates before the daemon measures its outcome - landings per worker-hour, first pass, lead time across all projects - against the same window before it, and posts the delta as a result on the landing's thread"),
@@ -156,7 +157,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"15","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"1024","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.pass_seconds"=>"60","daemon.max_jobs"=>"0","daemon.max_load"=>"0","daemon.min_free_mem_mb"=>"1024","daemon.nice"=>"5","daemon.build_jobs"=>"0",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"15","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.pass_seconds"=>"60","daemon.max_jobs"=>"0","daemon.max_load"=>"0","daemon.min_free_mem_mb"=>"1024","daemon.nice"=>"5","daemon.build_jobs"=>"0",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -166,7 +167,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.recover"=>("choice",None,["on","off"],None,"on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `pulse job retry` (ADR-036)"),
         "daemon.recover_limit"=>("count",Some(0),[],None,"recoveries one failed job may receive (the same job run again or a corrected job queued for it) before the daemon holds it for the lead and the owner; 0 holds every failure at once"),
         "daemon.recover_days"=>("count",Some(1),[],None,"days a failed job stays eligible for recovery and counts toward a repeated-failure lesson"),
-        "daemon.min_free_mb"=>("count",Some(0),[],None,"megabytes an executor's workdir filesystem must have free for its probe to pass; under it the probe note says `under N free on <workdir>` and the hand takes no job until space returns; 0 turns the check off"),
+        "daemon.min_free_mb"=>("count",Some(0),[],None,"megabytes an executor's workdir filesystem must have free for its probe to pass and for a run's verify to start; under it the probe note says `under N free on <workdir>` and the hand takes no job until space returns; the default leaves room for a build and the clones beside it, since a run that hits ENOSPC mid-build is lost work; 0 turns the check off"),
         "daemon.setup_mb"=>("count",Some(0),[],None,"megabytes of work-filesystem space one run's clone and setup are taken to need until runs of the project have measured it (runs.work_mb); each tick the daemon starts no more local runs than the free space above daemon.min_free_mb pays for at the largest footprint an active project has shown, one run always when none is in flight; 0 turns the admission off and leaves the floor alone"),
         "daemon.unfit_reprobe_minutes"=>("count",Some(0),[],None,"minutes before the daemon re-probes an executor/project held by an unfit mark while queued work waits; repeated failures double this wait up to 24h, and 0 turns the daemon re-probe off"),
         "daemon.sweep"=>("choice",None,["on","off"],None,"on: every ten minutes the daemon removes what runs, landings and agents left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, pulse/* or evolve/* branches no job will land (saved as a patch first), and worktrees a project checkout lists whose work is on the default branch (its merged branch goes with it) or that sat untouched for daemon.sweep_branch_days (the branch stays); a run in flight, a branch waiting to land, a locked worktree, uncommitted changes and the owner's own files are never touched. off: `pulse sweep` by hand"),
@@ -210,7 +211,7 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
         "lead.stuck_thread_jobs"=>("count",Some(0),[],None,"finished worker jobs one board thread may seed in a row (from its suggestions, handoffs and questions) that commit nothing - read-only triage, claims, questions - before the planner stops seeding that thread and asks the lead to decide it; a job from the thread that commits resets the count; 0 turns the cap off"),
         "lead.research_minutes"=>("count",Some(0),[],None,"minutes a project must sit with nothing queued or leased, no research job and no job that decided work (ballots and reflects do not count) created, before the planner seeds one research job (while the fleet is idle a free lane under parallel_per_project is enough: research then runs beside in-flight work): a worker investigates one focus in turn (the product as its user sees it, the code that changes most, the checks, the loop's report, the docs, the dependencies, the board, the memory) and ends with one to three experiment cards and a vote on every card below quorum; 0 turns research off (ADR-045)"),
         "lead.research_per_day"=>("count",Some(1),[],None,"research jobs one project may receive per UTC day"),
-        "lead.idle_factor"=>("count",Some(1),[],None,"while fewer than half the local worker slots hold a lease the fleet is idle: research waits lead.research_minutes divided by this (never below 10 minutes) with lead.research_per_day grown by it, a ballot job may come every lead.ballot_hours divided by this (never below 10 minutes), and a project's lead gets its standing brief after lead.idle_hours divided by this (never below 1 hour), so idle slots turn into cards, votes and queued work instead of waiting; 1 keeps the plain cadences"),
+        "lead.idle_factor"=>("count",Some(1),[],None,"while fewer than half the local worker slots hold a lease and no job waits in the queue the fleet is idle: research waits lead.research_minutes divided by this (never below 10 minutes) with lead.research_per_day grown by it, a ballot job may come every lead.ballot_hours divided by this (never below 10 minutes), and a project's lead gets its standing brief after lead.idle_hours divided by this (never below 1 hour), so idle slots turn into cards, votes and queued work instead of waiting; 1 keeps the plain cadences"),
         "lead.ballot_hours"=>("count",Some(1),[],None,"hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"),
         "lead.ballot_cap"=>("count",Some(1),[],None,"maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first"),
         "plan.operating_layer_per_day"=>("count",Some(0),[],None,"operating-layer improve jobs the planner may create from suggestion cards for one project per UTC day; product cards are unaffected and are planned first; 0 turns this cap off"),
@@ -470,6 +471,11 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                     "{name} must be at least {}, not {n}",
                     rule.min
                 )));
+            }
+            if name == "evolve.flat_cycles" && n == 1 {
+                return Err(input_err(
+                    "evolve.flat_cycles is a streak of at least 2 tied cycles, or 0 to turn the gate off; not 1",
+                ));
             }
             Ok(n.to_string())
         }
@@ -844,6 +850,43 @@ mod go_settings_tests {
             EVOLVE_RULES["evolve.heldout"]
                 .description
                 .contains("ADR-033")
+        );
+    }
+
+    #[test]
+    fn flat_cycles_setting() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("evolve.flat_cycles", ""), "6");
+        assert_eq!(s.setting_int("evolve.flat_cycles"), 6);
+        for (input, want) in [("0", "0"), ("2", "2"), (" 12 ", "12")] {
+            s.set_setting("human", "evolve.flat_cycles", input).unwrap();
+            assert_eq!(s.setting("evolve.flat_cycles", ""), want);
+        }
+        for (input, message) in [
+            (
+                "1",
+                "at least 2 tied cycles, or 0 to turn the gate off; not 1",
+            ),
+            ("-1", "evolve.flat_cycles must be at least 0, not -1"),
+            ("six", "evolve.flat_cycles takes a whole number"),
+            ("", "evolve.flat_cycles takes a whole number"),
+        ] {
+            let err = s
+                .set_setting("human", "evolve.flat_cycles", input)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(message), "{input:?}: {err}");
+        }
+        assert_eq!(s.setting("evolve.flat_cycles", ""), "12");
+        let rule = &EVOLVE_RULES["evolve.flat_cycles"];
+        assert_eq!(rule.kind, "count");
+        assert!(
+            rule.description.contains("0 turns the gate off")
+                && rule.description.contains("evolution/loop-gate"),
+            "{}",
+            rule.description
         );
     }
 

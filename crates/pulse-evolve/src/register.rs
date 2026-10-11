@@ -1,7 +1,6 @@
 use std::sync::Once;
 
 static REGISTER: Once = Once::new();
-/// Go: func init()
 pub fn register() {
     REGISTER.call_once(|| {
         pulse_cli::register(pulse_cli::Command {

@@ -1,12 +1,8 @@
-//! Test helpers ported from the Go test files owned by slice F1B (see files/RUNNER_TEST_WAVE.txt).
-//! Other slices call these as `crate::test_helpers_f1b::<go_name_in_snake_case>`.
-
 use base64::Engine;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Go: func base64Std(s string) string
 #[allow(dead_code)]
 pub(crate) fn base64_std(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
@@ -51,7 +47,6 @@ pub(crate) fn hands_exit_code(err: anyhow::Error) -> i32 {
         .unwrap_or(1)
 }
 
-/// Go: TestMain PULSE_TEST_HANDS bridge.
 pub(crate) fn hands_helper_process() {
     if std::env::var("PULSE_TEST_HANDS").as_deref() != Ok("1") {
         return;

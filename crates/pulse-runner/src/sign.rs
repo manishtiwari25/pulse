@@ -9,7 +9,6 @@ pub(crate) const SIGNING_REQUIREMENT_PREFIX: &str = "=designated => identifier "
 pub(crate) const SIGNING_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) static SIGNING_SYSTEM: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new(String::new()));
-/// Go: func signingOS() string
 pub(crate) fn signing_os() -> String {
     let v = SIGNING_SYSTEM.read().unwrap().clone();
     if v.is_empty() {
@@ -18,14 +17,12 @@ pub(crate) fn signing_os() -> String {
         v
     }
 }
-/// Go: func signed(path string) bool
 pub(crate) fn signed(path: &str) -> bool {
     if signing_os() != "macos" && signing_os() != "darwin" {
         return false;
     }
     pulse_cli::code_signed(path).0
 }
-/// Go: func sign(path string, running bool) error
 pub(crate) fn sign(path: &str, running: bool) -> Result<()> {
     if signing_os() != "macos" && signing_os() != "darwin" {
         return Ok(());
@@ -79,7 +76,6 @@ pub(crate) fn sign(path: &str, running: bool) -> Result<()> {
     }
     Ok(())
 }
-/// Go: func ensureSigned(out io.Writer, binary string)
 pub(crate) fn ensure_signed(out: &mut dyn Write, binary: &str) {
     if signing_os() != "macos" && signing_os() != "darwin" {
         return;
@@ -106,12 +102,10 @@ pub(crate) fn ensure_signed(out: &mut dyn Write, binary: &str) {
         }
     }
 }
-/// Go: func signNewBuild(_ *store.Store, path string) error
 pub(crate) fn sign_new_build(s: &pulse_store::Store, path: &str) -> Result<()> {
     let _ = s;
     sign(path, false)
 }
-/// Go: func copyFile(src, dst string) error
 pub(crate) fn copy_file(src: &str, dst: &str) -> Result<()> {
     std::fs::copy(src, dst)?;
     Ok(())
@@ -124,7 +118,8 @@ mod tests {
     #[test]
     fn signing_gives_every_build_the_same_requirement() {
         let _serial = crate::test_helpers::serial();
-        let _deadline = crate::test_helpers_f5::test_deadline(std::time::Duration::from_secs(60));
+        let _deadline =
+            crate::test_helpers_daemon::test_deadline(std::time::Duration::from_secs(60));
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("pulse");
         std::fs::write(&binary, b"not a mach-o").unwrap();

@@ -1,4 +1,4 @@
-//! PULSE: the scripted fake provider used by tests (port of Go package internal/provider/fake).
+//! PULSE: the scripted fake provider used by tests.
 
 use anyhow::Result;
 use pulse_provider::{
@@ -58,7 +58,7 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// Provider is a thread-safe scripted provider.
+/// A thread-safe scripted provider.
 #[derive(Debug)]
 pub struct FakeProvider {
     inner: Mutex<Inner>,
@@ -71,10 +71,7 @@ struct Inner {
     requests: Vec<Request>,
 }
 
-/// Go-compatible alias for the fake provider type.
-pub type Fake = FakeProvider;
-
-/// New returns a scripted fake provider.
+/// Returns a scripted fake provider.
 pub fn new(mut script: Script) -> FakeProvider {
     if script.tokens_per_char == 0.0 {
         script.tokens_per_char = 0.25;
@@ -87,9 +84,6 @@ pub fn new(mut script: Script) -> FakeProvider {
         }),
     }
 }
-
-/// Go-compatible alias for [`new`].
-pub use new as New;
 
 impl FakeProvider {
     fn next_reply(inner: &mut Inner) -> Reply {

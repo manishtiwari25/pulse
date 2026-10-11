@@ -1,4 +1,4 @@
-//! PULSE: board digest, ballot, proposals, queue, amendments, constitution (port of Go package internal/tally).
+//! PULSE: board digest, ballot, proposals, queue, amendments, constitution.
 
 use std::sync::{Arc, PoisonError, RwLock};
 

@@ -1,9 +1,9 @@
 #![allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
 
-//! Port of internal/runner/daemon_maintenance.go, plus the experiment lane:
-//! the Go daemon measured experiments on the same serial maintenance pass as
-//! the plain landings, so one ninety-minute measurement froze every landing
-//! behind it; here experiments are measured one at a time on their own lane.
+//! The daemon's maintenance pass, plus the experiment lane: an earlier daemon
+//! measured experiments on the same serial maintenance pass as the plain
+//! landings, so one ninety-minute measurement froze every landing behind it;
+//! here experiments are measured one at a time on their own lane.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -82,7 +82,6 @@ pub(crate) struct LandingRevision {
     pub(crate) generation: i32,
 }
 
-/// Go: func landingQueueState(s *store.Store, projects []row) map[landingRevision]bool
 pub(crate) fn landing_queue_state(
     s: &pulse_store::Store,
     projects: Vec<Row>,
@@ -213,13 +212,11 @@ fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 impl DaemonMaintenance {
-    /// Go: func (m *daemonMaintenance) hasNewPending(s *store.Store, projects []row) bool
     pub(crate) fn has_new_pending(&mut self, s: &pulse_store::Store, projects: Vec<Row>) -> bool {
         landing_queue_state(s, projects)
             .keys()
             .any(|revision| !self.pending.contains_key(revision))
     }
-    /// Go: func (m *daemonMaintenance) start(ctx context.Context, s *store.Store, projects []row, actor, now string, dry bool, inflight map[string]bool, binary selfUpdateEnv)
     pub(crate) fn start(
         &mut self,
         cancel: &pulse_bus::CancellationToken,
@@ -483,7 +480,6 @@ impl DaemonMaintenance {
             ),
         }
     }
-    /// Go: func (m *daemonMaintenance) drain() (lines []string)
     pub(crate) fn drain(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let mut lines = std::mem::take(&mut self.lines);
         lines.extend(self.drain_landing_workers(s));
@@ -680,7 +676,7 @@ fn record_lane_outcome(s: &pulse_store::Store, actor: &str, result: &LaneResult)
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
 
     fn set_retry_setting(s: &pulse_store::Store, key: &str, value: &str) {
         exec1(

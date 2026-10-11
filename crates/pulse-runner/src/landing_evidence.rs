@@ -1,10 +1,7 @@
-#![allow(
-    dead_code,
-    reason = "ported Go runner APIs are consumed incrementally across slices"
-)]
+#![allow(dead_code, reason = "not every item has a caller in the crate")]
 #![allow(
     clippy::too_many_arguments,
-    reason = "Go-port signatures intentionally mirror internal/runner"
+    reason = "signatures intentionally mirror the original runner"
 )]
 
 use anyhow::anyhow;
@@ -24,7 +21,6 @@ pub(crate) struct CappedBuffer {
     pub(crate) exceeded: bool,
 }
 
-/// Go: func landingRefTransition(ctx context.Context, root, ref, target, action string) (string, string)
 pub(crate) fn landing_ref_transition(
     ctx: &pulse_bus::CancellationToken,
     root: String,
@@ -77,7 +73,6 @@ pub(crate) fn landing_ref_transition(
     (before, after)
 }
 
-/// Go: func landingObjectID(value string) bool
 pub(crate) fn landing_object_id(value: String) -> bool {
     matches!(value.len(), 40 | 64)
         && value
@@ -85,7 +80,6 @@ pub(crate) fn landing_object_id(value: String) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
-/// Go: func experimentArchive(s *store.Store, project, branch, run string) (row, error)
 pub(crate) fn experiment_archive(
     s: &pulse_store::Store,
     project: String,
@@ -106,7 +100,6 @@ pub(crate) fn experiment_archive(
     .unwrap_or_default())
 }
 
-/// Go: func landingCodeDeliveryEvidence(ctx context.Context, root, before, after string) codedelivery.Evidence
 pub(crate) fn landing_code_delivery_evidence(
     ctx: &pulse_bus::CancellationToken,
     root: String,
@@ -211,7 +204,6 @@ pub(crate) fn landing_code_delivery_evidence(
     }
 }
 
-/// Go: func limitedGitOutput(ctx context.Context, repo string, timeout time.Duration, maxBytes int, args ...string) ([]byte, string)
 pub(crate) fn limited_git_output(
     ctx: &pulse_bus::CancellationToken,
     repo: String,
@@ -298,7 +290,6 @@ pub(crate) fn limited_git_output(
     }
 }
 
-/// Go: func landingWorkSnapshot(s *store.Store, project, job row, o landOpts) codedelivery.WorkSnapshot
 pub(crate) fn landing_work_snapshot(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -350,7 +341,6 @@ pub(crate) fn landing_work_snapshot(
     work
 }
 
-/// Go: func recordLanding(s *store.Store, project row, branch, actor, action, result string, o landOpts, detail map[string]any) error
 pub(crate) fn record_landing(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -416,7 +406,6 @@ pub(crate) fn record_landing(
     tx.commit()
 }
 
-/// Go: func failMissingExperiment(s *store.Store, project, job row, actor, run, archive, reason string) error
 pub(crate) fn fail_missing_experiment(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -447,7 +436,6 @@ pub(crate) fn fail_missing_experiment(
 }
 
 impl CappedBuffer {
-    /// Go: func (b *cappedBuffer) Write(p []byte) (int, error)
     pub(crate) fn write(&mut self, p: Vec<u8>) -> anyhow::Result<i32> {
         let space = self.limit as isize - self.buffer.len() as isize;
         if space > 0 {
@@ -467,7 +455,7 @@ impl CappedBuffer {
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f5::*;
+    use crate::test_helpers_daemon::*;
     use std::collections::BTreeMap;
 
     #[test]

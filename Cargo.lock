@@ -1139,7 +1139,6 @@ dependencies = [
  "pulse-hooks",
  "pulse-hub",
  "pulse-inspect",
- "pulse-parity",
  "pulse-provider-copilot",
  "pulse-provider-openai",
  "pulse-records",
@@ -1165,7 +1164,6 @@ dependencies = [
  "pulse-cli",
  "pulse-gitenv",
  "pulse-goals",
- "pulse-parity",
  "pulse-store",
  "pulse-testutil",
  "rand",
@@ -1376,7 +1374,6 @@ dependencies = [
  "pulse-cli",
  "pulse-evolve",
  "pulse-goals",
- "pulse-parity",
  "pulse-store",
  "pulse-tally",
  "pulse-testutil",
@@ -1441,7 +1438,6 @@ dependencies = [
  "pulse-bus",
  "pulse-cli",
  "pulse-gitenv",
- "pulse-parity",
  "pulse-provider",
  "pulse-provider-copilot",
  "pulse-runner",
@@ -1452,18 +1448,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tabwriter",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-parity"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde_json",
  "tempfile",
 ]
 
@@ -1625,7 +1609,6 @@ dependencies = [
  "pulse-cli",
  "pulse-gitenv",
  "pulse-goals",
- "pulse-parity",
  "pulse-store",
  "pulse-testutil",
  "regex",

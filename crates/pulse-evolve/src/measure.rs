@@ -1,5 +1,3 @@
-//! Port of internal/evolve/measure.go.
-
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -11,7 +9,6 @@ use std::time::Duration;
 
 pub(crate) type ExecutableHook = fn() -> std::io::Result<String>;
 
-/// Go: var executable = os.Executable
 pub(crate) static EXECUTABLE: LazyLock<RwLock<Option<ExecutableHook>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -39,13 +36,11 @@ struct FixtureResult {
     error: Option<anyhow::Error>,
 }
 
-/// Go: func pulseScorer(scorer string) bool {
 pub(crate) fn pulse_scorer(scorer: &str) -> bool {
     let trimmed = scorer.trim_start_matches([' ', '\t']);
     trimmed == "pulse" || trimmed.starts_with("pulse ") || trimmed.starts_with("pulse\t")
 }
 
-/// Go: func selfScorer(scorer, exe string) string {
 pub(crate) fn self_scorer(scorer: &str, exe: &str) -> String {
     if !pulse_scorer(scorer) {
         return scorer.to_string();
@@ -57,7 +52,6 @@ pub(crate) fn self_scorer(scorer: &str, exe: &str) -> String {
     format!("'{}'{rest}", exe.replace('\'', r#"'\''"#))
 }
 
-/// Go: func scorerEnv(home, commit, exe string) []string {
 pub(crate) fn scorer_env(home: &str, commit: &str, exe: &str) -> Vec<String> {
     let mut env = crate::process::isolated_env(home);
     env.push(format!("PULSE_MEASURE_COMMIT={commit}"));
@@ -71,7 +65,6 @@ pub(crate) fn scorer_env(home: &str, commit: &str, exe: &str) -> Vec<String> {
     env
 }
 
-/// Go: func measure(ctx context.Context, s *store.Store, project, repo, ref string, opts MeasureOptions) (scores *Scores, retErr error) {
 pub(crate) fn measure(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -442,7 +435,6 @@ fn measure_fixture(
     }
 }
 
-/// Go: func measurementFailure(ctx context.Context, label, step string, err error) error {
 pub(crate) fn measurement_failure(
     cancel: &pulse_bus::CancellationToken,
     label: &str,
@@ -476,7 +468,6 @@ pub(crate) fn measurement_failure(
     )
 }
 
-/// Go: func scoreClone(ctx context.Context, clone string, env, scorer []string) (value float64, reason string, retErr error) {
 pub(crate) fn score_clone(
     cancel: &pulse_bus::CancellationToken,
     clone: &str,
@@ -518,7 +509,6 @@ pub(crate) fn score_clone(
     ))
 }
 
-/// Go: func firstLine(text string, limit int) string {
 pub(crate) fn first_line(text: &str, limit: usize) -> String {
     for line in text.lines() {
         let line = line.trim();
@@ -536,7 +526,6 @@ pub(crate) fn first_line(text: &str, limit: usize) -> String {
     String::new()
 }
 
-/// Go: func parseScore(text string) (float64, error) {
 pub(crate) fn parse_score(text: &str) -> Result<f64> {
     if let Ok(v) = text.trim().parse::<f64>()
         && crate::fixtures::score_value(v)
@@ -597,14 +586,14 @@ fn select_fixtures(
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::*;
-    use crate::test_helpers_e3::*;
+    use crate::test_helpers_measure::*;
     use std::path::Path;
     use std::time::Duration;
 
     #[test]
     fn measure_weighted_isolated_and_private() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         fixture(&s, "demo", "F01", "printf 'score: 0.2\\n'", 1.0);
@@ -676,7 +665,7 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
     #[test]
     fn measure_subset_always_includes_private_set() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         fixture(&s, "demo", "F01", "printf 0.2", 1.0);
@@ -720,7 +709,7 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
     #[test]
     fn measure_build_caches_live_outside_clone_and_reach_scorer() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         let log = crate::test_helpers::temp_path().join("cache-log");
@@ -772,7 +761,7 @@ test ! -e target
     #[test]
     fn measure_metric_fixture_skips_harness_and_scores_clone() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         crate::fixtures::add_fixture(
@@ -814,7 +803,7 @@ printf 'score: 0.75\n'
     #[test]
     fn measure_removes_each_clone_before_next_fixture() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         s.set_setting("human", "evolve.measure_parallel", "1")
@@ -849,7 +838,7 @@ esac
     #[test]
     fn measure_parallel_overlaps_and_keeps_output_order() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         s.set_setting("human", "evolve.measure_parallel", "4")
@@ -906,7 +895,7 @@ rm -f "$running/$(basename "$PWD")"
     #[test]
     fn measure_read_only_scorer_violation() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         fixture(
@@ -939,7 +928,7 @@ rm -f "$running/$(basename "$PWD")"
     #[test]
     fn measure_failure_and_cancellation_cleanup() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         for mode in ["harness failure", "bad scorer", "nan scorer", "cancel"] {
             let s = test_store();
             let repo = test_project(&s, "demo");
@@ -1017,7 +1006,7 @@ rm -f "$running/$(basename "$PWD")"
     #[test]
     fn harness_prompt_is_one_literal_argument() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let request = "literal '; $(do-not-execute) \"\nrequest";
         for command in [
             "'/tmp/runner with spaces' --flag",
@@ -1033,7 +1022,7 @@ rm -f "$running/$(basename "$PWD")"
     #[test]
     fn measurement_harness_never_waits_for_a_prompt() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let request = "Improve the value in the clone.";
         s.set_setting("human", "harness", "copilot-cli").unwrap();
@@ -1122,7 +1111,7 @@ rm -f "$running/$(basename "$PWD")"
     #[test]
     fn measure_runs_a_written_judge() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e3_test_lock();
+        let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
         let dir = crate::test_helpers::temp_path();

@@ -71,11 +71,11 @@ pub fn publish_after(events: &[Event]) {
     }
 }
 
-/// Go's board `writer.event`: `Emit` on a plain connection (the row commits
-/// and the event is published at once); `EmitTx` inside a transaction, where
-/// the event is held and published only when that transaction commits
-/// (`PublishAfter`) and dropped if it rolls back — an event must never reach
-/// subscribers before its row is durable.
+/// Writes an event row on `conn` and publishes it. On a plain connection the
+/// row commits and the event is published at once; inside a transaction the
+/// event is held and published only when that transaction commits, and
+/// dropped if it rolls back — an event must never reach subscribers before
+/// its row is durable.
 pub fn emit_conn(
     conn: &rusqlite::Connection,
     now: &str,

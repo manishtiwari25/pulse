@@ -1,5 +1,5 @@
-//! Go: context.Context stand-in shared by every crate that needs
-//! cancellation/deadlines (the store's connection waits, the bus, the runner).
+//! Cancellation tokens with deadlines, shared by every crate that needs
+//! cancellation (the store's connection waits, the bus, the runner).
 
 use crossbeam_channel::{Receiver, bounded};
 use std::sync::Arc;
@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Go: context.Canceled and context.DeadlineExceeded - the two errors a done
-/// context reports; Display is the exact Go text so wrapped messages match.
+/// Why a token is done. The Display text is fixed - `context canceled` and
+/// `context deadline exceeded` - because callers classify wrapped errors
+/// and stored failure messages by matching on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ContextError {
     Canceled,
@@ -27,7 +28,6 @@ impl std::fmt::Display for ContextError {
 impl std::error::Error for ContextError {}
 
 impl ContextError {
-    /// Go: errors.Is(err, want) - true when `want` is anywhere in the chain.
     pub fn is(err: &anyhow::Error, want: ContextError) -> bool {
         Self::of(err) == Some(want)
     }
@@ -39,10 +39,10 @@ impl ContextError {
     }
 }
 
-/// The stand-in for Go's context.Context: clones share one cancellation flag
-/// (handles to the same context); `with_timeout`/`child` derive a new context
-/// that is done when its parent is done, when it is cancelled itself, or when
-/// its deadline passes.
+/// A cancellation token: clones share one cancellation flag (handles to the
+/// same token); `with_timeout`/`child` derive a new token that is done when
+/// its parent is done, when it is cancelled itself, or when its deadline
+/// passes.
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
@@ -51,8 +51,8 @@ pub struct CancellationToken {
     done: Arc<DoneSignal>,
 }
 
-/// Go: the channel behind ctx.Done(). Closing it (dropping the only sender)
-/// wakes every receiver, now and forever, exactly like a closed Go channel;
+/// The channel behind `done()`. Closing it (dropping the only sender) wakes
+/// every receiver, now and forever: a disconnected channel stays ready;
 /// descendants register here so a parent's cancel closes theirs too.
 struct DoneSignal {
     tx: parking_lot::Mutex<Option<crossbeam_channel::Sender<()>>>,
@@ -102,7 +102,6 @@ impl CancellationToken {
         Self::default()
     }
 
-    /// Go: context.WithCancel(parent).
     pub fn child(&self) -> Self {
         let done = Arc::new(DoneSignal::default());
         // Register with every ancestor so any of their cancels closes this one.
@@ -125,12 +124,10 @@ impl CancellationToken {
         c
     }
 
-    /// Go: context.WithTimeout(parent, d).
     pub fn with_timeout(&self, d: Duration) -> Self {
         self.with_deadline(Instant::now() + d)
     }
 
-    /// Go: context.WithDeadline(parent, at); an earlier parent deadline wins.
     pub fn with_deadline(&self, at: Instant) -> Self {
         let mut c = self.child();
         c.deadline = Some(match self.deadline {
@@ -141,17 +138,17 @@ impl CancellationToken {
     }
 
     pub fn cancel(&self) {
-        // Go: the first cause wins - cancelling after the deadline has already
-        // passed leaves Err() as DeadlineExceeded.
+        // The first cause wins - cancelling after the deadline has already
+        // passed leaves err() as DeadlineExceeded.
         if !self.deadline_exceeded() {
             self.cancelled.store(true, Ordering::SeqCst);
         }
         self.done.close();
     }
 
-    /// Go: ctx.Done() - a receiver that is ready (disconnected) once the
-    /// context is done and stays ready; every clone of it wakes, so it can sit
-    /// in a `crossbeam_channel::select!` next to other channels.
+    /// A receiver that is ready (disconnected) once the token is done and
+    /// stays ready; every clone of it wakes, so it can sit in a
+    /// `crossbeam_channel::select!` next to other channels.
     pub fn done(&self) -> Receiver<()> {
         if self.is_cancelled() {
             self.done.close();
@@ -183,16 +180,14 @@ impl CancellationToken {
         self.done.rx.clone()
     }
 
-    /// Go: ctx.Err() != nil.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
             || self.deadline_exceeded()
             || self.parent.as_ref().is_some_and(|p| p.is_cancelled())
     }
 
-    /// Go: ctx.Err() - None while the context is live, otherwise the typed
-    /// cause whose Display text is Go's ("context canceled" or "context
-    /// deadline exceeded").
+    /// None while the token is live, otherwise the typed cause (whose
+    /// Display text is `context canceled` or `context deadline exceeded`).
     pub fn err(&self) -> Option<ContextError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Some(ContextError::Canceled);
@@ -203,12 +198,10 @@ impl CancellationToken {
         self.parent.as_ref().and_then(|p| p.err())
     }
 
-    /// Go: ctx.Deadline().
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
 
-    /// Go: ctx.Err() == context.DeadlineExceeded.
     pub fn deadline_exceeded(&self) -> bool {
         self.deadline.is_some_and(|d| Instant::now() >= d)
     }

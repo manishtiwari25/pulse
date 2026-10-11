@@ -1,17 +1,13 @@
-//! Port of internal/evolve/card_job.go.
-
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
 pub const CARD_JOB_TITLE: &str = "Experiment card for suggestion ";
 pub(crate) const CARD_JOB_PRIORITY: i64 = 25;
 
-/// Go: func cardJobSource(suggestionID string) string { return "suggestion:" + suggestionID }
 pub(crate) fn card_job_source(suggestion_id: &str) -> String {
     format!("suggestion:{suggestion_id}")
 }
 
-/// Go: func openCardJob(s *store.Store, project string) (*board.Job, error) {
 pub(crate) fn open_card_job(
     s: &pulse_store::Store,
     project: &str,
@@ -30,7 +26,6 @@ pub(crate) fn open_card_job(
         .map(Option::flatten)
 }
 
-/// Go: func queueCardJob(tx *board.WriteTransaction, project string, p *tally.Post, sg tally.Suggestion, status *LoopStatus, opts PlanOptions) (*board.Job, bool, error) {
 pub(crate) fn queue_card_job(
     tx: &pulse_board::WriteTransaction<'_>,
     project: &str,
@@ -52,7 +47,6 @@ pub(crate) fn queue_card_job(
     })
 }
 
-/// Go: func cardJobBrief(project string, p *tally.Post, sg tally.Suggestion, status *LoopStatus) string {
 pub(crate) fn card_job_brief(
     project: &str,
     p: &pulse_tally::Post,
@@ -105,7 +99,6 @@ pub(crate) fn card_job_brief(
     )
 }
 
-/// Go: func indent(text string) string {
 pub(crate) fn indent(text: &str) -> String {
     text.split('\n')
         .map(|line| format!("  {line}"))
@@ -113,7 +106,6 @@ pub(crate) fn indent(text: &str) -> String {
         .join("\n")
 }
 
-/// Go: func truncate(text string, n int) string {
 pub(crate) fn truncate(text: &str, n: usize) -> String {
     let trimmed = text.trim();
     let chars: Vec<char> = trimmed.chars().collect();
@@ -128,12 +120,12 @@ pub(crate) fn truncate(text: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::count_rows;
-    use crate::test_helpers_e1::*;
+    use crate::test_helpers_plan::*;
 
     #[test]
     fn plan_experiment_queues_a_card_job_for_a_cardless_pick() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         crate::test_helpers::join_test_agent(&s, "card-writer");
         let idea = cardless_suggestion(&s, "idea", "Shorten the README intro", &["up", "up"]);
@@ -332,7 +324,7 @@ mod tests {
     #[test]
     fn plan_experiment_writes_one_card_at_a_time() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         crate::test_helpers::join_test_agent(&s, "card-writer");
         let first = cardless_suggestion(&s, "first", "Rename the flag", &["up", "up", "up"]);
@@ -390,7 +382,7 @@ mod tests {
     #[test]
     fn plan_experiment_runs_the_first_valid_card_past_a_cardless_pick() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let idea = cardless_suggestion(&s, "idea", "Make the daemon faster", &["up", "up", "up"]);
         let card =
@@ -432,7 +424,7 @@ mod tests {
     #[test]
     fn loop_claims_every_valid_card() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e1_test_lock();
+        let _guard = plan_test_lock();
         let s = cycle_ready();
         let idea = cardless_suggestion(&s, "idea", "Make the daemon faster", &["up", "up", "up"]);
         let first = voted_suggestion_with_votes(

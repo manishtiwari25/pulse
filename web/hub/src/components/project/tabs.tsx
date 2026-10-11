@@ -19,6 +19,7 @@ import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
 import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
+import { ProjectGoalPanel } from "@/components/project/goal";
 import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
@@ -99,6 +100,8 @@ export function OverviewTab({ slug }: { slug: string }) {
             ) : null}
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
               <div className="grid gap-4 content-start">
+                {/* The direction every run reads (ADR-040) - the home page's "generated goal" note lands here. */}
+                <ProjectGoalPanel key={"goal-" + slug} slug={slug} />
                 {tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={180} /> : null}
                 <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} icon={MessagesSquareIcon} actions={<Link href={hrefs.project(slug, "board", { sub: "threads" })} className="hover:underline">all</Link>} dense>
                   {o.open_threads.length ? <OpenThreads rows={o.open_threads} slug={slug} limit={6} /> : <p className="px-4 py-3 text-[12.5px] text-muted-foreground">No open thread. Threads open when an agent posts a claim, question or suggestion.</p>}

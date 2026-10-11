@@ -12,7 +12,6 @@ struct VoteInfo {
     session: String,
 }
 
-/// Go: SuggestionVoteCounts(s, project, suggestionID).
 pub fn suggestion_vote_counts(
     s: &pulse_store::Store,
     project: &str,
@@ -21,9 +20,11 @@ pub fn suggestion_vote_counts(
     suggestion_vote_counts_context(&CancellationToken::new(), s, project, suggestion_id)
 }
 
-/// Go: SuggestionVoteCountsContext(ctx, s, project, suggestionID) - the scan
-/// is bounded to one second and stops with ctx.Err() as soon as the caller's
-/// context is done, whether it is waiting for a connection or mid-scan.
+/// Counts the up and down votes on one suggestion, returning `(up, down,
+/// found)`; `found` is false when the project has no such suggestion. The
+/// scan is bounded to one second and stops with the context's error as soon
+/// as the caller's context is done, whether it is waiting for a connection or
+/// mid-scan.
 pub fn suggestion_vote_counts_context(
     ctx: &CancellationToken,
     s: &pulse_store::Store,

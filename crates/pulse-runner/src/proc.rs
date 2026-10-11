@@ -176,8 +176,7 @@ impl std::fmt::Debug for ProcessObserver {
     }
 }
 
-/// Go: func runGroup(ctx context.Context, argv []string, dir string, env []string, stdin []byte, budget time.Duration) (outcome, error)
-/// Runs argv in a child process group; the fill keeps the Go shape with `std::process::Command`, `pre_exec`/process groups and kill-on-cancel via `nix::sys::signal::killpg`.
+/// Runs argv in its own child process group so cancellation can kill the whole tree (`killpg`).
 pub(crate) fn run_group(
     cancel: &pulse_bus::CancellationToken,
     argv: &[String],
@@ -189,7 +188,6 @@ pub(crate) fn run_group(
     run_group_observed(cancel, argv, dir, env, stdin, budget, None)
 }
 
-/// Go: func runGroupObserved(ctx context.Context, argv []string, dir string, env []string, stdin []byte, budget time.Duration, observer *processObserver) (outcome, error)
 /// Observed process execution shares the same process-group cancellation path and heartbeat callbacks.
 pub(crate) fn run_group_observed(
     cancel: &pulse_bus::CancellationToken,
@@ -221,7 +219,7 @@ pub(crate) fn run_group_observed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let input = stdin.to_vec();
-    // The child leads its own process group (Go: Setpgid) so the whole tree
+    // The child leads its own process group so the whole tree
     // it spawns ends with it, at the nice level the daemon set for its jobs.
     own_process_group(&mut cmd);
     crate::daemon_load::nice_child(&mut cmd);
@@ -283,7 +281,6 @@ fn exit_code(status: std::process::ExitStatus) -> Option<i32> {
     })
 }
 
-/// Go: func waitCommand(ctx context.Context, cmd *exec.Cmd, budget, grace time.Duration, observer *processObserver) (error, bool, bool)
 pub(crate) fn wait_command(
     cancel: &pulse_bus::CancellationToken,
     cmd: &mut Command,
@@ -326,11 +323,9 @@ pub(crate) fn wait_command(
         }
     }
 }
-/// Go: func killGroup(pid int, done <-chan error)
 pub(crate) fn kill_group(pid: i32) {
     kill_group_after(pid, Duration::from_secs(5));
 }
-/// Go: func killGroupAfter(pid int, done <-chan error, grace time.Duration)
 /// SIGTERM the group, wait up to `grace` for it to empty, then SIGKILL it.
 pub(crate) fn kill_group_after(pid: i32, grace: Duration) {
     ProcessGroup::with_grace(pid, grace).terminate();
@@ -350,7 +345,6 @@ pub(crate) fn sweep_job_dir(dir: &str, log: &mut dyn FnMut(String)) -> Vec<Kille
 }
 pub(crate) static KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(5)));
-/// Go: func finish(err error, stdout, stderr string, timedOut bool) outcome
 pub(crate) fn finish(err: Option<i32>, stdout: &str, stderr: &str, timed_out: bool) -> Outcome {
     Outcome {
         timeout: timed_out,
@@ -359,7 +353,6 @@ pub(crate) fn finish(err: Option<i32>, stdout: &str, stderr: &str, timed_out: bo
         stderr: stderr.into(),
     }
 }
-/// Go: func envWith(base []string, extra map[string]string) []string
 pub(crate) fn env_with(base: &[String], extra: &BTreeMap<String, String>) -> Vec<String> {
     if extra.is_empty() {
         return base.to_vec();
@@ -376,7 +369,6 @@ pub(crate) fn env_with(base: &[String], extra: &BTreeMap<String, String>) -> Vec
     }
     out
 }
-/// Go: func indexByte(s string, c byte) int
 pub(crate) fn index_byte(s: &str, c: u8) -> i32 {
     s.as_bytes()
         .iter()
@@ -384,15 +376,12 @@ pub(crate) fn index_byte(s: &str, c: u8) -> i32 {
         .map(|i| i as i32)
         .unwrap_or(-1)
 }
-/// Go: func sortedKeys(m map[string]string) []string
 pub(crate) fn sorted_keys(m: &BTreeMap<String, String>) -> Vec<String> {
     m.keys().cloned().collect()
 }
-/// Go: func sortStrings(a []string)
 pub(crate) fn sort_strings(a: &mut [String]) {
     a.sort();
 }
-/// Go: func environ() []string
 pub(crate) fn environ() -> Vec<String> {
     let mut env = crate::util::strip_hook_git_env(
         &std::env::vars()

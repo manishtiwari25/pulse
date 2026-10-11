@@ -1,11 +1,6 @@
-//! Test helpers ported from Go test files owned by slice F4.
-
 #![cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "shared test helpers are consumed incrementally by other slices"
-    )
+    allow(dead_code, reason = "shared test helpers; not every one has a caller")
 )]
 #![cfg_attr(test, allow(dead_code))]
 
@@ -177,7 +172,7 @@ pub(crate) fn completion_worker_command(
     exit: i32,
     direct_answer: &str,
 ) -> (String, Vec<pulse_testutil::SetenvGuard>) {
-    // Go: t.Setenv for each - the helper process inherits them; they revert when the guards drop.
+    // The helper process inherits these; they revert when the guards drop.
     let env = vec![
         pulse_testutil::setenv("PULSE_COMPLETION_HELPER", "1"),
         pulse_testutil::setenv("PULSE_COMPLETION_STATUS", status),
@@ -188,7 +183,7 @@ pub(crate) fn completion_worker_command(
     ];
     (
         format!(
-            "{} --exact test_helpers_f4::tests::completion_worker_process --nocapture",
+            "{} --exact test_helpers_completion::tests::completion_worker_process --nocapture",
             shell_quote(&build_pulse())
         ),
         env,
@@ -237,7 +232,6 @@ pub(crate) fn jobs_by_source(s: &pulse_store::Store, source: &str) -> Row {
     j
 }
 
-/// Go: func withClosedLoginGate(t *testing.T) - hold the guard for the test's whole body.
 #[must_use = "the gate reopens when the guard drops"]
 pub(crate) fn with_closed_login_gate() -> crate::login_gate::LoginGateGuard {
     crate::login_gate::swap_login_gate(Box::new(|_| {

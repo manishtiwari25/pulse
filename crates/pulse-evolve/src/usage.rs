@@ -56,7 +56,6 @@ pub(crate) struct LocalUsageFile {
     pub(crate) path: String,
     pub(crate) at: DateTime<Utc>,
 }
-/// Go: func usageFiles(roots []string, extension string, cutoff time.Time) ([]localUsageFile, int)
 pub(crate) fn usage_files(
     roots: &[String],
     extension: &str,
@@ -78,15 +77,12 @@ pub(crate) fn usage_files(
     files.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.path.cmp(&b.path)));
     (files, problems)
 }
-/// Go: func object(value any) map[string]any
 pub(crate) fn object(value: &Value) -> Option<Map<String, Value>> {
     value.as_object().cloned()
 }
-/// Go: func text(value any) string
 pub(crate) fn text(value: &Value) -> String {
     value.as_str().unwrap_or("").to_string()
 }
-/// Go: func objectOrJSON(value any) map[string]any
 pub(crate) fn object_or_json(value: &Value) -> Option<Map<String, Value>> {
     object(value).or_else(|| {
         value
@@ -94,7 +90,6 @@ pub(crate) fn object_or_json(value: &Value) -> Option<Map<String, Value>> {
             .and_then(|s| decode_object(s.as_bytes()).ok())
     })
 }
-/// Go: func decodeObject(data []byte) (map[string]any, error)
 pub(crate) fn decode_object(data: &[u8]) -> Result<Map<String, Value>> {
     let mut de = serde_json::Deserializer::from_slice(data).into_iter::<Value>();
     let Some(value) = de.next() else {
@@ -106,7 +101,6 @@ pub(crate) fn decode_object(data: &[u8]) -> Result<Map<String, Value>> {
     }
     object(&value).ok_or_else(|| anyhow!("not an object"))
 }
-/// Go: func usageLines(file string, each func(map[string]any)) (bad int)
 pub(crate) fn usage_lines<F>(file: &str, each: F) -> i64
 where
     F: FnMut(Map<String, Value>),
@@ -130,7 +124,6 @@ where
     }
     bad
 }
-/// Go: func token(value any) *int64
 pub(crate) fn token(value: &Value) -> Option<i64> {
     let n = if let Some(n) = value.as_i64() {
         n
@@ -141,7 +134,6 @@ pub(crate) fn token(value: &Value) -> Option<i64> {
     };
     (n >= 0).then_some(n)
 }
-/// Go: func addToken(dest **int64, value *int64)
 pub(crate) fn add_token(dest: &mut Option<i64>, value: Option<i64>) {
     if let Some(value) = value {
         match dest {
@@ -154,7 +146,6 @@ pub(crate) fn add_token(dest: &mut Option<i64>, value: Option<i64>) {
         }
     }
 }
-/// Go: func sumTokens(values ...*int64) *int64
 pub(crate) fn sum_tokens(values: &[Option<i64>]) -> Option<i64> {
     let mut total = None;
     for v in values {
@@ -162,7 +153,6 @@ pub(crate) fn sum_tokens(values: &[Option<i64>]) -> Option<i64> {
     }
     total
 }
-/// Go: func addModel(session *UsageSession, model string)
 pub(crate) fn add_model(session: &mut UsageSession, model: &str) {
     if model.is_empty()
         || model == "<synthetic>"
@@ -176,7 +166,6 @@ pub(crate) fn add_model(session: &mut UsageSession, model: &str) {
         session.models.sort();
     }
 }
-/// Go: func newUsage(id string, at time.Time) *UsageSession
 pub(crate) fn new_usage(id: &str, at: DateTime<Utc>) -> UsageSession {
     let mut id = id.to_string();
     if pulse_store::secret_shaped(&id) || id.contains(['\r', '\n', '\0']) {
@@ -190,7 +179,6 @@ pub(crate) fn new_usage(id: &str, at: DateTime<Utc>) -> UsageSession {
         ..UsageSession::default()
     }
 }
-/// Go: func hasTokens(s *UsageSession) bool
 pub(crate) fn has_tokens(s: &UsageSession) -> bool {
     s.input.is_some()
         || s.output.is_some()
@@ -198,7 +186,6 @@ pub(crate) fn has_tokens(s: &UsageSession) -> bool {
         || s.cache_write.is_some()
         || s.subagent_total.is_some()
 }
-/// Go: func collectCopilot(files []localUsageFile) ([]UsageSession, int)
 pub(crate) fn collect_copilot(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i64) {
     let mut out = Vec::new();
     let mut bad = 0;
@@ -319,7 +306,6 @@ pub(crate) fn collect_copilot(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i
     }
     (out, bad)
 }
-/// Go: func collectClaude(files []localUsageFile) ([]UsageSession, int)
 pub(crate) fn collect_claude(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i64) {
     let mut sessions = BTreeMap::new();
     let mut seen = BTreeMap::new();
@@ -387,7 +373,6 @@ pub(crate) fn collect_claude(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i6
     }
     (usage_session_list(sessions), bad)
 }
-/// Go: func collectCodex(files []localUsageFile) ([]UsageSession, int)
 pub(crate) fn collect_codex(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i64) {
     let mut sessions = BTreeMap::new();
     let mut bad = 0;
@@ -442,7 +427,6 @@ pub(crate) fn collect_codex(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i64
     }
     (usage_session_list(sessions), bad)
 }
-/// Go: func collectOpenCode(files []localUsageFile) ([]UsageSession, int)
 pub(crate) fn collect_open_code(files: &[LocalUsageFile]) -> (Vec<UsageSession>, i64) {
     let mut sessions = BTreeMap::new();
     let mut seen = BTreeMap::new();
@@ -511,13 +495,11 @@ pub(crate) fn collect_open_code(files: &[LocalUsageFile]) -> (Vec<UsageSession>,
     }
     (usage_session_list(sessions), bad)
 }
-/// Go: func usageSessionList(sessions map[string]*UsageSession) []UsageSession
 pub(crate) fn usage_session_list(sessions: BTreeMap<String, UsageSession>) -> Vec<UsageSession> {
     let mut out: Vec<_> = sessions.into_values().filter(has_tokens).collect();
     out.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
     out
 }
-/// Go: func Usage(opts UsageOptions) ([]RunnerUsage, error)
 pub fn usage(opts: UsageOptions) -> Result<Vec<RunnerUsage>> {
     let mut opts = opts;
     if opts.days < 0 || opts.days > 36500 {

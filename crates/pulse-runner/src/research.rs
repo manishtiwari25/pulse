@@ -1,5 +1,3 @@
-//! Port of internal/runner/research.go.
-
 use crate::util::{Row, must_one, plus_minutes, setting_int, stamp_of};
 
 pub(crate) const RESEARCH_SOURCE_PREFIX: &str = "research:";
@@ -118,23 +116,34 @@ pub(crate) fn idle_factor(s: &pulse_store::Store) -> i32 {
     setting_int(s, "lead.idle_factor").max(1)
 }
 
-/// True while fewer than half the local worker slots hold a lease, so research
-/// and ballots can come more often without taking a slot from decided work.
+/// True while fewer than half the local worker slots hold a lease and no
+/// decided work waits in the queue, so research and ballots can come more
+/// often without taking a slot from it. Few leases alone do not make the
+/// fleet idle: the load governor or a project's lanes can hold queued jobs
+/// back, and research seeded over a waiting queue only lengthens it. Queued
+/// research (reflect, ballot, lead and answer jobs) is not counted, or the
+/// ballot the idle fleet just planned would end its own idleness.
 pub(crate) fn fleet_idle(s: &pulse_store::Store) -> bool {
+    let (leased, queued) = fleet_load(s);
     let workers = setting_int(s, "workers").max(1);
-    let Ok(conn) = s.conn() else {
-        return false;
-    };
-    let leased = must_one(
-        &conn,
-        "SELECT COUNT(*) AS n FROM jobs WHERE status = 'leased'",
-        &[],
-    )
-    .int("n");
-    leased * 2 < workers
+    leased * 2 < workers && queued == 0
 }
 
-/// Go: func researchDue(s *store.Store, slug, now string) (researchFocus, string, bool)
+/// Leased jobs of every kind and queued jobs of the kinds that decide or land
+/// work, across the fleet (a `blocked` job is one the runner stopped
+/// retrying, not open work).
+pub(crate) fn fleet_load(s: &pulse_store::Store) -> (i32, i32) {
+    let Ok(conn) = s.conn() else {
+        return (0, 0);
+    };
+    let r = must_one(
+        &conn,
+        "SELECT SUM(status = 'leased') AS leased, SUM(status = 'queued' AND kind NOT IN ('reflect', 'ballot', 'lead', 'answer')) AS queued FROM jobs WHERE status IN ('leased', 'queued')",
+        &[],
+    );
+    (r.int("leased"), r.int("queued"))
+}
+
 pub(crate) fn research_due(
     s: &pulse_store::Store,
     slug: String,
@@ -216,7 +225,6 @@ pub(crate) fn research_due(
     (next_focus(s, &slug, &now, ever), String::new(), true)
 }
 
-/// Go: func planResearch(s *store.Store, slug, now, createdBy string) (row, bool, error)
 pub(crate) fn plan_research(
     s: &pulse_store::Store,
     slug: String,
@@ -241,7 +249,6 @@ pub(crate) fn plan_research(
     )
 }
 
-/// Go: func researchBrief(s *store.Store, slug string, focus researchFocus) string
 pub(crate) fn research_brief(s: &pulse_store::Store, slug: String, focus: ResearchFocus) -> String {
     format!(
         "Research job: `{}` has a free lane and no card the board voted up is waiting for it, so this run makes the next work. Your focus this time is {}. The project goal puts real product defects, correctness, reliability and user experience before operating-layer churn. Investigate for real - run the commands, read the files, keep what you saw (path:line, the command's output) - guesswork is what the other agents vote down.\n\n\

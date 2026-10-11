@@ -1,5 +1,3 @@
-//! Test helpers ported from the Go test files owned by slice F6 (see files/RUNNER_TEST_WAVE.txt).
-//! Other slices call these as `crate::test_helpers_f6::<go_name_in_snake_case>`.
 #![allow(dead_code, unused_imports)]
 
 use crate::test_helpers::*;
@@ -9,7 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// Go: func invoke(t *testing.T, s *store.Store, name string, project string, args ...string) (string, string, int)
 pub(crate) fn invoke(
     s: &pulse_store::Store,
     name: &str,
@@ -67,7 +64,6 @@ pub(crate) fn invoke(
     (out.string(), err.string(), code)
 }
 
-/// Go: func invokeOK(t *testing.T, s *store.Store, name, project string, args ...string) string
 pub(crate) fn invoke_ok(
     s: &pulse_store::Store,
     name: &str,
@@ -81,11 +77,9 @@ pub(crate) fn invoke_ok(
     out
 }
 
-/// Go: func withStdin(t *testing.T, text string, f func())
-///
-/// Runs f with stdin reading text, as `... | pulse executor token --with-token` would. Go swaps
-/// `os.Stdin` for the pipe's read end; the process-wide equivalent here is dup2 onto fd 0, restored
-/// afterwards. Callers hold `serial()` so nothing else reads stdin meanwhile.
+/// Runs f with stdin reading text, as `... | pulse executor token --with-token` would. The pipe's
+/// read end is dup2'd onto fd 0 for the process and restored afterwards. Callers hold `serial()`
+/// so nothing else reads stdin meanwhile.
 pub(crate) fn with_stdin(text: &str, f: impl FnOnce()) {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let (r, mut w) = std::io::pipe().expect("pipe");
@@ -118,10 +112,8 @@ fn stub_gh_auth_token() -> anyhow::Result<String> {
     Ok(STUB_GH_TOKEN.lock().unwrap().clone())
 }
 
-/// Go: func stubGh(t *testing.T, tok string)
-///
-/// Makes the hub's `gh auth token` answer tok for the test; dropping the guard is Go's t.Cleanup
-/// (the old ghAuthToken back, the gh source cache forgotten).
+/// Makes the hub's `gh auth token` answer tok for the test; dropping the guard puts the old
+/// `GH_AUTH_TOKEN` back and forgets the gh source cache.
 #[must_use = "hold the guard for the test's life; dropping it restores gh auth token"]
 pub(crate) fn stub_gh(tok: &str) -> StubGh {
     let old = *crate::token::GH_AUTH_TOKEN.read().unwrap();
@@ -221,7 +213,6 @@ impl Drop for InstallFakeGuard {
     }
 }
 
-/// Go: func installFake(t *testing.T, target *cliRunner, f cliRunner)
 pub(crate) fn install_fake(
     setter: fn(Box<crate::provider::CliRunner>) -> Box<crate::provider::CliRunner>,
     runner: Box<crate::provider::CliRunner>,
@@ -242,7 +233,6 @@ fn contains(values: &[&str], want: &str) -> bool {
     values.contains(&want)
 }
 
-/// Go: type fakeAz struct (runner4_test.go)
 #[derive(Clone)]
 pub(crate) struct FakeAz(pub Arc<Mutex<FakeAzState>>);
 
@@ -253,13 +243,11 @@ pub(crate) struct FakeAzState {
     pub deleted: Vec<String>,
 }
 
-/// Go: az := &fakeAz{created: map[string]bool{}}
 pub(crate) fn new_fake_az() -> FakeAz {
     FakeAz(Arc::new(Mutex::new(FakeAzState::default())))
 }
 
 impl FakeAz {
-    /// Go: func (f *fakeAz) run(_ context.Context, args []string, _ time.Duration) (int, string, string, error)
     pub(crate) fn run(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -319,7 +307,6 @@ impl FakeAz {
         })
     }
 
-    /// Go: func (f *fakeAz) has(prefix string) bool
     pub(crate) fn has(&self, prefix: &str) -> bool {
         self.0
             .lock()
@@ -360,7 +347,6 @@ pub(crate) struct AwsFake {
     pub ip: String,
 }
 
-/// Go: func newFakeAws() *fakeAws
 pub(crate) fn new_fake_aws() -> FakeAws {
     FakeAws(Arc::new(Mutex::new(FakeAwsState::default())))
 }
@@ -558,7 +544,6 @@ pub(crate) struct GcpFake {
     pub project: String,
 }
 
-/// Go: func newFakeGcp() *fakeGcp
 pub(crate) fn new_fake_gcloud() -> FakeGcloud {
     FakeGcloud(Arc::new(Mutex::new(FakeGcloudState::default())))
 }
@@ -719,7 +704,6 @@ pub(crate) struct MpFake {
     pub ip: String,
 }
 
-/// Go: func newFakeMultipass() *fakeMultipass
 pub(crate) fn new_fake_multipass() -> FakeMultipass {
     FakeMultipass(Arc::new(Mutex::new(FakeMultipassState::default())))
 }
@@ -910,7 +894,6 @@ fn fake_place_login(
     })
 }
 
-/// Go: func newComputeHarness(t *testing.T, s *store.Store, settings map[string]string) *computeHarness
 pub(crate) fn new_compute_harness(
     s: &pulse_store::Store,
     settings: &[(&str, &str)],
@@ -942,7 +925,7 @@ pub(crate) fn new_compute_harness(
             .expect("set setting");
     }
     let old_wait = crate::provider::set_provision_wait(Duration::from_millis(5));
-    crate::test_helpers_f1b::write_executor_token(s);
+    crate::test_helpers_hands::write_executor_token(s);
     let old_ssh = crate::executor::run_ssh_hook();
     crate::executor::set_run_ssh(fake_run_ssh);
     let old_place = *crate::executor::PLACE_LOGIN.read().expect("place login");
@@ -988,7 +971,6 @@ pub(crate) fn new_compute_harness(
 }
 
 impl ComputeHarness {
-    /// Go: func (h *computeHarness) provisionAndRelease(...)
     pub(crate) fn provision_and_release(&self, s: &pulse_store::Store, provider: &str, ip: &str) {
         let req = pulse_tasks::request_compute(
             s,
@@ -1096,7 +1078,7 @@ mod tests {
     use crate::board::{PostOpts, actor_agent, create_post, post_row};
     use crate::plan::{plan_jobs, project_posts};
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store};
-    use crate::test_helpers_f4::suppress_planner_reflect;
+    use crate::test_helpers_completion::suppress_planner_reflect;
     use crate::util::{exec1, plus_hours, plus_minutes};
     use serde_json::json;
     use std::collections::BTreeMap;

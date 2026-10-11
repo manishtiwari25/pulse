@@ -1,4 +1,4 @@
-//! PULSE: the pulse goal command (port of Go package internal/goals/command).
+//! PULSE: the pulse goal command.
 
 mod command;
 

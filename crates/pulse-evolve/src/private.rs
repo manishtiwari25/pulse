@@ -5,11 +5,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::LazyLock;
 
-/// Go: const maxFixtureBytes = 1 << 20
 pub(crate) const MAX_FIXTURE_BYTES: usize = 1 << 20;
-/// Go: const templateMarker = "PULSE_HELDOUT_TEMPLATE"
 pub(crate) const TEMPLATE_MARKER: &str = "PULSE_HELDOUT_TEMPLATE";
-/// Go: const generatedLedger = "generated"
 pub(crate) const GENERATED_LEDGER: &str = "generated";
 
 #[derive(Debug, Clone, Default)]
@@ -48,7 +45,6 @@ pub struct Judge {
     pub label: String,
 }
 
-/// Go: var judgeLabels = map[string]string{...}
 pub(crate) static JUDGE_LABELS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     BTreeMap::from([
         (
@@ -78,7 +74,6 @@ pub(crate) static JUDGE_LABELS: LazyLock<BTreeMap<String, String>> = LazyLock::n
     ])
 });
 
-/// Go: func Judges() []Judge
 pub fn judges() -> Vec<Judge> {
     crate::score::starter_names()
         .into_iter()
@@ -101,7 +96,6 @@ pub struct HeldoutView {
     pub judges: Vec<Judge>,
 }
 
-/// Go: func HeldoutStatus(s *store.Store) HeldoutView
 pub fn heldout_status(s: &pulse_store::Store) -> HeldoutView {
     let mut view = HeldoutView {
         judges: judges(),
@@ -128,7 +122,6 @@ pub struct HeldoutWrite {
     pub generated: bool,
 }
 
-/// Go: func canonicalPath(value string) (string, error)
 pub(crate) fn canonical_path(value: &str) -> Result<String> {
     let mut value = value.to_string();
     if value == "~" || value.starts_with("~/") {
@@ -142,7 +135,7 @@ pub(crate) fn canonical_path(value: &str) -> Result<String> {
                 .to_string()
         };
     }
-    // Go: filepath.Abs - Clean(Join(cwd, value)).
+    // Make it absolute lexically: join onto cwd, then clean.
     let abs = if value.starts_with('/') {
         pulse_store::filepath::clean(&value)
     } else {
@@ -174,12 +167,10 @@ pub(crate) fn canonical_path(value: &str) -> Result<String> {
         }
     }
 }
-/// Go: filepath.Dir - the cleaned path without its last element.
 fn go_dir(path: &str) -> String {
     let i = path.rfind('/').map(|i| i + 1).unwrap_or(0);
     pulse_store::filepath::clean(&path[..i])
 }
-/// Go: filepath.Base - the last element after trailing slashes are removed.
 fn go_base(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
@@ -190,11 +181,9 @@ fn go_base(path: &str) -> String {
     }
     trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
-/// Go: func within(child, parent string) bool
 pub(crate) fn within(child: &str, parent: &str) -> bool {
     pulse_store::filepath::within(child, parent)
 }
-/// Go: func outsideProjects(s *store.Store, target string) error
 pub(crate) fn outside_projects(s: &pulse_store::Store, target: &str) -> Result<()> {
     for p in s.projects(false)? {
         if p.path.is_empty() {
@@ -208,7 +197,6 @@ pub(crate) fn outside_projects(s: &pulse_store::Store, target: &str) -> Result<(
     }
     Ok(())
 }
-/// Go: func privateError(why string) error
 pub(crate) fn private_error(why: &str) -> anyhow::Error {
     crate::fixtures::input_error(
         "Private fixture set is not ready",
@@ -216,7 +204,6 @@ pub(crate) fn private_error(why: &str) -> anyhow::Error {
         "pulse evolve setup DIR",
     )
 }
-/// Go: func privateDir(s *store.Store, value string) (string, error)
 pub(crate) fn private_dir(s: &pulse_store::Store, value: &str) -> Result<String> {
     if value.trim().is_empty() {
         return Err(private_error("no owner-private directory is configured"));
@@ -239,7 +226,6 @@ pub(crate) fn private_dir(s: &pulse_store::Store, value: &str) -> Result<String>
     }
     Ok(dir)
 }
-/// Go: func privateRegular(root *os.Root, name string, executable bool) ([]byte, error)
 pub(crate) fn private_regular(root: &Path, name: &str, executable: bool) -> Result<Vec<u8>> {
     let path = root.join(name);
     let meta = std::fs::symlink_metadata(&path).map_err(|_| {
@@ -278,11 +264,9 @@ pub(crate) fn private_regular(root: &Path, name: &str, executable: bool) -> Resu
     }
     Ok(data)
 }
-/// Go: func loadPrivate(s *store.Store) ([]privateFixture, HeldoutState, error)
 pub(crate) fn load_private(s: &pulse_store::Store) -> Result<(Vec<PrivateFixture>, HeldoutState)> {
     load_private_at(s, &s.setting("evolve.heldout_dir", ""))
 }
-/// Go: func loadPrivateAt(s *store.Store, value string) ([]privateFixture, HeldoutState, error)
 pub(crate) fn load_private_at(
     s: &pulse_store::Store,
     value: &str,
@@ -372,7 +356,6 @@ pub(crate) fn load_private_at(
     }
     Ok((out, state))
 }
-/// Go: func judgeOf(scorer string) string
 pub(crate) fn judge_of(scorer: &str) -> String {
     for name in crate::score::starter_names() {
         if scorer.contains(&format!("evolve score {name}\n")) {
@@ -381,7 +364,6 @@ pub(crate) fn judge_of(scorer: &str) -> String {
     }
     String::new()
 }
-/// Go: func readLedger(root *os.Root) map[string]bool
 pub(crate) fn read_ledger(root: &Path) -> BTreeMap<String, bool> {
     let mut stems = BTreeMap::new();
     let path = root.join(GENERATED_LEDGER);
@@ -400,7 +382,6 @@ pub(crate) fn read_ledger(root: &Path) -> BTreeMap<String, bool> {
     }
     stems
 }
-/// Go: func writeLedger(root *os.Root, stems map[string]bool) error
 pub(crate) fn write_ledger(root: &Path, stems: &BTreeMap<String, bool>) -> Result<()> {
     let mut names: Vec<String> = stems.keys().cloned().collect();
     names.sort();
@@ -411,7 +392,6 @@ pub(crate) fn write_ledger(root: &Path, stems: &BTreeMap<String, bool>) -> Resul
     };
     heldout_file(root, GENERATED_LEDGER, &body, 0o600)
 }
-/// Go: func HeldoutCount(s *store.Store) HeldoutState
 pub fn heldout_count(s: &pulse_store::Store) -> HeldoutState {
     match load_private(s) {
         Ok((_, state)) => state,
@@ -421,7 +401,6 @@ pub fn heldout_count(s: &pulse_store::Store) -> HeldoutState {
         },
     }
 }
-/// Go: func Setup(s *store.Store, value string) (*SetupResult, error)
 pub fn setup(s: &pulse_store::Store, value: &str) -> Result<SetupResult> {
     let dir = private_dir(s, value)?;
     std::fs::create_dir_all(&dir)
@@ -488,14 +467,12 @@ pub fn setup(s: &pulse_store::Store, value: &str) -> Result<SetupResult> {
         .map_err(|_| private_error("cannot save the owner-private directory setting"))?;
     Ok(result)
 }
-/// Go: func judgeScript(name string) string
 pub(crate) fn judge_script(name: &str) -> String {
     format!(
         "#!/bin/sh\n# PULSE held-out judge: {}\nexec \"${{PULSE_MEASURE_BINARY:-pulse}}\" evolve score {name}\n",
         JUDGE_LABELS.get(name).cloned().unwrap_or_default()
     )
 }
-/// Go: func heldoutText(text string) error
 pub(crate) fn heldout_text(text: &str) -> Result<()> {
     if text.trim().is_empty() || text.contains('\0') {
         return Err(private_error(
@@ -519,7 +496,6 @@ pub(crate) fn heldout_text(text: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Go: func heldoutTarget(root *os.Root, dir string, slot int) (string, error)
 pub(crate) fn heldout_target(root: &Path, dir: &str, slot: i64) -> Result<String> {
     let mut stems = Vec::new();
     for ent in std::fs::read_dir(dir)
@@ -557,7 +533,6 @@ pub(crate) fn heldout_target(root: &Path, dir: &str, slot: i64) -> Result<String
     }
     Err(private_error("cannot inspect the private fixture set"))
 }
-/// Go: func heldoutWritten(root *os.Root, stem string) bool
 pub(crate) fn heldout_written(root: &Path, stem: &str) -> bool {
     let req = root.join(format!("{stem}.request"));
     let scorer = root.join(format!("{stem}.score"));
@@ -567,7 +542,6 @@ pub(crate) fn heldout_written(root: &Path, stem: &str) -> bool {
     !heldout_pending(root, &format!("{stem}.request"))
         && !heldout_pending(root, &format!("{stem}.score"))
 }
-/// Go: func heldoutPending(root *os.Root, name string) bool
 pub(crate) fn heldout_pending(root: &Path, name: &str) -> bool {
     let mut data = String::new();
     std::fs::File::open(root.join(name))
@@ -579,7 +553,6 @@ pub(crate) fn heldout_pending(root: &Path, name: &str) -> bool {
         .is_ok()
         && data.contains(TEMPLATE_MARKER)
 }
-/// Go: func heldoutFile(root *os.Root, name, body string, mode os.FileMode) error
 pub(crate) fn heldout_file(root: &Path, name: &str, body: &str, mode: u32) -> Result<()> {
     let path = root.join(name);
     if let Ok(meta) = std::fs::symlink_metadata(&path)
@@ -603,7 +576,6 @@ pub(crate) fn heldout_file(root: &Path, name: &str, body: &str, mode: u32) -> Re
     }
     Ok(())
 }
-/// Go: func WriteHeldout(s *store.Store, w HeldoutWrite) (*SetupResult, error)
 pub fn write_heldout(s: &pulse_store::Store, w: HeldoutWrite) -> Result<SetupResult> {
     let dir = private_dir(s, &s.setting("evolve.heldout_dir", ""))?;
     std::fs::read_dir(&dir)

@@ -17,22 +17,18 @@ pub(crate) const ISO_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
 pub(crate) const HUMAN_AGENT: &str = pulse_store::HUMAN_AGENT;
 pub(crate) const COMMONS_SLUG: &str = pulse_store::COMMONS_SLUG;
 
-/// Go: func contains(list []string, s string) bool
 pub(crate) fn contains(list: &[String], s: &str) -> bool {
     list.iter().any(|x| x == s)
 }
 
-/// Go: func fail(code int, format string, args ...any) error
 pub(crate) fn fail(code: i32, message: impl Into<String>) -> pulse_cli::Error {
     pulse_cli::errorf(code, &message.into(), "", "")
 }
 
-/// Go: func stampOf(iso string) string
 pub(crate) fn stamp_of(iso: &str) -> String {
     iso.replace(['-', ':'], "")
 }
 
-/// Go: func parseISO(value string) (time.Time, error)
 pub(crate) fn parse_iso(value: &str) -> Result<DateTime<Utc>> {
     chrono::NaiveDateTime::parse_from_str(value, ISO_LAYOUT)
         .map(|n| n.and_utc())
@@ -44,22 +40,18 @@ pub(crate) fn parse_iso(value: &str) -> Result<DateTime<Utc>> {
         })
 }
 
-/// Go: func mustISO(value string) time.Time
 pub(crate) fn must_iso(value: &str) -> DateTime<Utc> {
     parse_iso(value).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
 
-/// Go: func formatISO(t time.Time) string
 pub(crate) fn format_iso(t: DateTime<Utc>) -> String {
     t.format(ISO_LAYOUT).to_string()
 }
 
-/// Go: func plusHours(iso string, hours float64) string
 pub(crate) fn plus_hours(iso: &str, hours: f64) -> String {
     format_iso(must_iso(iso) + chrono::Duration::milliseconds((hours * 3_600_000.0) as i64))
 }
 
-/// Go: func plusMinutes(iso string, minutes float64) string
 pub(crate) fn plus_minutes(iso: &str, minutes: impl Into<f64>) -> String {
     let minutes = minutes.into();
     format_iso(must_iso(iso) + chrono::Duration::milliseconds((minutes * 60_000.0) as i64))
@@ -75,7 +67,6 @@ pub(crate) fn format_minutes(minutes: i64) -> String {
     }
 }
 
-/// Go: func dayNumber(value string) int
 pub(crate) fn day_number(value: &str) -> i32 {
     if value.len() < 10 {
         return 0;
@@ -88,7 +79,6 @@ pub(crate) fn day_number(value: &str) -> i32 {
 
 static NON_SLUG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
 
-/// Go: func slugify(name string, limit int) string
 pub(crate) fn slugify(name: &str, limit: usize) -> String {
     let mut slug = NON_SLUG
         .replace_all(&name.to_lowercase(), "-")
@@ -105,12 +95,10 @@ pub(crate) fn slugify(name: &str, limit: usize) -> String {
     }
 }
 
-/// Go: func sha256Text(text string) string
 pub(crate) fn sha256_text(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-/// Go: func trunc(text string, n int) string
 pub(crate) fn trunc(text: &str, n: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() > n && n > 0 {
@@ -120,7 +108,6 @@ pub(crate) fn trunc(text: &str, n: usize) -> String {
     }
 }
 
-/// Go: func plural(n int, word string) string
 pub(crate) fn plural(n: i32, word: &str) -> String {
     if n == 1 {
         word.into()
@@ -129,7 +116,6 @@ pub(crate) fn plural(n: i32, word: &str) -> String {
     }
 }
 
-/// Go: func isInside(path, root string) bool
 pub(crate) fn is_inside(path: &str, root: &str) -> bool {
     let p = std::fs::canonicalize(path).or_else(|_| std::env::current_dir().map(|d| d.join(path)));
     let r = std::fs::canonicalize(root).or_else(|_| std::env::current_dir().map(|d| d.join(root)));
@@ -139,7 +125,6 @@ pub(crate) fn is_inside(path: &str, root: &str) -> bool {
     }
 }
 
-/// Go: func newID(prefix, now string) string
 pub(crate) fn new_id(prefix: &str, now: &str) -> String {
     let b: [u8; 3] = rand::random();
     format!("{prefix}-{}-{}", stamp_of(now), hex::encode(b))
@@ -154,18 +139,15 @@ pub(crate) struct GitResult {
     pub(crate) err: Option<String>,
 }
 impl GitResult {
-    /// Go: func (g gitResult) ok() bool
     pub(crate) fn ok(&self) -> bool {
         self.err.is_none() && self.code == 0
     }
 }
 
-/// Go: func gitTimeout(repo string, timeout time.Duration, args ...string) gitResult
 pub(crate) fn git_timeout(repo: &str, timeout: Duration, args: &[&str]) -> GitResult {
     git_timeout_env(repo, timeout, &[], args)
 }
 
-/// Go: func gitTimeoutEnv(repo string, timeout time.Duration, env []string, args ...string) gitResult
 pub(crate) fn git_timeout_env(
     repo: &str,
     timeout: Duration,
@@ -199,21 +181,17 @@ pub(crate) fn git_timeout_env(
     }
 }
 
-/// Go: func gitEnv(extra []string) []string
 pub(crate) fn git_env(extra: &[String]) -> Vec<String> {
     let mut e = pulse_gitenv::env();
     e.extend_from_slice(extra);
     e
 }
-/// Go: func stripHookGitEnv(env []string) []string
 pub(crate) fn strip_hook_git_env(env: &[String]) -> Vec<String> {
     pulse_gitenv::strip_hook(env.to_vec())
 }
-/// Go: func git(repo string, args ...string) gitResult
 pub(crate) fn git(repo: &str, args: &[&str]) -> GitResult {
     git_timeout(repo, Duration::from_secs(60), args)
 }
-/// Go: func gitCheck(repo string, args ...string) (gitResult, error)
 pub(crate) fn git_check(repo: &str, args: &[&str]) -> Result<GitResult> {
     let r = git(repo, args);
     if r.ok() {
@@ -227,7 +205,6 @@ pub(crate) fn git_check(repo: &str, args: &[&str]) -> Result<GitResult> {
         ))
     }
 }
-/// Go: func gitBranch(repo string) string
 pub(crate) fn git_branch(repo: &str) -> String {
     git_timeout(
         repo,
@@ -248,7 +225,6 @@ impl Row {
     pub(crate) fn insert(&mut self, k: impl Into<String>, v: Value) {
         self.0.insert(k.into(), v);
     }
-    /// Go: func (r row) str(key string) string
     pub(crate) fn str(&self, key: &str) -> String {
         match self.0.get(key) {
             None | Some(Value::Null) => String::new(),
@@ -258,7 +234,6 @@ impl Row {
             Some(v) => v.to_string(),
         }
     }
-    /// Go: func (r row) int(key string) int
     pub(crate) fn int(&self, key: &str) -> i32 {
         match self.0.get(key) {
             Some(Value::Number(n)) => n.as_i64().unwrap_or(0) as i32,
@@ -267,7 +242,6 @@ impl Row {
             _ => 0,
         }
     }
-    /// Go: func (r row) float(key string) float64
     pub(crate) fn float(&self, key: &str) -> f64 {
         match self.0.get(key) {
             Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
@@ -318,7 +292,6 @@ fn sql_value(v: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
-/// Go: func queryRows(q querier, query string, args ...any) ([]row, error)
 pub(crate) fn query_rows(
     q: &(impl Querier + ?Sized),
     query: &str,
@@ -341,7 +314,6 @@ pub(crate) fn query_rows(
     }
     Ok(out)
 }
-/// Go: func queryOne(q querier, query string, args ...any) (row, error)
 pub(crate) fn query_one(
     q: &(impl Querier + ?Sized),
     query: &str,
@@ -349,7 +321,6 @@ pub(crate) fn query_one(
 ) -> Result<Option<Row>> {
     Ok(query_rows(q, query, args)?.into_iter().next())
 }
-/// Go: func mustRows(q querier, query string, args ...any) []row
 pub(crate) fn must_rows(
     q: &(impl Querier + ?Sized),
     query: &str,
@@ -357,7 +328,6 @@ pub(crate) fn must_rows(
 ) -> Vec<Row> {
     query_rows(q, query, args).unwrap()
 }
-/// Go: func mustOne(q querier, query string, args ...any) row
 pub(crate) fn must_one(
     q: &(impl Querier + ?Sized),
     query: &str,
@@ -366,22 +336,18 @@ pub(crate) fn must_one(
     query_one(q, query, args).unwrap().unwrap_or_default()
 }
 
-/// Go: func isNil(r row) bool
 pub(crate) fn is_nil(r: &Row) -> bool {
     r.0.is_empty()
 }
 
-/// Go: func projectRow(s *store.Store, slug string) row
 pub(crate) fn project_row(s: &pulse_store::Store, slug: &str) -> Row {
     let conn = s.conn().unwrap();
     must_one(&conn, "SELECT * FROM projects WHERE slug = ?", &[&slug])
 }
 
-/// Go: func exec1(q querier, query string, args ...any)
 pub(crate) fn exec1(q: &(impl Querier + ?Sized), query: &str, args: &[&dyn rusqlite::ToSql]) {
     q.conn().execute(query, args).unwrap();
 }
-/// Go: func eventAt(q querier, at, actor, action, subject string, detail any)
 pub(crate) fn event_at(
     q: &(impl Querier + ?Sized),
     at: &str,
@@ -403,9 +369,7 @@ pub(crate) fn event_at(
         &[&at, &actor, &action, &subject, &text],
     );
 }
-/// Go: func recover1(err *error)
 pub(crate) fn recover1() {}
-/// Go: func jsonList(text string) []string
 pub(crate) fn json_list(text: &str) -> Vec<String> {
     if text.is_empty() {
         vec![]
@@ -413,7 +377,6 @@ pub(crate) fn json_list(text: &str) -> Vec<String> {
         serde_json::from_str(text).unwrap_or_default()
     }
 }
-/// Go: func jsonMap(text string) map[string]any
 pub(crate) fn json_map(text: &str) -> BTreeMap<String, Value> {
     if text.is_empty() {
         BTreeMap::new()
@@ -421,24 +384,19 @@ pub(crate) fn json_map(text: &str) -> BTreeMap<String, Value> {
         serde_json::from_str(text).unwrap_or_default()
     }
 }
-/// Go: func pyJSON(v any) string
 pub(crate) fn py_json<T: serde::Serialize>(v: T) -> String {
     pulse_store::py_json(v).unwrap_or_default()
 }
-/// Go: func fileExists(path string) bool
 pub(crate) fn file_exists(path: &str) -> bool {
     Path::new(path).exists()
 }
-/// Go: func readFile(path string) string
 pub(crate) fn read_file(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
-/// Go: func homeDir() string
 pub(crate) fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
 static SAFE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9@%+=:,./_-]+$").unwrap());
-/// Go: func shellQuote(s string) string
 pub(crate) fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         "''".into()
@@ -448,14 +406,12 @@ pub(crate) fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\"'\"'"))
     }
 }
-/// Go: func shellJoin(args []string) string
 pub(crate) fn shell_join(args: &[String]) -> String {
     args.iter()
         .map(|a| shell_quote(a))
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// Go: func splitShell(s string) []string
 pub(crate) fn split_shell(s: &str) -> Vec<String> {
     shlex_split(s)
 }
@@ -513,7 +469,6 @@ fn shlex_split(s: &str) -> Vec<String> {
     }
     out
 }
-/// Go: func settingInt(s *store.Store, key string) int
 pub(crate) fn setting_int(s: &pulse_store::Store, key: &str) -> i32 {
     s.setting_int(key) as i32
 }

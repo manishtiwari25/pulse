@@ -1,5 +1,3 @@
-//! Port of internal/evolve/readonly.go.
-
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -164,7 +162,6 @@ fn file_type(meta: &Metadata) -> FileType {
     meta.file_type()
 }
 
-/// Go: func freezeTree(root *os.Root) (func() error, error) {
 pub(crate) fn freeze_tree(
     root: &TreeRoot,
 ) -> Result<Box<dyn FnOnce() -> Result<()> + Send + 'static>> {
@@ -235,7 +232,6 @@ pub(crate) fn freeze_tree(
     Ok(Box::new(restore))
 }
 
-/// Go: func treeFingerprint(root *os.Root) (string, error) {
 pub(crate) fn tree_fingerprint(root: &TreeRoot) -> Result<String> {
     let mut hasher = DefaultHasher::new();
     let walk = Walk::of(root)?;

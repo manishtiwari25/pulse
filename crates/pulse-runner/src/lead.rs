@@ -1,11 +1,6 @@
-//! Port of internal/runner/lead.go.
-
 #![cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "ported Go runner APIs are consumed incrementally across slices"
-    )
+    allow(dead_code, reason = "not every item has a caller in the crate")
 )]
 #![cfg_attr(test, allow(dead_code))]
 
@@ -77,12 +72,10 @@ pub(crate) struct JobsTally {
     pub(crate) details: Vec<String>,
 }
 
-/// Go: func leadName(slug string) string
 pub(crate) fn lead_name(slug: String) -> String {
     format!("{slug}-lead")
 }
 
-/// Go: func ensureLead(s *store.Store, slug string) (*store.Agent, bool, error)
 pub(crate) fn ensure_lead(
     s: &pulse_store::Store,
     slug: String,
@@ -125,7 +118,6 @@ pub(crate) fn ensure_lead(
     Ok((Some(a), created))
 }
 
-/// Go: func leadBrief(slug string, msgs []tasks.Message, due []dueTask, away *awayBrief, extras ...leadBriefExtra) string
 pub(crate) fn lead_brief(
     slug: String,
     msgs: Vec<pulse_tasks::Message>,
@@ -195,7 +187,6 @@ pub(crate) fn lead_brief(
     b
 }
 
-/// Go: func writeLeadAgentsSection(b *strings.Builder, slug string, lines []string)
 pub(crate) fn write_lead_agents_section(b: &mut String, slug: String, lines: &[String]) {
     let _ = write!(b, "## Your project's agents now\n\n");
     if lines.is_empty() {
@@ -208,7 +199,6 @@ pub(crate) fn write_lead_agents_section(b: &mut String, slug: String, lines: &[S
     b.push('\n');
 }
 
-/// Go: func writeLeadMentionsSection(b *strings.Builder, slug string, lines []string)
 pub(crate) fn write_lead_mentions_section(b: &mut String, slug: String, lines: &[String]) {
     if lines.is_empty() {
         return;
@@ -223,7 +213,6 @@ pub(crate) fn write_lead_mentions_section(b: &mut String, slug: String, lines: &
     );
 }
 
-/// Go: func writeLeadOwnerQuestionsSection(b *strings.Builder, slug string, away *awayBrief, questions []ownerQuestion)
 pub(crate) fn write_lead_owner_questions_section(
     b: &mut String,
     slug: String,
@@ -253,7 +242,6 @@ pub(crate) fn write_lead_owner_questions_section(
     }
 }
 
-/// Go: func writeOwnerAwaySection(b *strings.Builder, slug string, away *awayBrief)
 pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Option<AwayBrief>) {
     let Some(away) = away else {
         return;
@@ -307,7 +295,6 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     b.push('\n');
 }
 
-/// Go: func ownerCards(items []tally.WorkItem) []tally.WorkItem
 pub(crate) fn owner_cards(items: Vec<pulse_tally::WorkItem>) -> Vec<pulse_tally::WorkItem> {
     items
         .into_iter()
@@ -315,7 +302,6 @@ pub(crate) fn owner_cards(items: Vec<pulse_tally::WorkItem>) -> Vec<pulse_tally:
         .collect()
 }
 
-/// Go: func awayLeadRules(slug string, away *awayBrief, start int) (rules string, next int)
 pub(crate) fn away_lead_rules(slug: String, away: Option<AwayBrief>, start: i32) -> (String, i32) {
     let Some(away) = away else {
         return (String::new(), start);
@@ -337,7 +323,6 @@ pub(crate) fn away_lead_rules(slug: String, away: Option<AwayBrief>, start: i32)
     (b, n)
 }
 
-/// Go: func tallyJobs(jobs []tasks.Job) jobsTally
 pub(crate) fn tally_jobs(jobs: Vec<pulse_tasks::Job>) -> JobsTally {
     let mut t = JobsTally::default();
     for j in &jobs {
@@ -371,7 +356,6 @@ pub(crate) fn tally_jobs(jobs: Vec<pulse_tasks::Job>) -> JobsTally {
     t
 }
 
-/// Go: func followUpBase(priority int) time.Duration
 pub(crate) fn follow_up_base(priority: i32) -> std::time::Duration {
     if priority >= 50 {
         Duration::from_secs(15 * 60)
@@ -382,7 +366,6 @@ pub(crate) fn follow_up_base(priority: i32) -> std::time::Duration {
     }
 }
 
-/// Go: func followUpDue(t tasks.Task, since string) string
 pub(crate) fn follow_up_due(t: pulse_tasks::Task, since: String) -> String {
     let last = crate::util::must_iso(&since);
     let mut wait = last - crate::util::must_iso(&t.created_at);
@@ -397,7 +380,6 @@ pub(crate) fn follow_up_due(t: pulse_tasks::Task, since: String) -> String {
     crate::util::format_iso(last + wait)
 }
 
-/// Go: func leadDue(s *store.Store, slug, lead, now string) ([]tasks.Message, []dueTask, *awayBrief, error)
 pub(crate) fn lead_due(
     s: &pulse_store::Store,
     slug: String,
@@ -507,7 +489,6 @@ pub(crate) fn lead_due(
     Ok((owner, due, away))
 }
 
-/// Go: func awaitingLeadProposals(s *store.Store, slug, now string, paced bool) ([]awaitingProposal, error)
 pub(crate) fn awaiting_lead_proposals(
     s: &pulse_store::Store,
     slug: String,
@@ -539,7 +520,6 @@ pub(crate) fn awaiting_lead_proposals(
     Ok(out)
 }
 
-/// Go: func recentlyPresentedToLead(s *store.Store, slug, now, postID string) bool
 pub(crate) fn recently_presented_to_lead(
     s: &pulse_store::Store,
     slug: String,
@@ -550,7 +530,6 @@ pub(crate) fn recently_presented_to_lead(
     !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND kind = ? AND created_at >= ? AND instr(brief, ?) > 0 LIMIT 1", &[&slug, &LEAD_KIND, &plus_hours(&now, -6.0), &post_id]).0.is_empty()
 }
 
-/// Go: func ownerAddressedQuestions(s *store.Store, slug, now string) []ownerQuestion
 pub(crate) fn owner_addressed_questions(
     s: &pulse_store::Store,
     slug: String,
@@ -572,14 +551,12 @@ pub(crate) fn owner_addressed_questions(
         .collect()
 }
 
-/// Go: func mentionsProjectLead(p row) bool
 pub(crate) fn mentions_project_lead(p: Row) -> bool {
     let lead = lead_name(p.str("project"));
     p.str("agent") != lead
         && pulse_board::parse_mentions(&(p.str("summary") + "\n" + &p.str("body"))).contains(&lead)
 }
 
-/// Go: func leadPeerMentions(s *store.Store, slug, lead, now, actor string) ([]string, int, error)
 pub(crate) fn lead_peer_mentions(
     s: &pulse_store::Store,
     slug: String,
@@ -651,7 +628,6 @@ pub(crate) fn lead_peer_mentions(
     Ok((lines, pending))
 }
 
-/// Go: func tendLead(s *store.Store, slug, now, actor string) []string
 pub(crate) fn tend_lead(
     s: &pulse_store::Store,
     slug: String,
@@ -821,7 +797,6 @@ pub(crate) fn tend_lead(
     lines
 }
 
-/// Go: func tendIdleLead(s *store.Store, slug, lead, now, actor string) []string
 pub(crate) fn tend_idle_lead(
     s: &pulse_store::Store,
     slug: String,
@@ -912,7 +887,6 @@ pub(crate) fn tend_idle_lead(
     )]
 }
 
-/// Go: func leadIdleBrief(s *store.Store, slug string, items []tally.WorkItem, failed []row, maxJobs int) string
 pub(crate) fn lead_idle_brief(
     s: &pulse_store::Store,
     slug: String,
@@ -1004,7 +978,6 @@ pub(crate) fn lead_idle_brief(
     b
 }
 
-/// Go: func tendTasks(s *store.Store, slug, now, actor string) []string
 pub(crate) fn tend_tasks(
     s: &pulse_store::Store,
     slug: String,
@@ -1179,8 +1152,6 @@ pub(crate) fn tend_tasks(
     lines
 }
 
-/// Go: func leadJobFor(s *store.Store, busy []string, dryRun bool, now, slot string, taken int) (lead string, job row, why string)
-///
 /// `held` is passed on to `take_job`: projects the slot may not take now.
 /// `fits` names the project and kind pairs the slot may lease (empty: any);
 /// a window with no room for any lead run leases none.
@@ -1246,12 +1217,10 @@ pub(crate) fn lead_job_for(
     (String::new(), Row::new(), reasons.join("; "))
 }
 
-/// Go: func anyLeased(jobs []tasks.Job) bool
 pub(crate) fn any_leased(jobs: Vec<pulse_tasks::Job>) -> bool {
     jobs.iter().any(|j| j.status == "leased")
 }
 
-/// Go: func jobRowKind(s *store.Store, id string) string
 pub(crate) fn job_row_kind(s: &pulse_store::Store, id: String) -> String {
     let Ok(conn) = s.conn() else {
         return String::new();
@@ -1260,7 +1229,6 @@ pub(crate) fn job_row_kind(s: &pulse_store::Store, id: String) -> String {
 }
 
 impl AwayBrief {
-    /// Go: func (a *awayBrief) pending() int
     pub(crate) fn pending(&mut self) -> i32 {
         (self.proposals.len() + self.owner_cards.len()) as i32
     }

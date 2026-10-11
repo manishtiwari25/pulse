@@ -30,7 +30,5 @@
   "repo_name": "demo-lib",
   "schema_version": "3",
   "store": "/home/owner/.pulse/pulse.sqlite",
-  "tally_mode": "go",
-  "tally_script": "",
   "tool": "pulse v0.0.0-20260909100531-6a5be5c7240c+dirty"
 }

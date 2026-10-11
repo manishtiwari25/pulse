@@ -1,11 +1,11 @@
-//! Port of internal/board/helpers_test.go: shared fixtures (new_home, snapshot_home, fixture, run_cmd, what, code, count_rows, oracle helpers) for every module's #[cfg(test)] tests.
+//! Shared test fixtures (new_home, fixture, run_cmd, what, code, count_rows) for every module's #[cfg(test)] tests.
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use pulse_cli::flags::parse_interleaved;
 use pulse_cli::{Buffer, Context, Error as CliError, FlagSet};
 use tempfile::TempDir;
@@ -16,44 +16,6 @@ use crate::projects::register_project;
 pub(crate) const TEST_NOW: &str = "2026-09-06T10:00:00Z";
 
 static EMPTY_STORE: OnceLock<Result<Vec<u8>, String>> = OnceLock::new();
-pub(crate) fn oracle_available() -> Option<PathBuf> {
-    pulse_parity::oracle()
-}
-
-pub(crate) fn oracle_message(stderr: &str) -> String {
-    stderr
-        .trim()
-        .trim_start_matches("pulse: ")
-        .trim()
-        .to_string()
-}
-
-pub(crate) fn oracle(
-    home: &Path,
-    env: &[(&str, &str)],
-    args: &[&str],
-) -> Result<(String, String, i32)> {
-    let bin = oracle_available().ok_or_else(|| anyhow!("no Go oracle (set PULSE_GO_ORACLE)"))?;
-    let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .env("PULSE_HOME", home)
-        .env("PULSE_NOW", TEST_NOW)
-        .env("PULSE_AGENT", "")
-        .env("PULSE_SESSION", "")
-        .env("PULSE_PROJECT", "")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let out = cmd.output()?;
-    Ok((
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-        out.status.code().unwrap_or(1),
-    ))
-}
 
 pub(crate) fn open_home(home: &Path) -> pulse_store::Store {
     let _guard = pulse_testutil::env_lock();
@@ -116,36 +78,6 @@ pub(crate) fn new_home() -> (TempDir, String, pulse_store::Store) {
     let s = open_home(dir.path());
     let home = dir.path().display().to_string();
     (dir, home, s)
-}
-
-pub(crate) fn snapshot_home() -> Option<(TempDir, String, pulse_store::Store)> {
-    let src = Path::new("/tmp/pulse-parity/pulse.sqlite");
-    if !src.is_file() {
-        return None;
-    }
-    let dir = tempfile::tempdir().ok()?;
-    copy_file(src, dir.path().join(pulse_store::STORE_NAME)).ok()?;
-    let s = open_home(dir.path());
-    let home = dir.path().display().to_string();
-    Some((dir, home, s))
-}
-
-pub(crate) fn copy_file(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
-    fs::copy(src, dst)?;
-    Ok(())
-}
-
-pub(crate) fn clone_home(home: impl AsRef<Path>) -> TempDir {
-    let dst = tempfile::tempdir().expect("clone home");
-    for suffix in ["", "-wal", "-shm"] {
-        let src = home
-            .as_ref()
-            .join(format!("{}{}", pulse_store::STORE_NAME, suffix));
-        if src.is_file() {
-            copy_file(&src, dst.path().join(src.file_name().unwrap())).expect("copy store file");
-        }
-    }
-    dst
 }
 
 pub(crate) fn git_repo() -> TempDir {
@@ -320,9 +252,9 @@ mod tests {
     #[test]
     fn new_home_with_runner_environment() {
         let _serial = crate::test_helpers::serial();
-        // Go runs the package's tests one after another; hold the (reentrant)
-        // env lock for the whole test so no parallel test observes
-        // PULSE_AGENT=parent between the set_var and new_home's reset.
+        // Hold the (reentrant) env lock for the whole test so no parallel
+        // test observes PULSE_AGENT=parent between the set_var and
+        // new_home's reset.
         let _guard = pulse_testutil::env_lock();
         let parent = tempfile::tempdir().unwrap();
         unsafe {
@@ -336,19 +268,5 @@ mod tests {
         for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION", "PULSE_PROJECT"] {
             assert_eq!(std::env::var(name).unwrap_or_default(), "");
         }
-    }
-
-    #[test]
-    fn helpers_go_parity() {
-        let _serial = crate::test_helpers::serial();
-        let Some(_bin) = oracle_available() else {
-            eprintln!("no Go oracle; skipping helpers_go_parity");
-            return;
-        };
-        let (dir, _home, _s) = new_home();
-        let (out, err, code) = oracle(dir.path(), &[], &["version"]).unwrap();
-        assert_eq!(code, 0, "{err}");
-        assert!(!out.trim().is_empty());
-        assert_eq!(oracle_message("pulse: hello\n"), "hello");
     }
 }

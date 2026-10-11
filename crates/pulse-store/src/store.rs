@@ -68,9 +68,9 @@ struct Inner {
     path: String,
     read_only: bool,
     now: String,
-    /// Go: database/sql's pool - idle connections plus the accounting behind
-    /// SetMaxOpenConns (idle + in-use, and the cap requests wait on; 0 = no
-    /// limit). One mutex for both so borrowers and returners never deadlock.
+    /// Idle connections plus the accounting behind `set_max_open_conns`
+    /// (idle + in-use, and the cap requests wait on; 0 = no limit). One
+    /// mutex for both so borrowers and returners never deadlock.
     pool: Mutex<Pool>,
     freed: Condvar,
 }
@@ -124,9 +124,10 @@ impl Drop for PooledConn {
     }
 }
 
-/// Go: what a context-aware query returns once its context is done - the
-/// context's error (database/sql and the sqlite driver both report ctx.Err()
-/// rather than the interrupted statement). Other errors pass through.
+/// The error a cancellable query reports once its token is done: the
+/// token's cause ([`ContextError`](crate::ctx::ContextError)) rather than
+/// the interrupted statement's own error, so callers can tell cancellation
+/// from failure. Other errors pass through.
 pub fn ctx_error(ctx: &CancellationToken, err: anyhow::Error) -> anyhow::Error {
     match ctx.err() {
         Some(cause) => anyhow::Error::new(cause),
@@ -198,11 +199,11 @@ impl Store {
         })
     }
 
-    /// Go: db.Conn(ctx) / QueryContext - a connection for one borrower. With a
-    /// SetMaxOpenConns cap in force the caller waits for a free connection
-    /// until `ctx` is done (then ctx.Err() comes back), and while it holds the
+    /// A connection for one borrower. With a `set_max_open_conns` cap in
+    /// force the caller waits for a free connection until `ctx` is done
+    /// (then the token's cause comes back), and while it holds the
     /// connection a cancelled `ctx` interrupts the running statement, which
-    /// surfaces as ctx.Err() too (see [`ctx_error`]).
+    /// surfaces as the token's cause too (see [`ctx_error`]).
     pub fn conn_ctx(&self, ctx: &CancellationToken) -> Result<PooledConn> {
         let conn = self.acquire(ctx)?;
         let watch = ctx.clone();
@@ -213,8 +214,8 @@ impl Store {
         })
     }
 
-    /// Go: db.SetMaxOpenConns(n) - at most n connections open at once, 0 for
-    /// no limit; further borrowers wait (or give up when their context ends).
+    /// At most n connections open at once, 0 for no limit; further
+    /// borrowers wait (or give up when their token is done).
     pub fn set_max_open_conns(&self, n: usize) {
         self.inner
             .pool
@@ -720,8 +721,9 @@ impl Detail {
             Detail::Json(v) => py_json_value(&v),
         }
     }
-    /// Go: a struct or map handed to `Event`, rendered by `PyJSON` (struct
-    /// fields keep their declaration order; map keys are sorted).
+    /// A struct or map as event detail, rendered by
+    /// [`py_json`](crate::pyjson::py_json) (struct fields keep their
+    /// declaration order; map keys are sorted).
     pub fn json<T: Serialize>(value: T) -> Result<Self> {
         Ok(Self::Text(crate::pyjson::py_json(value)?))
     }
@@ -769,8 +771,8 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// Go `t.UTC().Format(time.RFC3339Nano)`: the fraction keeps only its
-/// significant digits and disappears entirely on whole seconds
+/// RFC 3339 in UTC with a variable-width fraction: only the significant
+/// digits are kept and the fraction disappears entirely on whole seconds
 /// (`2026-01-02T03:04:05.5Z`, `2026-01-02T03:04:05Z`), unlike chrono's
 /// `SecondsFormat::Nanos`, which always prints nine digits.
 pub fn rfc3339_nano<Tz: chrono::TimeZone>(t: chrono::DateTime<Tz>) -> String {
@@ -1094,15 +1096,6 @@ mod tests {
         let size = wal_size(&s.path);
         assert!(size > 0, "test did not create a WAL");
         size
-    }
-
-    #[test]
-    fn ddl_matches_captured_schema() {
-        let _serial = crate::test_helpers::serial();
-        let Ok(want) = fs::read_to_string("/tmp/pulse-parity/schema.sql") else {
-            return;
-        };
-        assert_eq!(want, DDL);
     }
 
     #[test]
@@ -1781,128 +1774,6 @@ mod tests {
         let agents = s.agents("").unwrap();
         assert_eq!(agents.len(), 2);
         assert_eq!(s.agents("active").unwrap()[0].name, HUMAN_AGENT);
-    }
-
-    #[test]
-    fn schema_parity_with_python() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = TEST_LOCK.lock().unwrap();
-        set_env("PULSE_JOB", "");
-        remove_env("PULSE_NOW");
-        let script = Path::new("legacy").join("pulse.py");
-        if !script.exists() {
-            return;
-        }
-        if Command::new("python3").arg("--version").output().is_err() {
-            return;
-        }
-        let repo = tempfile::tempdir().unwrap();
-        for args in [
-            vec!["init", "-q", "--initial-branch=main"],
-            vec![
-                "-c",
-                "user.email=t@example.com",
-                "-c",
-                "user.name=t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "init",
-            ],
-        ] {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(repo.path())
-                .args(args)
-                .envs(pulse_testutil::git_env().into_iter().filter_map(|kv| {
-                    kv.split_once('=')
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                }))
-                .output()
-                .unwrap();
-            if !out.status.success() {
-                return;
-            }
-        }
-        let py_home = tempfile::tempdir().unwrap();
-        let out = Command::new("python3")
-            .arg(&script)
-            .arg("--home")
-            .arg(py_home.path())
-            .args(["init", "--path"])
-            .arg(repo.path())
-            .args(["--name", "parity"])
-            .env("PULSE_AGENT", "human")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "python init: {}\n{}",
-            String::from_utf8_lossy(&out.stderr),
-            String::from_utf8_lossy(&out.stdout)
-        );
-        let py = open_temp(Options {
-            home: py_home.path().display().to_string(),
-            skip_records: true,
-            ..Options::default()
-        });
-        let rust = open_temp(Options {
-            create: true,
-            skip_records: true,
-            ..Options::default()
-        });
-        let dump = |s: &Store| -> String {
-            let conn = s.conn().unwrap();
-            let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
-            stmt.query_map([], |r| {
-                Ok(format!(
-                    "{} {}\n{}\n",
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?.unwrap_or_default()
-                ))
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("")
-        };
-        let a = dump(&py);
-        let b = dump(&rust);
-        assert_eq!(
-            a, b,
-            "sqlite_master differs\n--- python ---\n{a}\n--- go ---\n{b}"
-        );
-        let py_settings = py.settings().unwrap();
-        let rust_settings = rust.settings().unwrap();
-        assert_eq!(
-            py_settings.len(),
-            rust_settings.len(),
-            "settings rows: python {}, go {}",
-            py_settings.len(),
-            rust_settings.len()
-        );
-        for (k, v) in py_settings {
-            assert_eq!(rust_settings.get(&k), Some(&v), "setting {k}");
-        }
-        let mut py_human = py.agent(HUMAN_AGENT).unwrap().unwrap();
-        let mut rust_human = rust.agent(HUMAN_AGENT).unwrap().unwrap();
-        py_human.created_at.clear();
-        rust_human.created_at.clear();
-        assert!(
-            py_human.display == rust_human.display
-                && py_human.kind == rust_human.kind
-                && py_human.notes == rust_human.notes
-                && py_human.status == rust_human.status,
-            "human agent: python {py_human:?}, go {rust_human:?}"
-        );
-        {
-            let key = "schema_version";
-            let a = py.meta(key).unwrap().0;
-            let b = rust.meta(key).unwrap().0;
-            assert_eq!(a, b, "meta {key}");
-        }
     }
 
     #[test]

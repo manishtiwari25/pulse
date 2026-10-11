@@ -28,7 +28,6 @@ pub(crate) fn fixture_build_jobs() -> usize {
     (cores / MEASURE_PARALLEL.load(Ordering::SeqCst).max(1)).max(1)
 }
 
-/// Go: func commandWords(text string) ([]string, error)
 pub(crate) fn command_words(text: &str) -> Result<Vec<String>> {
     let mut words = Vec::new();
     let mut word = String::new();
@@ -84,7 +83,6 @@ pub(crate) fn command_words(text: &str) -> Result<Vec<String>> {
     }
     Ok(words)
 }
-/// Go: func harnessArgs(command, request string) ([]string, error)
 pub(crate) fn harness_args(command: &str, request: &str) -> Result<Vec<String>> {
     let mut args = command_words(command).map_err(|_| {
         crate::fixtures::input_error(
@@ -214,7 +212,6 @@ pub(crate) fn seed_provider_logins(from_home: &str, to_home: &str) -> std::io::R
     }
     Ok(())
 }
-/// Go: func isolatedEnv(home string) []string
 pub(crate) fn isolated_env(home: &str) -> Vec<String> {
     let mut env = Vec::new();
     for (key, value) in std::env::vars() {
@@ -294,7 +291,6 @@ pub(crate) struct BoundedOutput {
     pub(crate) overflow: bool,
 }
 impl Write for BoundedOutput {
-    /// Go: func (b *boundedOutput) Write(p []byte) (int, error)
     fn write(&mut self, p: &[u8]) -> std::io::Result<usize> {
         let n = p.len();
         let remaining = self.limit.saturating_sub(self.buf.len());
@@ -308,7 +304,6 @@ impl Write for BoundedOutput {
         Ok(())
     }
 }
-/// Go: func runProcess(ctx context.Context, cwd string, env, argv []string, stdout io.Writer) error
 pub(crate) fn run_process(
     cancel: &pulse_bus::CancellationToken,
     cwd: &str,
@@ -318,7 +313,6 @@ pub(crate) fn run_process(
 ) -> Result<()> {
     run_process_to(cancel, cwd, env, argv, stdout, &mut std::io::sink())
 }
-/// Go: func runProcessTo(ctx context.Context, cwd string, env, argv []string, stdout, stderr io.Writer) error
 pub(crate) fn run_process_to(
     cancel: &pulse_bus::CancellationToken,
     cwd: &str,
@@ -416,7 +410,6 @@ fn kill_group(child: &mut std::process::Child) {
 
 #[cfg(not(unix))]
 fn kill_group(_child: &mut std::process::Child) {}
-/// Go: func gitOutput(ctx context.Context, repo string, args ...string) (string, error)
 pub(crate) fn git_output(
     cancel: &pulse_bus::CancellationToken,
     repo: &str,
@@ -424,7 +417,6 @@ pub(crate) fn git_output(
 ) -> Result<String> {
     Ok(git_raw(cancel, repo, args)?.trim().to_string())
 }
-/// Go: func gitRaw(ctx context.Context, repo string, args ...string) (string, error)
 pub(crate) fn git_raw(
     cancel: &pulse_bus::CancellationToken,
     repo: &str,
@@ -450,7 +442,6 @@ pub(crate) fn git_raw(
     Ok(String::from_utf8_lossy(&out.buf).to_string())
 }
 #[cfg(unix)]
-/// Go: func containProcess(cmd *exec.Cmd) func()
 pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce()> {
     use std::os::unix::process::CommandExt;
     cmd.process_group(0);
@@ -466,39 +457,33 @@ pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce
     Box::new(|| {})
 }
 #[cfg(not(unix))]
-/// Go: func containProcess(cmd *exec.Cmd) func()
 pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce()> {
     Box::new(|| {})
 }
 #[cfg(unix)]
-/// Go: func multipleLinks(info os.FileInfo) bool
 pub(crate) fn multiple_links(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     metadata.is_file() && metadata.nlink() > 1
 }
 #[cfg(not(unix))]
-/// Go: func multipleLinks(info os.FileInfo) bool
 pub(crate) fn multiple_links(metadata: &std::fs::Metadata) -> bool {
     let _ = metadata;
     false
 }
 
-/// Go: func stopSignals() []os.Signal (process_unix.go)
 #[cfg(unix)]
 pub(crate) fn stop_signals() -> Vec<i32> {
     vec![signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
 }
 
-/// Go: func stopSignals() []os.Signal (process_other.go)
 #[cfg(not(unix))]
 pub(crate) fn stop_signals() -> Vec<i32> {
     vec![signal_hook::consts::SIGINT]
 }
 
-/// Go: signal.NotifyContext(context.Background(), stopSignals()...) - the first stop signal cancels
-/// the token while the guard lives; dropping it (Go's deferred `cancel`) unregisters the handlers,
-/// restoring the default (terminating) disposition. Like Go, the cancel runs on an ordinary thread
-/// fed by the signal, never inside the handler itself.
+/// Turns the first SIGINT/SIGTERM into a cancel of the token while the guard lives; dropping it
+/// unregisters the handlers, restoring the default (terminating) disposition. The cancel runs on
+/// an ordinary thread fed by the signal, never inside the handler itself.
 pub(crate) struct SignalStop {
     handle: signal_hook::iterator::Handle,
     thread: Option<std::thread::JoinHandle<()>>,

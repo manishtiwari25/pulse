@@ -1,5 +1,3 @@
-//! Port of internal/evolve/finalization.go.
-
 use anyhow::Result;
 use rusqlite::params;
 
@@ -18,7 +16,6 @@ pub(crate) const FINALIZED_EXPERIMENT_SQL: &str = r#"
 		AND json_extract(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END, '$.run_id') = r.id
 		AND json_extract(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END, '$.archive') = a.id)"#;
 
-/// Go: func archiveFinalized(s *store.Store, project, job, archive string) (bool, error) {
 pub(crate) fn archive_finalized(
     s: &pulse_store::Store,
     project: &str,
@@ -38,12 +35,12 @@ pub(crate) fn archive_finalized(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_helpers_e2::*;
+    use crate::test_helpers_cycle::*;
 
     #[test]
     fn current_run_cannot_borrow_an_earlier_archive() {
         let _serial = crate::test_helpers::serial();
-        let _guard = e2_guard();
+        let _guard = cycle_guard();
         let s = cycle_ready();
         let p = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         let (job, _) = pulse_board::add_job(

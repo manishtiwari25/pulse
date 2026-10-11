@@ -41,7 +41,6 @@ pub(crate) fn set_ssh_hostname(
     )
 }
 
-/// Go: func retireCandidates(s *store.Store) []row
 pub(crate) fn retire_candidates(s: &pulse_store::Store) -> Vec<crate::util::Row> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
@@ -56,12 +55,10 @@ pub(crate) fn retire_candidates(s: &pulse_store::Store) -> Vec<crate::util::Row>
     .collect()
 }
 
-/// Go: func retireProvider(s *store.Store) Provider
 pub(crate) fn retire_provider(s: &pulse_store::Store) -> Option<Arc<dyn crate::compute::Provider>> {
     crate::compute::provider_named(s.setting("compute.provider", "").trim())
 }
 
-/// Go: func identifyVM(s *store.Store, r row) (*retiredVM, bool, string)
 pub(crate) fn identify_vm(
     s: &pulse_store::Store,
     r: crate::util::Row,
@@ -145,7 +142,6 @@ pub(crate) fn identify_vm(
     }
 }
 
-/// Go: func tendExecutors(s *store.Store, now, actor string) []string
 pub(crate) fn tend_executors(s: &pulse_store::Store, now: String, actor: String) -> Vec<String> {
     let mut lines = Vec::new();
     let heal = s.setting("compute.self_heal", "1") == "1";
@@ -195,7 +191,6 @@ pub(crate) fn tend_executors(s: &pulse_store::Store, now: String, actor: String)
     lines
 }
 
-/// Go: func healExecutor(s *store.Store, now, actor string, r row, identify func() (*retiredVM, bool)) (bool, string)
 pub(crate) fn heal_executor(
     s: &pulse_store::Store,
     now: String,
@@ -314,7 +309,6 @@ pub(crate) fn heal_executor(
     (true, format!("healed {name}: login placed from {origin}"))
 }
 
-/// Go: func adminRoute(address, ip string) string
 pub(crate) fn admin_route(address: String, ip: String) -> String {
     let mut host = address.trim().to_string();
     if let Some((_, after)) = host.split_once('@') {
@@ -330,7 +324,6 @@ pub(crate) fn admin_route(address: String, ip: String) -> String {
     }
 }
 
-/// Go: func machineDetail(m *Machine, extra map[string]any) map[string]any
 pub(crate) fn machine_detail(
     m: &crate::compute::Machine,
     extra: BTreeMap<String, serde_json::Value>,
@@ -345,7 +338,6 @@ pub(crate) fn machine_detail(
     detail
 }
 
-/// Go: func saveRetired(s *store.Store, executor string, m *Machine, now, deleteAfter string)
 pub(crate) fn save_retired(
     s: &pulse_store::Store,
     executor: String,
@@ -363,7 +355,6 @@ pub(crate) fn save_retired(
     );
 }
 
-/// Go: func retiredMachine(r row) *Machine
 pub(crate) fn retired_machine(r: crate::util::Row) -> Option<Box<crate::compute::Machine>> {
     let mut m = crate::compute::Machine {
         provider: r.str("provider"),
@@ -393,7 +384,6 @@ pub(crate) fn retired_machine(r: crate::util::Row) -> Option<Box<crate::compute:
     Some(Box::new(m))
 }
 
-/// Go: func retireExecutor(s *store.Store, now, actor string, r row, vm *retiredVM, ours bool, note string) []string
 pub(crate) fn retire_executor(
     s: &pulse_store::Store,
     now: String,
@@ -584,7 +574,6 @@ pub(crate) fn retire_executor(
     vec![line]
 }
 
-/// Go: func deleteRetired(s *store.Store, now, actor string) []string
 pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String) -> Vec<String> {
     let mut lines = Vec::new();
     let Ok(conn) = s.conn() else { return lines };
@@ -738,10 +727,10 @@ pub(crate) fn delete_retired(s: &pulse_store::Store, now: String, actor: String)
 mod tests {
     use super::*;
     use crate::test_helpers::*;
-    use crate::test_helpers_f3::drained_by_login;
-    use crate::test_helpers_f3b::*;
-    use crate::test_helpers_f5::must_one;
-    use crate::test_helpers_f6::{invoke_ok, stub_gh};
+    use crate::test_helpers_cloud::*;
+    use crate::test_helpers_daemon::must_one;
+    use crate::test_helpers_environment::drained_by_login;
+    use crate::test_helpers_provider::{invoke_ok, stub_gh};
     use crate::util::json_map;
     use rusqlite::params;
 
@@ -794,7 +783,7 @@ mod tests {
     #[test]
     fn tend_retires_our_azure_vm() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -897,7 +886,7 @@ mod tests {
     #[test]
     fn tend_without_az_is_not_ours() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -935,7 +924,7 @@ mod tests {
     #[test]
     fn tend_leaves_foreign_machine_running() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "laptop", "pulse@laptop.local");
@@ -973,7 +962,7 @@ mod tests {
     #[test]
     fn tend_heals_from_executor_token() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -1027,7 +1016,7 @@ mod tests {
     #[test]
     fn tend_heal_refused_retires_and_does_not_heal_twice() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -1084,7 +1073,7 @@ mod tests {
     #[test]
     fn tend_postpones_while_a_run_is_in_flight() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         let (_, slug) = new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -1093,7 +1082,7 @@ mod tests {
         );
         let _az_guard = install_retire_az(&az);
         let _stub = stub_gh("");
-        crate::test_helpers_f5::exec1(
+        crate::test_helpers_daemon::exec1(
             &s,
             "INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, 'vm-seven')",
             &[&slug, &TEST_NOW],
@@ -1113,7 +1102,7 @@ mod tests {
     #[test]
     fn tend_deletes_after_grace_and_keeps_what_the_owner_revived() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -1133,7 +1122,7 @@ mod tests {
             2
         );
         // The owner starts vm-nine's machine again and activates it before the grace ends: the row revives.
-        let _probe = crate::test_helpers_f1b::install_run_ssh(|_, _argv, _stdin, _| {
+        let _probe = crate::test_helpers_hands::install_run_ssh(|_, _argv, _stdin, _| {
             Ok((0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes harness=yes pulse=1.2.3 disk_free_mb=20000\n".into(), String::new()))
         });
         let out = invoke_ok(&s, "executor", "", &["activate", "vm-nine"]);
@@ -1215,7 +1204,7 @@ mod tests {
     #[test]
     fn tend_delete_closes_a_missing_vm() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         let az = RetireAz::missing();
@@ -1238,7 +1227,7 @@ mod tests {
     #[test]
     fn daemon_tick_tends_executors() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         new_bare_repo(&s);
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
@@ -1267,7 +1256,7 @@ mod tests {
     #[test]
     fn compute_held_without_login_source_and_explained_once_per_day() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         pulse_bus::reset_default();
         let s = new_store();
         new_bare_repo(&s);
@@ -1410,7 +1399,7 @@ mod tests {
     #[test]
     fn executor_login_records_admin_route() {
         let _serial = crate::test_helpers::serial();
-        let _lock = crate::test_helpers_f6::provider_test_lock();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
         let s = new_store();
         crate::executor::add_executor(
             &s,

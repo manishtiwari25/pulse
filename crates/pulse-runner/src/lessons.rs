@@ -1,11 +1,6 @@
-//! Port of internal/runner/lessons.go.
-
 #![cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "ported Go runner APIs are consumed incrementally across slices"
-    )
+    allow(dead_code, reason = "not every item has a caller in the crate")
 )]
 #![cfg_attr(test, allow(dead_code))]
 
@@ -23,7 +18,6 @@ pub(crate) struct LessonFailure {
     pub failure: crate::failure::Failure,
 }
 
-/// Go: func tendLessons(s *store.Store, slug, now, actor string) []string
 pub(crate) fn tend_lessons(
     s: &pulse_store::Store,
     slug: String,
@@ -178,7 +172,6 @@ pub(crate) fn tend_lessons(
     lines
 }
 
-/// Go: func recentFailureLessons(s *store.Store, slug, now string) []string
 pub(crate) fn recent_failure_lessons(
     s: &pulse_store::Store,
     slug: String,
@@ -221,12 +214,10 @@ pub(crate) fn recent_failure_lessons(
         .collect()
 }
 
-/// Go: func lessonJobIDs(jobs []lessonFailure) []string
 pub(crate) fn lesson_job_i_ds(jobs: Vec<LessonFailure>) -> Vec<String> {
     jobs.into_iter().map(|j| j.id).collect()
 }
 
-/// Go: func failureLessonBody(s *store.Store, project row, jobs []lessonFailure) string
 pub(crate) fn failure_lesson_body(
     s: &pulse_store::Store,
     project: Row,
@@ -266,7 +257,6 @@ pub(crate) fn failure_lesson_body(
     b
 }
 
-/// Go: func classParagraph(class failureClass) string
 pub(crate) fn class_paragraph(class: crate::failure::FailureClass) -> String {
     match class.0.as_str() {
         "transient" => "A transient failure belongs to the machine, runner, or moment, not the work. The daemon runs the job again on a growing pause before anyone rewrites it.".into(),
@@ -275,7 +265,6 @@ pub(crate) fn class_paragraph(class: crate::failure::FailureClass) -> String {
     }
 }
 
-/// Go: func lessonParagraph(verifyCmd string, f failure, n int) string
 pub(crate) fn lesson_paragraph(verify_cmd: String, f: crate::failure::Failure, n: i32) -> String {
     let head = f.signature.to_lowercase();
     let reason = f.reason.to_lowercase();
@@ -349,7 +338,6 @@ pub(crate) fn lesson_paragraph(verify_cmd: String, f: crate::failure::Failure, n
     }
 }
 
-/// Go: func recoveryCountsText(s *store.Store, ids []string) string
 pub(crate) fn recovery_counts_text(s: &pulse_store::Store, ids: &[String]) -> String {
     let Ok(conn) = s.conn() else {
         return "none yet".into();
@@ -386,7 +374,6 @@ pub(crate) fn recovery_counts_text(s: &pulse_store::Store, ids: &[String]) -> St
     parts.join("; ")
 }
 
-/// Go: func recoveryOutcome(s *store.Store, jobID string) string
 pub(crate) fn recovery_outcome(s: &pulse_store::Store, job_id: String) -> String {
     let Ok(conn) = s.conn() else {
         return String::new();
@@ -424,12 +411,10 @@ pub(crate) fn recovery_outcome(s: &pulse_store::Store, job_id: String) -> String
     }
 }
 
-/// Go: func recordHasTag(r store.Record, tag string) bool
 pub(crate) fn record_has_tag(r: pulse_store::Record, tag: String) -> bool {
     r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag))
 }
 
-/// Go: func lessonRecordBySignature(s *store.Store, slug, tag string) *store.Record
 pub(crate) fn lesson_record_by_signature(
     s: &pulse_store::Store,
     slug: String,
@@ -445,7 +430,6 @@ pub(crate) fn lesson_record_by_signature(
     .find(|r| record_has_tag(r.clone(), "failure".into()) && record_has_tag(r.clone(), tag.clone()))
 }
 
-/// Go: func lessonRecordID(s *store.Store, slug, title string) string
 pub(crate) fn lesson_record_id(s: &pulse_store::Store, slug: String, title: String) -> String {
     let mut id = format!("MEM-{}", record_slug(title));
     if let Ok(Some(p)) = s.project(&slug)
@@ -456,7 +440,6 @@ pub(crate) fn lesson_record_id(s: &pulse_store::Store, slug: String, title: Stri
     id
 }
 
-/// Go: func recordSlug(s string) string
 pub(crate) fn record_slug(s: String) -> String {
     let mut out = String::new();
     let mut dash = false;
@@ -474,7 +457,6 @@ pub(crate) fn record_slug(s: String) -> String {
     out
 }
 
-/// Go: func humanFailureHead(signature string) string
 pub(crate) fn human_failure_head(signature: String) -> String {
     trunc(
         log_failure_head(signature)
@@ -487,7 +469,6 @@ pub(crate) fn human_failure_head(signature: String) -> String {
     )
 }
 
-/// Go: func logFailureHead(signature string) string
 pub(crate) fn log_failure_head(signature: String) -> String {
     let head = signature
         .split_once(':')
@@ -496,12 +477,10 @@ pub(crate) fn log_failure_head(signature: String) -> String {
     trunc(head.trim(), 80)
 }
 
-/// Go: func backtickList(items []string) []string
 pub(crate) fn backtick_list(items: &[String]) -> Vec<String> {
     items.iter().map(|i| format!("`{i}`")).collect()
 }
 
-/// Go: func lessonMissingTool(reason string) string
 pub(crate) fn lesson_missing_tool(reason: String) -> String {
     BACKTICK_TOOL_RE
         .captures(&reason)
@@ -509,7 +488,6 @@ pub(crate) fn lesson_missing_tool(reason: String) -> String {
         .unwrap_or_else(|| "the missing tool".into())
 }
 
-/// Go: func exitCodeWord(reason string) string
 pub(crate) fn exit_code_word(reason: String) -> String {
     EXIT_CODE_RE
         .captures(&reason)
@@ -517,7 +495,6 @@ pub(crate) fn exit_code_word(reason: String) -> String {
         .unwrap_or_else(|| "non-zero".into())
 }
 
-/// Go: func firstLessonSentence(body string) string
 pub(crate) fn first_lesson_sentence(body: String) -> String {
     let mut lesson = section_body(body, "## Lesson".into());
     if lesson.is_empty() {
@@ -535,7 +512,6 @@ pub(crate) fn first_lesson_sentence(body: String) -> String {
     lesson
 }
 
-/// Go: func sectionBody(body, heading string) string
 pub(crate) fn section_body(body: String, heading: String) -> String {
     let Some(i) = body.find(&heading) else {
         return String::new();
