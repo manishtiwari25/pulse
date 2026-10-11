@@ -712,6 +712,11 @@ fn set_status(
             "pulse schedule add ... for a new one",
         ));
     }
+    if sched.status == status {
+        // Already there: a repeated pause or resume changes nothing, so it
+        // writes no event and keeps the note from the change that counted.
+        return Ok(sched);
+    }
     let now = s.now();
     let tx = s.begin()?;
     tx.execute(
