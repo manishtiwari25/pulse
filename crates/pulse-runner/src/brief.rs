@@ -197,6 +197,8 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         o.now.clone(),
         o.remote,
     );
+    write_mcp_brief_section(&mut b, store, &project.str("slug"), o.remote);
+    write_skills_brief_section(&mut b, store, &project.str("slug"), o.remote);
     if !o.lessons.is_empty() {
         w!("## Lessons from this project's recent failures (ADR-036)");
         w!("");
@@ -662,6 +664,111 @@ pub(crate) fn write_mentions_brief_section(
     }
 }
 
+/// The MCP servers a worker in `project` may call: the enabled global ones
+/// and the project's own. Only the local executor has the store (and so the
+/// `pulse mcp` bridge); a remote worker is told to ask for the data instead.
+pub(crate) fn write_mcp_brief_section(
+    b: &mut Vec<String>,
+    s: &pulse_store::Store,
+    project: &str,
+    remote: bool,
+) {
+    let servers = s.mcp_servers_for(project).unwrap_or_default();
+    if servers.is_empty() {
+        return;
+    }
+    if remote {
+        let names = servers
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        b.push(format!("## MCP servers ({})", servers.len()));
+        b.push(String::new());
+        b.push(format!(
+            "This project registers the MCP servers {names}, but they are reachable only from the local executor and this machine has no PULSE store. When your task needs what they hold (issues, feedback, docs), ask for it through a FINDING: line addressed to your lead, naming the server and what to fetch."
+        ));
+        b.push(String::new());
+        return;
+    }
+    b.push(format!("## MCP servers you can call ({})", servers.len()));
+    b.push(String::new());
+    for m in &servers {
+        b.push(mcp_server_line(m));
+    }
+    b.push(String::new());
+    b.push("`pulse mcp tools NAME` lists a server's tools with their descriptions; `pulse mcp call NAME TOOL --args '{...}'` calls one and prints its text result (exit 1 when the tool reports an error); `pulse mcp resources NAME` and `pulse mcp read NAME URI` read what it publishes.".into());
+    b.push(String::new());
+    b.push("Use them to read the outside world (issues, feedback, docs) and to act where a tool exists; never write a secret into a file, a commit or your report; say in your report which servers you used.".into());
+    b.push(String::new());
+}
+
+pub(crate) fn mcp_server_line(m: &pulse_store::McpServer) -> String {
+    let mut line = format!("- {} ({})", m.name, m.transport);
+    if !m.note.is_empty() {
+        line.push_str(" - ");
+        line.push_str(m.note.lines().next().unwrap_or("").trim());
+    }
+    line.push_str(&match m.last_check_ok {
+        None => ". Never checked; `pulse mcp connect` shows its tools.".to_string(),
+        Some(true) if m.last_check_note.is_empty() => format!(". Checked {}: ok.", m.last_check_at),
+        Some(true) => format!(". Checked {}: {}.", m.last_check_at, m.last_check_note),
+        Some(false) => format!(
+            ". The last check ({}) failed: {}.",
+            m.last_check_at,
+            m.last_check_note.lines().next().unwrap_or("").trim()
+        ),
+    });
+    line
+}
+
+/// How much of one skill a remote worker's brief carries inline.
+const REMOTE_SKILL_BODY_CAP: usize = 4000;
+
+/// The enabled skills for `project`: name and description, read in full with
+/// `pulse skill show`. A remote worker has no store, so the bodies ride
+/// along inline (capped) and new skills travel back through a FINDING: line.
+pub(crate) fn write_skills_brief_section(
+    b: &mut Vec<String>,
+    s: &pulse_store::Store,
+    project: &str,
+    remote: bool,
+) {
+    let skills = s.skills_for(project).unwrap_or_default();
+    if skills.is_empty() {
+        return;
+    }
+    b.push(format!("## Skills ({})", skills.len()));
+    b.push(String::new());
+    for k in &skills {
+        b.push(format!("- {} - {}", k.name, k.description));
+    }
+    b.push(String::new());
+    if remote {
+        b.push("Read a skill before doing work it covers. This machine has no PULSE store, so the skills are copied below; when you finish something others will repeat here - a setup, a debugging recipe, a check - put it in a FINDING: line for your lead (name, one-line description, the steps) so it can be added.".into());
+        for k in &skills {
+            b.push(String::new());
+            b.push(format!("### Skill {} - {}", k.name, k.description));
+            b.push(String::new());
+            if k.body.chars().count() > REMOTE_SKILL_BODY_CAP {
+                let cut: String = k.body.chars().take(REMOTE_SKILL_BODY_CAP).collect();
+                b.push(cut);
+                b.push(format!(
+                    "[... the skill goes on; the first {REMOTE_SKILL_BODY_CAP} characters are shown]"
+                ));
+            } else {
+                b.push(k.body.clone());
+            }
+        }
+        b.push(String::new());
+        return;
+    }
+    b.push("`pulse skill show NAME` prints a skill; `pulse skill add --name N --description D --file F` (or `--body TEXT`, or stdin) adds one for this project (`PULSE_PROJECT` is set in your shell); pass `--project ''` to share it with every project.".into());
+    b.push(String::new());
+    b.push("Read a skill before doing work it covers. When you finish something others will repeat here - a setup, a debugging recipe, a check - add it as a skill so the next worker does not rediscover it.".into());
+    b.push(String::new());
+}
+
 pub(crate) fn mention_lines(
     s: &pulse_store::Store,
     project: String,
@@ -982,6 +1089,277 @@ mod tests {
         assert!(ok);
         assert_eq!(summary, "Shorten the intro");
         assert!(body.contains("\nFile: README.md\n"));
+    }
+
+    fn brief_job() -> crate::util::Row {
+        let mut job = crate::util::Row::new();
+        job.insert("id", serde_json::json!("job-mcp"));
+        job.insert("kind", serde_json::json!("task"));
+        job.insert("tier", serde_json::json!(1));
+        job.insert("title", serde_json::json!("Read the issues"));
+        job.insert("brief", serde_json::json!("do it"));
+        job
+    }
+
+    #[test]
+    fn brief_carries_no_mcp_or_skills_section_when_nothing_is_registered() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        s.add_mcp_server(
+            "human",
+            pulse_store::McpServerInput {
+                name: "off".into(),
+                transport: "stdio".into(),
+                command: "/bin/cat".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_mcp_server_status("human", "MCP-001", "disabled")
+            .unwrap();
+        s.add_skill(
+            "human",
+            pulse_store::SkillInput {
+                name: "retired".into(),
+                description: "no longer".into(),
+                body: "nope".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_skill_status("human", "SKILL-001", "disabled")
+            .unwrap();
+        for remote in [false, true] {
+            let brief = must_write_brief(BriefOpts {
+                job: brief_job(),
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 10,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                remote,
+                ..Default::default()
+            });
+            assert!(
+                !brief.contains("## MCP servers") && !brief.contains("## Skills"),
+                "remote={remote}: brief carries a section with nothing to list:\n{brief}"
+            );
+        }
+    }
+
+    #[test]
+    fn brief_lists_mcp_servers_with_the_bridge_commands() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        s.add_mcp_server(
+            "human",
+            pulse_store::McpServerInput {
+                name: "github".into(),
+                transport: "stdio".into(),
+                command: "github-mcp-server".into(),
+                args: vec!["stdio".into()],
+                auth: "env".into(),
+                auth_header: "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
+                secret_ref: "keychain://pulse/github-mcp".into(),
+                note: "GitHub issues and pull requests of this project\nSecond line is not shown."
+                    .into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.record_mcp_check(
+            "human",
+            "MCP-001",
+            true,
+            "github-mcp 1.2.0: 2 tools: list_issues, get_issue",
+        )
+        .unwrap();
+        s.add_mcp_server(
+            "human",
+            pulse_store::McpServerInput {
+                name: "docs".into(),
+                project: "proj".into(),
+                transport: "http".into(),
+                url: "https://docs.example/mcp".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.add_mcp_server(
+            "human",
+            pulse_store::McpServerInput {
+                name: "broken".into(),
+                project: "proj".into(),
+                transport: "http".into(),
+                url: "https://broken.example/mcp".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.record_mcp_check("human", "MCP-003", false, "HTTP 502 Bad Gateway\nmore")
+            .unwrap();
+        s.add_mcp_server(
+            "human",
+            pulse_store::McpServerInput {
+                name: "hidden".into(),
+                transport: "stdio".into(),
+                command: "/bin/cat".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_mcp_server_status("human", "MCP-004", "disabled")
+            .unwrap();
+
+        let brief = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        for want in [
+            "## MCP servers you can call (3)",
+            &format!(
+                "- github (stdio) - GitHub issues and pull requests of this project. Checked {TEST_NOW}: github-mcp 1.2.0: 2 tools: list_issues, get_issue."
+            ),
+            "- docs (http). Never checked; `pulse mcp connect` shows its tools.",
+            &format!("- broken (http). The last check ({TEST_NOW}) failed: HTTP 502 Bad Gateway."),
+            "`pulse mcp tools NAME` lists a server's tools",
+            "`pulse mcp call NAME TOOL --args '{...}'`",
+            "never write a secret into a file, a commit or your report; say in your report which servers you used.",
+        ] {
+            assert!(brief.contains(want), "brief lacks {want:?}:\n{brief}");
+        }
+        assert!(
+            !brief.contains("hidden") && !brief.contains("Second line"),
+            "brief lists a disabled server or a note's second line:\n{brief}"
+        );
+        assert!(
+            !brief.contains("keychain://"),
+            "brief carries the secret reference:\n{brief}"
+        );
+
+        let remote = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            remote: true,
+            ..Default::default()
+        });
+        assert!(
+            remote.contains("## MCP servers (3)")
+                && remote.contains("This project registers the MCP servers github, broken, docs, but they are reachable only from the local executor")
+                && remote.contains("ask for it through a FINDING: line"),
+            "remote brief lacks the one-line notice:\n{remote}"
+        );
+        assert!(
+            !remote.contains("pulse mcp call"),
+            "remote brief offers the local bridge:\n{remote}"
+        );
+    }
+
+    #[test]
+    fn brief_lists_skills_and_inlines_them_for_remote_workers() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        s.add_skill(
+            "human",
+            pulse_store::SkillInput {
+                name: "release".into(),
+                description: "How to cut a release".into(),
+                body: "# Release\n\n1. Tag.\n2. Push.".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.add_skill(
+            "aurora",
+            pulse_store::SkillInput {
+                name: "flaky-tests".into(),
+                project: "proj".into(),
+                description: "Finding a flaky test".into(),
+                body: "Run the suite three times.".into(),
+            },
+        )
+        .unwrap();
+        s.add_skill(
+            "human",
+            pulse_store::SkillInput {
+                name: "old".into(),
+                description: "retired".into(),
+                body: "no more".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        s.set_skill_status("human", "SKILL-003", "disabled")
+            .unwrap();
+
+        let brief = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        for want in [
+            "## Skills (2)",
+            "- flaky-tests - Finding a flaky test",
+            "- release - How to cut a release",
+            "`pulse skill show NAME` prints a skill; `pulse skill add --name N --description D --file F`",
+            "Read a skill before doing work it covers. When you finish something others will repeat here - a setup, a debugging recipe, a check - add it as a skill so the next worker does not rediscover it.",
+        ] {
+            assert!(brief.contains(want), "brief lacks {want:?}:\n{brief}");
+        }
+        assert!(
+            !brief.contains("retired") && !brief.contains("1. Tag."),
+            "local brief lists a disabled skill or inlines a body:\n{brief}"
+        );
+
+        let remote = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            remote: true,
+            ..Default::default()
+        });
+        for want in [
+            "## Skills (2)",
+            "the skills are copied below",
+            "put it in a FINDING: line for your lead",
+            "### Skill release - How to cut a release",
+            "1. Tag.\n2. Push.",
+            "### Skill flaky-tests - Finding a flaky test",
+            "Run the suite three times.",
+        ] {
+            assert!(
+                remote.contains(want),
+                "remote brief lacks {want:?}:\n{remote}"
+            );
+        }
+        assert!(
+            !remote.contains("pulse skill show"),
+            "remote brief offers a store command:\n{remote}"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ const PATHS = [
   "org", "projects", "timeline", "notices", "runner", "running", "service", "settings", "cred", "heldout", "roster", "votes", "compute",
   "tasks", "tasks?project=demo", "tasks/TASK-001", "messages?project=demo&task=TASK-001", "code-deliveries?limit=20", "jobs/failed?project=demo&limit=20",
   "records", "records?kind=adr&status=Proposed", "records/ADR-001?project=demo", "constitution?project=demo", "hygiene?limit=30", "events?limit=40",
-  "harness", "harness/prompt", "harness/models", "harness/sessions?limit=50", "harness/sessions/abc",
+  "harness", "harness/prompt", "harness/models", "harness/sessions?limit=50", "harness/sessions/abc", "mcp", "mcp?project=demo", "mcp/MCP-001", "mcp/options", "skills", "skills/SKILL-001",
   "projects/demo/overview", "projects/demo/project", "projects/demo/timeline", "projects/demo/threads", "projects/demo/threads/k1", "projects/demo/posts/p1",
   "projects/demo/proposals", "projects/demo/questions", "projects/demo/suggestions", "projects/demo/amendments", "projects/demo/evolution", "projects/demo/notices", "projects/demo/goal",
 ];
@@ -50,6 +50,10 @@ test("each action refreshes the views it can change and nothing else", () => {
   const setting = hit(touches("setting"));
   for (const p of ["settings", "org", "runner", "harness", "heldout", "compute"]) assert.ok(setting.includes(p), p);
   for (const p of ["tasks", "records", "projects/demo/overview", "cred"]) assert.ok(!setting.includes(p), p);
+
+  assert.deepEqual(hit(touches("mcp.checked")), ["mcp", "mcp?project=demo", "mcp/MCP-001", "mcp/options"]);
+  assert.deepEqual(hit(touches("skill.added")), ["skills", "skills/SKILL-001"]);
+  for (const p of ["mcp", "skills"]) assert.ok(!setting.includes(p), p);
 
   const land = hit(touches("land.landed"));
   for (const p of ["org", "projects", "code-deliveries?limit=20", "runner", "tasks?project=demo", "projects/demo/overview", "projects/demo/timeline"]) assert.ok(land.includes(p), p);

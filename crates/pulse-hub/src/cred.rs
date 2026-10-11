@@ -298,13 +298,13 @@ pub(crate) fn addition_flag(
     }
 }
 
-fn go_value<T: serde::Serialize>(v: &T) -> Value {
+pub(crate) fn go_value<T: serde::Serialize>(v: &T) -> Value {
     let text = pulse_store::gojson::to_string(v).expect("serialize hub payload");
     serde_json::from_str(&text).expect("reparse hub payload")
 }
 
 #[cfg(not(test))]
-fn cred_resolver(home: &str) -> pulse_cred::Resolver {
+pub(crate) fn cred_resolver(home: &str) -> pulse_cred::Resolver {
     pulse_cred::new(home)
 }
 
@@ -320,7 +320,7 @@ static TEST_CRED_DEPS: LazyLock<Mutex<pulse_cred_setup::Deps>> =
     LazyLock::new(|| Mutex::new(pulse_cred_setup::Deps::default()));
 
 #[cfg(test)]
-fn cred_resolver(home: &str) -> pulse_cred::Resolver {
+pub(crate) fn cred_resolver(home: &str) -> pulse_cred::Resolver {
     TEST_CRED_RESOLVER
         .lock()
         .unwrap()

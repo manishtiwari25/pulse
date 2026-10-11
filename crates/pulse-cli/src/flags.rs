@@ -60,6 +60,8 @@ const ERR_RANGE: &str = "value out of range";
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlagValue {
     String(String),
+    /// A flag given more than once collects every value, in order.
+    Strings(Vec<String>),
     Bool(bool),
     Int(i32),
     I64(i64),
@@ -72,7 +74,7 @@ impl FlagValue {
     /// back-quoted value name (`""` for booleans, which take no argument).
     fn type_name(&self) -> &'static str {
         match self {
-            Self::String(_) => "string",
+            Self::String(_) | Self::Strings(_) => "string",
             Self::Int(_) => "int",
             Self::I64(_) => "int",
             Self::F64(_) => "float",
@@ -85,6 +87,7 @@ impl FlagValue {
     fn default_text(&self) -> String {
         match self {
             Self::String(v) => v.clone(),
+            Self::Strings(v) => v.join(","),
             Self::Bool(v) => v.to_string(),
             Self::Int(v) => v.to_string(),
             Self::I64(v) => v.to_string(),
@@ -98,6 +101,11 @@ impl FlagValue {
     fn set_from(&self, value: &str) -> Result<FlagValue, &'static str> {
         Ok(match self {
             Self::String(_) => Self::String(value.to_string()),
+            Self::Strings(v) => {
+                let mut v = v.clone();
+                v.push(value.to_string());
+                Self::Strings(v)
+            }
             Self::Bool(_) => Self::Bool(parse_bool(value).map_err(|()| ERR_PARSE)?),
             Self::Int(_) => {
                 let v = parse_go_int(value, 64)?;
@@ -145,6 +153,10 @@ impl FlagSet {
 
     pub fn string_var(&mut self, name: &str, default: &str, usage: &str) {
         self.define(name, FlagValue::String(default.to_string()), usage);
+    }
+    /// A repeatable flag: `--arg a --arg b` collects both.
+    pub fn strings_var(&mut self, name: &str, usage: &str) {
+        self.define(name, FlagValue::Strings(Vec::new()), usage);
     }
     pub fn bool_var(&mut self, name: &str, default: bool, usage: &str) {
         self.define(name, FlagValue::Bool(default), usage);
@@ -371,6 +383,13 @@ impl FlagSet {
             _ => String::new(),
         }
     }
+    pub fn get_strings(&self, name: &str) -> Vec<String> {
+        match &self.formal[name].value {
+            FlagValue::Strings(v) => v.clone(),
+            FlagValue::String(v) if !v.is_empty() => vec![v.clone()],
+            _ => Vec::new(),
+        }
+    }
     pub fn get_bool(&self, name: &str) -> bool {
         matches!(self.formal[name].value, FlagValue::Bool(true))
     }
@@ -428,6 +447,7 @@ impl FlagSet {
             let default = flag.default.default_text();
             let is_zero = match &flag.default {
                 FlagValue::String(v) => v.is_empty(),
+                FlagValue::Strings(v) => v.is_empty(),
                 FlagValue::Bool(v) => !*v,
                 FlagValue::Int(v) => *v == 0,
                 FlagValue::I64(v) => *v == 0,
@@ -436,7 +456,7 @@ impl FlagSet {
             };
             if !is_zero {
                 match flag.default {
-                    FlagValue::String(_) => {
+                    FlagValue::String(_) | FlagValue::Strings(_) => {
                         b.push_str(&format!(" (default {})", go_quote(&default)))
                     }
                     _ => b.push_str(&format!(" (default {default})")),
@@ -822,6 +842,33 @@ mod tests {
 
     fn sv(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn repeatable_flags_collect_every_value() {
+        let _serial = crate::test_helpers::serial();
+        let mut fs = FlagSet::new("x");
+        fs.strings_var("arg", "a repeatable `value`");
+        fs.string_var("one", "", "a plain flag");
+        let rest = parse_interleaved(
+            &mut fs,
+            &sv(&["--arg", "a", "pos", "--arg=b", "--one", "x", "--one", "y"]),
+        )
+        .unwrap();
+        assert_eq!(rest, sv(&["pos"]));
+        assert_eq!(fs.get_strings("arg"), sv(&["a", "b"]));
+        assert_eq!(fs.get_strings("one"), sv(&["y"]));
+        assert!(fs.is_set("arg"));
+        let mut fresh = FlagSet::new("y");
+        fresh.strings_var("arg", "a repeatable `value`");
+        assert!(fresh.get_strings("arg").is_empty());
+        assert!(!fresh.is_set("arg"));
+        let mut out = Vec::new();
+        fresh.print_defaults(&mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "  -arg value\n    \ta repeatable value\n"
+        );
     }
 
     #[test]

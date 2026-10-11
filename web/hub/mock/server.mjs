@@ -78,6 +78,9 @@ async function init() {
   // Questions for the owner (for_owner posts and the evolution loop's stop questions): a decision removes them like the hub does.
   state.questions = await loadJson("questions.json");
   state.events = (await loadJson("events.json")).events;
+  state.mcp = (await loadJson("mcp.json")).servers;
+  state.mcpOptions = await loadJson("mcp/options.json");
+  state.skills = (await loadJson("skills.json")).skills;
   const org = await loadJson("org.json");
   // An owner-set goal the fixture seeds (ADR-040) lives in state.goals like one set from the console, so GET goal, the org rows and the registry rows agree.
   for (const p of org.projects) if (p.kind !== "commons" && p.goal_source === "owner") state.goals.set(p.slug, { text: p.goal_preview, source: "owner", updated_at: "2026-09-02T10:00:00Z", updated_by: "human" });
@@ -384,7 +387,7 @@ function secretShaped(v) {
 
 async function handle(req, res) {
   const url = new URL(req.url, "http://x");
-  if (req.method === "OPTIONS") return send(res, 204, "", { "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" });
+  if (req.method === "OPTIONS") return send(res, 204, "", { "access-control-allow-methods": "GET,POST,PATCH,OPTIONS", "access-control-allow-headers": "content-type" });
   if (!url.pathname.startsWith("/api/v1/")) {
     if (staticDir) return serveStatic(res, url.pathname);
     return fail(res, 404, "not found", "the mock only serves /api/v1", "start next dev alongside: npm run dev:mock");
@@ -411,6 +414,16 @@ async function handle(req, res) {
       streams.delete(res);
     });
     return;
+  }
+
+  if ((req.method === "POST" || req.method === "PATCH") && (segs[0] === "mcp" || segs[0] === "skills")) {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return fail(res, 400, "bad request", String(e.message), "send a JSON object");
+    }
+    return segs[0] === "mcp" ? mcpWrite(req, res, segs, q, body) : skillWrite(req, res, segs, q, body);
   }
 
   if (req.method === "POST") {
@@ -886,7 +899,7 @@ async function handle(req, res) {
       }
       return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate");
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status, skills, skills/<id> (PATCH), skills/<id>/status");
   }
 
   // GET - live state first, fixtures second
@@ -1074,12 +1087,212 @@ async function handle(req, res) {
     if (p && p !== d?.record?.project) return send(res, 200, { record: null, body: "", amendments: [] });
     return send(res, 200, d);
   }
+  if (segs[0] === "mcp") {
+    if (segs.length === 1) return send(res, 200, { servers: scoped(state.mcp, q.get("project") || "") });
+    if (segs.length === 2 && segs[1] === "options") return send(res, 200, state.mcpOptions);
+    if (segs.length === 2) {
+      const server = state.mcp.find((x) => x.id === segs[1] || x.name === segs[1]);
+      return server ? send(res, 200, { server }) : fail(res, 404, "No MCP server " + segs[1], "Nothing registered under that id or name.", "pulse mcp list shows what there is.");
+    }
+    return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+  }
+  if (segs[0] === "skills") {
+    if (segs.length === 1) return send(res, 200, { skills: scoped(state.skills, q.get("project") || "") });
+    if (segs.length === 2) {
+      const skill = state.skills.find((x) => x.id === segs[1] || x.name === segs[1]);
+      return skill ? send(res, 200, { skill }) : fail(res, 404, "No skill " + segs[1], "Nothing registered under that id or name.", "pulse skill list shows what there is.");
+    }
+    return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+  }
   const d = await fixture(segs.map(encodeURIComponent).join("/"));
   if (d === null) return fail(res, 404, "not found", "no fixture for " + url.pathname, "add mock/api/" + segs.join("/") + ".json");
   return send(res, 200, d);
 }
 
 const strip = (t) => Object.fromEntries(Object.entries(t).filter(([k]) => !k.startsWith("_")));
+
+// ----- MCP servers and skills (TASK-022) --------------------------------
+// The mock keeps the hub's rules: slugs, one endpoint per transport, an
+// auth that fits the transport, a pulse-cred reference whenever auth is not
+// none, and never a secret in the store. Connect is canned per row.
+
+const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+const CRED_REF = /^(op:\/\/[^/]+\/[^/]+\/.+|keychain:\/\/[^/]+\/.+|file:\/\/\/.+)$/;
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const scoped = (rows, project) => rows.filter((r) => !project || r.project === "" || r.project === project);
+const str = (v) => (typeof v === "string" ? v.trim() : "");
+
+function mcpValidate(row) {
+  const auth = state.mcpOptions.auths.find((a) => a.name === row.auth);
+  if (!SLUG.test(row.name) || row.name.length > 64) return ["Invalid name " + row.name, "a name is lowercase letters, digits and dashes, 64 characters at most", "pick a slug like github or feedback-api"];
+  if (!state.mcpOptions.transports.includes(row.transport)) return ["Invalid transport " + row.transport, "transport is one of stdio, http, sse", "choose a transport"];
+  if (row.transport === "stdio" && !row.command) return ["Invalid command", "a stdio server needs the command that starts it", "set command"];
+  if (row.transport !== "stdio" && !/^https?:\/\/\S+$/.test(row.url)) return ["Invalid url", "an " + row.transport + " server needs an http(s) url", "set url"];
+  if (!auth) return ["Invalid auth " + row.auth, "auth is one of " + state.mcpOptions.auths.map((a) => a.name).join(", "), "choose an auth"];
+  if (!auth.transports.includes(row.transport)) return ["Invalid auth " + row.auth, "auth " + row.auth + " applies to " + auth.transports.join(", ") + " servers", "choose an auth that fits " + row.transport];
+  if (row.auth !== "none" && !CRED_REF.test(row.secret_ref)) return ["Invalid secret", "auth " + row.auth + " needs a credential reference: " + state.mcpOptions.cred_shapes, "pass --secret REF; never the secret itself"];
+  if (["header", "query", "env"].includes(row.auth) && !row.auth_header) return ["Invalid auth header", "auth " + row.auth + " needs the name to send the secret under", "set the auth header name"];
+  for (const [k, v] of Object.entries(row.env)) {
+    if (!ENV_KEY.test(k)) return ["Invalid env " + k, "an environment variable name is letters, digits and underscores", "rename it"];
+    if (secretShaped(v)) return ["Invalid env " + k, "the value looks like a secret; the store keeps references only", "put the secret in 1Password, the keychain or a file and reference it"];
+  }
+  return null;
+}
+
+function mcpRowFrom(body, base, project) {
+  const has = (k) => k in body;
+  const row = { ...base };
+  if (has("name")) row.name = str(body.name);
+  if (has("project")) row.project = str(body.project);
+  else if (!base.id) row.project = project;
+  if (has("transport")) row.transport = str(body.transport);
+  if (has("command")) row.command = str(body.command);
+  if (has("args")) row.args = Array.isArray(body.args) ? body.args.map(String) : base.args;
+  if (has("url")) row.url = str(body.url);
+  if (has("auth")) row.auth = str(body.auth);
+  if (has("auth_header")) row.auth_header = str(body.auth_header) || "Authorization";
+  if (has("secret_ref")) row.secret_ref = str(body.secret_ref);
+  if (has("env")) row.env = body.env && typeof body.env === "object" && !Array.isArray(body.env) ? Object.fromEntries(Object.entries(body.env).map(([k, v]) => [k, String(v)])) : base.env;
+  if (has("note")) row.note = str(body.note);
+  if (row.auth === "none") row.secret_ref = "";
+  return row;
+}
+
+function mcpWrite(req, res, segs, q, body) {
+  const now_ = now();
+  if (req.method === "POST" && segs.length === 1) {
+    const row = mcpRowFrom(body, { id: "", name: "", project: "", transport: "stdio", command: "", args: [], url: "", auth: "none", auth_header: "Authorization", secret_ref: "", env: {}, note: "", status: "enabled", last_check_at: "", last_check_ok: null, last_check_note: "", created_by: "owner", created_at: now_, updated_at: now_ }, q.get("project") || "");
+    const bad = mcpValidate(row);
+    if (bad) return fail(res, 400, ...bad);
+    const dup = state.mcp.find((x) => x.name === row.name && x.project === row.project);
+    if (dup) return fail(res, 400, "Invalid name " + row.name, dup.id + " already uses it" + (row.project ? " for " + row.project : " for every project"), "pick another name or update " + dup.id);
+    row.id = nextId("MCP", state.mcp);
+    state.mcp.push(row);
+    emit("owner", "mcp.added", row.id, row.name + " (" + row.transport + ", " + (row.project || "all projects") + ")");
+    return send(res, 200, { server: row });
+  }
+  const server = state.mcp.find((x) => x.id === segs[1] || x.name === segs[1]);
+  if (!server) return fail(res, 404, "No MCP server " + (segs[1] ?? ""), "Nothing registered under that id or name.", "pulse mcp list shows what there is.");
+  if (req.method === "PATCH" && segs.length === 2) {
+    const keys = Object.keys(body).filter((k) => ["name", "project", "transport", "command", "args", "url", "auth", "auth_header", "secret_ref", "env", "note"].includes(k));
+    if (!keys.length) return fail(res, 400, "Nothing to update", "The patch names no field.", "Send at least one of name, project, transport, command, args, url, auth, auth_header, secret_ref, env, note.");
+    const row = mcpRowFrom(body, server, server.project);
+    const bad = mcpValidate(row);
+    if (bad) return fail(res, 400, ...bad);
+    const dup = state.mcp.find((x) => x.id !== server.id && x.name === row.name && x.project === row.project);
+    if (dup) return fail(res, 400, "Invalid name " + row.name, dup.id + " already uses it", "pick another name");
+    Object.assign(server, row, { updated_at: now_ });
+    emit("owner", "mcp.updated", server.id, keys.join(", "));
+    return send(res, 200, { server });
+  }
+  if (req.method === "POST" && segs[2] === "status" && segs.length === 3) {
+    const status = str(body.status);
+    if (!["enabled", "disabled"].includes(status)) return fail(res, 400, "Invalid status", "status is enabled or disabled", "send {status:'enabled'} or {status:'disabled'}");
+    if (server.status !== status) {
+      server.status = status;
+      server.updated_at = now_;
+      emit("owner", status === "enabled" ? "mcp.enabled" : "mcp.disabled", server.id, server.name);
+    }
+    return send(res, 200, { server });
+  }
+  if (req.method === "POST" && segs[2] === "connect" && segs.length === 3) {
+    const outcome = mcpConnectOutcome(server);
+    server.last_check_at = now_;
+    server.last_check_ok = outcome.ok;
+    server.last_check_note = outcome.ok ? outcome.note : outcome.why;
+    server.updated_at = now_;
+    emit("owner", "mcp.checked", server.id, (outcome.ok ? "ok: " : "failed: ") + server.last_check_note);
+    if (!outcome.ok) return fail(res, outcome.code, outcome.error, outcome.why, outcome.fix);
+    return send(res, 200, { ok: true, note: outcome.note, info: outcome.info, tools: outcome.tools, server });
+  }
+  return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+}
+
+const CANNED_TOOLS = {
+  github: [
+    ["list_issues", "List issues of a repository, filtered by state, labels and assignee."],
+    ["get_issue", "Read one issue with its body and labels."],
+    ["create_issue", "Open an issue."],
+    ["add_issue_comment", "Comment on an issue or pull request."],
+    ["list_pull_requests", "List pull requests of a repository."],
+    ["get_pull_request", "Read one pull request with its diff summary."],
+    ["search_issues", "Search issues and pull requests across repositories."],
+    ["search_code", "Search code across repositories."],
+    ["get_file_contents", "Read a file at a ref."],
+    ["list_commits", "List commits of a branch."],
+    ["create_branch", "Create a branch from a ref."],
+    ["push_files", "Push several files in one commit."],
+  ],
+  sandbox: [
+    ["create_env", "Create a throwaway environment and return its id."],
+    ["run", "Run a command inside an environment."],
+    ["destroy_env", "Tear an environment down."],
+  ],
+};
+
+function mcpConnectOutcome(server) {
+  if (server.secret_ref.startsWith("keychain://")) {
+    return { ok: false, code: 409, error: "Cannot read the secret of " + server.name, why: "credential " + server.secret_ref + ": the keychain has no item for service " + server.secret_ref.slice("keychain://".length).replace("/", " account "), fix: "Check the reference and that this machine can read it, then try Connect again." };
+  }
+  if (server.transport !== "stdio" && /\.internal\b/.test(server.url) && !CANNED_TOOLS[server.name]) {
+    return { ok: false, code: 502, error: "Cannot reach " + server.name + " (" + server.url + ")", why: "GET " + server.url + ": connection refused", fix: server.transport === "sse" ? "check the url and the credential; a Streamable HTTP server wants --transport http" : "check the url and the credential; an older server may want --transport sse" };
+  }
+  const tools = (CANNED_TOOLS[server.name] ?? [["ping", "Answer with pong."], ["search", "Search what this server knows."]]).map(([name, description]) => ({ name, description }));
+  const info = { name: server.name + (server.transport === "stdio" ? "-mcp" : ""), version: CANNED_TOOLS[server.name] ? (server.name === "github" ? "0.6.2" : "1.0.0") : "0.1.0", protocol_version: "2025-06-18" };
+  const note = info.name + " " + info.version + ": " + tools.length + " tool" + (tools.length === 1 ? "" : "s") + ": " + tools.map((t) => t.name).join(", ");
+  return { ok: true, note, info, tools };
+}
+
+function skillValidate(row, except) {
+  if (!SLUG.test(row.name) || row.name.length > 64) return ["Invalid name " + row.name, "a name is lowercase letters, digits and dashes, 64 characters at most", "pick a slug like release-check"];
+  const dup = state.skills.find((x) => x.name === row.name && x.id !== except);
+  if (dup) return ["Invalid name " + row.name, dup.id + " already uses it", "pick another name or update " + dup.id];
+  if (!row.description || /[\r\n]/.test(row.description) || row.description.length > 200) return ["Invalid description", "one line, 200 characters at most", "say in one line when to read the skill"];
+  if (!row.body.trim()) return ["Invalid body", "a skill needs a body", "write the recipe in markdown"];
+  if (row.body.length > 65536) return ["Invalid body", "64 KiB at most", "shorten it"];
+  if (row.body.split(/\s+/).some(secretShaped)) return ["Body contains a secret", "Skills are shared with every agent.", "Name where the secret lives (a reference, an env var) instead of pasting it."];
+  return null;
+}
+
+function skillWrite(req, res, segs, q, body) {
+  const now_ = now();
+  if (req.method === "POST" && segs.length === 1) {
+    const row = { id: "", name: str(body.name), project: "project" in body ? str(body.project) : q.get("project") || "", description: str(body.description), body: typeof body.body === "string" ? body.body : "", status: "enabled", created_by: "owner", created_at: now_, updated_at: now_, uses: 0 };
+    const bad = skillValidate(row, "");
+    if (bad) return fail(res, 400, ...bad);
+    row.id = nextId("SKILL", state.skills);
+    state.skills.push(row);
+    emit("owner", "skill.added", row.id, row.name + " (" + (row.project || "all projects") + ")");
+    return send(res, 200, { skill: row });
+  }
+  const skill = state.skills.find((x) => x.id === segs[1] || x.name === segs[1]);
+  if (!skill) return fail(res, 404, "No skill " + (segs[1] ?? ""), "Nothing registered under that id or name.", "pulse skill list shows what there is.");
+  if (req.method === "PATCH" && segs.length === 2) {
+    const keys = Object.keys(body).filter((k) => ["name", "project", "description", "body"].includes(k));
+    if (!keys.length) return fail(res, 400, "Nothing to update", "The patch names no field.", "Send at least one of name, project, description, body.");
+    const row = { ...skill };
+    if ("name" in body) row.name = str(body.name);
+    if ("project" in body) row.project = str(body.project);
+    if ("description" in body) row.description = str(body.description);
+    if ("body" in body) row.body = typeof body.body === "string" ? body.body : "";
+    const bad = skillValidate(row, skill.id);
+    if (bad) return fail(res, 400, ...bad);
+    Object.assign(skill, row, { updated_at: now_ });
+    emit("owner", "skill.updated", skill.id, keys.join(", "));
+    return send(res, 200, { skill });
+  }
+  if (req.method === "POST" && segs[2] === "status" && segs.length === 3) {
+    const status = str(body.status);
+    if (!["enabled", "disabled"].includes(status)) return fail(res, 400, "Invalid status", "status is enabled or disabled", "send {status:'enabled'} or {status:'disabled'}");
+    if (skill.status !== status) {
+      skill.status = status;
+      skill.updated_at = now_;
+      emit("owner", status === "enabled" ? "skill.enabled" : "skill.disabled", skill.id, skill.name);
+    }
+    return send(res, 200, { skill });
+  }
+  return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+}
 
 await init();
 createServer((req, res) => {

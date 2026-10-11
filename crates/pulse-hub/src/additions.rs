@@ -59,6 +59,8 @@ impl Handler {
             "cred" => self.addition_cred(w, r, parts),
             "harness" => self.addition_harness(w, r, parts),
             "hygiene" => self.addition_hygiene(w, r, parts),
+            "mcp" => self.addition_mcp(w, r, parts),
+            "skills" => self.addition_skills(w, r, parts),
             "service" => self.addition_service(w, r, parts),
             _ => return false,
         }
@@ -1186,6 +1188,8 @@ pub(crate) fn addition_failure<E: AdditionFailureArg>(w: &mut ResponseWriter, er
         || what.starts_with("No compute request ")
         || what.starts_with("No project ")
         || what.starts_with("No executor ")
+        || what.starts_with("No MCP server ")
+        || what.starts_with("No skill ")
     {
         code = 404;
     }

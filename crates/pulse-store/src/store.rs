@@ -3,7 +3,7 @@ use crate::ddl::DDL;
 use crate::evolve_ddl::EVOLVE_DDL;
 use crate::harness_ddl::{HARNESS_COLUMNS, HARNESS_DDL};
 use crate::hooks_ddl::HOOKS_DDL;
-use crate::mcp_servers::MCP_DDL;
+use crate::mcp_ddl::MCP_DDL;
 use crate::pyjson::py_json_value;
 use crate::records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 use crate::runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
@@ -355,6 +355,28 @@ impl Store {
             return Ok(());
         }
         let tx = self.begin()?;
+        for (table, marker) in SUPERSEDED_SHAPES {
+            if !table_present(&tx, table)? || has_column(&tx, table, marker)? {
+                continue;
+            }
+            let rows: i64 =
+                tx.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+            let kept = if rows == 0 {
+                tx.execute(&format!("DROP TABLE {table}"), [])?;
+                String::new()
+            } else {
+                let aside = format!("{table}_superseded");
+                tx.execute(&format!("DROP TABLE IF EXISTS {aside}"), [])?;
+                tx.execute(&format!("ALTER TABLE {table} RENAME TO {aside}"), [])?;
+                aside
+            };
+            tx.event(
+                "pulse",
+                "schema.superseded",
+                table,
+                format!("rows={rows} kept_as={kept}"),
+            )?;
+        }
         for list in additive_ddl() {
             for stmt in list {
                 tx.execute(stmt, [])
@@ -419,6 +441,12 @@ impl Store {
             names.remove(&name);
         }
         if !names.is_empty() {
+            return false;
+        }
+        if SUPERSEDED_SHAPES.iter().any(|(table, marker)| {
+            table_present(&conn, table).unwrap_or(false)
+                && !has_column(&conn, table, marker).unwrap_or(true)
+        }) {
             return false;
         }
         additive_columns()
@@ -875,6 +903,15 @@ pub fn create(path: impl AsRef<Path>) -> Result<()> {
     s.ensure_records()
 }
 
+/// Tables an earlier build created in a shape this one replaced, named with a
+/// column only the current shape has. `ensure_records` drops such a table
+/// when it is empty, or moves it aside as `<table>_superseded`, and lets the
+/// additive DDL create the current shape; `CREATE TABLE IF NOT EXISTS` alone
+/// would keep the old columns forever. `mcp_servers`: a store-only first cut
+/// (transport, endpoint, auth_ref) landed before the registry with command,
+/// url, auth kinds and status.
+pub const SUPERSEDED_SHAPES: &[(&str, &str)] = &[("mcp_servers", "auth")];
+
 pub fn additive_ddl() -> Vec<&'static [&'static str]> {
     vec![
         RECORDS_DDL,
@@ -979,6 +1016,15 @@ fn git_top_level(dir: &Path) -> String {
         return String::from_utf8_lossy(&out.stdout).trim().to_string();
     }
     String::new()
+}
+
+pub(crate) fn table_present(conn: &Connection, table: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+        |r| r.get(0),
+    )?;
+    Ok(n == 1)
 }
 
 pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -2014,6 +2060,87 @@ mod tests {
         assert!(
             got.contains("USING INDEX events_action_subject"),
             "executor history plan:\n{got}"
+        );
+    }
+
+    const THIN_MCP_SERVERS: &str = "CREATE TABLE mcp_servers (id TEXT PRIMARY KEY, project TEXT NOT NULL, name TEXT NOT NULL, transport TEXT NOT NULL, endpoint TEXT NOT NULL, auth_ref TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project, name))";
+
+    fn open_with_thin_mcp_table(rows: &str) -> (tempfile::TempDir, TestStore) {
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        db.execute_batch(&format!("{THIN_MCP_SERVERS}; {rows}"))
+            .unwrap();
+        assert!(!has_column(&db, "mcp_servers", "auth").unwrap());
+        drop(db);
+        let s = open_temp(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        });
+        (home, s)
+    }
+
+    #[test]
+    fn superseded_mcp_servers_shape_is_replaced_on_open() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        // Empty thin table: dropped and recreated in the current shape.
+        let (_home, s) = open_with_thin_mcp_table("");
+        let conn = s.conn().unwrap();
+        for c in ["auth", "url", "command", "secret_ref", "status"] {
+            assert!(
+                has_column(&conn, "mcp_servers", c).unwrap(),
+                "replaced mcp_servers lacks {c}"
+            );
+        }
+        assert!(!table_present(&conn, "mcp_servers_superseded").unwrap());
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.superseded' AND subject = 'mcp_servers'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(s.additive_complete(), "a replaced shape counts as complete");
+        drop(conn);
+        // Reopening changes nothing more.
+        let again = open_temp(Options {
+            home: s.home.clone(),
+            ..Options::default()
+        });
+        let n: i64 = again
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.superseded'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the migration ran again on a current shape");
+        // A thin table with rows is kept aside, never silently dropped.
+        let (_kept_home, kept) = open_with_thin_mcp_table(
+            "INSERT INTO mcp_servers VALUES ('MCP-001', 'demo', 'issues', 'http', 'https://x', '', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')",
+        );
+        let conn = kept.conn().unwrap();
+        assert!(has_column(&conn, "mcp_servers", "auth").unwrap());
+        let aside: String = conn
+            .query_row("SELECT name FROM mcp_servers_superseded", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(aside, "issues");
+        let detail: String = conn
+            .query_row(
+                "SELECT detail FROM events WHERE action = 'schema.superseded' AND subject = 'mcp_servers'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            detail.contains("rows=1") && detail.contains("kept_as=mcp_servers_superseded"),
+            "{detail}"
         );
     }
 

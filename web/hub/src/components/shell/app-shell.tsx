@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CpuIcon, FolderIcon, HomeIcon, ListTodoIcon, MoreHorizontalIcon, SettingsIcon, TerminalIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, BookOpenIcon, ChevronDownIcon, CpuIcon, FolderIcon, HomeIcon, ListTodoIcon, MoreHorizontalIcon, PlugIcon, SettingsIcon, TerminalIcon, VoteIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -24,6 +24,7 @@ const NAV: { href: string; label: string; icon: React.ComponentType<{ className?
   { href: "/compute/", label: "Compute", icon: CpuIcon, match: (p) => p.startsWith("/compute") },
   { href: "/agents/", label: "Agents", icon: BotIcon, match: (p) => p.startsWith("/agents") },
   { href: "/harness/", label: "Harness", icon: TerminalIcon, match: (p) => p.startsWith("/harness") },
+  { href: "/connections/", label: "Connections", icon: PlugIcon, match: (p) => p.startsWith("/connections") },
   { href: "/settings/", label: "Settings", icon: SettingsIcon, match: (p) => p.startsWith("/settings") },
 ];
 

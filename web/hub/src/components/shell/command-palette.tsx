@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownIcon, ArrowUpIcon, BookOpenIcon, BotIcon, CornerDownLeftIcon, CpuIcon, FolderIcon, HistoryIcon, HomeIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, SearchIcon, SettingsIcon, SparklesIcon, TerminalIcon, VoteIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, BookOpenIcon, BotIcon, CornerDownLeftIcon, CpuIcon, FolderIcon, HistoryIcon, HomeIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, PlugIcon, SearchIcon, SettingsIcon, SparklesIcon, TerminalIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
 import { hrefs, PROJECT_TABS, type ProjectCanonicalTab } from "@/lib/nav";
@@ -109,6 +109,9 @@ export function CommandPalette() {
             </CommandItem>
             <CommandItem value="page harness" className={itemStyle} onSelect={() => go(hrefs.harness())}>
               <TerminalIcon aria-hidden="true" className={itemIcon} /> Harness
+            </CommandItem>
+            <CommandItem value="page connections mcp servers skills" className={itemStyle} onSelect={() => go(hrefs.connections())}>
+              <PlugIcon aria-hidden="true" className={itemIcon} /> Connections
             </CommandItem>
             <CommandItem value="page settings" className={itemStyle} onSelect={() => go(hrefs.settings())}>
               <SettingsIcon aria-hidden="true" className={itemIcon} /> Settings

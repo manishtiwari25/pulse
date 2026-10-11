@@ -1109,6 +1109,7 @@ mod tests {
             "/settings",
             "/agents",
             "/harness",
+            "/connections",
         ] {
             let want_body =
                 h.ui.read_file(&format!("{}/index.html", route.trim_start_matches('/')))

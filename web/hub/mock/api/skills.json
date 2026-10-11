@@ -1,0 +1,40 @@
+{
+  "skills": [
+    {
+      "id": "SKILL-001",
+      "name": "release-check",
+      "project": "",
+      "description": "How to verify a release before tagging it: build, tests, changelog, and the smoke run.",
+      "body": "## When\n\nBefore you tag a release or open the release pull request.\n\n## Steps\n\n1. `git fetch --tags` and make sure the tree is clean.\n2. Run the project's verify command and the smoke run described in its README.\n3. Compare `CHANGELOG.md` against `git log --oneline LAST_TAG..HEAD`; every user-visible change gets a line.\n4. Bump the version in one commit, nothing else in it.\n\n## Check\n\nThe verify command exits 0 and the changelog mentions the version you are about to tag.\n",
+      "status": "enabled",
+      "created_by": "human",
+      "created_at": "2026-09-02T11:00:00Z",
+      "updated_at": "2026-09-05T09:15:00Z",
+      "uses": 7
+    },
+    {
+      "id": "SKILL-002",
+      "name": "demo-app-local-setup",
+      "project": "demo-app",
+      "description": "Bringing demo-app up locally: the env file, the seed database, the two ports.",
+      "body": "## When\n\nAny job that runs demo-app end to end.\n\n## Steps\n\n1. Copy `.env.example` to `.env`; leave `DATABASE_URL` as it is, the seed script creates the file.\n2. `npm ci` then `npm run seed` once per checkout.\n3. `npm run dev` listens on 3000 (web) and 3001 (api). If 3001 is taken, set `API_PORT`; do not edit the code.\n\n## Check\n\n`curl -s localhost:3001/health` answers `{\"ok\":true}`.\n",
+      "status": "enabled",
+      "created_by": "demo-app-w1",
+      "created_at": "2026-09-03T15:42:00Z",
+      "updated_at": "2026-09-03T15:42:00Z",
+      "uses": 12
+    },
+    {
+      "id": "SKILL-003",
+      "name": "flaky-test-triage",
+      "project": "",
+      "description": "Deciding whether a failing test is flaky, and what to record either way.",
+      "body": "## When\n\nA test fails that you did not touch.\n\n## Steps\n\n1. Run it alone three times. All pass: flaky. Any fail: real.\n2. Flaky: open a FINDING with the test name and the three runs; do not retry the suite more than once.\n3. Real: bisect against the base commit before blaming your change.\n\n## Check\n\nYour report says which of the two it was and shows the evidence.\n",
+      "status": "disabled",
+      "created_by": "human",
+      "created_at": "2026-09-04T08:00:00Z",
+      "updated_at": "2026-09-06T10:30:00Z",
+      "uses": 2
+    }
+  ]
+}
