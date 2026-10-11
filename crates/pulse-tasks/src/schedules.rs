@@ -1246,3 +1246,55 @@ pub fn fire_due(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod every_tests {
+    use super::{MINUTES_PER_DAY, format_every, parse_every};
+
+    /// Representative minute values at every unit boundary: the display an
+    /// owner sees in `pulse schedule show` must parse back to the same cadence.
+    #[test]
+    fn format_every_round_trips_across_unit_boundaries() {
+        let cases = [
+            1,
+            59,
+            60,
+            61,
+            90,
+            MINUTES_PER_DAY - 1,
+            MINUTES_PER_DAY,
+            MINUTES_PER_DAY + 1,
+            2 * MINUTES_PER_DAY,
+            6 * MINUTES_PER_DAY,
+            7 * MINUTES_PER_DAY - 1,
+            7 * MINUTES_PER_DAY,
+            7 * MINUTES_PER_DAY + 60,
+            14 * MINUTES_PER_DAY,
+            i64::from(i32::MAX),
+        ];
+        for minutes in cases {
+            let text = format_every(minutes);
+            assert_eq!(
+                parse_every(&text).ok(),
+                Some(minutes),
+                "format_every({minutes}) = {text:?} did not round-trip"
+            );
+        }
+    }
+
+    /// At each exact boundary the largest whole unit wins.
+    #[test]
+    fn format_every_uses_largest_whole_unit() {
+        assert_eq!(format_every(1), "1m");
+        assert_eq!(format_every(59), "59m");
+        assert_eq!(format_every(60), "1h");
+        assert_eq!(format_every(90), "90m");
+        assert_eq!(format_every(MINUTES_PER_DAY - 1), "1439m");
+        assert_eq!(format_every(MINUTES_PER_DAY), "1d");
+        assert_eq!(format_every(2 * MINUTES_PER_DAY), "2d");
+        assert_eq!(format_every(6 * MINUTES_PER_DAY), "6d");
+        assert_eq!(format_every(7 * MINUTES_PER_DAY), "1w");
+        assert_eq!(format_every(14 * MINUTES_PER_DAY), "2w");
+        assert_eq!(format_every(7 * MINUTES_PER_DAY + 60), "169h");
+    }
+}
