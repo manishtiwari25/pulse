@@ -31,6 +31,8 @@ The only Markdown in this repository is this file.
 - [Share PULSE](#share-pulse)
 - [The agents' path](#the-agents-path)
   - [Standing jobs: `pulse schedule`](#standing-jobs-pulse-schedule)
+  - [Connecting the outside world: `pulse mcp`](#connecting-the-outside-world-pulse-mcp)
+  - [Shared skills: `pulse skill`](#shared-skills-pulse-skill)
   - [Shared project goals](#shared-project-goals)
   - [Records in SQLite](#records-in-sqlite)
   - [Democracy and self-improvement](#democracy-and-self-improvement)
@@ -391,6 +393,136 @@ queued jobs. Two lead settings bound them: `schedule.min_minutes` (default
 (default `10`, `0` for no cap) caps the active and paused schedules a project
 holds. Events: `schedule.added`, `schedule.fired`, `schedule.skipped`,
 `schedule.paused`, `schedule.resumed`, `schedule.run`, `schedule.ended`.
+
+### Connecting the outside world: `pulse mcp`
+
+Agents work in a shell, and a shell sees only the checkout. The MCP registry
+gives them the rest: issue trackers, user feedback, documentation, a service
+that sets up environments - anything that speaks the Model Context Protocol.
+You register a server once, with where it runs and how it authenticates; the
+daemon tells every worker of that project what is there, and the worker calls
+it from its shell through `pulse mcp`. PULSE holds a small client of its own
+(`crates/pulse-mcp`): `initialize`, `tools/list`, `tools/call`,
+`resources/list`, `resources/read`, `prompts/list`, JSON-RPC 2.0, asking for
+protocol `2025-06-18` and taking what the server answers.
+
+A server has a `name` (a slug agents type), a project (or none, for every
+project; a project row with the same name wins over the global one), a
+transport and an auth:
+
+- `stdio` runs a command on this machine (`--command npx --arg -y --arg
+  @modelcontextprotocol/server-github`) and talks over its stdin/stdout;
+  `--env K=V` sets its environment, and a value may itself be a credential
+  reference, resolved when the command starts.
+- `http` is Streamable HTTP: requests are POSTed to the url, the session id
+  the server hands back is kept for the conversation, and the reply may be
+  JSON or an event stream.
+- `sse` is the older HTTP+SSE pair: the url is an event stream that announces
+  the endpoint to POST to. It is supported best-effort for servers that have
+  not moved on.
+
+Where the secret lives is the same answer as for the push key: a
+[credential](#credentials) reference, never the value. `--secret
+op://VAULT/ITEM/FIELD`, `keychain://SERVICE/ACCOUNT` or
+`file:///ABSOLUTE/PATH`; the store keeps the reference, the resolver reads it
+for the seconds of a request, and the client blanks the resolved value out of
+every error, result and log line before anyone sees it. The auth says how it
+is sent:
+
+| auth     | applies to  | what is sent                                                                 |
+|----------|-------------|------------------------------------------------------------------------------|
+| `none`   | all         | nothing; the server is open or trusts the connection                         |
+| `bearer` | http, sse   | `Authorization: Bearer <secret>`                                             |
+| `basic`  | http, sse   | `Authorization: Basic base64(<secret>)`; the secret is `user:password`       |
+| `header` | http, sse   | `<auth header>: <secret>`, e.g. `--auth-header X-Api-Key`                    |
+| `query`  | http, sse   | `?<auth header>=<secret>` appended to the url                                |
+| `env`    | stdio       | `<auth header>=<secret>` in the command's environment, e.g. `GITHUB_PERSONAL_ACCESS_TOKEN` |
+
+```bash
+pulse mcp add --name github --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-github \
+  --auth env --auth-header GITHUB_PERSONAL_ACCESS_TOKEN --secret op://PULSE/github-mcp/token \
+  --note "Issues and pull requests of every project; read before planning"
+pulse mcp add --name feedback --project my-app --transport http --url https://feedback.example.com/mcp \
+  --auth bearer --secret keychain://pulse/feedback-mcp --note "What users wrote in the in-app form"
+pulse mcp connect github            # initialize + tools/list; prints the server's name, version and tools
+pulse mcp list [--project my-app]   # id, name, project, transport, status, last check
+pulse mcp show github               # the row; never the secret
+pulse mcp update github --note "..." --secret op://PULSE/github-mcp/token-2026
+pulse mcp disable github            # workers stop seeing it; the row stays
+pulse mcp tools github              # the tools with their descriptions
+pulse mcp call github list_issues --args '{"owner":"acme","repo":"app","state":"open"}'
+pulse mcp resources github && pulse mcp read github repo://acme/app/README.md
+```
+
+`connect` is the check: it resolves the secret, starts or reaches the server,
+and records what it learnt on the row (`last_check_at`, `last_check_ok`, a
+note like `github-mcp-server 0.6.2: 12 tools: list_issues, get_issue, ...`).
+A failure records the reason instead and prints what, why and fix - a
+reference this machine cannot read names the reference and how to change it;
+a command that does not start shows its output. `call` prints the tool's
+text content and exits 1 when the tool reports an error, so an agent's shell
+sees it as a failed command. Every command takes `--json`.
+
+What agents see: a worker's brief gains a section "MCP servers you can call
+(N)" when its project, or the whole fleet, has enabled servers - each with
+its transport, your note and the last check (the tool names when the check
+passed), then the bridge commands `pulse mcp tools NAME` and `pulse mcp call
+NAME TOOL --args '{...}'` and the rule: use them to read the outside world
+(issues, feedback, docs) and to act where a tool exists; never write a secret
+into a file, a commit or the report; say in the report which servers were
+used. The secret is resolved inside `pulse mcp` on the local executor only.
+A worker on a remote executor has no store and no credentials, so its brief
+says the servers exist but are reachable only from the local executor, and
+asks it to request the data through a `FINDING:` line to its lead.
+
+The hub has the same registry under **Connections**: the list with each
+server's scope, transport, status and last check; *Add MCP server* with the
+transport choice, every auth type and its one-line explanation, the secret
+reference with the accepted shapes and a pointer to the credentials settings,
+environment rows for stdio servers and the note; and per row *Connect* (the
+server's name, version and tools, or the error with its fix), *Enable* /
+*Disable* and *Edit*. The routes are `/api/v1/mcp`, `/api/v1/mcp/options`,
+`/api/v1/mcp/{id}` (`GET`, `PATCH`), `/api/v1/mcp/{id}/connect` and
+`/api/v1/mcp/{id}/status`. Agents can register servers too (`created_by`
+says who); whoever adds one, the row never carries more than the reference,
+and a stdio command runs as the same user the agent's shell already has.
+Events: `mcp.added`,
+`mcp.updated`, `mcp.checked`, `mcp.enabled`, `mcp.disabled`. Exposing MCP
+tools natively to the harness's model, without the shell, is a possible
+follow-up; today the bridge is the CLI.
+
+### Shared skills: `pulse skill`
+
+A skill is a recipe one worker learnt that the next should not rediscover: how
+this project comes up locally, how a release is checked, what to do with a
+flaky test. It is a name, a one-line description, a markdown body, and a
+scope - one project or every project. Workers are told about the skills of
+their project in the brief ("Skills (N)": `name - description`, then `pulse
+skill show NAME` and `pulse skill add ...`) with the rule: read a skill
+before doing work it covers, and when you finish something others will repeat
+here - a setup, a debugging recipe, a check - add it as a skill. Reading one
+counts (`uses`), so you can see which skills earn their place.
+
+```bash
+pulse skill add --name release-check --description "How to verify a release before tagging it" --file docs/release-check.md
+pulse skill add --name local-setup --project my-app --description "Bringing my-app up locally" --body "## Steps ..."   # or the body on stdin
+pulse skill list [--project my-app]   # id, name, project, status, uses
+pulse skill show release-check        # prints the body; counts a read
+pulse skill update release-check --description "..." --file docs/release-check.md
+pulse skill disable release-check     # workers stop hearing about it; the body stays
+```
+
+Inside a job `PULSE_PROJECT` is set, so a worker's `pulse skill add` scopes
+the skill to its project; `--project ''` shares it with every project. A
+remote worker has no store, so its brief carries the skill bodies themselves
+(long ones cut at a fixed length) and asks it to put a new recipe in a
+`FINDING:` line for its lead. Bodies are refused when they carry something
+shaped like a secret - skills are shared with every agent. The hub's
+**Connections** page has a *Skills* tab: the list, *Add skill* with a
+markdown editor and preview, *Read*, *Edit*, *Enable* / *Disable*; routes
+`/api/v1/skills`, `/api/v1/skills/{id}` (`GET`, `PATCH`) and
+`/api/v1/skills/{id}/status`. Events: `skill.added`, `skill.updated`,
+`skill.enabled`, `skill.disabled`.
 
 ### Shared project goals
 
@@ -1563,9 +1695,12 @@ for the seconds of the push, runs `ssh -oBatchMode=yes -oIdentitiesOnly=yes
 -oIdentityAgent=none -i <that file>` for exactly that push, and removes it.
 A key that cannot be resolved holds the landing with `push credential:
 <why>` in `pulse status` and the hub; the daemon never falls back to your
-credentials, and no reference is resolved inside a worker. Only the owner
-runs `pulse cred token|set|clear` or sets `push.credential`; agents may read
-`pulse cred status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
+credentials, and no reference is resolved inside a worker - the one exception
+is an MCP server's secret, which `pulse mcp` resolves on the local executor
+for the request it sends and never prints (see [Connecting the outside
+world](#connecting-the-outside-world-pulse-mcp)). Only the owner runs `pulse
+cred token|set|clear` or sets `push.credential`; agents may read `pulse cred
+status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
 returns at once), then revoke the service account and the deploy key.
 
 Where this runs: the daemon is a launchd agent on macOS and a `systemd

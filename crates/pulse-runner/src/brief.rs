@@ -763,7 +763,7 @@ pub(crate) fn write_skills_brief_section(
         b.push(String::new());
         return;
     }
-    b.push("`pulse skill show NAME` prints a skill; `pulse skill add --name N --description D --file F` (or `--body TEXT`, or stdin) adds one for this project when you run it with `--project`, or for every project without.".into());
+    b.push("`pulse skill show NAME` prints a skill; `pulse skill add --name N --description D --file F` (or `--body TEXT`, or stdin) adds one for this project (`PULSE_PROJECT` is set in your shell); pass `--project ''` to share it with every project.".into());
     b.push(String::new());
     b.push("Read a skill before doing work it covers. When you finish something others will repeat here - a setup, a debugging recipe, a check - add it as a skill so the next worker does not rediscover it.".into());
     b.push(String::new());
