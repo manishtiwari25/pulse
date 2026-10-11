@@ -237,7 +237,7 @@ pub fn queue_text(res: &TallyResult) -> String {
     }
     if !any {
         b.push_str(
-            "  nothing queued - post a card with `pulse post suggestion --project <name> ...` or run `pulse ballot` to vote on open cards\n",
+            "  nothing queued - post a card with `pulse post suggestion --project <name> --area <area> --thread <thread> --summary \"<one line>\" ...` or run `pulse ballot` to vote on open cards\n",
         );
     }
     b
@@ -799,5 +799,9 @@ mod empty_queue_tests {
         let text = queue_text(&res);
         assert!(text.starts_with("  nothing queued - "), "{text}");
         assert!(text.contains("pulse post suggestion"), "{text}");
+        for flag in ["--project", "--area", "--thread", "--summary"] {
+            assert!(text.contains(flag), "hint lacks {flag}: {text}");
+        }
+        assert!(text.contains("pulse ballot"), "{text}");
     }
 }
