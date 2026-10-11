@@ -278,6 +278,17 @@ function seed() {
   pulse(["job", "finish", guide, "failed", "--result", "The README section conflicts with an open task; stopped."]);
   job("pulse", "Reflect on the last cycle", "reflect", "Read the board and turn this cycle's signals into posts.");
   job("demo-app", "Answer the open governance question", "answer", "Add an opinion to governance/review-depth.", ["--tier", "0"]);
+
+  // MCP servers and skills (TASK-022): references only, never a secret.
+  pulse(["mcp", "add", "--name", "github", "--transport", "stdio", "--command", "npx", "--arg", "-y", "--arg", "@modelcontextprotocol/server-github", "--auth", "env", "--auth-header", "GITHUB_PERSONAL_ACCESS_TOKEN", "--secret", "op://PULSE/github-mcp/token", "--env", "GITHUB_HOST=https://github.com", "--note", "Issues, pull requests and comments of every project on GitHub. Read them before planning; comment only when the task says so."]);
+  pulse(["mcp", "add", "--project", "demo-app", "--name", "feedback", "--transport", "http", "--url", "https://feedback.demo.internal/mcp", "--auth", "bearer", "--secret", "keychain://pulse/feedback-mcp", "--note", "What users of demo-app wrote in the in-product feedback form, newest first. Use it to find what hurts before choosing work."]);
+  pulse(["mcp", "add", "--name", "docs", "--transport", "sse", "--url", "https://docs.demo.internal/sse", "--note", "Full-text search over the internal handbook and runbooks."]);
+  pulse(["mcp", "disable", "docs"]);
+  pulse(["mcp", "add", "--project", "demo-lib", "--name", "sandbox", "--transport", "stdio", "--command", "/home/owner/bin/sandbox-mcp", "--env", "SANDBOX_ROOT=/home/owner/sandboxes", "--note", "Creates and tears down throwaway environments for demo-lib checks. Destroy what you create."], { agent: "delta" });
+  pulse(["skill", "add", "--name", "release-check", "--description", "How to verify a release before tagging it: build, tests, changelog, and the smoke run."], { input: "## When\n\nBefore you tag a release or open the release pull request.\n\n## Steps\n\n1. `git fetch --tags` and make sure the tree is clean.\n2. Run the project's verify command and the smoke run described in its README.\n3. Compare `CHANGELOG.md` against `git log --oneline LAST_TAG..HEAD`; every user-visible change gets a line.\n4. Bump the version in one commit, nothing else in it.\n\n## Check\n\nThe verify command exits 0 and the changelog mentions the version you are about to tag.\n" });
+  pulse(["skill", "add", "--project", "demo-app", "--name", "demo-app-local-setup", "--description", "Bringing demo-app up locally: the env file, the seed database, the two ports."], { agent: "ember", input: "## When\n\nAny job that runs demo-app end to end.\n\n## Steps\n\n1. Copy `.env.example` to `.env`; leave `DATABASE_URL` as it is, the seed script creates the file.\n2. `npm ci` then `npm run seed` once per checkout.\n3. `npm run dev` listens on 3000 (web) and 3001 (api). If 3001 is taken, set `API_PORT`; do not edit the code.\n\n## Check\n\n`curl -s localhost:3001/health` answers `{\"ok\":true}`.\n" });
+  pulse(["skill", "add", "--name", "flaky-test-triage", "--description", "Deciding whether a failing test is flaky, and what to record either way."], { input: "## When\n\nA test fails that you did not touch.\n\n## Steps\n\n1. Run it alone three times. All pass: flaky. Any fail: real.\n2. Flaky: open a FINDING with the test name and the three runs; do not retry the suite more than once.\n3. Real: bisect against the base commit before blaming your change.\n\n## Check\n\nYour report says which of the two it was and shows the evidence.\n" });
+  pulse(["skill", "disable", "flaky-test-triage"]);
 }
 
 // ----- capture ------------------------------------------------------------
@@ -315,6 +326,7 @@ async function capture() {
     if (rosterOnly) return;
     for (const route of ["activity", "compute", "events", "executors", "health", "hygiene", "messages", "notices", "org", "proposals", "questions", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
+    for (const route of ["mcp", "mcp/options", "skills"]) write(route, await get(route));
     const records = write("records", await get("records"));
     for (const r of records.records) write("records/" + r.id, await get("records/" + encodeURIComponent(r.id)));
     const taskRows = await get("tasks");

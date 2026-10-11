@@ -63,6 +63,8 @@ export const TOUCHES: [RegExp, PathMatch][] = [
   [/^project\./, any(SUMMARY, registry, projectView(), starts("tasks", "timeline"))],
   [/^hook\./, any(starts("org", "settings"), registry, projectView("project", "overview"))],
   [/^schedule\./, any(starts("runner", "tasks", "org"), projectView("overview"))],
+  [/^mcp\./, starts("mcp")],
+  [/^skill\./, starts("skills")],
   [/^agent\./, any(starts("roster", "org", "runner", "hygiene"), projectView("overview"))],
   [/^(daemon|worktree|auto|rolled)\./, DAEMON],
 ];

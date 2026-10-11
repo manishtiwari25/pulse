@@ -75,6 +75,8 @@ export const hrefs = {
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
   agents: () => "/agents/",
   harness: (f: { id?: string; project?: string; status?: string; agent?: string } = {}) => "/harness/" + qs({ id: f.id, project: f.project, status: f.status, agent: f.agent }),
+  // MCP servers and skills (TASK-022); `tab` opens the skills half, `project` filters both.
+  connections: (f: { project?: string; tab?: "mcp" | "skills" } = {}) => "/connections/" + qs({ project: f.project, tab: f.tab !== "mcp" ? f.tab : undefined }),
   votes: (f: { project?: string; status?: string; kind?: string } = {}) => "/votes/" + qs(f),
   tasks: (f: { project?: string; status?: string } = {}) => "/tasks/" + qs(f),
 };

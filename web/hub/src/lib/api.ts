@@ -71,6 +71,12 @@ export function post<T>(path: string, payload: unknown): Promise<T> {
   return api<T>(path, { method: "POST", headers, body: JSON.stringify(payload) });
 }
 
+// The registries that take partial edits (MCP servers, skills) answer PATCH
+// with the whole row, like their POST.
+export function patch<T>(path: string, payload: unknown): Promise<T> {
+  return api<T>(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+
 // Why a "commons" sits next to the projects. One sentence, shown wherever the
 // commons appears so the owner reads the same explanation everywhere.
 export const COMMONS_HINT =
@@ -1684,6 +1690,116 @@ export interface EventsPayload {
   events: StoreEvent[];
 }
 
+// ----- MCP servers and skills (TASK-022) -----------------------------------
+
+// A registered MCP server, as `pulse mcp list --json` prints it. The secret
+// never travels: `secret_ref` is a pulse-cred reference (op://, keychain://,
+// file://) read on this machine at connect time, like the push key.
+export type McpTransport = "stdio" | "http" | "sse";
+export type McpAuth = "none" | "bearer" | "basic" | "header" | "query" | "env";
+export type McpStatus = "enabled" | "disabled";
+
+export interface McpServer {
+  id: string;
+  name: string;
+  project: string; // "" = every project
+  transport: McpTransport;
+  command: string;
+  args: string[];
+  url: string;
+  auth: McpAuth;
+  auth_header: string; // header name, query parameter or environment variable, by auth
+  secret_ref: string;
+  env: Record<string, string>;
+  note: string;
+  status: McpStatus;
+  last_check_at: string;
+  last_check_ok: boolean | null;
+  last_check_note: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface McpServersPayload {
+  servers: McpServer[];
+}
+
+export interface McpAuthOption {
+  name: McpAuth;
+  explain: string;
+  transports: McpTransport[];
+}
+
+export interface McpOptions {
+  transports: McpTransport[];
+  auths: McpAuthOption[];
+  cred_shapes: string;
+}
+
+export interface McpServerInput {
+  name: string;
+  project?: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  auth?: McpAuth;
+  auth_header?: string;
+  secret_ref?: string;
+  env?: Record<string, string>;
+  note?: string;
+}
+
+export type McpServerPatch = Partial<McpServerInput>;
+
+export interface McpTool {
+  name: string;
+  description: string;
+}
+
+export interface McpServerInfo {
+  name: string;
+  version: string;
+  protocol_version: string;
+  instructions?: string;
+}
+
+export interface McpConnectResult {
+  ok: boolean;
+  note: string;
+  info: McpServerInfo;
+  tools: McpTool[];
+  server: McpServer;
+}
+
+// A shared skill: a markdown recipe agents read before work it covers.
+export interface Skill {
+  id: string;
+  name: string;
+  project: string; // "" = every project
+  description: string;
+  body: string;
+  status: McpStatus;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  uses: number;
+}
+
+export interface SkillsPayload {
+  skills: Skill[];
+}
+
+export interface SkillInput {
+  name: string;
+  project?: string;
+  description: string;
+  body: string;
+}
+
+export type SkillPatch = Partial<SkillInput>;
+
 // ----- writes (one CLI command each; every one logs the same event) -------
 
 // The human gates in the console (ADR-028): a Proposed ADR is accepted,
@@ -1735,4 +1851,12 @@ export const writes = {
   credSet: (reference: string, probe = true) => post<{ result: CredSetResult; report: CredReport }>("cred/set", { reference, probe }),
   credClear: (token: boolean) => post<{ cleared: CredCleared; report: CredReport }>("cred/clear", { token }),
   credGenerate: (replace: boolean) => post<{ generated: CredGenerated }>("cred/generate", { replace }),
+  // MCP servers and skills (TASK-022): the same functions `pulse mcp` and `pulse skill` run.
+  addMcp: (input: McpServerInput) => post<{ server: McpServer }>("mcp", input),
+  updateMcp: (id: string, input: McpServerPatch) => patch<{ server: McpServer }>("mcp/" + enc(id), input),
+  setMcpStatus: (id: string, status: McpStatus) => post<{ server: McpServer }>("mcp/" + enc(id) + "/status", { status }),
+  connectMcp: (id: string) => post<McpConnectResult>("mcp/" + enc(id) + "/connect", {}),
+  addSkill: (input: SkillInput) => post<{ skill: Skill }>("skills", input),
+  updateSkill: (id: string, input: SkillPatch) => patch<{ skill: Skill }>("skills/" + enc(id), input),
+  setSkillStatus: (id: string, status: McpStatus) => post<{ skill: Skill }>("skills/" + enc(id) + "/status", { status }),
 };

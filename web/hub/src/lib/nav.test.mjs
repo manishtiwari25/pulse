@@ -12,6 +12,13 @@ test("harness links do not advertise an unsupported job filter", () => {
   assert.equal(hrefs.harness({ project: "demo-app", agent: "cinder", job: "job-price-cache" }), "/harness/?project=demo-app&agent=cinder");
 });
 
+test("connections links carry the project filter and the skills tab", () => {
+  assert.equal(hrefs.connections(), "/connections/");
+  assert.equal(hrefs.connections({ project: "demo-app" }), "/connections/?project=demo-app");
+  assert.equal(hrefs.connections({ tab: "skills" }), "/connections/?tab=skills");
+  assert.equal(hrefs.connections({ tab: "mcp" }), "/connections/");
+});
+
 test("project tab links resolve old ids to human tabs", () => {
   assert.deepEqual(resolveProjectTab(null), { tab: "overview" });
   assert.deepEqual(resolveProjectTab("proposals"), { tab: "for-you" });
