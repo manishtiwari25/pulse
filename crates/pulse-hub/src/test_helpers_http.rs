@@ -68,7 +68,7 @@ pub(crate) fn request(
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    if method == "POST" || method == "DELETE" {
+    if method == "POST" || method == "DELETE" || method == "PATCH" {
         req = req
             .header("Content-Type", "application/json")
             .body(body.to_string());

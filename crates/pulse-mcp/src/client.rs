@@ -178,6 +178,21 @@ pub fn prepare(server: &McpServer, resolver: &pulse_cred::Resolver) -> Result<Wi
 /// Scrubs resolved secrets (and their encoded forms), private keys,
 /// 1Password tokens and well-known API token shapes from text that is about
 /// to be printed, stored or sent to an agent.
+/// [`redact_secrets`] over every string inside a JSON value.
+pub fn redact_value(v: &mut Value, secrets: &[String]) {
+    match v {
+        Value::String(s) => {
+            let out = redact_secrets(s, secrets);
+            if out != *s {
+                *s = out;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|i| redact_value(i, secrets)),
+        Value::Object(map) => map.values_mut().for_each(|i| redact_value(i, secrets)),
+        _ => {}
+    }
+}
+
 pub fn redact_secrets(text: &str, secrets: &[String]) -> String {
     static TOKEN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
@@ -338,7 +353,10 @@ impl Client {
         if !params.is_null() {
             body["params"] = params;
         }
-        let resp = self.transport.request(body, id, timeout)?;
+        let mut resp = self.transport.request(body, id, timeout)?;
+        // Everything the server says may echo a secret it was given (a tool
+        // description, a result, an error); scrub it once, here.
+        redact_value(&mut resp, &self.secrets);
         if let Some(err) = resp.get("error") {
             let code = err.get("code").and_then(Value::as_i64).unwrap_or(0);
             let message = err

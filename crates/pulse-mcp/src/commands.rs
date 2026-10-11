@@ -257,11 +257,14 @@ pub fn connect_and_record(
     actor: &str,
     server: &McpServer,
     resolver: &pulse_cred::Resolver,
+    connect_timeout: Duration,
 ) -> Result<Checked> {
-    let outcome = Client::connect(server, resolver).and_then(|mut cl| {
-        let tools = cl.tools()?;
-        Ok((cl.server.clone(), tools))
-    });
+    let outcome = client::prepare(server, resolver)
+        .and_then(|wire| Client::connect_with(server, wire, connect_timeout))
+        .and_then(|mut cl| {
+            let tools = cl.tools()?;
+            Ok((cl.server.clone(), tools))
+        });
     match outcome {
         Ok((info, tools)) => {
             let note = client::check_note(&info, &tools);
@@ -280,7 +283,8 @@ pub fn connect_and_record(
     }
 }
 
-fn connect_error(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
+/// The user-facing error for a failed connect: what, why (redacted) and a fix.
+pub fn connect_error(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
     if let Some(ce) = e.downcast_ref::<client::CredentialError>() {
         return pulse_cli::errorf(
             1,
@@ -564,8 +568,8 @@ pub fn run_mcp(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             let s = store(c)?;
             let m = s.mcp_server(&c.project, &rest[0])?;
             let r = resolver(&c.home);
-            let checked =
-                connect_and_record(s, &actor(c), &m, &r).map_err(|e| connect_error(&m, e))?;
+            let checked = connect_and_record(s, &actor(c), &m, &r, client::CONNECT_TIMEOUT)
+                .map_err(|e| connect_error(&m, e))?;
             if c.json {
                 return pulse_cli::write_json(
                     &mut c.out,

@@ -6,4 +6,6 @@ pub mod client;
 pub mod commands;
 
 pub use client::*;
-pub use commands::{Checked, RESOLVER_TIMEOUT, connect_and_record, register, resolver};
+pub use commands::{
+    Checked, RESOLVER_TIMEOUT, connect_and_record, connect_error, register, resolver,
+};

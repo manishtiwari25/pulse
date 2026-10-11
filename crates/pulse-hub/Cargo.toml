@@ -20,6 +20,7 @@ pulse-gitenv.workspace = true
 pulse-goals.workspace = true
 pulse-harness.workspace = true
 pulse-inspect.workspace = true
+pulse-mcp.workspace = true
 pulse-provider.workspace = true
 pulse-provider-openai.workspace = true
 pulse-records.workspace = true

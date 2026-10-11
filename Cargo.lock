@@ -1409,6 +1409,7 @@ dependencies = [
  "pulse-goals",
  "pulse-harness",
  "pulse-inspect",
+ "pulse-mcp",
  "pulse-provider",
  "pulse-provider-openai",
  "pulse-records",

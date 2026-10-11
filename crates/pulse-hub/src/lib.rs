@@ -50,6 +50,7 @@ pub mod httpx;
 pub mod hygiene;
 pub mod job_repair;
 pub mod lifecycle;
+pub mod mcp;
 pub mod privacy;
 pub mod project_goal;
 pub mod read;
