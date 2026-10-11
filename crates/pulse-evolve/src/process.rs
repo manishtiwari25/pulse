@@ -579,9 +579,11 @@ mod tests {
         let home = crate::test_helpers::temp_path();
         prepare_measurement_caches(&home.display().to_string()).unwrap();
         let env = isolated_env(&home.display().to_string());
+        // An owner's export or the daemon's cap (daemon.build_jobs) wins over
+        // the fixture split; only without one does the split apply.
+        let want = std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| cores.to_string());
         assert!(
-            env.iter()
-                .any(|v| v == &format!("CARGO_BUILD_JOBS={cores}")),
+            env.iter().any(|v| v == &format!("CARGO_BUILD_JOBS={want}")),
             "{env:?}"
         );
         set_measure_parallel(1);
