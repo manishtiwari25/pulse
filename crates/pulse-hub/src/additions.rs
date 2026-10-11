@@ -316,15 +316,21 @@ impl Handler {
         };
         let project = addition_row_string(&task, "project");
         let job_id = addition_row_string(&task, "job_id");
+        // A task's jobs carry `task:ID` or `task:ID:label` (one task, several jobs).
+        let (exact, like) = pulse_store::task_source_params(&parts[1]);
         let jobs = match self.addition_rows(
             r,
-            "SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,\
+            &format!(
+                "SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,\
              lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch,\
              (SELECT hs.id FROM harness_sessions hs WHERE hs.job_id = jobs.id ORDER BY hs.started_at DESC LIMIT 1) AS harness_session \
-             FROM jobs WHERE project=? AND (source=? OR (? != '' AND id=?)) ORDER BY created_at,id",
+             FROM jobs WHERE project=? AND ({} OR (? != '' AND id=?)) ORDER BY created_at,id",
+                pulse_store::task_source_clause("source")
+            ),
             vec![
                 SqlValue::Text(project),
-                SqlValue::Text(format!("task:{}", parts[1])),
+                SqlValue::Text(exact),
+                SqlValue::Text(like),
                 SqlValue::Text(job_id.clone()),
                 SqlValue::Text(job_id),
             ],
@@ -1919,11 +1925,32 @@ mod tests {
         assert!(status == 200 || status == 201);
         assert_eq!(result["message"]["author"], "human");
         assert_eq!(result["message"]["body"], "How is it going?");
+        // The task's jobs: its plain source, its labelled sources, not a
+        // longer task id that shares the prefix.
+        for (job, source) in [
+            ("job-plain", format!("task:{id}")),
+            ("job-ui", format!("task:{id}:hub-ui")),
+            ("job-near", format!("task:{id}0")),
+        ] {
+            s.store
+                .conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, 'one', 'task', 'T', ?, 'queued', '2026-01-01T00:00:00Z')",
+                    rusqlite::params![job, source],
+                )
+                .unwrap();
+        }
         let (status, result) =
             http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
         assert_eq!(status, 200);
         assert_eq!(arr(&result, "revisions").len(), 2);
         assert_eq!(arr(&result, "messages").len(), 1);
+        let jobs = arr(&result, "jobs")
+            .iter()
+            .map(|j| j["id"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(jobs, vec!["job-plain", "job-ui"], "{result:?}");
         let (status, result) = http::additions_request(
             http::handler(&s),
             "POST",
