@@ -114,6 +114,26 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
 /// read and post; they keep the plain `parallel_per_project` limit.
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
 
+/// The jobs the owner is waiting on, as a clause over `j`: the lead's own
+/// runs, answers, and the jobs a lead planned for an owner task
+/// (`task:TASK-NNN` or `task:TASK-NNN:label`). They lease before the
+/// fleet's own work and alone through the express lane.
+pub(crate) const OWNER_DRIVEN_SQL: &str =
+    "(j.kind IN ('lead', 'answer') OR j.source LIKE 'task:%')";
+
+/// The `fits` entry that opens a slot to owner-driven jobs alone: the
+/// express lane the load governor keeps open while the machine is saturated.
+const OWNER_LANE: (&str, &str) = ("*", "owner");
+
+pub(crate) fn owner_lane_fits() -> Vec<(String, String)> {
+    vec![(OWNER_LANE.0.to_string(), OWNER_LANE.1.to_string())]
+}
+
+pub(crate) fn is_owner_lane(fits: &[(String, String)]) -> bool {
+    fits.iter()
+        .any(|(project, kind)| project == OWNER_LANE.0 && kind == OWNER_LANE.1)
+}
+
 /// How many landings the verify-time median is taken over.
 const LANE_SAMPLE: usize = 5;
 
@@ -329,7 +349,9 @@ pub(crate) fn lease_job(
             sql.push_str(" AND j.id = ?");
             vals.push(Box::new(o.job_id.clone()));
         }
-        if !o.fits.is_empty() {
+        if is_owner_lane(&o.fits) {
+            sql.push_str(&format!(" AND {OWNER_DRIVEN_SQL}"));
+        } else if !o.fits.is_empty() {
             let marks = vec!["?"; o.fits.len()].join(",");
             sql.push_str(&format!(" AND (j.project || '/' || j.kind) IN ({marks})"));
             for (project, kind) in &o.fits {
@@ -356,9 +378,11 @@ pub(crate) fn lease_job(
             sql.push_str(" AND j.kind != ?");
             vals.push(Box::new(crate::lead::LEAD_KIND.to_string()));
         }
-        sql.push_str(
-            " ORDER BY MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1",
-        );
+        // The owner's work first; then the project that waited longest
+        // (fairness between projects); then priority and age.
+        sql.push_str(&format!(
+            " ORDER BY CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+        ));
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| &**v).collect();
         let r = one_dyn(q, &sql, &refs);
         if r.0.is_empty() {
@@ -661,6 +685,89 @@ mod tests {
         }
         let second = lease("cinder");
         assert_eq!(second.str("id"), ids[1], "{second:?}");
+    }
+
+    fn add_second_project(s: &pulse_store::Store, slug: &str) {
+        let now = s.now();
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, '/nowhere', '', 0, '', 'main', 'active', ?, ?, ?)",
+            rusqlite::params![slug, slug, now, pulse_store::HUMAN_AGENT, now],
+        )
+        .unwrap();
+    }
+
+    fn queue(
+        s: &pulse_store::Store,
+        project: &str,
+        kind: &str,
+        source: &str,
+        priority: i32,
+    ) -> String {
+        let (job, _) = crate::jobs::add_job(
+            s,
+            project.into(),
+            kind.into(),
+            source.into(),
+            "brief".into(),
+            1,
+            priority,
+            source.into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        job.str("id")
+    }
+
+    #[test]
+    fn lease_takes_the_owners_jobs_before_the_fleets_work_and_alone_through_the_owner_lane() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        // `proj` ran most recently, so project fairness alone would send the
+        // next worker to `other`, whose improve job also carries the higher
+        // priority. The owner's task job in `proj` still goes first.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES ('run-old', 'job-old', 'aurora', 'proj', '2026-09-01T00:00:00Z', '2026-09-01T00:10:00Z', 'done')",
+                [],
+            )
+            .unwrap();
+        let fleet = queue(&s, "other", "improve", "lead-idle:other:1", 40);
+        let owner = queue(&s, "proj", "task", "task:TASK-001:ui", 1);
+        let lease = |agent: &str, fits: Vec<(String, String)>| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    fits,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = lease("aurora", Vec::new());
+        assert_eq!(first.str("id"), owner, "owner's job first: {first:?}");
+        // The owner lane passes nothing but owner-driven jobs: the fleet's
+        // improve job waits even though a slot is free.
+        let lane = lease("borealis", super::owner_lane_fits());
+        assert!(lane.0.is_empty(), "owner lane leased fleet work: {lane:?}");
+        let second = lease("borealis", Vec::new());
+        assert_eq!(second.str("id"), fleet, "{second:?}");
+        // An answer the owner waits on goes through the lane.
+        let answer = queue(&s, "other", "answer", "question:Q-1", 1);
+        let lane = lease("cinder", super::owner_lane_fits());
+        assert_eq!(lane.str("id"), answer, "{lane:?}");
     }
 
     fn fake_probe_ssh(
@@ -5571,7 +5678,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         }
         assert!(
             brief.contains("waiting on the owner: <the question>")
-                && brief.contains("\n7. Report with `pulse job finish`"),
+                && brief.contains("\n7. With the owner answered and every task planned")
+                && brief.contains("\n8. Report with `pulse job finish`"),
             "present brief changed:\n{brief}"
         );
     }
@@ -5613,7 +5721,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "\n10. For each eligible suggestion addressed to the owner",
             "--source suggestion:<id>",
             "--resolution declined",
-            "\n11. Report with `pulse job finish`",
+            "\n11. With the owner answered and every task planned",
+            "\n12. Report with `pulse job finish`",
         ] {
             assert!(brief.contains(want), "away brief lacks {want:?}:\n{brief}");
         }
@@ -5633,7 +5742,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         );
         assert!(
             !brief.contains("addressed to the owner")
-                && brief.contains("\n10. Report with `pulse job finish`"),
+                && brief.contains("\n11. Report with `pulse job finish`"),
             "away brief without owner cards:\n{brief}"
         );
     }
@@ -5645,7 +5754,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         let brief = crate::lead::lead_idle_brief(&s, "proj".into(), vec![], vec![], 1);
         assert!(
             !brief.contains("## The owner is away")
-                && brief.contains("\n6. Finish with `SUMMARY:`"),
+                && brief.contains("\n6. Send the owner ONE short message")
+                && brief.contains("\n7. Finish with `SUMMARY:`"),
             "present idle brief:\n{brief}"
         );
         set_owner_away(&s);
@@ -5665,10 +5775,11 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "### Awaiting proposals (0)",
             "(none)",
             "### Eligible suggestions addressed to the owner (1)",
-            "\n5. Send the owner ONE short message",
-            "\n6. For each proposal listed above",
-            "\n9. For each eligible suggestion addressed to the owner",
-            "\n10. Finish with `SUMMARY:`",
+            "\n5. Keep the project watched",
+            "\n6. Send the owner ONE short message",
+            "\n7. For each proposal listed above",
+            "\n10. For each eligible suggestion addressed to the owner",
+            "\n11. Finish with `SUMMARY:`",
         ] {
             assert!(
                 brief.contains(want),

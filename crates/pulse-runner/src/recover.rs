@@ -482,7 +482,9 @@ pub(crate) fn recovery_carrier(q: &Querier, job: Row, root: String) -> String {
 }
 
 pub(crate) fn lead_followed_up(q: &Querier, job: Row) -> bool {
-    let task = job.str("source").trim_start_matches("task:").to_string();
+    let task = pulse_store::task_source_id(&job.str("source"))
+        .unwrap_or_default()
+        .to_string();
     !must_one(
         q,
         "SELECT 1 AS x FROM events WHERE action = ? AND subject = ? AND at >= ? LIMIT 1",

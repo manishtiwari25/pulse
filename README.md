@@ -170,11 +170,23 @@ controls and raw activity fold under **Show details**.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent picks it up the same tick, turns
   it into jobs at the task's priority (urgent runs first) and reports back on
-  the task thread. Nothing waits on you: a task the lead parked comes back to
-  it on a doubling schedule (15 min for urgent, then 30, 60, ...) until the
-  blocker is gone, a failed job goes back to the lead to re-plan, and a task
-  whose jobs are done and landed closes itself. `review` means the lead could
-  not finish without you - the conversation says why.
+  the task thread. Your work leases before the fleet's own: a lead run, an
+  answer, or a job planned from a task (`task:TASK-NNN`, or
+  `task:TASK-NNN:<label>` when one task needs several jobs) goes to the next
+  free worker ahead of improve jobs and ballots whatever project waited
+  longest, and while the machine is saturated one local slot stays open to
+  that work alone. Write on the task thread again while its jobs are queued
+  and the daemon raises them to priority 80 (`task.nudged` in the timeline),
+  once per message - a nudge moves the work, not only the lead. Nothing waits
+  on you: a task the lead parked comes back to it on a doubling schedule (15
+  min for urgent, then 30, 60, ...) until the blocker is gone, a failed job
+  goes back to the lead to re-plan, and a task whose jobs are done and landed
+  closes itself. `review` means the lead could not finish without you - the
+  conversation says why - and the lead's brief tells it that your answer,
+  however short (`use your judgement`, `do not ask me`), is final: it decides,
+  writes the decision in one message and plans; a task that mixes a reserved
+  decision with ordinary work gets its Tier 0/1 parts planned now and one doc
+  job drafting the decision record, never a second round of questions.
 - **Votes** - everything in vote across projects: suggestions still needing
   votes, suggestions decided eligible or rejected, and open amendments. At
   quorum, more ups make a suggestion `eligible`, more downs make it `rejected`,
@@ -1204,9 +1216,14 @@ The heartbeat the hub shows counts `loops` and `passes` apart.
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Idle workers are reused instead of
-repeatedly selecting a busy identity. Project fairness includes lease
-reservations before the worker's run thread records its start, so dispatch can
-spread work across projects without waiting for their processes to launch.
+repeatedly selecting a busy identity. A lease takes the owner's work first -
+lead runs, answers and the jobs planned from owner tasks (source `task:...`) -
+and only then the project that waited longest, by priority and age within it.
+Project fairness includes lease reservations before the worker's run thread
+records its start, so dispatch can spread work across projects without waiting
+for their processes to launch. Without the owner-first key a six-project fleet
+on four workers made an urgent task wait a full round of other projects'
+improve jobs (ninety minutes, measured) before its first job leased.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
 ### Services and self-update
@@ -1385,6 +1402,13 @@ macOS itself reports memory pressure; the runs in flight finish, the idle line
 says `machine saturated: load 40.1 is over daemon.max_load 12` or `machine
 saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
 change rather than per tick, and slots held this way are not hands wanted.
+A load hold alone (not memory, not a restart window) keeps one local slot
+open as the express lane: it leases only the owner's work - lead runs,
+answers, `task:` jobs - while the load stays under twice `daemon.max_load`
+and the run cap has room; the idle line adds `one express slot stays open for
+the owner's work`. The fleet's own builds and landings are what push the
+load over the line, and without the lane they held the owner's tasks behind
+themselves.
 Remote hands carry their own load and are not capped by this machine's
 governor. Every run the daemon starts here - the worker, its `npm ci`, its
 test suite, the clone's removal - runs at nice 10, so the owner's own work and
@@ -2027,6 +2051,15 @@ the lead gets a standing brief: read the board's queue, the failed
 jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
+The lead is the project's maintainer, not only its planner: both briefs let
+it fix small things itself in its clone - a flaky test, doc drift, a failing
+scheduled check, a watcher the project lacks - and commit, and the runner lands
+a lead's commits like a worker's (not while the default branch is red; its
+fix job owns that). Answers and plans come first; larger work still goes to
+a job. The standing brief also expects every project to be watched: a project
+without a scheduled `check` gets one from its lead, and something the lead
+looked at by hand this run becomes a `watch` script that prints only when
+there is work.
 Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued or leased (blocked jobs do not count), and no research job or
 job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do

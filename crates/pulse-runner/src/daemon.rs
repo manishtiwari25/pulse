@@ -1529,6 +1529,10 @@ pub(crate) fn daemon(
                 // at daemon.max_jobs and all close while the machine is saturated.
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
+                // While load alone holds the machine, one local slot stays
+                // open to the owner's work (jobs.rs OWNER_DRIVEN_SQL): the
+                // owner should not wait behind the fleet's own builds.
+                let mut express_slot = false;
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
                     let running_local = inflight
                         .values()
@@ -1542,8 +1546,20 @@ pub(crate) fn daemon(
                         reserved,
                     );
                     if let Some(hold) = verdict.hold {
-                        load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
-                        load_hold = Some(hold);
+                        // Not during a restart window: the lane's job could
+                        // outlast it.
+                        if verdict.express && restart_kinds.is_empty() {
+                            // The slot kept is restricted, so the tick still
+                            // counts as held: an empty lane is not starvation.
+                            load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
+                            express_slot = true;
+                            load_hold = Some(format!(
+                                "{hold}; one express slot stays open for the owner's work"
+                            ));
+                        } else {
+                            load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
+                            load_hold = Some(hold);
+                        }
                     } else {
                         // Over the cap is capacity the owner chose not to use, not
                         // a hold: those slots are simply not there this tick.
@@ -1591,8 +1607,14 @@ pub(crate) fn daemon(
                             .is_some_and(|r| r.str("projects") == "*");
                         (unrestricted, *i)
                     });
+                    let owner_lane = crate::jobs::owner_lane_fits();
                     for i in order {
                         let slot = &slots[i];
+                        let fits = if express_slot && slot == crate::executor::LOCAL_EXECUTOR {
+                            &owner_lane
+                        } else {
+                            &restart_kinds
+                        };
                         let mut held = BTreeMap::new();
                         if slot == crate::executor::LOCAL_EXECUTOR
                             && let Some(adm) = admission.as_ref()
@@ -1615,7 +1637,7 @@ pub(crate) fn daemon(
                             slot.clone(),
                             started.len() as i32,
                             &held,
-                            &restart_kinds,
+                            fits,
                         );
                         let (worker, job) = if !job.0.is_empty() {
                             (lead, job)
@@ -1640,7 +1662,7 @@ pub(crate) fn daemon(
                                 slot,
                                 started.len() as i32,
                                 &held,
-                                &restart_kinds,
+                                fits,
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {

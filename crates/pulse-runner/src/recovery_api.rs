@@ -538,8 +538,8 @@ pub(crate) fn inspect_recovery_failure(
         );
         return Ok((v, f, run));
     }
-    if job.str("source").starts_with("task:") {
-        let task_id = job.str("source").trim_start_matches("task:").to_string();
+    if let Some(task_id) = pulse_store::task_source_id(&job.str("source")) {
+        let task_id = task_id.to_string();
         let task = must_one(
             q,
             "SELECT * FROM tasks WHERE id = ? AND project = ?",

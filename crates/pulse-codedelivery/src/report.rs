@@ -347,9 +347,7 @@ fn delivery_tasks(
     let conn = s.conn_ctx(ctx)?;
     let mut refs = Vec::new();
     let mut seen = BTreeMap::new();
-    if let Some(id) = source.strip_prefix("task:")
-        && !id.is_empty()
-    {
+    if let Some(id) = pulse_store::task_source_id(source) {
         let mut stmt = conn
             .prepare("SELECT id, title FROM tasks WHERE project = ? AND id = ? ORDER BY id")
             .map_err(|e| ctx_error(ctx, e.into()))?;

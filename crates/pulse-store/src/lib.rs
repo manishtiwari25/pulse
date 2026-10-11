@@ -18,6 +18,7 @@ pub mod records_ddl;
 pub mod runner_ddl;
 pub mod settings;
 pub mod store;
+pub mod task_source;
 pub mod tasks_ddl;
 
 pub use ctx::{CancellationToken, ContextError};
@@ -35,6 +36,7 @@ pub use records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 pub use runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
 pub use settings::*;
 pub use store::*;
+pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, task_source_params};
 pub use tasks_ddl::TASKS_DDL;
 
 #[cfg(test)]

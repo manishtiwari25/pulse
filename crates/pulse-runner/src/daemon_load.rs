@@ -186,7 +186,17 @@ pub(crate) struct Verdict {
     pub(crate) room: usize,
     /// Why the machine takes nothing new right now, when it is saturated.
     pub(crate) hold: Option<String>,
+    /// One local slot stays open to the owner's work alone (the lead's runs,
+    /// answers, the jobs of owner tasks): the hold is load alone, the load is
+    /// under [`EXPRESS_LOAD_FACTOR`] times the cap, and a slot is free under
+    /// `daemon.max_jobs`. The fleet's own builds are what saturate the
+    /// machine; the owner's request should not queue behind them.
+    pub(crate) express: bool,
 }
+
+/// How far over `daemon.max_load` the express lane still opens: a machine at
+/// twice the cap is swapping, and one more run would not finish sooner.
+pub(crate) const EXPRESS_LOAD_FACTOR: f64 = 2.0;
 
 /// The pure decision: `running` local runs are in flight, `reserved` slots
 /// are kept free for something else (a self-update build that waits).
@@ -197,14 +207,26 @@ pub(crate) fn decide(
     reserved: usize,
 ) -> Verdict {
     let hold = hold_reason(limits, pressure);
+    let cap = limits.max_jobs.max(0) as usize;
     let room = if hold.is_some() {
         0
     } else {
-        (limits.max_jobs.max(0) as usize)
-            .saturating_sub(running)
-            .saturating_sub(reserved)
+        cap.saturating_sub(running).saturating_sub(reserved)
     };
-    Verdict { room, hold }
+    let load_only = hold.is_some()
+        && !pressure.mem_warning
+        && !pressure
+            .free_mem_mb
+            .is_some_and(|free| limits.min_free_mem_mb > 0 && free < limits.min_free_mem_mb)
+        && pressure
+            .load1
+            .is_some_and(|load| load <= limits.max_load * EXPRESS_LOAD_FACTOR);
+    let express = load_only && running + reserved < cap;
+    Verdict {
+        room,
+        hold,
+        express,
+    }
 }
 
 /// Why nothing new should start on this machine, if the pressure says so.
@@ -706,7 +728,8 @@ mod tests {
             decide(&l, &calm(), 0, 0),
             Verdict {
                 room: 4,
-                hold: None
+                hold: None,
+                express: false
             }
         );
         assert_eq!(decide(&l, &calm(), 3, 0).room, 1);
@@ -732,6 +755,10 @@ mod tests {
             v.hold.as_deref(),
             Some("machine saturated: load 40.1 is over daemon.max_load 12")
         );
+        assert!(
+            !v.express,
+            "a load over twice the cap keeps the express lane shut: {v:?}"
+        );
         let tight = Pressure {
             free_mem_mb: Some(512),
             ..calm()
@@ -742,6 +769,7 @@ mod tests {
             v.hold.as_deref(),
             Some("machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024")
         );
+        assert!(!v.express, "memory pressure has no express lane");
         let warned = Pressure {
             mem_warning: true,
             ..calm()
@@ -753,6 +781,42 @@ mod tests {
     }
 
     #[test]
+    fn decide_keeps_an_express_slot_for_the_owner_while_load_alone_holds() {
+        let l = limits(4, 12.0, 1024);
+        let busy = Pressure {
+            load1: Some(15.0),
+            ..calm()
+        };
+        let v = decide(&l, &busy, 2, 0);
+        assert_eq!(v.room, 0, "the hold still closes the ordinary slots");
+        assert!(v.hold.is_some());
+        assert!(v.express, "load alone, under the cap: {v:?}");
+        assert!(
+            !decide(&l, &busy, 4, 0).express,
+            "a full cap has no slot to lend"
+        );
+        assert!(
+            !decide(&l, &busy, 3, 1).express,
+            "a reserved slot counts against the cap"
+        );
+        let swamped = Pressure {
+            load1: Some(24.1),
+            ..calm()
+        };
+        assert!(!decide(&l, &swamped, 0, 0).express);
+        let loaded_and_tight = Pressure {
+            load1: Some(15.0),
+            free_mem_mb: Some(512),
+            ..calm()
+        };
+        assert!(!decide(&l, &loaded_and_tight, 0, 0).express);
+        assert!(
+            !decide(&l, &calm(), 0, 0).express,
+            "no hold, no lane needed"
+        );
+    }
+
+    #[test]
     fn decide_treats_a_missing_reading_and_a_zero_floor_as_no_pressure() {
         let l = limits(2, 8.0, 1024);
         let blind = Pressure::default();
@@ -760,7 +824,8 @@ mod tests {
             decide(&l, &blind, 0, 0),
             Verdict {
                 room: 2,
-                hold: None
+                hold: None,
+                express: false
             }
         );
         let off = limits(2, 8.0, 0);

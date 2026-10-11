@@ -221,7 +221,7 @@ pub fn project_focus(s: &pulse_store::Store, project: &str, now: &str) -> Result
 }
 
 fn source_task(s: &pulse_store::Store, source: &str) -> (String, String) {
-    let Some(id) = source.strip_prefix("task:").filter(|x| !x.is_empty()) else {
+    let Some(id) = pulse_store::task_source_id(source) else {
         return (String::new(), String::new());
     };
     let title = s

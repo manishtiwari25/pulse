@@ -222,6 +222,54 @@ fn cancel_cancels_queued_jobs_only() {
 }
 
 #[test]
+fn labelled_task_sources_count_as_the_tasks_jobs() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let a = new(&s, "demo", "T", "", 0, "human").unwrap();
+    let other = new(&s, "demo", "U", "", 0, "human").unwrap();
+    assert_eq!((a.id.as_str(), other.id.as_str()), ("TASK-001", "TASK-002"));
+    for (id, source) in [
+        ("J-plain", "task:TASK-001"),
+        ("J-ui", "task:TASK-001:hub-ui"),
+        ("J-skills", "task:TASK-001:skills"),
+        ("J-other", "task:TASK-002"),
+        ("J-prefix", "task:TASK-0010"),
+    ] {
+        s.conn().unwrap().execute("INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, 'demo', 'task', 'T', ?, 'queued', ?)", params![id, source, s.now()]).unwrap();
+    }
+    let mut mine = jobs(&s, &a.id)
+        .unwrap()
+        .into_iter()
+        .map(|j| j.id)
+        .collect::<Vec<_>>();
+    mine.sort();
+    assert_eq!(mine, vec!["J-plain", "J-skills", "J-ui"]);
+    let c = cancel(&s, &a.id, "changed my mind", "human").unwrap();
+    assert_eq!(c.status, "cancelled");
+    let conn = s.conn().unwrap();
+    let status = |id: &str| -> String {
+        conn.query_row("SELECT status FROM jobs WHERE id = ?", [id], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        (
+            status("J-plain"),
+            status("J-ui"),
+            status("J-skills"),
+            status("J-other"),
+            status("J-prefix")
+        ),
+        (
+            "cancelled".into(),
+            "cancelled".into(),
+            "cancelled".into(),
+            "queued".into(),
+            "queued".into()
+        )
+    );
+}
+
+#[test]
 fn work_for_summarizes_task_jobs() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();

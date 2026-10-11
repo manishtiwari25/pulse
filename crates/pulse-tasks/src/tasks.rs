@@ -239,9 +239,13 @@ pub fn list(s: &pulse_store::Store, project: &str, status: &str) -> Result<Vec<T
 
 pub fn jobs(s: &pulse_store::Store, id: &str) -> Result<Vec<Job>> {
     let conn = s.conn()?;
-    let mut stmt = conn.prepare("SELECT id, kind, title, status, lease_agent, branch, priority, created_at, finished_at, result FROM jobs WHERE source = ? ORDER BY created_at")?;
+    let (exact, like) = pulse_store::task_source_params(id);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, kind, title, status, lease_agent, branch, priority, created_at, finished_at, result FROM jobs WHERE {} ORDER BY created_at",
+        pulse_store::task_source_clause("source")
+    ))?;
     Ok(stmt
-        .query_map([format!("task:{id}")], |r| {
+        .query_map([exact, like], |r| {
             Ok(Job {
                 id: r.get(0)?,
                 kind: r.get(1)?,
@@ -325,13 +329,18 @@ pub fn amend(
         "UPDATE tasks SET title = ?, current_rev = ?, updated_at = ? WHERE id = ?",
         params![title, rev, now, id],
     )?;
+    let (exact, like) = pulse_store::task_source_params(id);
     let replanned = tx.execute(
-        "UPDATE jobs SET brief = brief || ? WHERE source = ? AND status = 'queued'",
+        &format!(
+            "UPDATE jobs SET brief = brief || ? WHERE {} AND status = 'queued'",
+            pulse_store::task_source_clause("source")
+        ),
         params![
             format!(
                 "\n\n[task amended: rev {rev} - re-read `pulse task show {id}` before starting]"
             ),
-            format!("task:{id}")
+            exact,
+            like
         ],
     )?;
     tx.event(
@@ -370,11 +379,14 @@ pub fn cancel(s: &pulse_store::Store, id: &str, reason: &str, actor: &str) -> Re
         "UPDATE tasks SET status = 'cancelled', updated_at = ? WHERE id = ?",
         params![now, id],
     )?;
-    let cancelled = tx.execute("UPDATE jobs SET status = 'cancelled', finished_at = ?, result = ? WHERE source = ? AND status = 'queued'",
-        params![now, format!("task cancelled: {reason}"), format!("task:{id}")])?;
+    let (exact, like) = pulse_store::task_source_params(id);
+    let clause = pulse_store::task_source_clause("source");
+    let cancelled = tx.execute(
+        &format!("UPDATE jobs SET status = 'cancelled', finished_at = ?, result = ? WHERE {clause} AND status = 'queued'"),
+        params![now, format!("task cancelled: {reason}"), exact, like])?;
     let leased: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM jobs WHERE source = ? AND status = 'leased'",
-        [format!("task:{id}")],
+        &format!("SELECT COUNT(*) FROM jobs WHERE {clause} AND status = 'leased'"),
+        [exact, like],
         |r| r.get(0),
     )?;
     tx.event(actor, "task.cancelled", id, pulse_store::Detail::json(json!({"project": cur.project, "reason": reason, "cancelled_jobs": cancelled, "leased_jobs": leased, "lead": cur.lead}))?)?;
