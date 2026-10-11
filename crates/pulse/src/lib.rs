@@ -98,6 +98,7 @@ pub fn register_all() {
         pulse_hooks::register();
         pulse_hub::register();
         pulse_inspect::register();
+        pulse_mcp::register();
         pulse_provider_copilot::register();
         pulse_provider_openai::register();
         pulse_records::register();

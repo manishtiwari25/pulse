@@ -34,6 +34,7 @@ pulse-goals-command = { path = "crates/pulse-goals-command" }
 pulse-codedelivery = { path = "crates/pulse-codedelivery" }
 pulse-evolve = { path = "crates/pulse-evolve" }
 pulse-hooks = { path = "crates/pulse-hooks" }
+pulse-mcp = { path = "crates/pulse-mcp" }
 pulse-runner = { path = "crates/pulse-runner" }
 pulse-inspect = { path = "crates/pulse-inspect" }
 pulse-hub = { path = "crates/pulse-hub" }

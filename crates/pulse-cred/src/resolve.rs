@@ -113,6 +113,43 @@ impl Resolver {
         if self.worker || !self.getenv("PULSE_JOB").is_empty() {
             return Err(ErrWorker.into());
         }
+        let (mut key, source) = self.read_bytes(&reference)?;
+        if !is_private_key(&key) {
+            let hint = if reference.scheme == "op" && reference.query.is_empty() {
+                "; for an SSH Key item add ?ssh-format=openssh to the reference"
+            } else {
+                ""
+            };
+            bail!(
+                "{} is not an SSH private key (it does not start with -----BEGIN ... PRIVATE KEY-----){}",
+                reference.raw,
+                hint
+            );
+        }
+        key.push(b'\n');
+        Ok(Secret { key, source })
+    }
+
+    /// Reads a plain secret (an API token, a `user:password` pair) the
+    /// reference names, trimmed of surrounding whitespace. Unlike `resolve`
+    /// it accepts any text and works inside a run: these secrets exist so
+    /// an agent's job can call an MCP server, so the worker refusal of
+    /// ADR-041 D4 (which protects the push key) does not apply. Errors never
+    /// carry the secret.
+    pub fn read_secret(&self, reference: &Ref) -> Result<Secret> {
+        let (mut key, source) = self.read_bytes(reference)?;
+        let lead = key.iter().take_while(|b| b.is_ascii_whitespace()).count();
+        key.drain(..lead);
+        if is_private_key(&key) {
+            bail!(
+                "{} holds an SSH private key, not a token; point it at the secret itself",
+                reference.raw
+            );
+        }
+        Ok(Secret { key, source })
+    }
+
+    fn read_bytes(&self, reference: &Ref) -> Result<(Vec<u8>, String)> {
         let (mut key, source) = match reference.scheme.as_str() {
             "op" => {
                 let (out, token_source) = self.op(&["read", "-n", &reference.raw])?;
@@ -177,20 +214,7 @@ impl Resolver {
         if key.is_empty() {
             bail!("{} resolved to nothing", reference.raw);
         }
-        if !is_private_key(&key) {
-            let hint = if reference.scheme == "op" && reference.query.is_empty() {
-                "; for an SSH Key item add ?ssh-format=openssh to the reference"
-            } else {
-                ""
-            };
-            bail!(
-                "{} is not an SSH private key (it does not start with -----BEGIN ... PRIVATE KEY-----){}",
-                reference.raw,
-                hint
-            );
-        }
-        key.push(b'\n');
-        Ok(Secret { key, source })
+        Ok((key, source))
     }
 
     pub fn op_available(&self) -> bool {
@@ -853,6 +877,45 @@ mod tests {
         let mut r = resolver(&Fake::default(), "linux", BTreeMap::new());
         r.worker = true;
         assert!(r.resolve(reference).unwrap_err().is::<ErrWorker>());
+    }
+
+    #[test]
+    fn read_secret_accepts_tokens_inside_a_run() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempdir().unwrap();
+        let token = dir.path().join("token");
+        fs::write(&token, "  ghp_example_token_value\n\n").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        let reference = parse(&format!("file://{}", token.display())).unwrap();
+        let mut env = BTreeMap::new();
+        env.insert("PULSE_JOB".to_string(), "job-x".to_string());
+        let r = resolver(&Fake::default(), "linux", env);
+        assert!(r.resolve(reference.clone()).unwrap_err().is::<ErrWorker>());
+        let sec = r.read_secret(&reference).unwrap();
+        assert_eq!(
+            String::from_utf8(sec.key).unwrap(),
+            "ghp_example_token_value"
+        );
+        assert_eq!(sec.source, "file");
+
+        let key = dir.path().join("key");
+        fs::write(&key, TEST_KEY).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        let err = r
+            .read_secret(&parse(&format!("file://{}", key.display())).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("holds an SSH private key"), "{err}");
+        assert!(!err.contains("b3BlbnNzaC"), "{err}");
+
+        let empty = dir.path().join("empty");
+        fs::write(&empty, "\n").unwrap();
+        fs::set_permissions(&empty, fs::Permissions::from_mode(0o600)).unwrap();
+        let err = r
+            .read_secret(&parse(&format!("file://{}", empty.display())).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("resolved to nothing"), "{err}");
     }
 
     #[test]

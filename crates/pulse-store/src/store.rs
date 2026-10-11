@@ -3,6 +3,7 @@ use crate::ddl::DDL;
 use crate::evolve_ddl::EVOLVE_DDL;
 use crate::harness_ddl::{HARNESS_COLUMNS, HARNESS_DDL};
 use crate::hooks_ddl::HOOKS_DDL;
+use crate::mcp_ddl::MCP_DDL;
 use crate::pyjson::py_json_value;
 use crate::records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 use crate::runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
@@ -882,6 +883,7 @@ pub fn additive_ddl() -> Vec<&'static [&'static str]> {
         RUNNER_DDL,
         EVOLVE_DDL,
         HARNESS_DDL,
+        MCP_DDL,
     ]
 }
 pub fn additive_columns() -> Vec<Column> {

@@ -1139,6 +1139,7 @@ dependencies = [
  "pulse-hooks",
  "pulse-hub",
  "pulse-inspect",
+ "pulse-mcp",
  "pulse-provider-copilot",
  "pulse-provider-openai",
  "pulse-records",
@@ -1449,6 +1450,25 @@ dependencies = [
  "serde_json",
  "tabwriter",
  "tempfile",
+]
+
+[[package]]
+name = "pulse-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "pulse-cli",
+ "pulse-cred",
+ "pulse-store",
+ "pulse-testutil",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

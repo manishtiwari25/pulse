@@ -25,6 +25,7 @@ pulse-harness.workspace = true
 pulse-hooks.workspace = true
 pulse-hub.workspace = true
 pulse-inspect.workspace = true
+pulse-mcp.workspace = true
 pulse-provider-copilot.workspace = true
 pulse-provider-openai.workspace = true
 pulse-records.workspace = true
