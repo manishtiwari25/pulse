@@ -35,7 +35,7 @@ pub use records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 pub use runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
 pub use settings::*;
 pub use store::*;
-pub use tasks_ddl::TASKS_DDL;
+pub use tasks_ddl::{SCHEDULE_COLUMNS, TASKS_DDL};
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

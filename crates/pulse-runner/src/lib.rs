@@ -63,6 +63,7 @@ pub mod retention;
 pub mod retire;
 pub mod run;
 pub mod schedule;
+pub mod schedule_script;
 pub mod selfupdate;
 pub mod service;
 pub mod sign;

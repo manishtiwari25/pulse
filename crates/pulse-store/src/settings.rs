@@ -202,7 +202,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10",},
+    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10","schedule.script_timeout_minutes"=>"20","schedule.scripts_per_tick"=>"2",},
 );
 pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -218,6 +218,8 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
         "plan.operating_layer_fill"=>("choice",None,["on","off"],None,"on: once the day's operating-layer cap is reached, voted operating-layer cards are still planned while no product card of the project passes the plan gates, so idle workers do the voted work instead of waiting for tomorrow; the cap holds again the moment a product card competes. off: the cap holds whatever competes"),
         "schedule.min_minutes"=>("count",Some(5),[],None,"the shortest cadence a schedule may have (`pulse schedule add --every`); a standing job that runs more often than this is a loop, not a schedule"),
         "schedule.max_per_project"=>("count",Some(0),[],None,"active or paused schedules one project may hold at once; 0 turns the cap off"),
+        "schedule.script_timeout_minutes"=>("count",Some(1),[],None,"minutes a check or watch script (`pulse schedule add --kind check|watch --script`) may run before the daemon kills it and counts the run as a failure (a red check, a broken watcher)"),
+        "schedule.scripts_per_tick"=>("count",Some(1),[],None,"check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated"),
     }
 });
 pub const OWNER_PRESENT: &str = "present";

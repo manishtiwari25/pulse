@@ -20,6 +20,11 @@ pub(crate) static SWEEP_JOB_ENTRY_RE: LazyLock<regex::Regex> = LazyLock::new(|| 
 });
 pub(crate) static SWEEP_LAND_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^land-(.+)-([0-9]+)$").expect("sweep land regex"));
+/// The worktree a check or watch script ran in (`schedule_script`), named
+/// after the schedule and the daemon's pid.
+pub(crate) static SWEEP_SCHED_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^sched-(SCHED-[0-9]+)-([0-9]+)$").expect("sweep schedule regex")
+});
 pub(crate) static SWEEP_RUN_LOG_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6})\.log$").expect("sweep run log regex")
 });
@@ -931,7 +936,14 @@ impl Sweeper {
             if let Some(c) = SWEEP_LAND_RE.captures(&name)
                 && e.file_type().is_ok_and(|t| t.is_dir())
             {
-                self.sweep_land_worktree(path, c[1].into(), c[2].into());
+                self.sweep_pid_worktree(path, c[1].into(), c[2].into(), "landing");
+                continue;
+            }
+            if let Some(c) = SWEEP_SCHED_RE.captures(&name)
+                && e.file_type().is_ok_and(|t| t.is_dir())
+            {
+                let slug = self.schedule_project(&c[1]);
+                self.sweep_pid_worktree(path, slug, c[2].into(), &format!("{} script run", &c[1]));
                 continue;
             }
             let Some(c) = SWEEP_JOB_ENTRY_RE.captures(&name) else {
@@ -1050,14 +1062,33 @@ impl Sweeper {
             }
         }
     }
-    pub(crate) fn sweep_land_worktree(&mut self, path: String, slug: String, pid_text: String) {
+    fn schedule_project(&self, id: &str) -> String {
+        let Ok(conn) = self.s.conn() else {
+            return String::new();
+        };
+        crate::util::query_one(&conn, "SELECT project FROM schedules WHERE id = ?", &[&id])
+            .ok()
+            .flatten()
+            .map(|r| r.str("project"))
+            .unwrap_or_default()
+    }
+    /// A worktree under `work/` that a process of this machine made for
+    /// itself - a landing, a check or watch script run - named with its pid:
+    /// kept while the pid lives, removed once it is gone and the grace is up.
+    pub(crate) fn sweep_pid_worktree(
+        &mut self,
+        path: String,
+        slug: String,
+        pid_text: String,
+        what: &str,
+    ) {
         let pid = pid_text.parse::<i32>().unwrap_or(0);
         if pid > 0 && process_alive(pid) {
             self.held(
                 "worktree".into(),
                 path,
                 slug,
-                format!("landing by pid {pid} still running"),
+                format!("{what} by pid {pid} still running"),
             );
             return;
         }
@@ -1083,7 +1114,7 @@ impl Sweeper {
             .find(|p| p.str("slug") == slug)
             .map(|p| p.str("path"))
             .unwrap_or_default();
-        let why = format!("landing by pid {pid} is gone");
+        let why = format!("{what} by pid {pid} is gone");
         if self.o.dry_run {
             self.rep.removed.push(Swept {
                 kind: "worktree".into(),
@@ -3384,6 +3415,72 @@ mod tests {
             "{list}"
         );
         assert!(list.contains(alive.to_str().unwrap()), "{list}");
+    }
+
+    #[test]
+    fn sweep_script_worktree() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        std::fs::write(Path::new(&root).join("check.sh"), "exit 0\n").unwrap();
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "check"]);
+        let sc = pulse_tasks::schedules::add(
+            &s,
+            pulse_tasks::schedules::ScheduleInput {
+                project: "proj".into(),
+                title: "Check".into(),
+                kind: "check".into(),
+                script: "check.sh".into(),
+                tier: 1,
+                every: "1h".into(),
+                author: "aurora".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let work = Path::new(&s.home).join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let dead = work.join(format!("sched-{}-99999999", sc.id));
+        let alive = work.join(format!("sched-{}-{}", sc.id, std::process::id()));
+        for wt in [&dead, &alive] {
+            run(
+                &root,
+                &[
+                    "git",
+                    "worktree",
+                    "add",
+                    "-q",
+                    "--detach",
+                    wt.to_str().unwrap(),
+                    "HEAD",
+                ],
+            );
+        }
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(!crate::util::file_exists(&dead.display().to_string()));
+        assert!(crate::util::file_exists(&alive.display().to_string()));
+        assert_eq!(
+            swept_paths(&rep.removed, "worktree"),
+            vec![dead.display().to_string()]
+        );
+        let swept = rep.removed.iter().find(|x| x.kind == "worktree").unwrap();
+        assert!(
+            swept
+                .why
+                .contains("SCHED-001 script run by pid 99999999 is gone"),
+            "{:?}",
+            rep.removed
+        );
+        assert_eq!(swept.project, "proj");
+        assert!(held_why(&rep.held, &alive).contains("still running"));
+        let list = run(&root, &["git", "worktree", "list", "--porcelain"]);
+        assert!(
+            !list.contains(dead.to_str().unwrap()) && !list.contains("prunable"),
+            "{list}"
+        );
     }
 
     #[test]

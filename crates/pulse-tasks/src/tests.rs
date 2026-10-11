@@ -1347,3 +1347,684 @@ fn schedule_list_rejects_unknown_project() {
     run_cmd(&mut c, "schedule", &["list"]).unwrap();
     assert!(out.string().contains("No schedules"), "{}", out.string());
 }
+
+/// A git repo for project `demo` whose `main` holds `scripts/check.sh` and
+/// `scripts/watch.sh`, with the project row pointed at it.
+fn script_repo(s: &pulse_store::Store) -> String {
+    let repo = Path::new(&s.home).join("demo-repo");
+    std::fs::create_dir_all(repo.join("scripts")).unwrap();
+    std::fs::write(repo.join("scripts/check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(repo.join("scripts/watch.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    let dir = repo.display().to_string();
+    let git = |args: &[&str]| {
+        let mut full = vec!["-C", dir.as_str()];
+        full.extend_from_slice(args);
+        pulse_testutil::git(&full).unwrap();
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "scripts"]);
+    // One file only in the working tree, never committed: not on main.
+    std::fs::write(repo.join("scripts/draft.sh"), "#!/bin/sh\n").unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE projects SET path = ?, default_branch = 'main' WHERE slug = 'demo'",
+            [&dir],
+        )
+        .unwrap();
+    dir
+}
+
+fn detail(e: &pulse_bus::Event) -> serde_json::Value {
+    serde_json::from_str(&e.detail).unwrap()
+}
+
+fn script_input(kind: &str, script: &str) -> schedules::ScheduleInput {
+    schedules::ScheduleInput {
+        project: "demo".into(),
+        title: format!("{kind} {script}"),
+        kind: kind.into(),
+        every: "1d".into(),
+        author: "demo-lead".into(),
+        script: script.into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn schedule_script_path_validation() {
+    for (path, want) in [
+        ("scripts/check.sh", "scripts/check.sh"),
+        ("./scripts/check.sh", "scripts/check.sh"),
+        ("check.sh", "check.sh"),
+        (" scripts/a b.sh ", "scripts/a b.sh"),
+    ] {
+        assert_eq!(
+            schedules::validate_script_path(path).unwrap(),
+            want,
+            "{path:?}"
+        );
+    }
+    for (path, why) in [
+        ("", "needs a script"),
+        ("   ", "needs a script"),
+        ("/usr/bin/true", "not absolute"),
+        ("../other/check.sh", "`..`"),
+        ("scripts/../../x.sh", "`..`"),
+        ("scripts\\check.sh", "forward slashes"),
+        ("./", "names no file"),
+    ] {
+        let err = schedules::validate_script_path(path).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains(why), "{path:?}: {text}");
+    }
+}
+
+#[test]
+fn schedule_script_kinds_need_a_script_on_the_default_branch() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let repo = script_repo(&s);
+    // A job kind takes no script and no job kind.
+    let mut input = sched_input("1d");
+    input.script = "scripts/check.sh".into();
+    let err = format!("{}", schedules::add(&s, input).unwrap_err());
+    assert!(err.contains("--script is for a check or a watch"), "{err}");
+    let mut input = sched_input("1d");
+    input.job_kind = "improve".into();
+    let err = format!("{}", schedules::add(&s, input).unwrap_err());
+    assert!(
+        err.contains("--job-kind is for a check or a watch"),
+        "{err}"
+    );
+    // A script kind needs one.
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("check", "")).unwrap_err()
+    );
+    assert!(err.contains("needs a script"), "{err}");
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("watch", "/abs/watch.sh")).unwrap_err()
+    );
+    assert!(err.contains("not absolute"), "{err}");
+    // On the default branch, not merely in the working tree.
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("check", "scripts/draft.sh")).unwrap_err()
+    );
+    assert!(
+        err.contains("No file \"scripts/draft.sh\" on main of demo"),
+        "{err}"
+    );
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("check", "scripts")).unwrap_err()
+    );
+    assert!(err.contains("No file \"scripts\" on main"), "{err}");
+    // The job kind of a script is task or improve.
+    let mut input = script_input("check", "scripts/check.sh");
+    input.job_kind = "clean".into();
+    let err = format!("{}", schedules::add(&s, input).unwrap_err());
+    assert!(err.contains("A check cannot queue \"clean\" jobs"), "{err}");
+    // Brief optional; job_kind defaults to task.
+    let (sc, warning) =
+        schedules::add_checked(&s, script_input("check", "./scripts/check.sh")).unwrap();
+    assert_eq!(warning, "");
+    assert_eq!(
+        (
+            sc.kind.as_str(),
+            sc.script.as_str(),
+            sc.job_kind.as_str(),
+            sc.state.as_str(),
+            sc.last_rc,
+            sc.fails
+        ),
+        ("check", "scripts/check.sh", "task", "", None, 0)
+    );
+    assert!(sc.is_script());
+    let mut input = script_input("watch", "scripts/watch.sh");
+    input.job_kind = "improve".into();
+    input.brief = "Triage the issues it lists.".into();
+    let sc = schedules::add(&s, input).unwrap();
+    assert_eq!(
+        (sc.kind.as_str(), sc.job_kind.as_str()),
+        ("watch", "improve")
+    );
+    let added = events(&s, "schedule.added");
+    assert_eq!(added.len(), 2);
+    assert_eq!(detail(&added[1])["script"], "scripts/watch.sh");
+    assert_eq!(detail(&added[1])["job_kind"], "improve");
+    // The job kinds record their own kind as the job kind.
+    let sc = schedules::add(&s, sched_input("1d")).unwrap();
+    assert_eq!((sc.kind.as_str(), sc.job_kind.as_str()), ("task", "task"));
+    // A repo out of reach: accepted with a warning.
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE projects SET path = ? WHERE slug = 'demo'",
+            [format!("{repo}-gone")],
+        )
+        .unwrap();
+    let (sc, warning) =
+        schedules::add_checked(&s, script_input("check", "scripts/nowhere.sh")).unwrap();
+    assert_eq!(sc.script, "scripts/nowhere.sh");
+    assert!(
+        warning.contains("could not look for scripts/nowhere.sh on main"),
+        "{warning}"
+    );
+    // The commons has no repo to run a script in.
+    let mut input = script_input("check", "scripts/check.sh");
+    input.project = pulse_store::COMMONS_SLUG.into();
+    let err = format!("{}", schedules::add(&s, input).unwrap_err());
+    assert!(err.contains("needs a repo"), "{err}");
+}
+
+#[test]
+fn schedule_scripts_are_not_fired_as_jobs() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    script_repo(&s);
+    let check = schedules::add(&s, script_input("check", "scripts/check.sh")).unwrap();
+    let job = schedules::add(&s, sched_input("1d")).unwrap();
+    let later = "2026-09-08T10:00:00Z";
+    let fired = schedules::fire_due(&s, later, &[], "daemon").unwrap();
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].schedule.id, job.id);
+    let due = schedules::due_scripts(&s, later, &[]).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].id, check.id);
+    assert!(
+        schedules::due_scripts(&s, later, &["other".to_string()])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        schedules::due_scripts(&s, "2026-09-07T10:00:00Z", &[])
+            .unwrap()
+            .is_empty(),
+        "not due yet"
+    );
+    // The longest overdue first.
+    let watch = schedules::add(&s, script_input("watch", "scripts/watch.sh")).unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE schedules SET next_at = '2026-09-01T00:00:00Z' WHERE id = ?",
+            [&watch.id],
+        )
+        .unwrap();
+    let due = schedules::due_scripts(&s, later, &[]).unwrap();
+    assert_eq!(
+        due.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+        [watch.id.as_str(), check.id.as_str()]
+    );
+}
+
+#[test]
+fn schedule_verdicts_and_briefs() {
+    let sched = schedules::Schedule {
+        id: "SCHED-007".into(),
+        project: "demo".into(),
+        title: "Store tests".into(),
+        kind: "check".into(),
+        brief: "Keep the store green.".into(),
+        script: "scripts/check.sh".into(),
+        every_minutes: 1440,
+        created_by: "demo-lead".into(),
+        ..Default::default()
+    };
+    let v = schedules::verdict(&sched, 0, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("green", 0, false, ""),
+        "a first green run is not a transition"
+    );
+    let v = schedules::verdict(&sched, 1, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("red", 1, true, "red")
+    );
+    let red = schedules::Schedule {
+        state: "red".into(),
+        fails: 1,
+        ..sched.clone()
+    };
+    let v = schedules::verdict(&red, 2, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("red", 2, false, "red"),
+        "every red run wants the job; the dedupe keeps one"
+    );
+    let v = schedules::verdict(&red, 0, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("green", 0, true, "")
+    );
+    let watch = schedules::Schedule {
+        kind: "watch".into(),
+        script: "scripts/watch.sh".into(),
+        brief: String::new(),
+        ..sched.clone()
+    };
+    let v = schedules::verdict(&watch, 0, "  \n");
+    assert_eq!((v.state.as_str(), v.job_why.as_str()), ("ok", ""));
+    let v = schedules::verdict(&watch, 0, "issue #12 opened\n");
+    assert_eq!((v.state.as_str(), v.job_why.as_str()), ("ok", "trigger"));
+    let v = schedules::verdict(&watch, 2, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("broken", 1, true, "")
+    );
+    let failing = schedules::Schedule {
+        state: "broken".into(),
+        fails: 2,
+        ..watch.clone()
+    };
+    let v = schedules::verdict(&failing, 2, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("broken", 3, false, "fix")
+    );
+    let v = schedules::verdict(&failing, 0, "");
+    assert_eq!(
+        (v.state.as_str(), v.fails, v.transition, v.job_why.as_str()),
+        ("ok", 0, true, "")
+    );
+
+    let tree = schedules::Tree {
+        branch: "main".into(),
+        sha: "0123456789abcdef0123".into(),
+    };
+    let brief = schedules::check_job_brief(
+        &sched,
+        3,
+        1,
+        "2026-09-07T09:00:00Z",
+        &tree,
+        "test store::x ... FAILED\n",
+    );
+    assert!(brief.starts_with("Keep the store green.\n\nThe check `scripts/check.sh` failed (exit 1) at 2026-09-07T09:00:00Z on main@0123456789ab. Output tail:\n\n    test store::x ... FAILED\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end SCHED-007 --note WHY` and say why."), "{brief}");
+    assert!(
+        brief.contains("run 3 of schedule SCHED-007 (a check of `scripts/check.sh`, every 1d), set by demo-lead")
+            && brief.contains("pulse schedule log SCHED-007"),
+        "{brief}"
+    );
+    let brief = schedules::check_job_brief(&sched, 1, -1, "t", &tree, "");
+    assert!(
+        brief.contains("failed (timed out and was killed) at t")
+            && brief.contains("    (no output)"),
+        "{brief}"
+    );
+    let brief = schedules::watch_job_brief(
+        &watch,
+        1,
+        "2026-09-07T09:00:00Z",
+        "#12 Crash on start\n#13 Typo\n",
+    );
+    assert!(
+        brief.starts_with("The watcher `scripts/watch.sh` reported at 2026-09-07T09:00:00Z:\n\n    #12 Crash on start\n    #13 Typo\n\nHandle what it reports; when done, the next run of the watcher will see your changes."),
+        "{brief}"
+    );
+    let brief = schedules::watch_fix_brief(&watch, 4, 2, 3, "t", &tree, "gh: not found");
+    assert!(
+        brief.contains("The watcher `scripts/watch.sh` itself is broken: it failed (exit 2) 3 runs in a row, last at t on main@0123456789ab.")
+            && brief.contains("    gh: not found")
+            && brief.contains("pulse schedule end SCHED-007 --note WHY"),
+        "{brief}"
+    );
+    assert_eq!(
+        schedules::script_job_title(&sched, "red"),
+        "Make check `scripts/check.sh` pass: Store tests"
+    );
+    assert_eq!(
+        schedules::script_job_title(&watch, "fix"),
+        "Fix watcher `scripts/watch.sh`: Store tests"
+    );
+    assert_eq!(
+        schedules::script_job_title(&watch, "trigger"),
+        "Store tests"
+    );
+}
+
+#[test]
+fn schedule_script_runs_are_recorded() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    script_repo(&s);
+    let mut input = script_input("check", "scripts/check.sh");
+    input.times = 2;
+    let sc = schedules::add(&s, input).unwrap();
+    let t1 = "2026-09-08T10:00:00Z";
+    let run = schedules::ScriptRun {
+        rc: Some(1),
+        seconds: 3.21,
+        output: "boom\n".into(),
+        verdict: schedules::verdict(&sc, 1, ""),
+        job: "job-1".into(),
+        queued: true,
+        post: "POST-1".into(),
+        ..Default::default()
+    };
+    let rec = schedules::record_script_run(&s, &sc, t1, "daemon", &run).unwrap();
+    assert_eq!(rec.previous, "");
+    assert!(!rec.ended);
+    let got = &rec.schedule;
+    assert_eq!(
+        (
+            got.state.as_str(),
+            got.state_since.as_str(),
+            got.last_rc,
+            got.last_output.as_str(),
+            got.fails,
+            got.runs,
+            got.last_at.as_str(),
+            got.last_job.as_str()
+        ),
+        ("red", t1, Some(1), "boom\n", 1, 1, t1, "job-1")
+    );
+    assert_eq!(
+        got.next_at, "2026-09-08T21:00:00Z",
+        "one cadence on from its due time"
+    );
+    let ran = events(&s, "schedule.ran");
+    assert_eq!(ran.len(), 1);
+    let d = detail(&ran[0]);
+    assert_eq!(d["rc"], 1);
+    assert_eq!(d["seconds"], 3.2);
+    assert_eq!(d["state"], "red");
+    assert_eq!(d["job"], "job-1");
+    let red = events(&s, "schedule.red");
+    assert_eq!(red.len(), 1);
+    assert_eq!(detail(&red[0])["post"], "POST-1");
+    assert_eq!(events(&s, "schedule.fired").len(), 1);
+    assert_eq!(events(&s, "schedule.green").len(), 0);
+    // A second red run: no transition; the dedupe found the job open.
+    let t2 = "2026-09-09T10:00:00Z";
+    let run = schedules::ScriptRun {
+        rc: Some(1),
+        seconds: 1.0,
+        output: "boom again\n".into(),
+        verdict: schedules::verdict(got, 1, ""),
+        job: "job-1".into(),
+        queued: false,
+        ..Default::default()
+    };
+    let rec = schedules::record_script_run(&s, got, t2, "daemon", &run).unwrap();
+    assert_eq!(rec.previous, "red");
+    assert!(rec.ended, "--times 2 counts script runs");
+    let got = &rec.schedule;
+    assert_eq!(
+        (
+            got.state.as_str(),
+            got.state_since.as_str(),
+            got.fails,
+            got.runs,
+            got.status.as_str(),
+            got.note.as_str()
+        ),
+        ("red", t1, 2, 2, "ended", "ended after 2 runs")
+    );
+    assert_eq!(events(&s, "schedule.red").len(), 1);
+    assert_eq!(events(&s, "schedule.skipped").len(), 1);
+    assert_eq!(events(&s, "schedule.ended").len(), 1);
+    // A run that could not start: counted, nothing else changes.
+    let other = schedules::add(&s, script_input("watch", "scripts/watch.sh")).unwrap();
+    let run = schedules::ScriptRun {
+        rc: None,
+        output: "no worktree: git failed".into(),
+        ..Default::default()
+    };
+    let rec = schedules::record_script_run(&s, &other, t2, "daemon", &run).unwrap();
+    assert_eq!(
+        (
+            rec.schedule.state.as_str(),
+            rec.schedule.last_rc,
+            rec.schedule.runs,
+            rec.schedule.last_output.as_str()
+        ),
+        ("", None, 1, "no worktree: git failed")
+    );
+    assert_eq!(events(&s, "schedule.ran").len(), 3);
+    // The output tail is capped.
+    let long = "x".repeat(schedules::OUTPUT_TAIL + 100);
+    let run = schedules::ScriptRun {
+        rc: Some(0),
+        output: format!("{long}END"),
+        verdict: schedules::verdict(&rec.schedule, 0, ""),
+        ..Default::default()
+    };
+    let rec = schedules::record_script_run(&s, &rec.schedule, t2, "daemon", &run).unwrap();
+    assert_eq!(rec.schedule.last_output.len(), schedules::OUTPUT_TAIL);
+    assert!(rec.schedule.last_output.ends_with("END"));
+    assert_eq!(rec.schedule.state, "ok");
+}
+
+#[test]
+fn schedule_script_commands_end_to_end() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    script_repo(&s);
+    let (mut c, out) = ctx_for(&s, "demo-lead", "demo", false);
+    let err = run_cmd(
+        &mut c,
+        "schedule",
+        &[
+            "add",
+            "--title",
+            "Store tests",
+            "--every",
+            "1d",
+            "--kind",
+            "check",
+        ],
+    )
+    .unwrap_err();
+    assert!(format!("{err}").contains("needs a script"), "{err}");
+    let err = run_cmd(
+        &mut c,
+        "schedule",
+        &[
+            "add",
+            "--title",
+            "x",
+            "--every",
+            "1d",
+            "--script",
+            "scripts/check.sh",
+            "--brief",
+            "b",
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err}").contains("--script is for a check or a watch"),
+        "{err}"
+    );
+    run_cmd(
+        &mut c,
+        "schedule",
+        &[
+            "add",
+            "--title",
+            "Store tests",
+            "--every",
+            "1d",
+            "--at",
+            "03:00",
+            "--kind",
+            "check",
+            "--script",
+            "scripts/check.sh",
+            "--job-kind",
+            "improve",
+        ],
+    )
+    .unwrap();
+    assert!(
+        out.string().contains(
+            "SCHED-001 set in demo: check `scripts/check.sh` every 1d, first run at 2026-09-07T03:00:00Z"
+        ),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(
+        &mut c,
+        "schedule",
+        &[
+            "add",
+            "--title",
+            "New issues",
+            "--every",
+            "6h",
+            "--kind",
+            "watch",
+            "--script",
+            "scripts/watch.sh",
+            "--brief",
+            "Triage each issue.",
+        ],
+    )
+    .unwrap();
+    out.clear();
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    let text = out.string();
+    assert!(text.contains("KIND") && text.contains("STATE"), "{text}");
+    let line = text.lines().find(|l| l.starts_with("SCHED-001")).unwrap();
+    assert!(
+        line.contains("check") && line.contains("Store tests (scripts/check.sh)"),
+        "{line}"
+    );
+    assert_eq!(
+        line.split_whitespace().nth(4),
+        Some("-"),
+        "no run yet: {line}"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains(
+            "check `scripts/check.sh`, queues improve jobs at tier 1, priority 0; set by demo-lead"
+        ) && text.contains("state: not run yet")
+            && text.contains("JOBS"),
+        "{text}"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["log", "SCHED-001"]).unwrap();
+    assert!(
+        out.string()
+            .contains("SCHED-001 has not run `scripts/check.sh` yet"),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["run", "SCHED-001"]).unwrap();
+    assert!(
+        out.string()
+            .contains("SCHED-001 due now; the daemon runs `scripts/check.sh` on the next tick"),
+        "{}",
+        out.string()
+    );
+    out.clear();
+    // After a run.
+    let sc = schedules::get(&s, "SCHED-001").unwrap();
+    let t = "2026-09-07T03:00:05Z";
+    let run = schedules::ScriptRun {
+        rc: Some(101),
+        seconds: 12.0,
+        output: "line 1\nline 2\ntest x FAILED\n".into(),
+        verdict: schedules::verdict(&sc, 101, ""),
+        job: "job-abc".into(),
+        queued: true,
+        ..Default::default()
+    };
+    schedules::record_script_run(&s, &sc, t, "daemon", &run).unwrap();
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    let line = out
+        .string()
+        .lines()
+        .find(|l| l.starts_with("SCHED-001"))
+        .unwrap()
+        .to_string();
+    assert_eq!(line.split_whitespace().nth(4), Some("red"), "{line}");
+    out.clear();
+    run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains("state: red since 2026-09-07T03:00:05Z; last exit 101, 1 failure in a row")
+            && text.contains("last run at 2026-09-07T03:00:05Z (last job job-abc)")
+            && text.contains("LAST OUTPUT")
+            && text.contains("test x FAILED"),
+        "{text}"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["log", "SCHED-001"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains("SCHED-001 `scripts/check.sh` at 2026-09-07T03:00:05Z: red (exit 101)")
+            && text.contains("line 1\nline 2\ntest x FAILED"),
+        "{text}"
+    );
+    out.clear();
+    // A job schedule has no log.
+    run_cmd(
+        &mut c,
+        "schedule",
+        &["add", "--title", "Audit", "--every", "1d", "--brief", "b"],
+    )
+    .unwrap();
+    let err = run_cmd(&mut c, "schedule", &["log", "SCHED-003"]).unwrap_err();
+    assert!(
+        format!("{err}").contains("SCHED-003 is a task schedule, not a check or watch"),
+        "{err}"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    let line = out
+        .string()
+        .lines()
+        .find(|l| l.starts_with("SCHED-003"))
+        .unwrap()
+        .to_string();
+    assert!(line.contains(" task ") && line.contains("Audit"), "{line}");
+
+    let (mut c, out) = ctx_for(&s, "demo-lead", "demo", true);
+    run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(v["schedule"]["kind"], "check");
+    assert_eq!(v["schedule"]["script"], "scripts/check.sh");
+    assert_eq!(v["schedule"]["job_kind"], "improve");
+    assert_eq!(v["schedule"]["state"], "red");
+    assert_eq!(v["schedule"]["state_since"], t);
+    assert_eq!(v["schedule"]["last_rc"], 101);
+    assert_eq!(v["schedule"]["fails"], 1);
+    assert_eq!(
+        v["schedule"]["last_output"],
+        "line 1\nline 2\ntest x FAILED\n"
+    );
+    out.clear();
+    run_cmd(&mut c, "schedule", &["list"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    let watch = v["schedules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|sc| sc["id"] == "SCHED-002")
+        .unwrap();
+    assert_eq!(watch["kind"], "watch");
+    assert_eq!(watch["script"], "scripts/watch.sh");
+    assert_eq!(watch["job_kind"], "task");
+    assert!(watch["last_rc"].is_null());
+    out.clear();
+    run_cmd(&mut c, "schedule", &["log", "SCHED-001"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(
+        v["schedule"]["last_output"],
+        "line 1\nline 2\ntest x FAILED\n"
+    );
+}

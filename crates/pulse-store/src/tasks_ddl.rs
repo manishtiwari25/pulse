@@ -1,3 +1,5 @@
+use crate::Column;
+
 pub const TASKS_DDL: &[&str] = &[
     r####"CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,                -- TASK-001
@@ -74,8 +76,56 @@ pub const TASKS_DDL: &[&str] = &[
   note TEXT NOT NULL DEFAULT '',      -- why it is paused or ended
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  script TEXT NOT NULL DEFAULT '',    -- check/watch: repo-relative path of the script on the default branch
+  job_kind TEXT NOT NULL DEFAULT 'task', -- the kind of job a red check or a firing watch queues
+  state TEXT NOT NULL DEFAULT '',     -- check: green/red; watch: ok/broken; '' until the first run
+  state_since TEXT NOT NULL DEFAULT '',
+  last_rc INTEGER,                    -- exit code of the last script run, NULL until one ran
+  last_output TEXT NOT NULL DEFAULT '', -- redacted tail of the last script run
+  fails INTEGER NOT NULL DEFAULT 0    -- consecutive non-zero exits
 );"####,
     r####"CREATE INDEX IF NOT EXISTS schedules_project_status ON schedules (project, status, next_at);"####,
     r####"CREATE TRIGGER IF NOT EXISTS schedules_no_delete BEFORE DELETE ON schedules BEGIN SELECT RAISE(ABORT, 'schedules are never deleted: end instead'); END;"####,
+];
+
+/// Columns added after the schedules table shipped: the script kinds
+/// (`check`, `watch`). `ensure_records` adds each one that is missing, so an
+/// older store gains them on first open.
+pub const SCHEDULE_COLUMNS: &[Column] = &[
+    Column {
+        table: r####"schedules"####,
+        name: r####"script"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"job_kind"####,
+        ddl: r####"TEXT NOT NULL DEFAULT 'task'"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"state"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"state_since"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"last_rc"####,
+        ddl: r####"INTEGER"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"last_output"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"fails"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
 ];

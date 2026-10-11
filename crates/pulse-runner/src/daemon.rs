@@ -1327,10 +1327,26 @@ pub(crate) fn daemon(
                         say(&o, line);
                     }
                     if crate::run::runner_stopped(s).is_empty() {
+                        let mut scripts_held = false;
                         for line in
                             crate::schedule::tend_schedules(s, now.clone(), actor.clone(), &slugs)
                         {
-                            say(&o, line);
+                            // A hold on the check and watch scripts stands for
+                            // as long as the machine is saturated; it logs
+                            // once per change, like the load hold.
+                            if crate::schedule_script::is_hold_line(&line) {
+                                scripts_held = true;
+                                if let Some(line) =
+                                    idle_log.line("schedules", &line, std::time::Instant::now())
+                                {
+                                    say(&o, line);
+                                }
+                            } else {
+                                say(&o, line);
+                            }
+                        }
+                        if !scripts_held {
+                            idle_log.clear("schedules");
                         }
                     }
                 }

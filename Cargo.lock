@@ -1629,6 +1629,7 @@ dependencies = [
  "pulse-board",
  "pulse-bus",
  "pulse-cli",
+ "pulse-gitenv",
  "pulse-store",
  "pulse-testutil",
  "rusqlite",
