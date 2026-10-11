@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+build = "build.rs"
 description = "PULSE: the HTTP API and SSE the console uses, with the embedded console"
 
 [dependencies]
