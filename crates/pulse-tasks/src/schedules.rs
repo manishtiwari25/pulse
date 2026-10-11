@@ -203,7 +203,7 @@ pub fn parse_every(text: &str) -> Result<i64> {
             n.checked_mul(per).ok_or_else(bad)?
         }
     };
-    if minutes < 1 {
+    if minutes < 1 || minutes > i64::from(i32::MAX) {
         return Err(bad());
     }
     Ok(minutes)

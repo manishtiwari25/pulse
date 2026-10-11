@@ -2093,3 +2093,11 @@ fn schedule_script_commands_end_to_end() {
         "line 1\nline 2\ntest x FAILED\n"
     );
 }
+
+#[test]
+fn schedule_add_rejects_a_cadence_the_row_cannot_hold() {
+    let s = new_store();
+    let err = schedules::add(&s, sched_input("3000000000m")).unwrap_err();
+    assert!(err.to_string().contains("cadence"), "{err}");
+    assert_eq!(schedules::list(&s, "demo", "").unwrap().len(), 0);
+}
