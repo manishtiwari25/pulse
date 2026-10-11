@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -30,6 +31,22 @@ pub const STALE_BINARY_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const CAPPED_LOGS: &[&str] = &["daemon.log", "hub.log"];
 
 static TRASH_WORKER: AtomicBool = AtomicBool::new(false);
+
+/// Homes whose trash has a discard waiting; the single remover thread drains
+/// every one of them, so a discard that lands while a pass runs (or under a
+/// different `PULSE_HOME`, as the tests do) is never left behind.
+static TRASH_PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn trash_pending() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    TRASH_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn take_pending_home() -> Option<PathBuf> {
+    let mut pending = trash_pending();
+    (!pending.is_empty()).then(|| pending.remove(0))
+}
 
 pub fn trash_dir(home: &Path) -> PathBuf {
     home.join(TRASH_DIR)
@@ -83,26 +100,44 @@ pub fn discard_dir(home: &Path, path: &Path) -> std::io::Result<Discarded> {
 }
 
 /// Starts one background thread (never two) that deletes everything in the
-/// trash at low priority, then exits. Cheap to call after every discard.
+/// trash at low priority, then exits. Cheap to call after every discard. A
+/// home queued while the thread runs is taken by that thread; a home queued
+/// as it exits starts a new one, so no discard waits for the next call.
 pub fn empty_trash_later(home: &Path) {
     if !trash_dir(home).is_dir() {
         return;
     }
+    {
+        let mut pending = trash_pending();
+        if !pending.iter().any(|h| h == home) {
+            pending.push(home.to_path_buf());
+        }
+    }
+    spawn_trash_worker();
+}
+
+fn spawn_trash_worker() {
     if TRASH_WORKER.swap(true, Ordering::SeqCst) {
         return;
     }
-    let home = home.to_path_buf();
     let spawned = std::thread::Builder::new()
         .name("trash-remover".into())
         .spawn(move || {
-            // A discard that lands while a pass runs is taken by the next pass.
-            loop {
-                let report = empty_trash(&home);
-                if report.entries == 0 || !report.errors.is_empty() {
-                    break;
+            while let Some(home) = take_pending_home() {
+                // A discard that lands while a pass runs is taken by the next pass.
+                loop {
+                    let report = empty_trash(&home);
+                    if report.entries == 0 || !report.errors.is_empty() {
+                        break;
+                    }
                 }
             }
             TRASH_WORKER.store(false, Ordering::SeqCst);
+            // A home queued between the last take and the store would wait
+            // for the next discard; start another thread for it instead.
+            if !trash_pending().is_empty() {
+                spawn_trash_worker();
+            }
         });
     if spawned.is_err() {
         TRASH_WORKER.store(false, Ordering::SeqCst);
@@ -352,6 +387,30 @@ mod tests {
     fn age_path(path: &Path, days: i64) {
         let t = FileTime::from_unix_time(FileTime::now().unix_seconds() - days * 24 * 3600, 0);
         filetime::set_file_mtime(path, t).unwrap();
+    }
+
+    #[test]
+    fn empty_trash_later_drains_every_home_queued_while_a_pass_runs() {
+        // Two homes discarded back to back (the test suite does this across
+        // tempdirs) must both be emptied without a further call.
+        let homes: Vec<_> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+        for home in &homes {
+            for n in 0..20 {
+                mkfile(&trash_dir(home.path()).join(format!("c{n}/deep/file")), "x");
+            }
+        }
+        for home in &homes {
+            empty_trash_later(home.path());
+        }
+        for home in &homes {
+            for _ in 0..400 {
+                if trash_entries(home.path()) == 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert_eq!(trash_entries(home.path()), 0, "trash left in {home:?}");
+        }
     }
 
     #[test]
