@@ -1,12 +1,19 @@
 //! Schedules: a standing job any agent can set for a project - "every day at
 //! 09:00, run this brief" - which the daemon queues as an ordinary job each
 //! time it is due. The worker that takes the job is the scheduled agent.
+//!
+//! Two kinds run a script from the repo instead of a worker: a `check`
+//! (a monitor: exit 0 is green, anything else is red and queues one job to
+//! make it pass) and a `watch` (a watcher: whatever it prints is handed to
+//! one job; silence means nothing to do). The daemon runs them with no LLM
+//! and wakes an agent only when the script says so.
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, NaiveTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::json;
+use std::path::Component;
 
 use crate::tasks::{check_project, clean, input, next_id};
 
@@ -14,9 +21,23 @@ pub const SCHEDULE_STATUSES: &[&str] = &["active", "paused", "ended"];
 /// The job kinds a schedule may queue: the ones a worker runs from a brief
 /// alone. Experiments, ballots and leads are the planner's.
 pub const SCHEDULE_KINDS: &[&str] = &["task", "improve", "clean", "reflect"];
+/// The kinds that run a committed script instead of queueing a job every
+/// time: `check` (a monitor) and `watch` (a watcher).
+pub const SCRIPT_KINDS: &[&str] = &["check", "watch"];
+/// The kinds of job a red check or a firing watch may queue.
+pub const SCRIPT_JOB_KINDS: &[&str] = &["task", "improve"];
+/// Consecutive failures of a watch script after which a job to fix the
+/// watcher itself is queued.
+pub const WATCH_FIX_AFTER: i32 = 3;
+/// Characters of a script's output kept in `last_output` and quoted to the
+/// job and the board.
+pub const OUTPUT_TAIL: usize = 4000;
 /// The `source` of every job a schedule queues: `schedule:SCHED-001`. One
 /// open job per schedule at a time - `add_job` dedupes on it.
 pub const SOURCE_PREFIX: &str = "schedule:";
+/// The board area the daemon posts a check's or watcher's findings under;
+/// the thread is the schedule id.
+pub const BOARD_AREA: &str = "schedule";
 const TIME_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
 const MINUTES_PER_DAY: i64 = 24 * 60;
 
@@ -41,6 +62,21 @@ pub struct Schedule {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    /// `check`/`watch`: the script, relative to the repo root, on the
+    /// project's default branch. Empty for the kinds that queue a job.
+    pub script: String,
+    /// The kind of job the schedule queues: its own kind for the job kinds,
+    /// task or improve for a check or a watch.
+    pub job_kind: String,
+    /// `check`: green/red; `watch`: ok/broken; empty until the first run.
+    pub state: String,
+    pub state_since: String,
+    /// Exit code of the last script run; -1 when it timed out.
+    pub last_rc: Option<i32>,
+    /// Redacted tail of the last script run's output.
+    pub last_output: String,
+    /// Consecutive non-zero exits.
+    pub fails: i32,
 }
 
 impl Schedule {
@@ -50,6 +86,23 @@ impl Schedule {
     }
     pub fn source(&self) -> String {
         format!("{SOURCE_PREFIX}{}", self.id)
+    }
+    /// A check or a watch: the daemon runs its script instead of queueing a
+    /// job each time.
+    pub fn is_script(&self) -> bool {
+        SCRIPT_KINDS.contains(&self.kind.as_str())
+    }
+    /// The state a failing run puts a script schedule in.
+    pub fn bad_state(&self) -> &'static str {
+        if self.kind == "watch" {
+            "broken"
+        } else {
+            "red"
+        }
+    }
+    /// The state a passing run puts a script schedule in.
+    pub fn good_state(&self) -> &'static str {
+        if self.kind == "watch" { "ok" } else { "green" }
     }
 }
 
@@ -68,6 +121,11 @@ pub struct ScheduleInput {
     /// End after this many jobs; 0 keeps going.
     pub times: i32,
     pub author: String,
+    /// `check`/`watch`: the script to run, relative to the repo root.
+    pub script: String,
+    /// `check`/`watch`: the kind of job to queue (task, improve); empty
+    /// means task.
+    pub job_kind: String,
 }
 
 /// What one due schedule did on a daemon tick.
@@ -81,7 +139,7 @@ pub struct Fired {
     pub ended: bool,
 }
 
-const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at";
+const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at, script, job_kind, state, state_since, last_rc, last_output, fails";
 
 fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     Ok(Schedule {
@@ -104,6 +162,13 @@ fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         created_by: row.get(16)?,
         created_at: row.get(17)?,
         updated_at: row.get(18)?,
+        script: row.get(19)?,
+        job_kind: row.get(20)?,
+        state: row.get(21)?,
+        state_since: row.get(22)?,
+        last_rc: row.get(23)?,
+        last_output: row.get(24)?,
+        fails: row.get(25)?,
     })
 }
 
@@ -225,9 +290,92 @@ fn setting_int(s: &pulse_store::Store, name: &str, default: i64) -> i64 {
     s.setting(name, "").trim().parse().unwrap_or(default)
 }
 
+/// Checks a check's or watch's script path as written: relative, inside the
+/// repo, with no `..`, backslash or absolute root. Returns it trimmed of a
+/// leading `./`.
+pub fn validate_script_path(path: &str) -> Result<String> {
+    let path = path.trim();
+    let bad = |why: &str| {
+        input(
+            2,
+            format!("Not a script path: {path:?}"),
+            why,
+            "--script scripts/check.sh (relative to the repo root, committed on the default branch)",
+        )
+    };
+    if path.is_empty() {
+        return Err(input(
+            2,
+            "A check or watch needs a script",
+            "the daemon runs it from the repo root on a cadence",
+            "--script scripts/check.sh",
+        ));
+    }
+    if path.contains('\\') {
+        return Err(bad("use forward slashes"));
+    }
+    if path.starts_with('/') {
+        return Err(bad("the path is relative to the repo root, not absolute"));
+    }
+    let mut parts = Vec::new();
+    for c in std::path::Path::new(path).components() {
+        match c {
+            Component::Normal(p) => parts.push(p.to_string_lossy().to_string()),
+            Component::CurDir => {}
+            Component::ParentDir => return Err(bad("`..` would leave the repo")),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(bad("the path is relative to the repo root, not absolute"));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(bad("it names no file"));
+    }
+    Ok(parts.join("/"))
+}
+
+/// Whether `path` is a file on `branch` of the repo at `repo`: `Some(true)`
+/// when `git cat-file` finds a blob there, `Some(false)` when the repo answers
+/// and it is not, `None` when the repo cannot be asked (no such directory, no
+/// git, not a repo).
+pub fn script_on_branch(repo: &str, branch: &str, path: &str) -> Option<bool> {
+    if repo.trim().is_empty() || !std::path::Path::new(repo).is_dir() {
+        return None;
+    }
+    let git = |args: &[&str]| -> Option<(bool, String)> {
+        let mut cmd = std::process::Command::new(pulse_gitenv::git_program());
+        cmd.arg("-C").arg(repo).args(args);
+        cmd.env_clear();
+        for kv in pulse_gitenv::env() {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k, v);
+            }
+        }
+        let out = cmd.output().ok()?;
+        Some((
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        ))
+    };
+    let (is_repo, _) = git(&["rev-parse", "--git-dir"])?;
+    if !is_repo {
+        return None;
+    }
+    let spec = format!("{branch}:{path}");
+    Some(matches!(git(&["cat-file", "-t", &spec]), Some((true, kind)) if kind == "blob"))
+}
+
 /// Adds a schedule for `input.project`; the first job is due one cadence from
-/// now (or at the next `at`).
+/// now (or at the next `at`). A check or watch whose repo cannot be asked for
+/// the script is accepted all the same; see `add_checked` for the warning.
 pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
+    add_checked(s, input).map(|(sched, _)| sched)
+}
+
+/// `add`, returning also a warning for the caller to print: non-empty when
+/// the script of a check or watch could not be looked for on the default
+/// branch because the repo was out of reach.
+pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Schedule, String)> {
     let title = clean(&input.title);
     if title.is_empty() {
         return Err(self::input(
@@ -245,27 +393,68 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
             "move detail into the brief (--brief TEXT or --brief-file F)",
         ));
     }
-    if input.brief.trim().is_empty() {
-        return Err(self::input(
-            2,
-            "A schedule needs a brief",
-            "the worker that takes each job has nothing else to go on",
-            "--brief 'what to do, how to know it is done' or --brief-file F",
-        ));
-    }
     let kind = if input.kind.is_empty() {
         "task".to_string()
     } else {
         input.kind.clone()
     };
-    if !SCHEDULE_KINDS.contains(&kind.as_str()) {
+    let script_kind = SCRIPT_KINDS.contains(&kind.as_str());
+    if !script_kind && !SCHEDULE_KINDS.contains(&kind.as_str()) {
         return Err(self::input(
             2,
             format!("A schedule cannot queue {kind:?} jobs"),
-            format!("its kinds are {}", SCHEDULE_KINDS.join(", ")),
+            format!(
+                "its kinds are {} (jobs) and {} (scripts)",
+                SCHEDULE_KINDS.join(", "),
+                SCRIPT_KINDS.join(", ")
+            ),
             "--kind task",
         ));
     }
+    let mut warning = String::new();
+    let (script, job_kind) = if script_kind {
+        let script = validate_script_path(&input.script)?;
+        let job_kind = if input.job_kind.trim().is_empty() {
+            "task".to_string()
+        } else {
+            input.job_kind.trim().to_string()
+        };
+        if !SCRIPT_JOB_KINDS.contains(&job_kind.as_str()) {
+            return Err(self::input(
+                2,
+                format!("A {kind} cannot queue {job_kind:?} jobs"),
+                format!("--job-kind is one of {}", SCRIPT_JOB_KINDS.join(", ")),
+                "--job-kind task",
+            ));
+        }
+        (script, job_kind)
+    } else {
+        if !input.script.trim().is_empty() {
+            return Err(self::input(
+                2,
+                format!("--script is for a check or a watch, not a {kind}"),
+                "a job kind queues its brief to a worker; a script kind runs the script and queues a job only when it says so",
+                "--kind check --script PATH, or drop --script",
+            ));
+        }
+        if !input.job_kind.trim().is_empty() {
+            return Err(self::input(
+                2,
+                format!("--job-kind is for a check or a watch, not a {kind}"),
+                "a job kind queues jobs of its own kind",
+                "--kind check --job-kind improve, or drop --job-kind",
+            ));
+        }
+        if input.brief.trim().is_empty() {
+            return Err(self::input(
+                2,
+                "A schedule needs a brief",
+                "the worker that takes each job has nothing else to go on",
+                "--brief 'what to do, how to know it is done' or --brief-file F",
+            ));
+        }
+        (String::new(), kind.clone())
+    };
     if input.tier != 0 && input.tier != 1 {
         return Err(self::input(
             2,
@@ -294,6 +483,45 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
         ));
     }
     check_project(s, &input.project)?;
+    if script_kind {
+        let Some(project) = s.project(&input.project)? else {
+            return Err(self::input(
+                2,
+                format!("A {kind} needs a repo; {} has none", input.project),
+                "the daemon runs the script in a worktree of the project's default branch",
+                "pick a project from pulse projects",
+            ));
+        };
+        let branch = if project.default_branch.trim().is_empty() {
+            "main".to_string()
+        } else {
+            project.default_branch.trim().to_string()
+        };
+        match script_on_branch(&project.path, &branch, &script) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(self::input(
+                    2,
+                    format!("No file {script:?} on {branch} of {}", input.project),
+                    format!(
+                        "the daemon runs the script from a worktree of {branch}, so it must be committed there (`git -C {} cat-file -e {branch}:{script}` fails)",
+                        project.path
+                    ),
+                    format!("commit it on {branch} first, or check the path"),
+                ));
+            }
+            None => {
+                warning = format!(
+                    "warning: could not look for {script} on {branch}: the repo at {} is out of reach from here; the daemon will tell on the first run",
+                    if project.path.is_empty() {
+                        "(no path)".to_string()
+                    } else {
+                        project.path.clone()
+                    }
+                );
+            }
+        }
+    }
     let every = parse_every(&input.every)?;
     let min = setting_int(s, "schedule.min_minutes", 30).max(1);
     if every < min {
@@ -341,8 +569,8 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
     let id = next_id(&tx, "schedules", "SCHED-")?;
     let next_at = first_due(&now, every, at)?;
     tx.execute(
-        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at, script, job_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             input.project,
@@ -357,7 +585,9 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
             input.times,
             input.author,
             now,
-            now
+            now,
+            script,
+            job_kind
         ],
     )?;
     tx.event(
@@ -368,13 +598,15 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
             "project": input.project,
             "title": title,
             "kind": kind,
+            "script": script,
+            "job_kind": job_kind,
             "every": format_every(every),
             "next_at": next_at,
             "times": input.times,
         }))?,
     )?;
     tx.commit()?;
-    get(s, &id)
+    Ok((get(s, &id)?, warning))
 }
 
 pub fn get(s: &pulse_store::Store, id: &str) -> Result<Schedule> {
@@ -558,10 +790,379 @@ pub fn job_brief(sched: &Schedule, run: i32) -> String {
     brief
 }
 
+/// What one run of a check or watch script decided, from its exit code and
+/// output alone; the daemon acts on it (queues the job, posts the finding)
+/// and then records it with `record_script_run`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Verdict {
+    /// The state after this run: green/red for a check, ok/broken for a
+    /// watch.
+    pub state: String,
+    /// Consecutive non-zero exits after this run.
+    pub fails: i32,
+    /// The state changed: a check went red or came back green, a watch broke
+    /// or recovered. A first run that passes is not a transition.
+    pub transition: bool,
+    /// Why a job is queued this run, if one is: `red` (a failing check),
+    /// `trigger` (a watch that printed something), `fix` (a watch broken
+    /// `WATCH_FIX_AFTER` runs in a row); empty for none.
+    pub job_why: String,
+}
+
+/// Reads one script run: `rc` is the exit code (-1 for a timeout), `stdout`
+/// what the script printed.
+pub fn verdict(sched: &Schedule, rc: i32, stdout: &str) -> Verdict {
+    let good = sched.good_state();
+    let bad = sched.bad_state();
+    let passed = rc == 0;
+    let state = if passed { good } else { bad }.to_string();
+    let fails = if passed { 0 } else { sched.fails + 1 };
+    let transition = if passed {
+        sched.state == bad
+    } else {
+        sched.state != bad
+    };
+    let job_why = match (sched.kind.as_str(), passed) {
+        ("check", false) => "red",
+        ("watch", true) if !stdout.trim().is_empty() => "trigger",
+        ("watch", false) if fails >= WATCH_FIX_AFTER => "fix",
+        _ => "",
+    }
+    .to_string();
+    Verdict {
+        state,
+        fails,
+        transition,
+        job_why,
+    }
+}
+
+fn exit_text(rc: i32) -> String {
+    if rc < 0 {
+        "timed out and was killed".to_string()
+    } else {
+        format!("exit {rc}")
+    }
+}
+
+fn quoted(tail: &str) -> String {
+    let tail = tail.trim();
+    if tail.is_empty() {
+        return "    (no output)".to_string();
+    }
+    tail.lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The brief of a job a check or watch queues: the schedule's own brief (when
+/// it has one), what the script said, and where the schedule lives.
+pub fn script_job_brief(sched: &Schedule, run: i32, body: &str) -> String {
+    let mut brief = sched.brief.trim().to_string();
+    if !brief.is_empty() {
+        brief.push_str("\n\n");
+    }
+    brief.push_str(body.trim_end());
+    brief.push_str(&format!(
+        "\n\n---\nThis job comes from run {run} of schedule {} (a {} of `{}`, every {}), set by {}. `pulse schedule show {}` has its history and `pulse schedule log {}` the last output; only {} or the owner pause or end it.",
+        sched.id,
+        sched.kind,
+        sched.script,
+        sched.every(),
+        sched.created_by,
+        sched.id,
+        sched.id,
+        sched.created_by
+    ));
+    if sched.max_runs > 0 {
+        brief.push_str(&format!(" It ends after {} runs.", sched.max_runs));
+    }
+    brief
+}
+
+/// Where a script ran: the default branch and its commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tree {
+    pub branch: String,
+    pub sha: String,
+}
+
+impl Tree {
+    pub fn at(&self) -> String {
+        let short: String = self.sha.chars().take(12).collect();
+        if short.is_empty() {
+            self.branch.clone()
+        } else {
+            format!("{}@{short}", self.branch)
+        }
+    }
+}
+
+/// The brief of the job a red check queues.
+pub fn check_job_brief(
+    sched: &Schedule,
+    run: i32,
+    rc: i32,
+    now: &str,
+    tree: &Tree,
+    tail: &str,
+) -> String {
+    script_job_brief(
+        sched,
+        run,
+        &format!(
+            "The check `{}` failed ({}) at {now} on {}. Output tail:\n\n{}\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end {} --note WHY` and say why.",
+            sched.script,
+            exit_text(rc),
+            tree.at(),
+            quoted(tail),
+            sched.id
+        ),
+    )
+}
+
+/// The brief of the job a watch queues when its script printed something.
+pub fn watch_job_brief(sched: &Schedule, run: i32, now: &str, stdout: &str) -> String {
+    script_job_brief(
+        sched,
+        run,
+        &format!(
+            "The watcher `{}` reported at {now}:\n\n{}\n\nHandle what it reports; when done, the next run of the watcher will see your changes.",
+            sched.script,
+            quoted(stdout)
+        ),
+    )
+}
+
+/// The brief of the job that fixes a watch script failing run after run.
+pub fn watch_fix_brief(
+    sched: &Schedule,
+    run: i32,
+    rc: i32,
+    fails: i32,
+    now: &str,
+    tree: &Tree,
+    tail: &str,
+) -> String {
+    script_job_brief(
+        sched,
+        run,
+        &format!(
+            "The watcher `{}` itself is broken: it failed ({}) {fails} runs in a row, last at {now} on {}. Output tail:\n\n{}\n\nFix the watcher so it exits 0 again: print nothing when there is nothing to do, print what needs handling otherwise. If it is no longer wanted, end the schedule with `pulse schedule end {} --note WHY` and say why.",
+            sched.script,
+            exit_text(rc),
+            tree.at(),
+            quoted(tail),
+            sched.id
+        ),
+    )
+}
+
+/// The title of the job a script schedule queues.
+pub fn script_job_title(sched: &Schedule, why: &str) -> String {
+    let title = match why {
+        "red" => format!("Make check `{}` pass: {}", sched.script, sched.title),
+        "fix" => format!("Fix watcher `{}`: {}", sched.script, sched.title),
+        _ => sched.title.clone(),
+    };
+    clean(&title).chars().take(200).collect()
+}
+
+/// The active check and watch schedules of `projects` whose time has come,
+/// the longest overdue first.
+pub fn due_scripts(
+    s: &pulse_store::Store,
+    now: &str,
+    projects: &[String],
+) -> Result<Vec<Schedule>> {
+    let mut due = list(s, "", "active")?
+        .into_iter()
+        .filter(|sc| sc.is_script())
+        .filter(|sc| sc.next_at.as_str() <= now)
+        .filter(|sc| projects.is_empty() || projects.contains(&sc.project))
+        .collect::<Vec<_>>();
+    due.sort_by(|a, b| a.next_at.cmp(&b.next_at).then_with(|| a.id.cmp(&b.id)));
+    Ok(due)
+}
+
+/// One finished run of a check or watch script, as the daemon records it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ScriptRun {
+    /// Exit code; -1 for a timeout; `None` when the script could not be
+    /// started at all (no worktree), which counts as a run but changes no
+    /// state and queues nothing.
+    pub rc: Option<i32>,
+    pub timeout: bool,
+    pub seconds: f64,
+    /// The redacted tail of stdout and stderr, at most `OUTPUT_TAIL` chars.
+    pub output: String,
+    /// What `verdict` said; ignored when `rc` is `None`.
+    pub verdict: Verdict,
+    /// The job queued or found open this run, and whether it was new.
+    pub job: String,
+    pub queued: bool,
+    /// The finding posted this run, if any.
+    pub post: String,
+}
+
+/// What `record_script_run` left behind.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Recorded {
+    pub schedule: Schedule,
+    /// The state before this run.
+    pub previous: String,
+    pub ended: bool,
+}
+
+/// Writes one script run to the schedule - state, exit code, output tail,
+/// run count, next time - with its events: `schedule.ran` always,
+/// `schedule.red`/`schedule.green` on a transition, `schedule.fired` or
+/// `schedule.skipped` when a job was wanted, `schedule.ended` when the run
+/// count is up.
+pub fn record_script_run(
+    s: &pulse_store::Store,
+    sched: &Schedule,
+    now: &str,
+    actor: &str,
+    run: &ScriptRun,
+) -> Result<Recorded> {
+    let runs = sched.runs + 1;
+    let ended = sched.max_runs > 0 && runs >= sched.max_runs;
+    let next_at = advance(&sched.next_at, i64::from(sched.every_minutes), now)?;
+    let note = if ended {
+        format!("ended after {runs} runs")
+    } else {
+        sched.note.clone()
+    };
+    let started = run.rc.is_some();
+    let (state, fails, transition) = if started {
+        (
+            run.verdict.state.clone(),
+            run.verdict.fails,
+            run.verdict.transition,
+        )
+    } else {
+        (sched.state.clone(), sched.fails, false)
+    };
+    let state_since = if started && (transition || sched.state_since.is_empty()) {
+        now.to_string()
+    } else {
+        sched.state_since.clone()
+    };
+    let output: String = run
+        .output
+        .chars()
+        .rev()
+        .take(OUTPUT_TAIL)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let tx = s.begin()?;
+    tx.execute(
+        "UPDATE schedules SET runs = ?, last_at = ?, last_job = CASE WHEN ? THEN ? ELSE last_job END,
+         next_at = ?, status = CASE WHEN ? THEN 'ended' ELSE status END, note = ?, updated_at = ?,
+         state = ?, state_since = ?, last_rc = ?, last_output = ?, fails = ? WHERE id = ?",
+        params![
+            runs,
+            now,
+            run.queued,
+            run.job,
+            next_at,
+            ended,
+            note,
+            now,
+            state,
+            state_since,
+            run.rc,
+            output,
+            fails,
+            sched.id
+        ],
+    )?;
+    tx.event(
+        actor,
+        "schedule.ran",
+        &sched.id,
+        pulse_store::Detail::json(json!({
+            "project": sched.project,
+            "kind": sched.kind,
+            "script": sched.script,
+            "rc": run.rc,
+            "timeout": run.timeout,
+            "seconds": (run.seconds * 10.0).round() / 10.0,
+            "state": state,
+            "fails": fails,
+            "run": runs,
+            "next_at": next_at,
+            "job": run.job,
+            "queued": run.queued,
+            "ended": ended,
+        }))?,
+    )?;
+    if started && transition {
+        tx.event(
+            actor,
+            if state == sched.bad_state() {
+                "schedule.red"
+            } else {
+                "schedule.green"
+            },
+            &sched.id,
+            pulse_store::Detail::json(json!({
+                "project": sched.project,
+                "kind": sched.kind,
+                "script": sched.script,
+                "rc": run.rc,
+                "state": state,
+                "previous": sched.state,
+                "job": run.job,
+                "post": run.post,
+            }))?,
+        )?;
+    }
+    if !run.job.is_empty() {
+        tx.event(
+            actor,
+            if run.queued {
+                "schedule.fired"
+            } else {
+                "schedule.skipped"
+            },
+            &sched.id,
+            pulse_store::Detail::json(json!({
+                "project": sched.project,
+                "job": run.job,
+                "why": run.verdict.job_why,
+                "run": runs,
+                "next_at": next_at,
+                "ended": ended,
+            }))?,
+        )?;
+    }
+    if ended {
+        tx.event(
+            actor,
+            "schedule.ended",
+            &sched.id,
+            pulse_store::Detail::json(json!({"project": sched.project, "note": note}))?,
+        )?;
+    }
+    tx.commit()?;
+    Ok(Recorded {
+        schedule: get(s, &sched.id)?,
+        previous: sched.state.clone(),
+        ended,
+    })
+}
+
 /// Queues a job for every active schedule of `projects` whose time has come
 /// and moves each on to its next time. One open job per schedule: when the
 /// previous run's job is still queued or leased, nothing new is queued and
-/// the tick is skipped. Called by the daemon once per loop.
+/// the tick is skipped. Called by the daemon once per loop. Checks and
+/// watches are not fired here: the daemon runs their scripts (`due_scripts`,
+/// `record_script_run`).
 pub fn fire_due(
     s: &pulse_store::Store,
     now: &str,
@@ -570,6 +1171,7 @@ pub fn fire_due(
 ) -> Result<Vec<Fired>> {
     let due = list(s, "", "active")?
         .into_iter()
+        .filter(|sc| !sc.is_script())
         .filter(|sc| sc.next_at.as_str() <= now)
         .filter(|sc| projects.is_empty() || projects.contains(&sc.project))
         .collect::<Vec<_>>();

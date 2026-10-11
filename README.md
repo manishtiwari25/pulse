@@ -398,11 +398,128 @@ pulse schedule end SCHED-001 --note "done"  # final; the row stays for its histo
 
 Only the agent that set a schedule, or the owner, pauses, resumes, ends or
 runs it; schedules are never deleted. `--times N` ends a schedule after N
-queued jobs. Two lead settings bound them: `schedule.min_minutes` (default
-`30`, never under 5) is the shortest cadence, and `schedule.max_per_project`
-(default `10`, `0` for no cap) caps the active and paused schedules a project
-holds. Events: `schedule.added`, `schedule.fired`, `schedule.skipped`,
-`schedule.paused`, `schedule.resumed`, `schedule.run`, `schedule.ended`.
+queued jobs (for a check or a watch, after N runs of its script). Two lead
+settings bound them: `schedule.min_minutes` (default `30`, never under 5) is
+the shortest cadence, and `schedule.max_per_project` (default `10`, `0` for
+no cap) caps the active and paused schedules a project holds. Events:
+`schedule.added`, `schedule.fired`, `schedule.skipped`, `schedule.paused`,
+`schedule.resumed`, `schedule.run`, `schedule.ended`, and for scripts
+`schedule.ran`, `schedule.red`, `schedule.green`.
+
+#### Watchers and monitors
+
+A standing job costs an agent run every time it fires. Two more schedule
+kinds cost none until something needs doing: the daemon runs a script the
+project keeps in its repo, on the cadence, with no model, and queues a job
+only when the script says so.
+
+- A **check** (`--kind check`) is a monitor. Exit 0 is green, anything else
+  (or a timeout) is red. A red run queues one job to make it pass; a green
+  run after a red one says so on the board. Use it for what must stay true:
+  the tests of a crate, a deploy that answers, a dependency audit.
+- A **watch** (`--kind watch`) is a watcher. It exits 0 and prints nothing
+  when there is nothing to do; whatever it prints is handed to a job. Use it
+  for what arrives from outside: new issues, a release of a dependency, a
+  file that changed. A watch that exits non-zero is broken itself: the daemon
+  says so once on the board and, after three failures in a row, queues one
+  job to fix the watcher.
+
+Both take `--script REL_PATH`: a path relative to the repo root, committed on
+the project's default branch (`pulse schedule add` refuses a path that is not
+there, or that is absolute or climbs out with `..`). `--brief` is optional and
+is prepended to the job's brief as context; `--job-kind task|improve`
+(default `task`) is the kind of job a red check or a firing watch queues;
+`--tier`, `--priority`, `--every`, `--at` and `--times` mean what they mean
+for a standing job. The LLM kinds keep queuing jobs exactly as before and do
+not take `--script`.
+
+How a script runs: in a fresh temporary worktree of the default branch's head
+(the project checkout is not touched; the worktree is removed afterwards),
+executed directly when it has the executable bit and with `sh` otherwise, at
+low priority, for at most `schedule.script_timeout_minutes` (default `20`) -
+a script over its budget is killed with everything it started. It gets
+`PULSE_PROJECT`, `PULSE_SCHEDULE` (the id), `PULSE_SCHEDULE_KIND`,
+`PULSE_LAST_STATE` (`green`, `red` or empty for a check; `ok`, `broken` or
+empty for a watch), `PULSE_HOME`, `PULSE_CLI` (the pulse binary, also on
+`PATH`) and `PULSE_STATE_DIR`: a directory of its own under
+`<pulse home>/schedules/SCHED-NNN/` that the daemon creates and keeps between
+runs, where a watcher stores its cursors. The output of a run - stdout and
+stderr, secrets redacted, the last 4000 characters - is kept as the
+schedule's last output; `pulse schedule log SCHED-NNN` prints it.
+
+The job a script queues is an ordinary job with `source = schedule:SCHED-NNN`,
+the schedule's tier and priority, created by the agent that set the schedule,
+and the same one-open-job rule as a standing job: while the job from the last
+red run or trigger is queued or leased, a red run or a trigger queues nothing
+new (event `schedule.skipped`), so a check that stays red for a week makes one
+job, not seven. A red check's brief says which script failed, with which exit
+code, when, on which commit, with the output tail, and asks for the check to
+pass on the default branch - or, if the check itself is wrong, for the script
+to be fixed or the schedule ended with `pulse schedule end SCHED-NNN --note
+WHY`. A watch's brief carries what the watcher printed and says the next run
+will see the changes. The board gets one finding per change of state on the
+thread `SCHED-NNN` of area `schedule` (red, green again, broken, works again),
+not one per run.
+
+The daemon runs due scripts on its tick, at most `schedule.scripts_per_tick`
+(default `2`) per tick with the longest overdue first; the rest wait for the
+next tick. While the load governor reports the machine saturated it runs none
+and says so once (`schedules: 2 check/watch scripts due, held - machine
+saturated: ...`); the schedules are not moved on, so they run on the first
+tick with room. After a run the schedule moves on one cadence like a standing
+job, and the log has one line per run:
+
+```text
+schedule SCHED-004 (my-app): check scripts/store-tests.sh red (exit 101, 48.3s); queued job-20260906T020000Z-1f3a; posted 20260906T020000Z-daemon; next at 2026-09-07T02:00:00Z
+schedule SCHED-005 (my-app): watch scripts/new-issues.sh quiet (exit 0, 1.2s); next at 2026-09-06T03:00:00Z
+schedule SCHED-005 (my-app): watch scripts/new-issues.sh fired job-20260906T030000Z-9c2e (exit 0, 1.4s); next at 2026-09-06T04:00:00Z
+```
+
+Events: `schedule.ran` on every run (exit code, seconds, state),
+`schedule.red` and `schedule.green` on a change of state, `schedule.fired`
+and `schedule.skipped` when a job was wanted. `pulse schedule list` shows the
+kind, script and state; `pulse schedule show` the script, job kind, state and
+since when, the last exit code, the failures in a row and the last run.
+
+A nightly check that keeps one crate's tests green, as a script at
+`scripts/store-tests.sh` on the default branch:
+
+```sh
+#!/bin/sh
+# A check: exit 0 when the store's tests pass. The daemon runs it in a fresh
+# worktree of the default branch; cargo output is the job's evidence.
+exec cargo test -p pulse-store --quiet
+```
+
+```bash
+pulse schedule add --project my-app --kind check --script scripts/store-tests.sh --title "Store tests stay green" --every 1d --at 02:00 --job-kind task
+pulse schedule log SCHED-004     # the last output, after the first run
+```
+
+A watch that reports GitHub issues opened since it last looked, keeping its
+cursor in `$PULSE_STATE_DIR/since` (`gh` must be logged in on the daemon's
+machine):
+
+```sh
+#!/bin/sh
+# A watch: print the issues opened since the last run, or nothing.
+set -e
+cursor="$PULSE_STATE_DIR/since"
+since=$(cat "$cursor" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+gh issue list --search "created:>$since" --json number,title \
+  --jq '.[] | "#\(.number) \(.title)"'
+echo "$now" > "$cursor"
+```
+
+```bash
+pulse schedule add --project my-app --kind watch --script scripts/new-issues.sh --title "New GitHub issues" --every 1h --brief "Triage each issue: reproduce, label, and fix it in this job when it is small."
+```
+
+The first run writes the cursor and prints nothing; from then on every new
+issue wakes one agent with the list in its brief, and the cursor moves only
+when the script got that far, so a run that failed leaves the next one to
+report the same issues.
 
 ### Shared project goals
 
@@ -878,6 +995,8 @@ record, read with `pulse record show WF-evolve`.
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
+| `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`pulse schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
+| `schedule.scripts_per_tick` | `2` scripts (minimum `1`) | Check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
 
 These are defaults, not the owner's effective values. Read those with
@@ -2056,10 +2175,12 @@ it fix small things itself in its clone - a flaky test, doc drift, a failing
 scheduled check, a watcher the project lacks - and commit, and the runner lands
 a lead's commits like a worker's (not while the default branch is red; its
 fix job owns that). Answers and plans come first; larger work still goes to
-a job. The standing brief also expects every project to be watched: a project
-without a scheduled `check` gets one from its lead, and something the lead
-looked at by hand this run becomes a `watch` script that prints only when
-there is work.
+a job. The standing brief also expects every project to be watched: a lead
+gives every project at least one `check` (its tests, its deploy) and turns a
+look it keeps taking by hand - new issues, a dependency's releases, a
+dashboard - into a `watch` script that prints only when there is work, so the
+daemon looks for free and an agent runs only when there is something to do
+(see [Standing jobs](#standing-jobs-pulse-schedule)).
 Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued or leased (blocked jobs do not count), and no research job or
 job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do

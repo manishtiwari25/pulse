@@ -8,7 +8,7 @@ use crate::pyjson::py_json_value;
 use crate::records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 use crate::runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
 use crate::settings::{default_settings, setting_names};
-use crate::tasks_ddl::TASKS_DDL;
+use crate::tasks_ddl::{SCHEDULE_COLUMNS, TASKS_DDL};
 use anyhow::{Context, Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use regex::Regex;
@@ -891,6 +891,7 @@ pub fn additive_columns() -> Vec<Column> {
         .iter()
         .chain(HARNESS_COLUMNS.iter())
         .chain(crate::evolve_ddl::EVOLVE_COLUMNS.iter())
+        .chain(SCHEDULE_COLUMNS.iter())
         .copied()
         .collect()
 }
@@ -2013,6 +2014,71 @@ mod tests {
         assert!(
             got.contains("USING INDEX events_action_subject"),
             "executor history plan:\n{got}"
+        );
+    }
+
+    #[test]
+    fn schedule_script_columns_fresh_and_migrated() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let cols = [
+            "script",
+            "job_kind",
+            "state",
+            "state_since",
+            "last_rc",
+            "last_output",
+            "fails",
+        ];
+        let fresh = open_temp(Options {
+            create: true,
+            ..Options::default()
+        });
+        for c in cols {
+            assert!(
+                has_column(&fresh.conn().unwrap(), "schedules", c).unwrap(),
+                "fresh store lacks schedules.{c}"
+            );
+        }
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        db.execute_batch(
+            "CREATE TABLE schedules (id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'task', brief TEXT NOT NULL DEFAULT '', tier INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0, every_minutes INTEGER NOT NULL, at_time TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','ended')), next_at TEXT NOT NULL, last_at TEXT NOT NULL DEFAULT '', last_job TEXT NOT NULL DEFAULT '', runs INTEGER NOT NULL DEFAULT 0, max_runs INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); \
+             INSERT INTO schedules (id, project, title, every_minutes, next_at, created_by, created_at, updated_at) VALUES ('SCHED-001', 'demo', 'old', 60, '2026-09-11T01:00:00Z', 'owner', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z');",
+        )
+        .unwrap();
+        assert!(!has_column(&db, "schedules", "script").unwrap());
+        drop(db);
+        let migrated = open_temp(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        });
+        let conn = migrated.conn().unwrap();
+        for c in cols {
+            assert!(
+                has_column(&conn, "schedules", c).unwrap(),
+                "migrated store lacks schedules.{c}"
+            );
+        }
+        let (script, job_kind, state, last_rc, fails): (String, String, String, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT script, job_kind, state, last_rc, fails FROM schedules WHERE id = 'SCHED-001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                script.as_str(),
+                job_kind.as_str(),
+                state.as_str(),
+                last_rc,
+                fails
+            ),
+            ("", "task", "", None, 0)
         );
     }
 

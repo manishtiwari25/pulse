@@ -1,14 +1,23 @@
 //! The daemon's side of `pulse schedule`: once per loop, every active
-//! schedule whose time has come queues its job.
+//! schedule whose time has come queues its job - or, for a check or a watch,
+//! runs its script (see `schedule_script`) and queues a job only if the
+//! script asks for one.
 
-/// Queues the jobs of the due schedules of `slugs` and says what happened.
+/// Queues the jobs of the due schedules of `slugs`, runs the due check and
+/// watch scripts, and says what happened.
 pub(crate) fn tend_schedules(
     s: &pulse_store::Store,
     now: String,
     actor: String,
     slugs: &[String],
 ) -> Vec<String> {
-    match pulse_tasks::schedules::fire_due(s, &now, slugs, &actor) {
+    let mut lines = fire_jobs(s, &now, &actor, slugs);
+    lines.extend(crate::schedule_script::run_due(s, &now, &actor, slugs));
+    lines
+}
+
+fn fire_jobs(s: &pulse_store::Store, now: &str, actor: &str, slugs: &[String]) -> Vec<String> {
+    match pulse_tasks::schedules::fire_due(s, now, slugs, actor) {
         Ok(fired) => fired
             .iter()
             .map(|f| {
