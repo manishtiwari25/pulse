@@ -1696,7 +1696,7 @@ export interface EventsPayload {
 // never travels: `secret_ref` is a pulse-cred reference (op://, keychain://,
 // file://) read on this machine at connect time, like the push key.
 export type McpTransport = "stdio" | "http" | "sse";
-export type McpAuth = "none" | "bearer" | "basic" | "header" | "query" | "env";
+export type McpAuth = "none" | "bearer" | "basic" | "header" | "query" | "env" | "oauth";
 export type McpStatus = "enabled" | "disabled";
 
 export interface McpServer {

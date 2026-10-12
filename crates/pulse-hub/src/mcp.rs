@@ -563,7 +563,7 @@ done
         assert_eq!(code, 200);
         assert_eq!(body["transports"], json!(["stdio", "http", "sse"]));
         let auths = body["auths"].as_array().unwrap();
-        assert_eq!(auths.len(), 6);
+        assert_eq!(auths.len(), 7);
         assert_eq!(auths[1]["name"], "bearer");
         assert!(
             auths[1]["explain"]
@@ -572,6 +572,14 @@ done
                 .contains("Authorization: Bearer")
         );
         assert_eq!(auths[1]["transports"], json!(["http", "sse"]));
+        assert_eq!(auths[6]["name"], "oauth");
+        assert!(
+            auths[6]["explain"]
+                .as_str()
+                .unwrap()
+                .contains("pulse mcp login")
+        );
+        assert_eq!(auths[6]["transports"], json!(["http", "sse"]));
         assert_eq!(body["cred_shapes"], pulse_cred::SHAPES);
 
         let (code, body, _) = request(handler(&s), "GET", "/api/v1/mcp", "", &[]);

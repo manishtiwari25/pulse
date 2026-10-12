@@ -42,6 +42,7 @@ export const DEFAULT_OPTIONS: McpOptions = {
     { name: "header", explain: "Sends the secret in a header of your choice (auth header name, e.g. X-Api-Key).", transports: ["http", "sse"] },
     { name: "query", explain: "Appends the secret as a query parameter of your choice (auth header name is the parameter).", transports: ["http", "sse"] },
     { name: "env", explain: "Passes the secret to the stdio command as an environment variable (auth header name is the variable).", transports: ["stdio"] },
+    { name: "oauth", explain: "Signs in with OAuth 2.1 once from a terminal (pulse mcp login NAME); PULSE registers itself with the server's authorization server, keeps the tokens on that machine and refreshes them. No secret reference.", transports: ["http", "sse"] },
   ],
   cred_shapes: "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH",
 };
@@ -73,6 +74,7 @@ export const AUTH_LABEL: Record<McpAuth, string> = {
   header: "Secret in a header",
   query: "Secret in the web address",
   env: "Secret in an environment variable",
+  oauth: "OAuth sign-in",
 };
 
 const AUTH_PLAIN: Record<McpAuth, string> = {
@@ -82,6 +84,7 @@ const AUTH_PLAIN: Record<McpAuth, string> = {
   header: "PULSE sends the secret in a header you name, such as X-Api-Key.",
   query: "PULSE adds the secret to the web address as a parameter you name.",
   env: "PULSE hands the secret to the program as an environment variable you name.",
+  oauth: "You sign in once in a browser, from a terminal (pulse mcp login NAME). PULSE registers itself with the server, keeps the tokens on that machine and renews them; there is no secret to store.",
 };
 
 // The auths a transport can use, in catalogue order.
@@ -96,7 +99,8 @@ export function authExplain(options: McpOptions | undefined | null, auth: McpAut
 
 export const authLabel = (auth: McpAuth): string => AUTH_LABEL[auth] ?? auth;
 
-export const needsSecret = (auth: McpAuth): boolean => auth !== "none";
+// OAuth keeps its tokens on the machine that signed in; nothing to reference here.
+export const needsSecret = (auth: McpAuth): boolean => auth !== "none" && auth !== "oauth";
 
 // What the auth_header field is called for an auth, or null when the auth has no such field.
 export function authFieldLabel(auth: McpAuth): string | null {
@@ -238,7 +242,7 @@ export function validateMcpForm(f: McpForm, options: McpOptions | undefined | nu
   }
   if (!authsFor(options, f.transport).some((a) => a.name === f.auth)) errors.push(authLabel(f.auth) + " doesn't work with " + TRANSPORT_LABEL[f.transport].toLowerCase() + ". Pick another sign-in.");
   if (needsSecret(f.auth) && !f.secret_ref.trim()) errors.push("Say where the secret is kept: a secret reference such as " + (options ?? DEFAULT_OPTIONS).cred_shapes + ".");
-  if (f.secret_ref.trim() && !/^(op|keychain|file):\/\/\S+$/.test(f.secret_ref.trim())) errors.push("Enter a reference that starts with op://, keychain:// or file://, never the secret itself.");
+  if (needsSecret(f.auth) && f.secret_ref.trim() && !/^(op|keychain|file):\/\/\S+$/.test(f.secret_ref.trim())) errors.push("Enter a reference that starts with op://, keychain:// or file://, never the secret itself.");
   if (authFieldLabel(f.auth) && !f.auth_header.trim()) errors.push("Fill in the " + authFieldLabel(f.auth)!.toLowerCase() + " the secret goes in.");
   for (const r of f.env) {
     const key = r.key.trim();

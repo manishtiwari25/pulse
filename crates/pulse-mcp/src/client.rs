@@ -112,7 +112,7 @@ fn is_reference(value: &str) -> bool {
         .any(|p| value.starts_with(p))
 }
 
-fn read_secret(resolver: &pulse_cred::Resolver, reference: &str) -> Result<String> {
+pub(crate) fn read_secret(resolver: &pulse_cred::Resolver, reference: &str) -> Result<String> {
     let r = pulse_cred::parse(reference).map_err(|e| CredentialError {
         reference: reference.to_string(),
         message: e.to_string(),
@@ -130,8 +130,9 @@ fn read_secret(resolver: &pulse_cred::Resolver, reference: &str) -> Result<Strin
     })
 }
 
-/// Resolves the server's secret and env references. Nothing here touches
-/// the network or spawns a process.
+/// Resolves the server's secret and env references. Nothing here spawns a
+/// process; only an `oauth` server whose token is about to expire goes to
+/// the network, to refresh it.
 pub fn prepare(server: &McpServer, resolver: &pulse_cred::Resolver) -> Result<Wire> {
     let mut wire = Wire::default();
     for (k, v) in &server.env {
@@ -144,6 +145,13 @@ pub fn prepare(server: &McpServer, resolver: &pulse_cred::Resolver) -> Result<Wi
         }
     }
     if server.auth == "none" {
+        return Ok(wire);
+    }
+    if server.auth == "oauth" {
+        let token = crate::oauth::access_token(server, resolver)?;
+        wire.secrets.push(token.clone());
+        wire.headers
+            .push(("Authorization".to_string(), format!("Bearer {token}")));
         return Ok(wire);
     }
     let secret = read_secret(resolver, &server.secret_ref)?;

@@ -182,6 +182,12 @@ function McpFormBody({ options, server, project, close }: { options: McpOptions;
           ) : null}
         </div>
 
+        {f.auth === "oauth" ? (
+          <Notice tone="info">
+            After saving, sign in once from a terminal on the machine that will use it: <Mono>pulse mcp login {f.name.trim() || "NAME"}</Mono>. A browser opens, you approve, and PULSE keeps the tokens there and renews them. <Mono>pulse mcp logout {f.name.trim() || "NAME"}</Mono> forgets them.
+          </Notice>
+        ) : null}
+
         {needsSecret(f.auth) ? (
           <div className="grid content-start gap-1.5">
             <Label htmlFor="mcp-secret">Where the secret is kept</Label>

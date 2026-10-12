@@ -1463,11 +1463,13 @@ dependencies = [
  "pulse-cred",
  "pulse-store",
  "pulse-testutil",
+ "rand",
  "regex",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "url",
 ]

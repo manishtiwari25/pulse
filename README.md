@@ -574,6 +574,7 @@ is sent:
 | `header` | http, sse   | `<auth header>: <secret>`, e.g. `--auth-header X-Api-Key`                    |
 | `query`  | http, sse   | `?<auth header>=<secret>` appended to the url                                |
 | `env`    | stdio       | `<auth header>=<secret>` in the command's environment, e.g. `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| `oauth`  | http, sse   | `Authorization: Bearer <token>` from a sign-in; no `--secret`, see below      |
 
 ```bash
 pulse mcp add --name github --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-github \
@@ -590,6 +591,39 @@ pulse mcp tools github              # the tools with their descriptions
 pulse mcp call github list_issues --args '{"owner":"acme","repo":"app","state":"open"}'
 pulse mcp resources github && pulse mcp read github repo://acme/app/README.md
 ```
+
+**OAuth 2.1 servers.** Hosted servers increasingly take no static token: they
+answer `401` with a `WWW-Authenticate: Bearer ... resource_metadata=...`
+challenge and expect the client to sign in through OAuth 2.1, registering
+itself first ([MCP authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)).
+`--auth oauth` does exactly that, once, from a terminal:
+
+```bash
+pulse mcp add --name linear --transport http --url https://mcp.linear.app/mcp --auth oauth \
+  --note "Issues and projects in Linear"
+pulse mcp login linear              # discovers, registers, opens the browser, waits for the redirect
+pulse mcp connect linear            # from here on every call carries the token
+pulse mcp logout linear             # revokes the tokens at the server and forgets them here
+```
+
+`login` follows the server's challenge to its protected-resource metadata
+(RFC 9728) and from there to the authorization server's metadata (RFC 8414 or
+OpenID discovery), registers PULSE as a public client by dynamic client
+registration (RFC 7591) when the server offers it, and runs the authorization
+code flow with PKCE (S256, required), `resource` (RFC 8707) on every request
+and a `state` it checks, on a loopback redirect `http://127.0.0.1:PORT/callback`
+that it listens on for up to five minutes. It prints the URL as well, so a
+machine without a browser (`--no-browser`) can be signed in from another one.
+A server without registration takes `--client-id ID` and, for a confidential
+client, `--client-secret REF` - a credential reference, as everywhere. `--scope`
+overrides what the challenge or the metadata asked for; `--redirect-port N`
+fixes the port when the client was registered with one. The tokens live in
+`~/.pulse/secrets/mcp-oauth/<MCP-ID>.json` (mode 0600) on the machine that
+signed in; the client refreshes them before they expire and, when a refresh
+fails or the server gave no refresh token, `connect` says so and names
+`pulse mcp login NAME` as the fix. `show` tells whether the server is signed
+in and when the token expires; tokens never appear in any output. Endpoints
+must be `https://`, or `http://` on loopback for a server under test.
 
 `connect` is the check: it resolves the secret, starts or reaches the server,
 and records what it learnt on the row (`last_check_at`, `last_check_ok`, a
@@ -615,7 +649,8 @@ asks it to request the data through a `FINDING:` line to its lead.
 The hub has the same registry under **Connections**: the list with each
 server's scope, transport, status and last check; *Add MCP server* with the
 transport choice, every auth type and its one-line explanation, the secret
-reference with the accepted shapes and a pointer to the credentials settings,
+reference with the accepted shapes and a pointer to the credentials settings
+(or, for `oauth`, the terminal sign-in to run after saving),
 environment rows for stdio servers and the note; and per row *Connect* (the
 server's name, version and tools, or the error with its fix), *Enable* /
 *Disable* and *Edit*. The routes are `/api/v1/mcp`, `/api/v1/mcp/options`,

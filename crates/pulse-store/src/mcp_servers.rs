@@ -44,6 +44,11 @@ pub const MCP_AUTHS: &[McpAuth] = &[
         explain: "Passes the secret to the stdio command as an environment variable (auth header name is the variable).",
         transports: &["stdio"],
     },
+    McpAuth {
+        name: "oauth",
+        explain: "Signs in with OAuth 2.1 the way the MCP specification describes: PULSE finds the server's authorization server, registers itself as a client when the server allows it, opens the sign-in page once (pulse mcp login NAME) and keeps the tokens on this machine, refreshing them itself.",
+        transports: &["http", "sse"],
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -280,6 +285,13 @@ fn validate(m: &McpServer) -> Result<()> {
             return Err(input_err(
                 "Invalid secret: auth none takes no secret; choose an auth type or drop --secret",
             ));
+        }
+    } else if m.auth == "oauth" {
+        if !m.secret_ref.is_empty() {
+            return Err(input_err(format!(
+                "Invalid secret: auth oauth signs in by itself (pulse mcp login {}) and keeps its own tokens; a client registered with the provider by hand goes on the login: pulse mcp login {} --client-id ID [--client-secret REF]",
+                m.name, m.name
+            )));
         }
     } else {
         if m.secret_ref.is_empty() {
@@ -885,6 +897,10 @@ mod tests {
         );
         assert!(err(http("docs", "bearer", "vault://x")).contains("Invalid secret"));
         assert!(err(http("docs", "none", "keychain://pulse/x")).contains("takes no secret"));
+        assert!(err(http("docs", "oauth", "keychain://pulse/x")).contains("pulse mcp login docs"));
+        let mut t = stdio("github", "");
+        t.auth = "oauth".into();
+        assert!(err(t).contains("for a stdio server"));
         assert!(err(http("docs", "token", "keychain://pulse/x")).contains("Invalid auth"));
         assert!(err(http("docs", "env", "keychain://pulse/x")).contains("for a http server"));
         let mut t = http("docs", "header", "keychain://pulse/x");
@@ -915,6 +931,21 @@ mod tests {
         let mut t = stdio("github", "");
         t.note = "token ghp_abcdefghijklmnop".into();
         assert!(err(t).contains("Invalid note"));
+    }
+
+    #[test]
+    fn oauth_auth_needs_no_secret() {
+        let (_h, s) = new_store();
+        let mut t = http("docs", "oauth", "");
+        t.auth_header = "Authorization".into();
+        let m = s.add_mcp_server("human", t).unwrap();
+        assert_eq!((m.auth.as_str(), m.secret_ref.as_str()), ("oauth", ""));
+        let mut sse = http("notes", "oauth", "");
+        sse.transport = "sse".into();
+        assert!(s.add_mcp_server("human", sse).is_ok());
+        let oauth = MCP_AUTHS.iter().find(|a| a.name == "oauth").unwrap();
+        assert_eq!(oauth.transports, &["http", "sse"]);
+        assert!(oauth.explain.contains("pulse mcp login NAME"));
     }
 
     #[test]

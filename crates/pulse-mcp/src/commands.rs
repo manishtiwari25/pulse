@@ -69,6 +69,26 @@ struct ReadOut<'a> {
 }
 
 #[derive(Serialize)]
+struct LoginOut<'a> {
+    server: &'a str,
+    issuer: &'a str,
+    client_id: &'a str,
+    registered: bool,
+    scope: &'a str,
+    expires_at: u64,
+    has_refresh_token: bool,
+    grant_file: &'a str,
+}
+
+#[derive(Serialize)]
+struct LogoutOut<'a> {
+    server: &'a str,
+    had_grant: bool,
+    revoked: bool,
+    note: &'a str,
+}
+
+#[derive(Serialize)]
 struct SkillOut<'a> {
     skill: &'a Skill,
 }
@@ -80,7 +100,7 @@ struct SkillsOut<'a> {
 
 pub fn register() {
     REGISTER.call_once(|| {
-        pulse_cli::register(Command { name:"mcp".into(), group:"agents".into(), summary:"MCP servers agents can call: add, list, show, update, enable, disable, connect, tools, call, resources, read".into(), usage:"pulse mcp add --name N --transport stdio|http|sse (--command CMD [--arg A]... | --url U) [--auth none|bearer|basic|header|query|env] [--auth-header NAME] [--secret REF] [--env K=V]... [--project P] [--note TEXT]\npulse mcp list [--project P] [--json]\npulse mcp show N|MCP-NNN [--json]\npulse mcp update N|MCP-NNN [--name N] [--transport T] [--command CMD] [--arg A]... [--url U] [--auth A] [--auth-header NAME] [--secret REF] [--env K=V]... [--note TEXT] [--project P]\npulse mcp enable|disable N|MCP-NNN\npulse mcp connect N [--json]              (initialize + tools/list; records the check)\npulse mcp tools N [--json]\npulse mcp call N TOOL [--args JSON | stdin] [--json]   (exit 1 when the tool reports an error)\npulse mcp resources N [--json]\npulse mcp read N URI [--json]\n\nThe secret is a pulse_cred reference, never the value: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. For basic auth it resolves to user:password. Env values may be references too.\n\nA server is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it. A project's own server replaces a shared one with the same name.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_mcp, flags:Some(mcp_flags) });
+        pulse_cli::register(Command { name:"mcp".into(), group:"agents".into(), summary:"MCP servers agents can call: add, list, show, update, enable, disable, login, logout, connect, tools, call, resources, read".into(), usage:"pulse mcp add --name N --transport stdio|http|sse (--command CMD [--arg A]... | --url U) [--auth none|bearer|basic|header|query|env|oauth] [--auth-header NAME] [--secret REF] [--env K=V]... [--project P] [--note TEXT]\npulse mcp list [--project P] [--json]\npulse mcp show N|MCP-NNN [--json]\npulse mcp update N|MCP-NNN [--name N] [--transport T] [--command CMD] [--arg A]... [--url U] [--auth A] [--auth-header NAME] [--secret REF] [--env K=V]... [--note TEXT] [--project P]\npulse mcp enable|disable N|MCP-NNN\npulse mcp login N [--client-id ID [--client-secret REF]] [--scope S] [--redirect-port N] [--no-browser] [--json]   (auth oauth: sign in once in a browser)\npulse mcp logout N [--json]               (auth oauth: revoke and forget the tokens)\npulse mcp connect N [--json]              (initialize + tools/list; records the check)\npulse mcp tools N [--json]\npulse mcp call N TOOL [--args JSON | stdin] [--json]   (exit 1 when the tool reports an error)\npulse mcp resources N [--json]\npulse mcp read N URI [--json]\n\nThe secret is a pulse_cred reference, never the value: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. For basic auth it resolves to user:password. Env values may be references too.\n\nauth oauth (http, sse) takes no secret: pulse mcp login N finds the server's authorization server, registers PULSE as a client when the server allows it, signs in through your browser (OAuth 2.1, PKCE) and keeps the tokens in ~/.pulse/secrets/mcp-oauth/, refreshing them itself. --client-id and --client-secret are for a client you registered with the provider by hand; --redirect-port fixes the loopback port such a client was registered with.\n\nA server is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it. A project's own server replaces a shared one with the same name.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_mcp, flags:Some(mcp_flags) });
         pulse_cli::register(Command { name:"skill".into(), group:"agents".into(), summary:"skills shared between agents - a setup, a debugging recipe, a check: add, list, show, update, enable, disable".into(), usage:"pulse skill add --name N --description D (--file F | --body TEXT | stdin) [--project P]\npulse skill list [--project P] [--json]\npulse skill show N|SKILL-NNN [--json]      (prints the body)\npulse skill update N|SKILL-NNN [--name N] [--description D] [--file F | --body TEXT | stdin] [--project P]\npulse skill enable|disable N|SKILL-NNN\n\nA skill is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_skill, flags:Some(skill_flags) });
     });
 }
@@ -98,7 +118,7 @@ fn mcp_flags(fs: &mut FlagSet) {
     fs.string_var(
         "auth",
         "",
-        "none, bearer, basic, header, query or env (add, update; default none)",
+        "none, bearer, basic, header, query, env or oauth (add, update; default none)",
     );
     fs.string_var(
         "auth-header",
@@ -123,6 +143,31 @@ fn mcp_flags(fs: &mut FlagSet) {
         "args",
         "",
         "call: the tool's arguments as a JSON object (or on stdin)",
+    );
+    fs.string_var(
+        "client-id",
+        "",
+        "login: a client `id` you registered with the provider by hand (default: PULSE registers itself)",
+    );
+    fs.string_var(
+        "client-secret",
+        "",
+        "login: that client's secret as a pulse_cred `reference`, when it has one",
+    );
+    fs.string_var(
+        "scope",
+        "",
+        "login: the `scopes` to ask for, space-separated (default: what the server suggests)",
+    );
+    fs.int_var(
+        "redirect-port",
+        0,
+        "login: the loopback `port` the redirect URI uses (default: one the system picks)",
+    );
+    fs.bool_var(
+        "no-browser",
+        false,
+        "login: print the sign-in address, do not open a browser",
     );
 }
 
@@ -313,6 +358,15 @@ pub fn connect_and_record(
 
 /// The user-facing error for a failed connect: what, why (redacted) and a fix.
 pub fn connect_error(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
+    if let Some(ln) = e.downcast_ref::<crate::oauth::LoginNeeded>() {
+        return pulse_cli::errorf(
+            1,
+            &format!("{} needs a sign-in", server.name),
+            &ln.why,
+            &format!("pulse mcp login {}", server.name),
+        )
+        .into();
+    }
     if let Some(ce) = e.downcast_ref::<client::CredentialError>() {
         return pulse_cli::errorf(
             1,
@@ -330,10 +384,14 @@ pub fn connect_error(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
         1,
         &format!("Cannot reach {} ({})", server.name, server.endpoint()),
         &pulse_cred::redact(&e.to_string(), &[]),
-        match server.transport.as_str() {
-            "stdio" => "check that the command is installed for this user and starts by hand; its output is in the why line",
-            "sse" => "check the url and the credential; a Streamable HTTP server wants --transport http",
-            _ => "check the url and the credential; an older server may want --transport sse",
+        &match (server.transport.as_str(), server.auth.as_str()) {
+            ("stdio", _) => "check that the command is installed for this user and starts by hand; its output is in the why line".to_string(),
+            (_, "oauth") => format!(
+                "check the url; when the server turned the token down, sign in again: pulse mcp login {}",
+                server.name
+            ),
+            ("sse", _) => "check the url and the credential; a Streamable HTTP server wants --transport http".to_string(),
+            _ => "check the url and the credential; an older server may want --transport sse".to_string(),
         },
     )
     .into()
@@ -394,6 +452,7 @@ fn print_server(c: &mut Context, m: &McpServer) -> Result<()> {
     }
     let auth = match m.auth.as_str() {
         "none" => "none".to_string(),
+        "oauth" => format!("oauth ({})", crate::oauth::describe(m, &c.home)),
         "bearer" | "basic" => format!("{} ({})", m.auth, m.secret_ref),
         _ => format!("{} {} ({})", m.auth, m.auth_header, m.secret_ref),
     };
@@ -590,6 +649,135 @@ pub fn run_mcp(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 return pulse_cli::write_json(&mut c.out, &ServerOut { server: &m });
             }
             printf(c, format_args!("{} {}: {}\n", m.id, m.status, m.name))
+        }
+        "login" => {
+            need("mcp", rest, 1, "a server name or id")?;
+            let s = store(c)?;
+            let m = s.mcp_server(&c.project, &rest[0])?;
+            if m.auth != "oauth" {
+                return Err(pulse_cli::errorf(
+                    2,
+                    &format!("{} does not sign in with OAuth", m.name),
+                    &format!("its auth is {}", m.auth),
+                    &format!(
+                        "pulse mcp update {} --auth oauth --secret '' switches it, then pulse mcp login {}",
+                        m.name, m.name
+                    ),
+                )
+                .into());
+            }
+            let port = fs.get_int("redirect-port");
+            if !(0..=65535).contains(&port) {
+                return Err(pulse_cli::errorf(
+                    2,
+                    "Invalid --redirect-port",
+                    &format!("{port} is not a port"),
+                    "pass a number between 1 and 65535",
+                )
+                .into());
+            }
+            let opts = crate::oauth::LoginOptions {
+                client_id: fs.get_string("client-id"),
+                client_secret_ref: fs.get_string("client-secret"),
+                scope: fs.get_string("scope"),
+                redirect_port: port as u16,
+                open_browser: !fs.get_bool("no-browser"),
+            };
+            let r = resolver(&c.home);
+            let quiet = c.json || c.quiet;
+            let mut report = |line: &str| {
+                if !quiet {
+                    let _ = c.println(format!("  {line}"));
+                }
+            };
+            let login = crate::oauth::login(&m, &r, &opts, &mut report).map_err(|e| {
+                pulse_cli::errorf(
+                    1,
+                    &format!("Cannot sign in to {}", m.name),
+                    &pulse_cred::redact(&e.to_string(), &[]),
+                    "fix what the why line names and run the login again; pulse mcp show NAME shows the server",
+                )
+            })?;
+            let g = &login.grant;
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &LoginOut {
+                        server: &m.name,
+                        issuer: &g.issuer,
+                        client_id: &g.client_id,
+                        registered: g.registered,
+                        scope: &g.scope,
+                        expires_at: g.expires_at,
+                        has_refresh_token: !g.refresh_token.is_empty(),
+                        grant_file: &login.path.display().to_string(),
+                    },
+                );
+            }
+            let life = match g.expires_in(crate::oauth::now_unix()) {
+                Some(secs) => format!(
+                    "; the token expires in {}{}",
+                    crate::oauth::humanize(secs),
+                    if g.refresh_token.is_empty() {
+                        " and the server gave no refresh token"
+                    } else {
+                        " and refreshes itself"
+                    }
+                ),
+                None => String::new(),
+            };
+            printf(
+                c,
+                format_args!(
+                    "{}: signed in at {} as client {}{}{life}; kept in {}\nnext: pulse mcp connect {}\n",
+                    m.name,
+                    g.issuer,
+                    g.client_id,
+                    if g.scope.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (scope {})", g.scope)
+                    },
+                    login.path.display(),
+                    m.name
+                ),
+            )
+        }
+        "logout" => {
+            need("mcp", rest, 1, "a server name or id")?;
+            let s = store(c)?;
+            let m = s.mcp_server(&c.project, &rest[0])?;
+            let r = resolver(&c.home);
+            let out = crate::oauth::logout(&m, &r)?;
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &LogoutOut {
+                        server: &m.name,
+                        had_grant: out.had_grant,
+                        revoked: out.revoked,
+                        note: &out.revoke_note,
+                    },
+                );
+            }
+            if !out.had_grant {
+                return printf(
+                    c,
+                    format_args!("{}: nothing to forget, it was not signed in\n", m.name),
+                );
+            }
+            printf(
+                c,
+                format_args!(
+                    "{}: signed out; the tokens are {} and forgotten here\n",
+                    m.name,
+                    if out.revoked {
+                        "revoked at the authorization server".to_string()
+                    } else {
+                        format!("not revoked ({})", out.revoke_note)
+                    }
+                ),
+            )
         }
         "connect" => {
             need("mcp", rest, 1, "a server name or id")?;
@@ -1847,6 +2035,550 @@ mod tests {
             seen.len() >= 3 && seen.iter().all(|a| a == "Bearer legacy-token"),
             "{seen:?}"
         );
+    }
+
+    /// What the fake authorization server saw and handed out.
+    #[derive(Default, Debug)]
+    struct AsState {
+        registered: Vec<Value>,
+        authorize_params: Vec<BTreeMap<String, String>>,
+        token_forms: Vec<BTreeMap<String, String>>,
+        revoked: Vec<BTreeMap<String, String>>,
+        mcp_auth_seen: Vec<String>,
+        code_challenge: String,
+        /// The access token the MCP server accepts right now.
+        current_token: String,
+    }
+
+    fn form_map(body: &str) -> BTreeMap<String, String> {
+        url::form_urlencoded::parse(body.as_bytes())
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// One server playing both parts: the MCP server at /mcp (401 with a
+    /// resource_metadata pointer until the right token comes) and the
+    /// authorization server under /as with metadata, registration,
+    /// authorize, token and revoke endpoints.
+    fn oauth_server(state: Arc<Mutex<AsState>>) -> pulse_testutil::httptest::Server {
+        use pulse_testutil::httptest::Response;
+        let base: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let base_for_handler = Arc::clone(&base);
+        let srv = pulse_testutil::httptest::Server::new(move |req| {
+            let base = base_for_handler.lock().unwrap().clone();
+            let mut st = state.lock().unwrap();
+            match (req.method.as_str(), req.path()) {
+                ("POST", "/mcp") => {
+                    let auth = req.header("authorization").unwrap_or("").to_string();
+                    st.mcp_auth_seen.push(auth.clone());
+                    if auth != format!("Bearer {}", st.current_token) {
+                        return Response::text(401, "sign in first").header(
+                            "WWW-Authenticate",
+                            &format!(
+                                "Bearer realm=\"mcp\", resource_metadata=\"{base}/.well-known/oauth-protected-resource/mcp\", scope=\"mcp:tools\""
+                            ),
+                        );
+                    }
+                    let body: Value = req.json().unwrap_or(Value::Null);
+                    http_answer(&body, false)
+                }
+                ("GET", "/.well-known/oauth-protected-resource/mcp") => Response::json(
+                    200,
+                    &serde_json::json!({
+                        "resource": format!("{base}/mcp"),
+                        "authorization_servers": [format!("{base}/as")],
+                        "scopes_supported": ["mcp:tools", "mcp:resources"],
+                    }),
+                ),
+                ("GET", "/.well-known/oauth-authorization-server/as") => Response::json(
+                    200,
+                    &serde_json::json!({
+                        "issuer": format!("{base}/as"),
+                        "authorization_endpoint": format!("{base}/as/authorize"),
+                        "token_endpoint": format!("{base}/as/token"),
+                        "registration_endpoint": format!("{base}/as/register"),
+                        "revocation_endpoint": format!("{base}/as/revoke"),
+                        "code_challenge_methods_supported": ["S256"],
+                        "response_types_supported": ["code"],
+                        "grant_types_supported": ["authorization_code", "refresh_token"],
+                    }),
+                ),
+                ("POST", "/as/register") => {
+                    let body: Value = req.json().unwrap();
+                    st.registered.push(body.clone());
+                    Response::json(
+                        201,
+                        &serde_json::json!({
+                            "client_id": format!("dyn-{}", st.registered.len()),
+                            "client_id_issued_at": 1_700_000_000,
+                            "redirect_uris": body["redirect_uris"],
+                            "token_endpoint_auth_method": "none",
+                        }),
+                    )
+                }
+                ("GET", "/as/authorize") => {
+                    let q = form_map(req.query());
+                    st.code_challenge = q.get("code_challenge").cloned().unwrap_or_default();
+                    let redirect = q.get("redirect_uri").cloned().unwrap_or_default();
+                    let state_param = q.get("state").cloned().unwrap_or_default();
+                    st.authorize_params.push(q);
+                    let n = st.authorize_params.len();
+                    Response::new(302).header(
+                        "Location",
+                        &format!("{redirect}?code=code-{n}&state={state_param}"),
+                    )
+                }
+                ("POST", "/as/token") => {
+                    let form = form_map(&req.body_str());
+                    st.token_forms.push(form.clone());
+                    let n = st.token_forms.len();
+                    match form.get("grant_type").map(String::as_str) {
+                        Some("authorization_code") => {
+                            let verifier = form.get("code_verifier").cloned().unwrap_or_default();
+                            if crate::oauth::pkce_challenge(&verifier) != st.code_challenge {
+                                return Response::json(
+                                    400,
+                                    &serde_json::json!({"error": "invalid_grant", "error_description": "PKCE verifier does not match"}),
+                                );
+                            }
+                            if form.get("resource").map(String::as_str)
+                                != Some(&format!("{base}/mcp"))
+                            {
+                                return Response::json(
+                                    400,
+                                    &serde_json::json!({"error": "invalid_target"}),
+                                );
+                            }
+                            if !form.get("code").is_some_and(|c| c.starts_with("code-")) {
+                                return Response::json(
+                                    400,
+                                    &serde_json::json!({"error": "invalid_grant"}),
+                                );
+                            }
+                        }
+                        Some("refresh_token") => {
+                            if form.get("refresh_token").map(String::as_str)
+                                != Some(&format!("rt-{}", n - 1))
+                            {
+                                return Response::json(
+                                    400,
+                                    &serde_json::json!({"error": "invalid_grant", "error_description": "unknown refresh token"}),
+                                );
+                            }
+                        }
+                        _ => {
+                            return Response::json(
+                                400,
+                                &serde_json::json!({"error": "unsupported_grant_type"}),
+                            );
+                        }
+                    }
+                    st.current_token = format!("at-{n}");
+                    Response::json(
+                        200,
+                        &serde_json::json!({
+                            "access_token": format!("at-{n}"),
+                            "token_type": "Bearer",
+                            "expires_in": 3600,
+                            "refresh_token": format!("rt-{n}"),
+                            "scope": form.get("scope").cloned().unwrap_or_else(|| "mcp:tools".into()),
+                        }),
+                    )
+                }
+                ("POST", "/as/revoke") => {
+                    st.revoked.push(form_map(&req.body_str()));
+                    Response::new(200)
+                }
+                _ => Response::text(404, "nothing here"),
+            }
+        });
+        *base.lock().unwrap() = srv.url();
+        srv
+    }
+
+    /// Stands in for the browser: follows the authorization URL (the fake
+    /// server redirects to the loopback callback) from another thread.
+    fn browser_for_tests() {
+        crate::oauth::set_opener_for_tests(Some(Box::new(|url: &str| {
+            let url = url.to_string();
+            std::thread::spawn(move || {
+                let _ = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(20))
+                    .build()
+                    .unwrap()
+                    .get(&url)
+                    .send();
+            });
+            Ok(())
+        })));
+    }
+
+    #[test]
+    fn oauth_login_connect_refresh_and_logout() {
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let state = Arc::new(Mutex::new(AsState::default()));
+        let srv = oauth_server(Arc::clone(&state));
+        browser_for_tests();
+        let (mut c, out) = ctx_for(&s, false);
+        run_cmd(
+            &mut c,
+            "mcp",
+            &[
+                "add",
+                "--name",
+                "docs",
+                "--transport",
+                "http",
+                "--url",
+                &format!("{}/mcp", srv.url()),
+                "--auth",
+                "oauth",
+            ],
+        )
+        .unwrap();
+        let e = run_cmd(
+            &mut c,
+            "mcp",
+            &["update", "docs", "--secret", "keychain://pulse/x"],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("pulse mcp login docs"), "{e}");
+        out.clear();
+
+        // Before the sign-in: connect says so, and records it.
+        let e = run_cmd(&mut c, "mcp", &["connect", "docs"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("docs needs a sign-in"), "{e}");
+        assert!(e.contains("no sign-in on this machine yet"), "{e}");
+        assert!(e.contains("fix: pulse mcp login docs"), "{e}");
+        let m = s.mcp_server("", "docs").unwrap();
+        assert_eq!(m.last_check_ok, Some(false));
+        assert!(
+            m.last_check_note.contains("needs a sign-in"),
+            "{}",
+            m.last_check_note
+        );
+        assert!(
+            state.lock().unwrap().mcp_auth_seen.is_empty(),
+            "no request without a token"
+        );
+        run_cmd(&mut c, "mcp", &["show", "docs"]).unwrap();
+        assert!(
+            out.string()
+                .contains("auth:       oauth (not signed in: pulse mcp login docs)"),
+            "{}",
+            out.string()
+        );
+        out.clear();
+        let e = run_cmd(&mut c, "mcp", &["login", "nope"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("No MCP server named nope"), "{e}");
+
+        // The sign-in: discovery, registration, PKCE, loopback redirect, exchange.
+        run_cmd(&mut c, "mcp", &["login", "docs"]).unwrap();
+        let text = out.string();
+        assert!(text.contains("asks for a sign-in (HTTP 401)"), "{text}");
+        assert!(
+            text.contains(&format!("authorization server {}/as", srv.url())),
+            "{text}"
+        );
+        assert!(
+            text.contains("registered as client dyn-1 (token endpoint auth: none)"),
+            "{text}"
+        );
+        assert!(text.contains("sign in here:\n"), "{text}");
+        assert!(text.contains("/as/authorize?response_type=code&client_id=dyn-1&redirect_uri=http%3A%2F%2F127.0.0.1%3A"), "{text}");
+        assert!(text.contains("(a browser was opened)"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "docs: signed in at {}/as as client dyn-1 (scope mcp:tools); the token expires in ",
+                srv.url()
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                " and refreshes itself; kept in {}\n",
+                crate::oauth::grant_path(&s.home, "MCP-001").display()
+            )),
+            "{text}"
+        );
+        assert!(text.contains("next: pulse mcp connect docs"), "{text}");
+        assert!(
+            !text.contains("at-1") && !text.contains("rt-1"),
+            "tokens never printed: {text}"
+        );
+        out.clear();
+        {
+            let st = state.lock().unwrap();
+            assert_eq!(st.registered.len(), 1);
+            let reg = &st.registered[0];
+            assert_eq!(reg["client_name"], "PULSE");
+            assert_eq!(reg["token_endpoint_auth_method"], "none");
+            assert_eq!(
+                reg["grant_types"],
+                serde_json::json!(["authorization_code", "refresh_token"])
+            );
+            assert_eq!(
+                reg["scope"], "mcp:tools",
+                "the 401's scope hint wins over scopes_supported"
+            );
+            let redirect = reg["redirect_uris"][0].as_str().unwrap().to_string();
+            assert!(
+                redirect.starts_with("http://127.0.0.1:") && redirect.ends_with("/callback"),
+                "{redirect}"
+            );
+            let auth = &st.authorize_params[0];
+            assert_eq!(auth["code_challenge_method"], "S256");
+            assert_eq!(auth["resource"], format!("{}/mcp", srv.url()));
+            assert_eq!(auth["redirect_uri"], redirect);
+            assert_eq!(auth["scope"], "mcp:tools");
+            assert_eq!(auth["state"].len(), 43);
+            let tok = &st.token_forms[0];
+            assert_eq!(tok["grant_type"], "authorization_code");
+            assert_eq!(tok["code"], "code-1");
+            assert_eq!(tok["redirect_uri"], redirect);
+            assert_eq!(tok["client_id"], "dyn-1");
+            assert!(!tok.contains_key("client_secret"));
+        }
+        let grant = crate::oauth::load_grant(&s.home, "MCP-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(grant.access_token, "at-1");
+        assert_eq!(grant.refresh_token, "rt-1");
+        assert!(grant.registered);
+        assert_eq!(grant.client_id, "dyn-1");
+        assert!(grant.expires_at > crate::oauth::now_unix() + 3500);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(crate::oauth::grant_path(&s.home, "MCP-001"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        // Connected with the token; show knows the state. (The login's own
+        // probe was the one request without a token.)
+        {
+            let mut st = state.lock().unwrap();
+            assert_eq!(
+                st.mcp_auth_seen,
+                vec![String::new()],
+                "{:?}",
+                st.mcp_auth_seen
+            );
+            st.mcp_auth_seen.clear();
+        }
+        run_cmd(&mut c, "mcp", &["connect", "docs"]).unwrap();
+        assert!(
+            out.string().contains("docs: connected to http-fake 2.0"),
+            "{}",
+            out.string()
+        );
+        out.clear();
+        {
+            let st = state.lock().unwrap();
+            assert!(!st.mcp_auth_seen.is_empty());
+            assert!(
+                st.mcp_auth_seen.iter().all(|a| a == "Bearer at-1"),
+                "{:?}",
+                st.mcp_auth_seen
+            );
+            assert_eq!(st.token_forms.len(), 1, "a fresh token is not refreshed");
+        }
+        run_cmd(&mut c, "mcp", &["show", "docs"]).unwrap();
+        assert!(
+            out.string().contains(&format!(
+                "auth:       oauth (signed in at {}/as as client dyn-1; the token expires in ",
+                srv.url()
+            )),
+            "{}",
+            out.string()
+        );
+        out.clear();
+
+        // An expiring token is refreshed on the way in, and the rotation kept.
+        let mut stale = grant.clone();
+        stale.expires_at = crate::oauth::now_unix() + 10;
+        crate::oauth::save_grant(&s.home, "MCP-001", &stale).unwrap();
+        state.lock().unwrap().mcp_auth_seen.clear();
+        run_cmd(&mut c, "mcp", &["tools", "docs"]).unwrap();
+        assert!(out.string().contains("ping"), "{}", out.string());
+        out.clear();
+        {
+            let st = state.lock().unwrap();
+            assert_eq!(st.token_forms.len(), 2);
+            let r = &st.token_forms[1];
+            assert_eq!(r["grant_type"], "refresh_token");
+            assert_eq!(r["refresh_token"], "rt-1");
+            assert_eq!(r["client_id"], "dyn-1");
+            assert_eq!(r["resource"], format!("{}/mcp", srv.url()));
+            assert!(
+                st.mcp_auth_seen.iter().all(|a| a == "Bearer at-2"),
+                "{:?}",
+                st.mcp_auth_seen
+            );
+        }
+        let grant = crate::oauth::load_grant(&s.home, "MCP-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (grant.access_token.as_str(), grant.refresh_token.as_str()),
+            ("at-2", "rt-2")
+        );
+        assert!(grant.expires_at > crate::oauth::now_unix() + 3500);
+
+        // A refresh the server turns down asks for a sign-in, with the reason.
+        let mut broken = grant.clone();
+        broken.expires_at = 1;
+        broken.refresh_token = "rt-stale".into();
+        crate::oauth::save_grant(&s.home, "MCP-001", &broken).unwrap();
+        let e = run_cmd(&mut c, "mcp", &["connect", "docs"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("docs needs a sign-in"), "{e}");
+        assert!(e.contains("refreshing it failed"), "{e}");
+        assert!(e.contains("unknown refresh token"), "{e}");
+        assert!(!e.contains("rt-stale"), "{e}");
+        assert!(e.contains("fix: pulse mcp login docs"), "{e}");
+        crate::oauth::save_grant(&s.home, "MCP-001", &grant).unwrap();
+
+        // Signing in again keeps the registration (same client, same port).
+        // With --no-browser the address is printed before the wait, for a
+        // person to follow by hand - here, this thread.
+        let again = pulse_cli::Buffer::new();
+        let worker = {
+            let (store, home, again) = (s.store.clone(), s.home.clone(), again.clone());
+            std::thread::spawn(move || {
+                let mut c = Context {
+                    store: Some(store),
+                    home,
+                    out: Box::new(again.clone()),
+                    err: Box::new(again),
+                    json: false,
+                    quiet: false,
+                    color: false,
+                    agent: String::new(),
+                    project: String::new(),
+                    session: String::new(),
+                    now: "2026-09-06T21:00:00Z".into(),
+                    args: vec![],
+                };
+                run_cmd(&mut c, "mcp", &["login", "docs", "--no-browser"])
+                    .map_err(|e| e.to_string())
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let url = loop {
+            let text = again.string();
+            if let Some(rest) = text.split("sign in here:\n").nth(1)
+                && let Some(line) = rest.lines().next()
+                && text.contains("waiting for the sign-in on")
+            {
+                break line.trim().to_string();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no address printed: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .unwrap();
+        worker.join().unwrap().unwrap();
+        let text = again.string();
+        assert!(
+            text.contains("still client dyn-1 from the last sign-in"),
+            "{text}"
+        );
+        assert!(!text.contains("a browser was opened"), "{text}");
+        assert_eq!(
+            state.lock().unwrap().registered.len(),
+            1,
+            "no second registration"
+        );
+
+        // Logout revokes and forgets; connect then asks for a sign-in again.
+        run_cmd(&mut c, "mcp", &["logout", "docs"]).unwrap();
+        assert!(
+            out.string().contains("docs: signed out; the tokens are revoked at the authorization server and forgotten here"),
+            "{}",
+            out.string()
+        );
+        out.clear();
+        {
+            let st = state.lock().unwrap();
+            assert_eq!(st.revoked.len(), 1);
+            assert_eq!(st.revoked[0]["token_type_hint"], "refresh_token");
+            assert!(st.revoked[0]["token"].starts_with("rt-"));
+        }
+        assert!(
+            crate::oauth::load_grant(&s.home, "MCP-001")
+                .unwrap()
+                .is_none()
+        );
+        let e = run_cmd(&mut c, "mcp", &["connect", "docs"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("docs needs a sign-in"), "{e}");
+        run_cmd(&mut c, "mcp", &["logout", "docs"]).unwrap();
+        assert!(
+            out.string()
+                .contains("docs: nothing to forget, it was not signed in"),
+            "{}",
+            out.string()
+        );
+        out.clear();
+
+        // JSON shapes.
+        let (mut cj, outj) = ctx_for(&s, true);
+        run_cmd(&mut cj, "mcp", &["login", "docs"]).unwrap();
+        let v: Value = serde_json::from_str(&outj.string()).unwrap();
+        assert_eq!(v["server"], "docs");
+        assert_eq!(v["issuer"], format!("{}/as", srv.url()));
+        assert_eq!(v["registered"], true);
+        assert_eq!(v["has_refresh_token"], true);
+        assert!(v["expires_at"].as_u64().unwrap() > 0);
+        assert!(v.get("access_token").is_none());
+        outj.clear();
+        run_cmd(&mut cj, "mcp", &["logout", "docs"]).unwrap();
+        let v: Value = serde_json::from_str(&outj.string()).unwrap();
+        assert_eq!(v["had_grant"], true);
+        assert_eq!(v["revoked"], true);
+
+        // login on a server without oauth points at update.
+        run_cmd(
+            &mut c,
+            "mcp",
+            &[
+                "add",
+                "--name",
+                "plain",
+                "--transport",
+                "http",
+                "--url",
+                &format!("{}/mcp", srv.url()),
+            ],
+        )
+        .unwrap();
+        let e = run_cmd(&mut c, "mcp", &["login", "plain"])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("plain does not sign in with OAuth"), "{e}");
+        assert!(e.contains("--auth oauth"), "{e}");
+        crate::oauth::set_opener_for_tests(None);
     }
 
     #[test]

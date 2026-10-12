@@ -377,11 +377,37 @@ impl Store {
                 format!("rows={rows} kept_as={kept}"),
             )?;
         }
+        let mut widened = Vec::new();
+        for (table, needle) in WIDENED_CHECKS {
+            if !table_present(&tx, table)? || table_sql_has(&tx, table, needle)? {
+                continue;
+            }
+            let aside = format!("{table}_widening");
+            tx.execute(&format!("DROP TABLE IF EXISTS {aside}"), [])?;
+            tx.execute(&format!("ALTER TABLE {table} RENAME TO {aside}"), [])?;
+            widened.push((*table, aside));
+        }
         for list in additive_ddl() {
             for stmt in list {
                 tx.execute(stmt, [])
                     .map_err(|e| anyhow!("records schema: {e}"))?;
             }
+        }
+        for (table, aside) in widened {
+            let old_cols = table_columns(&tx, &aside)?;
+            let new_cols = table_columns(&tx, table)?;
+            let shared = old_cols
+                .iter()
+                .filter(|c| new_cols.contains(c))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rows = tx.execute(
+                &format!("INSERT INTO {table} ({shared}) SELECT {shared} FROM {aside}"),
+                [],
+            )?;
+            tx.execute(&format!("DROP TABLE {aside}"), [])?;
+            tx.event("pulse", "schema.widened", table, format!("rows={rows}"))?;
         }
         for c in additive_columns() {
             if !has_column(&tx, c.table, c.name).map_err(|e| anyhow!("records schema: {e}"))? {
@@ -446,6 +472,12 @@ impl Store {
         if SUPERSEDED_SHAPES.iter().any(|(table, marker)| {
             table_present(&conn, table).unwrap_or(false)
                 && !has_column(&conn, table, marker).unwrap_or(true)
+        }) {
+            return false;
+        }
+        if WIDENED_CHECKS.iter().any(|(table, needle)| {
+            table_present(&conn, table).unwrap_or(false)
+                && !table_sql_has(&conn, table, needle).unwrap_or(true)
         }) {
             return false;
         }
@@ -912,6 +944,13 @@ pub fn create(path: impl AsRef<Path>) -> Result<()> {
 /// url, auth kinds and status.
 pub const SUPERSEDED_SHAPES: &[(&str, &str)] = &[("mcp_servers", "auth")];
 
+/// Tables whose current DDL widened a CHECK constraint, named with a token
+/// only the widened constraint carries. SQLite cannot alter a constraint in
+/// place, so `ensure_records` moves such a table aside, lets the additive DDL
+/// create the current shape, copies the rows over by column name and drops
+/// the old table. `mcp_servers`: `auth` gained `oauth`.
+pub const WIDENED_CHECKS: &[(&str, &str)] = &[("mcp_servers", "'oauth'")];
+
 pub fn additive_ddl() -> Vec<&'static [&'static str]> {
     vec![
         RECORDS_DDL,
@@ -1025,6 +1064,24 @@ pub(crate) fn table_present(conn: &Connection, table: &str) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(n == 1)
+}
+
+/// Whether the CREATE statement SQLite keeps for `table` contains `needle`.
+pub(crate) fn table_sql_has(conn: &Connection, table: &str, needle: &str) -> Result<bool> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            [table],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(sql.is_some_and(|s| s.contains(needle)))
+}
+
+pub(crate) fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?)")?;
+    let rows = stmt.query_map([table], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 pub(crate) fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -2142,6 +2199,78 @@ mod tests {
             detail.contains("rows=1") && detail.contains("kept_as=mcp_servers_superseded"),
             "{detail}"
         );
+    }
+
+    #[test]
+    fn narrow_mcp_auth_check_is_widened_on_open() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        // The registry shape as it shipped before `oauth` joined the auth kinds.
+        let narrow = MCP_DDL[0].replace(",'oauth'", "");
+        assert!(!narrow.contains("oauth"));
+        db.execute_batch(&format!(
+            "{narrow}; INSERT INTO mcp_servers (id, name, project, transport, url, auth, secret_ref, created_by, created_at, updated_at) VALUES ('MCP-001', 'github', '', 'http', 'https://x/mcp', 'bearer', 'keychain://pulse/gh', 'owner', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')"
+        ))
+        .unwrap();
+        assert!(db
+            .execute(
+                "INSERT INTO mcp_servers (id, name, transport, url, auth, created_by, created_at, updated_at) VALUES ('MCP-002', 'o', '', 'http', 'https://x', 'oauth', 'owner', '', '')",
+                []
+            )
+            .is_err());
+        drop(db);
+        let s = open_temp(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        });
+        let conn = s.conn().unwrap();
+        assert!(table_sql_has(&conn, "mcp_servers", "'oauth'").unwrap());
+        assert!(!table_present(&conn, "mcp_servers_widening").unwrap());
+        let (name, auth, secret): (String, String, String) = conn
+            .query_row(
+                "SELECT name, auth, secret_ref FROM mcp_servers WHERE id = 'MCP-001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (name.as_str(), auth.as_str(), secret.as_str()),
+            ("github", "bearer", "keychain://pulse/gh")
+        );
+        conn.execute(
+            "INSERT INTO mcp_servers (id, name, transport, url, auth, created_by, created_at, updated_at) VALUES ('MCP-002', 'o', 'http', 'https://x', 'oauth', 'owner', '', '')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'mcp_servers' AND detail = 'rows=1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(s.additive_complete(), "a widened shape counts as complete");
+        drop(conn);
+        let again = open_temp(Options {
+            home: s.home.clone(),
+            ..Options::default()
+        });
+        let n: i64 = again
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the widening ran again on a current shape");
     }
 
     #[test]

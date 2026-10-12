@@ -7,7 +7,7 @@ pub const MCP_DDL: &[&str] = &[
   command TEXT NOT NULL DEFAULT '',   -- stdio: the program to spawn
   args TEXT NOT NULL DEFAULT '[]',    -- stdio: JSON array of strings
   url TEXT NOT NULL DEFAULT '',       -- http/sse: the endpoint
-  auth TEXT NOT NULL CHECK (auth IN ('none','bearer','basic','header','query','env')),
+  auth TEXT NOT NULL CHECK (auth IN ('none','bearer','basic','header','query','env','oauth')),
   auth_header TEXT NOT NULL DEFAULT 'Authorization', -- header, query parameter or env var name
   secret_ref TEXT NOT NULL DEFAULT '', -- pulse_cred reference, never the secret
   env TEXT NOT NULL DEFAULT '{}',     -- stdio: JSON object of strings; values may be pulse_cred references

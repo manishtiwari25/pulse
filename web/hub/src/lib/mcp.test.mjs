@@ -33,7 +33,7 @@ test("each transport offers only the auths the hub accepts for it", () => {
   );
   assert.deepEqual(
     authsFor(DEFAULT_OPTIONS, "http").map((a) => a.name),
-    ["none", "bearer", "basic", "header", "query"],
+    ["none", "bearer", "basic", "header", "query", "oauth"],
   );
   assert.deepEqual(authsFor(null, "sse").map((a) => a.name), authsFor(DEFAULT_OPTIONS, "sse").map((a) => a.name));
   assert.equal(authFieldLabel("header"), "Header name");
@@ -41,6 +41,7 @@ test("each transport offers only the auths the hub accepts for it", () => {
   assert.equal(authFieldLabel("env"), "Environment variable");
   assert.equal(authFieldLabel("bearer"), null);
   assert.equal(authFieldLabel("none"), null);
+  assert.equal(authFieldLabel("oauth"), null);
 });
 
 test("the form refuses what the hub would refuse, before the request", () => {
@@ -51,6 +52,10 @@ test("the form refuses what the hub would refuse, before the request", () => {
   assert.match(validateMcpForm(form({ transport: "http", auth: "none", url: "" }))[0], /URL/);
   assert.match(validateMcpForm(form({ transport: "http", auth: "none", url: "ftp://x" }))[0], /http/);
   assert.match(validateMcpForm(form({ transport: "http", auth: "env", url: "https://x" }))[0], /doesn't work with/);
+  // OAuth signs in from a terminal: no secret reference, and a stale one is ignored.
+  assert.deepEqual(validateMcpForm(form({ transport: "http", auth: "oauth", url: "https://x", secret_ref: "" })), []);
+  assert.deepEqual(validateMcpForm(form({ transport: "http", auth: "oauth", url: "https://x", secret_ref: "left over" })), []);
+  assert.match(validateMcpForm(form({ transport: "stdio", auth: "oauth" }))[0], /doesn't work with/);
   assert.match(validateMcpForm(form({ secret_ref: "" }))[0], /secret reference/);
   assert.match(validateMcpForm(form({ secret_ref: "ghp_abcdefghijklmnopqrstuvwxyz" }))[0], /never the secret itself/);
   assert.match(validateMcpForm(form({ auth_header: "" }))[0], /environment variable/);
@@ -69,6 +74,7 @@ test("the input drops what the transport and auth do not use", () => {
   assert.equal(http.secret_ref, "op://PULSE/github-mcp/token");
   const open = mcpInput(form({ auth: "none" }));
   assert.equal(open.secret_ref, "");
+  assert.equal(mcpInput(form({ transport: "http", url: "https://x", auth: "oauth" })).secret_ref, "");
   assert.equal(open.auth_header, "");
   assert.deepEqual(open.env, { GITHUB_HOST: "https://github.com" });
   assert.deepEqual(parseArgs(" stdio \n\n--read-only\n"), ["stdio", "--read-only"]);
