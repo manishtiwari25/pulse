@@ -4640,7 +4640,13 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let _ = done_tx.send(result);
+            if let Err(crossbeam_channel::SendError(result)) = done_tx.send(result) {
+                // The test thread already gave up (an earlier assertion panicked),
+                // so surface the daemon's exit state instead of silently dropping it.
+                eprintln!(
+                    "late-cancellation daemon finished after the test stopped waiting: {result}"
+                );
+            }
         });
         waiting_rx
             .recv_timeout(test_wait(Duration::from_secs(60)))
