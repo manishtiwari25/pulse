@@ -863,6 +863,7 @@ impl Handler {
             "harness.keep_observations",
             "harness.system_prompt",
             "harness.step_timeout",
+            "harness.commit_timeout",
             "harness.output_limit",
             "worker_model",
             "light_model",

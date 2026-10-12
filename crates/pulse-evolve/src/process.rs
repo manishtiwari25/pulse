@@ -149,6 +149,7 @@ pub(crate) fn measurement_argv(
         for (flag, key) in [
             ("--max-steps", "harness.max_steps"),
             ("--step-timeout", "harness.step_timeout"),
+            ("--commit-timeout", "harness.commit_timeout"),
             ("--output-limit", "harness.output_limit"),
             ("--max-cost", "harness.max_cost"),
             ("--keep-observations", "harness.keep_observations"),

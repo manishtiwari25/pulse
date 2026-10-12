@@ -11,11 +11,20 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const DEFAULT_MAX_STEPS: i32 = 60;
 pub const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Deadline for a `git commit` (and friends) whose pre-commit hook runs the
+/// project's verify command: verify alone commonly runs 10-16 min after a
+/// lock wait, so the generic step timeout killed green-in-progress commits.
+pub const DEFAULT_COMMIT_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+/// First line of the pre-commit hook the runner installs
+/// (`pulse_runner::keys::pre_commit_hook_script`); its presence tells the
+/// harness that a commit step carries the verify gate.
+pub const VERIFY_GATE_HOOK_MARKER: &str = "# pulse: verify-before-commit gate";
 pub const DEFAULT_OUTPUT_LIMIT: usize = 20000;
 pub const DEFAULT_KEEP_OBSERVATIONS: usize = 5;
 pub const DEFAULT_MAX_FORMAT_ERRORS: i32 = 3;
 pub const DEFAULT_FORMAT_RETRIES: i32 = 1;
 
+pub use DEFAULT_COMMIT_TIMEOUT as DefaultCommitTimeout;
 pub use DEFAULT_FORMAT_RETRIES as DefaultFormatRetries;
 pub use DEFAULT_KEEP_OBSERVATIONS as DefaultKeepObservations;
 pub use DEFAULT_MAX_FORMAT_ERRORS as DefaultMaxFormatErrors;
@@ -54,6 +63,11 @@ pub struct Config {
     pub env: Vec<String>,
     pub max_steps: i32,
     pub step_timeout: Duration,
+    /// Deadline for a command that runs `git commit`/`merge`/`rebase`/
+    /// `cherry-pick`/`am` in a clone whose pre-commit hook is the runner's
+    /// verify gate; zero means [`DEFAULT_COMMIT_TIMEOUT`]. Capped by
+    /// `wall_time` when set; never shorter than `step_timeout`.
+    pub commit_timeout: Duration,
     pub wall_time: Duration,
     pub max_cost: f64,
     pub output_limit: usize,
@@ -723,7 +737,12 @@ impl Agent {
                 String::new(),
             );
         }
-        let obs = self.env.execute(cancel, command, self.cfg.step_timeout);
+        let gate = self.verify_gate_for(command);
+        let timeout = match &gate {
+            Some(_) => self.commit_deadline(),
+            None => self.cfg.step_timeout,
+        };
+        let obs = self.env.execute(cancel, command, timeout);
         self.emit_observation(command, &obs);
         if obs.exit_code == 127 && self.sandbox_lost() {
             let msg = format!(
@@ -739,7 +758,12 @@ impl Agent {
             });
             self.fatal = Some((EXIT_SANDBOX_LOST, msg));
         }
-        let formatted = format_observation(&obs, self.cfg.output_limit);
+        let formatted = match gate {
+            Some(gate) if obs.timed_out => {
+                format_commit_timeout(&obs, self.cfg.output_limit, &gate)
+            }
+            _ => format_observation(&obs, self.cfg.output_limit),
+        };
         if obs.exit_code == 0
             && !obs.timed_out
             && let Some(sub) = submission_from_observation(&obs.output)
@@ -776,6 +800,37 @@ impl Agent {
         self.emit_observation(&command, &obs);
         let formatted = format_observation(&obs, self.cfg.output_limit);
         (formatted, false, String::new())
+    }
+
+    /// The verify gate a command would trigger: `Some(gate)` when the command
+    /// runs a git subcommand that fires the pre-commit hook and the clone's
+    /// hook carries [`VERIFY_GATE_HOOK_MARKER`].
+    fn verify_gate_for(&self, command: &str) -> Option<VerifyGate> {
+        if !runs_git_commit(command) {
+            return None;
+        }
+        let dir = if self.cfg.cwd.is_empty() {
+            std::env::current_dir().ok()?
+        } else {
+            std::path::PathBuf::from(&self.cfg.cwd)
+        };
+        verify_gate_in(&dir)
+    }
+
+    /// Deadline for a gated commit: `commit_timeout`, never below
+    /// `step_timeout`, capped by what remains of the wall clock (with a
+    /// small reserve so the model can still report).
+    fn commit_deadline(&self) -> Duration {
+        let mut d = self.cfg.commit_timeout.max(self.cfg.step_timeout);
+        if !self.cfg.wall_time.is_zero() {
+            let left = self
+                .cfg
+                .wall_time
+                .saturating_sub(self.started.elapsed())
+                .saturating_sub(Duration::from_secs(60));
+            d = d.min(left.max(self.cfg.step_timeout));
+        }
+        d
     }
 
     fn native_read(&self, spec: &str) -> Observation {
@@ -1257,6 +1312,9 @@ pub fn apply_defaults(mut cfg: Config) -> Config {
     if cfg.step_timeout.is_zero() {
         cfg.step_timeout = DEFAULT_STEP_TIMEOUT;
     }
+    if cfg.commit_timeout.is_zero() {
+        cfg.commit_timeout = DEFAULT_COMMIT_TIMEOUT;
+    }
     if cfg.output_limit == 0 {
         cfg.output_limit = DEFAULT_OUTPUT_LIMIT;
     }
@@ -1536,6 +1594,106 @@ pub fn deny_description(pattern: &str) -> String {
         p if p == DEFAULT_DENY[3] => "credential and private paths are disabled".into(),
         _ => pattern.to_string(),
     }
+}
+
+/// What a commit step's pre-commit hook will run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VerifyGate {
+    /// The verify command the hook runs, when it can be read from the hook.
+    pub verify_cmd: String,
+}
+
+/// True when the command contains a git subcommand that fires the
+/// pre-commit hook (`commit`, `merge`, `rebase`, `cherry-pick`, `am`).
+pub fn runs_git_commit(command: &str) -> bool {
+    static RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?:^|[\s;&|(])git\s+(?:-[-\w=./]+\s+|-C\s+\S+\s+)*(?:commit|merge|rebase|cherry-pick|am)(?:\s|$)")
+            .expect("git commit regex")
+    });
+    RE.is_match(command)
+}
+
+/// Reads `<clone>/.git/hooks/pre-commit` (following a `.git` file for
+/// worktrees) and returns the verify gate it carries, if any.
+pub fn verify_gate_in(clone: &std::path::Path) -> Option<VerifyGate> {
+    let dot_git = clone.join(".git");
+    let git_dir = if dot_git.is_file() {
+        let s = std::fs::read_to_string(&dot_git).ok()?;
+        let rel = s.trim().strip_prefix("gitdir:")?.trim();
+        let p = std::path::PathBuf::from(rel);
+        let p = if p.is_absolute() { p } else { clone.join(p) };
+        // A worktree's gitdir is `<main>/.git/worktrees/<name>`; hooks live
+        // in the common dir `<main>/.git`.
+        match p.parent().and_then(|w| w.parent()) {
+            Some(common) if p.parent().is_some_and(|w| w.ends_with("worktrees")) => {
+                common.to_path_buf()
+            }
+            _ => p,
+        }
+    } else {
+        dot_git
+    };
+    let hook = std::fs::read_to_string(git_dir.join("hooks").join("pre-commit")).ok()?;
+    if !hook.contains(VERIFY_GATE_HOOK_MARKER) {
+        return None;
+    }
+    Some(VerifyGate {
+        verify_cmd: verify_cmd_from_hook(&hook),
+    })
+}
+
+/// The verify command line of the runner's hook: the last non-empty,
+/// non-comment line before the `)` that closes the hook's subshell.
+fn verify_cmd_from_hook(hook: &str) -> String {
+    let mut last = "";
+    for line in hook.lines() {
+        let t = line.trim();
+        if t == ")" {
+            break;
+        }
+        if !t.is_empty() && !t.starts_with('#') && t != "(" {
+            last = t;
+        }
+    }
+    one_line(last, 160)
+}
+
+/// Observation text for a gated commit that hit its deadline: names the
+/// verify gate and the lock wait instead of the generic "smaller scope" hint.
+pub fn format_commit_timeout(obs: &Observation, limit: usize, gate: &VerifyGate) -> String {
+    let mut out = truncate(&obs.output, limit);
+    let secs = (obs.duration.as_secs_f64().round() as i64).max(1);
+    let lock_wait = lock_wait_from_output(&obs.output);
+    let which = if gate.verify_cmd.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", gate.verify_cmd)
+    };
+    let line = format!(
+        "The command timed out after {secs}s and was killed: the pre-commit verify gate{which} was still running after {secs}s (lock wait {lock_wait}s). Verify was in progress, not stuck; do not background, nohup or sleep around git commit (the harness kills that too). Check whether the commit landed with `git log -1`, and if not run the verify command once in the foreground to see what it reports, then commit again."
+    );
+    if out.is_empty() {
+        out = line;
+    } else {
+        out.push('\n');
+        out.push_str(&line);
+    }
+    format!("exit code: {}\n{}", obs.exit_code, out)
+}
+
+/// Seconds the hook spent waiting for the verify lock, read from its
+/// `pulse: another verification holds ...` / `waited Ns` lines; 0 when
+/// nothing was printed.
+fn lock_wait_from_output(output: &str) -> u64 {
+    static RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"after waiting (\d+)s").expect("lock wait regex"));
+    let mut best = 0;
+    for c in RE.captures_iter(output) {
+        if let Ok(n) = c[1].parse::<u64>() {
+            best = best.max(n);
+        }
+    }
+    best
 }
 
 pub fn format_observation(obs: &Observation, limit: usize) -> String {
@@ -2016,6 +2174,7 @@ mod tests {
     struct FakeEnv {
         observations: Vec<Observation>,
         commands: Vec<String>,
+        timeouts: Vec<Duration>,
         default_output: String,
     }
 
@@ -2024,10 +2183,11 @@ mod tests {
             &mut self,
             _cancel: &CancelToken,
             command: &str,
-            _timeout: Duration,
+            timeout: Duration,
         ) -> Observation {
             let mut e = self.lock().unwrap();
             e.commands.push(command.to_string());
+            e.timeouts.push(timeout);
             if e.observations.is_empty() {
                 Observation {
                     output: e.default_output.clone(),
@@ -2076,6 +2236,192 @@ mod tests {
             message: Some(message),
             ..pulse_provider::Response::default()
         }
+    }
+
+    #[test]
+    fn runs_git_commit_detects_hook_firing_subcommands() {
+        for c in [
+            "git commit -m x",
+            "git add -A && git commit -am 'x'",
+            "cd crates && git -C .. commit -q -m x",
+            "git --no-pager merge --no-ff topic",
+            "git rebase main",
+            "git cherry-pick abc",
+            "git am < p.patch",
+            "(git commit -m x)",
+        ] {
+            assert!(runs_git_commit(c), "{c}");
+        }
+        for c in [
+            "git status",
+            "git log --oneline -3",
+            "git diff --cached",
+            "cargo test commit_timeout",
+            "echo 'git commit' > note.txt",
+            "git committer-check",
+            "forgit commit",
+        ] {
+            assert!(!runs_git_commit(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn verify_gate_in_reads_runner_hook_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        let hooks = clone.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        assert_eq!(verify_gate_in(&clone), None);
+        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ncargo fmt --check\n").unwrap();
+        assert_eq!(
+            verify_gate_in(&clone),
+            None,
+            "a foreign hook is not the gate"
+        );
+        std::fs::write(
+            hooks.join("pre-commit"),
+            concat!(
+                "#!/bin/sh\n",
+                "# pulse: verify-before-commit gate (auto-installed by runner)\n",
+                "unset GIT_INDEX_FILE\n",
+                "export CI=1\n",
+                "(\n",
+                "cd /tmp/clone\n",
+                "env X=1 sh -c 'cargo test --workspace'\n",
+                ")\n",
+                "rc=$?\n",
+            ),
+        )
+        .unwrap();
+        let gate = verify_gate_in(&clone).expect("runner hook is the gate");
+        assert_eq!(gate.verify_cmd, "env X=1 sh -c 'cargo test --workspace'");
+        // A worktree's `.git` file points at `<main>/.git/worktrees/<n>`;
+        // the hook lives in the main `.git/hooks`.
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let wt_git = clone.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&wt_git).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_git.display())).unwrap();
+        assert_eq!(verify_gate_in(&wt), Some(gate));
+    }
+
+    #[test]
+    fn format_commit_timeout_names_gate_and_lock_wait() {
+        let obs = Observation {
+            output: "pulse: another verification holds x.lock (pid 7); waiting for it to finish\npulse: verification ran 0s after waiting 390s for the lock\n".into(),
+            exit_code: -1,
+            duration: Duration::from_secs(1500),
+            timed_out: true,
+        };
+        let gate = VerifyGate {
+            verify_cmd: "cargo test".into(),
+        };
+        let text = format_commit_timeout(&obs, 20_000, &gate);
+        assert!(text.contains("the pre-commit verify gate (cargo test) was still running after 1500s (lock wait 390s)"), "{text}");
+        assert!(text.contains("do not background, nohup or sleep around git commit"));
+        assert!(!text.contains("smaller scope"));
+        assert_eq!(lock_wait_from_output("nothing here"), 0);
+    }
+
+    #[test]
+    fn gated_commit_gets_commit_timeout_and_specific_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(
+            hooks.join("pre-commit"),
+            "#!/bin/sh\n# pulse: verify-before-commit gate (auto-installed by runner)\n(\ncargo test\n)\n",
+        )
+        .unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("git status")),
+            resp(tool("git commit -m x")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![
+                Observation {
+                    output: "clean\n".into(),
+                    exit_code: 0,
+                    ..Observation::default()
+                },
+                Observation {
+                    output: "pulse: verification ran 0s after waiting 120s for the lock\n".into(),
+                    exit_code: -1,
+                    duration: Duration::from_secs(1500),
+                    timed_out: true,
+                },
+            ],
+            ..FakeEnv::default()
+        }));
+        let mut cfg = base_config();
+        cfg.cwd = tmp.path().display().to_string();
+        cfg.step_timeout = Duration::from_secs(900);
+        cfg.commit_timeout = Duration::from_secs(1500);
+        cfg.wall_time = Duration::from_secs(3 * 3600);
+        let (h, got) = run_agent(p, env.clone(), cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let timeouts = env.lock().unwrap().timeouts.clone();
+        assert_eq!(
+            timeouts,
+            vec![Duration::from_secs(900), Duration::from_secs(1500)],
+            "plain commands keep step_timeout; the gated commit gets commit_timeout"
+        );
+        let msgs = h.messages();
+        let tool_msgs: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+        assert!(
+            tool_msgs[1].content.contains(
+                "pre-commit verify gate (cargo test) was still running after 1500s (lock wait 120s)"
+            ),
+            "{}",
+            tool_msgs[1].content
+        );
+        assert!(!tool_msgs[1].content.contains("smaller scope"));
+    }
+
+    #[test]
+    fn commit_timeout_is_capped_by_remaining_wall_clock_and_floored_by_step_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks = tmp.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(
+            hooks.join("pre-commit"),
+            "# pulse: verify-before-commit gate (auto-installed by runner)\n",
+        )
+        .unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("git commit -m x")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.cwd = tmp.path().display().to_string();
+        cfg.step_timeout = Duration::from_secs(300);
+        cfg.commit_timeout = Duration::from_secs(1500);
+        // 10 min of wall clock minus the 60 s reserve leaves 540 s.
+        cfg.wall_time = Duration::from_secs(600);
+        run_agent(p, env.clone(), cfg).unwrap();
+        let t = env.lock().unwrap().timeouts[0];
+        assert!(
+            t <= Duration::from_secs(540) && t >= Duration::from_secs(300),
+            "{t:?}"
+        );
+
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("git commit -m x")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.cwd = tmp.path().display().to_string();
+        cfg.step_timeout = Duration::from_secs(900);
+        cfg.commit_timeout = Duration::from_secs(60);
+        run_agent(p, env.clone(), cfg).unwrap();
+        assert_eq!(
+            env.lock().unwrap().timeouts[0],
+            Duration::from_secs(900),
+            "never below step_timeout"
+        );
     }
 
     fn base_config() -> Config {
