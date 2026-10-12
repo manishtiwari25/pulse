@@ -8,7 +8,7 @@
     "build:      `npm run build` = static export to out/ (commit out/ after UI changes). `npm run serve:out` serves out/ plus the mock API on :8787 (the same layout the pulse hub serves) for a last look at the export.",
     "check:      `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + a build exported to the scratch dir PULSE_HUB_OUT_DIR=.next/check-out (gitignored, eslint-ignored; see next.config.ts), so verifying never rewrites the committed out/. Only `npm run build` regenerates out/. All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
     "routes:     / (hub), /project/?slug=&tab=, /tasks/, /votes/?project=&status=&kind=, /records/?id=, /compute/, /settings/, /agents/, /harness/, /connections/?project=&tab= - state in search params, no dynamic segments.",
-    "design:     tokens live in src/app/globals.css (oklch palette derived from .github/assets/pulse-logo.svg, shadows, radius, utilities). Inter Variable is vendored in public/fonts (latin + latin-ext, OFL.txt alongside) so the export needs no network at build or run time."
+    "design:     \"the daily briefing\" - plain words (src/lib/words.ts is the vocabulary: runner, machines, private tests, statusWord()), marigold only for what waits on the owner, flat cards, details folded. Tokens live in src/app/globals.css (oklch palette from .github/assets/pulse-logo.svg; teal primary, marigold `you`, series colours for charts). Atkinson Hyperlegible Next and Mono are vendored in public/fonts (latin + latin-ext, OFL-atkinson-*.txt alongside) so the export needs no network at build or run time."
   ],
   "version": "0.1.0",
   "private": true,

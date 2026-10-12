@@ -3,16 +3,17 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BookOpenIcon, InboxIcon } from "lucide-react";
+import { BookOpenIcon, ScaleIcon, SearchIcon, XIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/pulse/data-table";
-import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { RECORD_COLUMNS, RecordCards, RecordSheet, kindLabel } from "@/components/records/records";
+import { RECORD_COLUMNS, RecordCards, RecordSheet, TIER_KINDS, kindLabel } from "@/components/records/records";
 import { registeredProjects, RECORD_KINDS, type Org, type RecordsPayload } from "@/lib/api";
-import { plural } from "@/lib/format";
+import { plural, sentence } from "@/lib/format";
+import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,7 @@ function RecordsScreen() {
   const pathname = usePathname();
   const kind = sp.get("kind") || "";
   const status = sp.get("status") || "";
+  const statusKey = status.toLowerCase();
   const project = sp.get("project") || "";
   const id = sp.get("id");
   // The framework's own docs (workflows, skills, templates…) are indexed too;
@@ -63,7 +65,12 @@ function RecordsScreen() {
   const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : project ? [project] : []), [org.data, project]);
   const all = useMemo(() => q.data?.records ?? [], [q.data]);
   const scope = useMemo(() => (showFramework ? all : all.filter((r) => OWNER_KINDS.includes(r.kind))), [all, showFramework]);
-  const statuses = useMemo(() => Array.from(new Set(scope.map((r) => r.status).filter(Boolean))).sort(), [scope]);
+  // One entry per status word: the store may hold "Active" and "active".
+  const statuses = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of scope) if (r.status && !m.has(r.status.toLowerCase())) m.set(r.status.toLowerCase(), r.status);
+    return Array.from(m.values()).sort((a, b) => statusWord(a).localeCompare(statusWord(b)));
+  }, [scope]);
   const areas = useMemo(() => Array.from(new Set(scope.flatMap((r) => r.areas || []))).sort(), [scope]);
   // Every kind the store holds, in the canonical order, plus the one in the
   // URL so a deep link to an empty shelf still shows which chip is selected.
@@ -78,8 +85,8 @@ function RecordsScreen() {
   // Everything but the kind filter, so each chip can count what it would show.
   const baseAll = useMemo(() => {
     const t = text.trim().toLowerCase();
-    return all.filter((r) => (!status || r.status === status) && (!area || (r.areas || []).includes(area)) && (!t || r.id.toLowerCase().includes(t) || r.title.toLowerCase().includes(t) || (r.tags || []).some((x) => x.toLowerCase().includes(t))));
-  }, [all, status, area, text]);
+    return all.filter((r) => (!statusKey || (r.status || "").toLowerCase() === statusKey) && (!area || (r.areas || []).includes(area)) && (!t || r.id.toLowerCase().includes(t) || r.title.toLowerCase().includes(t) || (r.tags || []).some((x) => x.toLowerCase().includes(t))));
+  }, [all, statusKey, area, text]);
   const base = useMemo(() => (showFramework ? baseAll : baseAll.filter((r) => OWNER_KINDS.includes(r.kind))), [baseAll, showFramework]);
   const rows = useMemo(() => (kind ? base.filter((r) => r.kind === kind) : base), [base, kind]);
   const perKind = useMemo(() => {
@@ -95,20 +102,20 @@ function RecordsScreen() {
     chipsRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [kind, kinds]);
 
+  const clearAll = () => {
+    setText("");
+    setArea("");
+    setParams({ kind: null, status: null, project: null, fw: null });
+  };
+
   return (
     <>
       <PageTitle
         icon={BookOpenIcon}
-        sub="The decisions, rules and evaluators that shape each project."
-        actions={
-          <>
-            <Input aria-label="Search records" placeholder="Find a record…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-36 sm:w-56" />
-            <ViewToggle value={view} onChange={setView} />
-          </>
-        }
+        sub="Decisions, plans, guides and notes your agents keep. Agents write them; you accept or decline the decisions."
         bar={
-          <div className="grid gap-1">
-            <BarRow ref={chipsRef} role="group" aria-label="Kind" className="surface-glass w-fit gap-0.5 rounded-xl border p-0.5">
+          <div className="grid gap-3">
+            <BarRow ref={chipsRef} role="group" aria-label="Kind of record" className="scroll-strip mx-0 w-fit max-w-full flex-nowrap gap-0.5 rounded-lg bg-muted p-0.5 ring-1 ring-border/70 ring-inset sm:mx-0 sm:px-0.5">
               <KindChip active={!kind} n={q.data ? base.length : undefined} onClick={() => setParams({ kind: null })}>
                 All
               </KindChip>
@@ -119,14 +126,14 @@ function RecordsScreen() {
               ))}
               {frameworkKinds.length ? (
                 <>
-                  <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+                  <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
                   <KindChip
                     active={showFramework}
                     n={q.data ? frameworkCount : undefined}
-                    title={showFramework ? "Hide built-in docs" : "Show built-in docs: workflows, skills, guides, templates, prompts…"}
+                    title={showFramework ? "Hide the guides PULSE comes with" : "Show the guides PULSE comes with: workflows, skills, prompts, templates and more"}
                     onClick={() => setParams(showFramework ? { fw: null, kind: kind && !OWNER_KINDS.includes(kind) ? null : kind } : { fw: "1" })}
                   >
-                    Built-in docs
+                    Built-in guides
                   </KindChip>
                   {showFramework
                     ? frameworkKinds.map((k) => (
@@ -139,12 +146,16 @@ function RecordsScreen() {
               ) : null}
             </BarRow>
             <BarRow>
+              <div className="relative w-full shrink-0 sm:w-60">
+                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                <Input type="search" aria-label="Search records" placeholder="Search records" value={text} onChange={(e) => setText(e.target.value)} className="h-9 pl-8" />
+              </div>
               <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
                 <SelectTrigger aria-label="Project" className={SELECT}>
-                  <SelectValue placeholder="project" />
+                  <SelectValue placeholder="Project" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__all">all projects</SelectItem>
+                  <SelectItem value="__all">All projects</SelectItem>
                   {projects.map((p) => (
                     <SelectItem key={p} value={p}>
                       {p}
@@ -152,15 +163,15 @@ function RecordsScreen() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={status || "__all"} onValueChange={(v) => setParams({ status: v === "__all" ? null : v })}>
+              <Select value={statusKey || "__all"} onValueChange={(v) => setParams({ status: v === "__all" ? null : statuses.find((s) => s.toLowerCase() === v) || v })}>
                 <SelectTrigger aria-label="Status" className={SELECT}>
-                  <SelectValue placeholder="status" />
+                  <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__all">all statuses</SelectItem>
+                  <SelectItem value="__all">All statuses</SelectItem>
                   {statuses.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
+                    <SelectItem key={s} value={s.toLowerCase()}>
+                      {statusWord(s)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -168,35 +179,24 @@ function RecordsScreen() {
               {areas.length ? (
                 <Select value={area || "__all"} onValueChange={(v) => setArea(v === "__all" ? "" : v)}>
                   <SelectTrigger aria-label="Area" className={SELECT}>
-                    <SelectValue placeholder="area" />
+                    <SelectValue placeholder="Area" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__all">all areas</SelectItem>
+                    <SelectItem value="__all">All areas</SelectItem>
                     {areas.map((a) => (
                       <SelectItem key={a} value={a}>
-                        {a}
+                        {sentence(a)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               ) : null}
               {filtered ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="shrink-0"
-                  onClick={() => {
-                    setText("");
-                    setArea("");
-                    setParams({ kind: null, status: null, project: null, fw: null });
-                  }}
-                >
-                  clear
+                <Button size="sm" variant="ghost" className="shrink-0 text-muted-foreground" onClick={clearAll}>
+                  <XIcon /> Clear filters
                 </Button>
               ) : null}
-              <span className="ml-auto shrink-0 whitespace-nowrap">
-                <Count>{q.data ? plural(rows.length, "record") : ""}</Count>
-              </span>
+              <ViewToggle value={view} onChange={setView} className="ml-auto" />
             </BarRow>
           </div>
         }
@@ -204,16 +204,14 @@ function RecordsScreen() {
         Records
       </PageTitle>
       {waiting && !showingWaiting ? (
-        <div className="surface-glass mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-primary/30 px-3.5 py-2.5 text-sm shadow-card">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden>
-            <InboxIcon className="size-4" />
-          </span>
-          <span className="min-w-0 flex-1 anywhere">{plural(waiting, "proposed decision") + (waiting === 1 ? " waits" : " wait") + " for you."}</span>
-          <Button size="xs" onClick={() => setParams({ kind: "adr", status: "Proposed", project: null })}>
-            Show them here
-          </Button>
-          <Button asChild size="xs" variant="outline">
-            <Link href={hrefs.home() + "#for-you"}>Decide on the hub</Link>
+        <div className="surface-you mb-5 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-3 text-sm">
+          <ScaleIcon className="size-4 shrink-0 text-you-ink" aria-hidden />
+          <span className="min-w-0 flex-1 basis-56 font-medium anywhere">{plural(waiting, "decision") + (waiting === 1 ? " waits" : " wait") + " for your answer."}</span>
+          <Link href={hrefs.home() + "#for-you"} className="text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+            Answer on Home
+          </Link>
+          <Button size="sm" onClick={() => setParams({ kind: "adr", status: "Proposed", project: null })}>
+            Show them
           </Button>
         </div>
       ) : null}
@@ -223,54 +221,54 @@ function RecordsScreen() {
         <SkeletonRows n={10} />
       ) : !rows.length ? (
         <EmptyState
-          title={all.length ? "No matching records" : "No records yet"}
+          icon={<BookOpenIcon className="size-[18px]" />}
+          title={all.length ? "No records match" : "No records yet"}
           action={
             filtered ? (
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => {
-                  setText("");
-                  setArea("");
-                  setParams({ kind: null, status: null, project: null, fw: null });
-                }}
-              >
+              <Button size="sm" variant="outline" onClick={clearAll}>
                 Clear filters
               </Button>
             ) : undefined
           }
         >
-          {all.length ? "Nothing matches these filters." : <>Records appear here after a project is set up and agents start writing down decisions, plans and notes.</>}
+          {all.length ? "Try another kind or status, or clear the filters to see every record." : "Agents write decisions, plans and notes here once a project is set up and work starts."}
         </EmptyState>
-      ) : view === "table" ? (
-        <div className="surface-raised overflow-hidden rounded-2xl border">
-          <DataTable columns={RECORD_COLUMNS(!project)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setParams({ id: r.id })} initialSort="updated" caption="Records" />
-        </div>
       ) : (
-        <RecordCards rows={rows} showProject={!project} onOpen={(r) => setParams({ id: r.id })} activeId={id} cols={3} />
+        <>
+          <p className="mb-3 text-[13px] text-muted-foreground" aria-live="polite">
+            {showingWaiting ? plural(rows.length, "decision") + " waiting for your answer" : "Showing " + plural(rows.length, "record")}
+          </p>
+          {view === "table" ? (
+            <div className="overflow-hidden rounded-2xl border bg-card">
+              <DataTable columns={RECORD_COLUMNS(!project, !kind || TIER_KINDS.includes(kind))} rows={rows} rowKey={(r) => r.project + "/" + r.id} onRow={(r) => setParams({ id: r.id })} initialSort="updated" caption="Records" />
+            </div>
+          ) : (
+            <RecordCards rows={rows} showProject={!project} onOpen={(r) => setParams({ id: r.id })} activeId={id} cols={3} />
+          )}
+        </>
       )}
       <RecordSheet id={id} project={project || undefined} onClose={() => setParams({ id: null })} />
     </>
   );
 }
 
-const SELECT = "h-8 w-32 shrink-0 sm:w-36";
+const SELECT = "h-9 w-[calc(50%-0.25rem)] shrink-0 sm:w-40";
 
 // The kinds an owner writes or decides on; every other kind is the framework's own documentation.
 const OWNER_KINDS: string[] = ["adr", "plan", "wu", "feature", "memory", "evolution"];
 
-// One row of the sticky filter bar: scrolls sideways on its own (hidden
-// scrollbar) so reaching the last filter never drags the other row along.
+// One row of the filter bar. The kind chips add scroll-strip, so they scroll
+// sideways on their own; the controls row wraps instead.
 function BarRow({ className, children, ...rest }: React.ComponentProps<"div">) {
   return (
-    <div className={cn("-mx-3 flex flex-wrap items-center gap-2 overflow-x-auto px-3 py-0.5 [scrollbar-width:none] sm:-mx-4 sm:px-4 [&::-webkit-scrollbar]:hidden", className)} {...rest}>
+    <div className={cn("-mx-3 flex flex-wrap items-center gap-2 px-3 py-0.5 sm:-mx-4 sm:px-4", className)} {...rest}>
       {children}
     </div>
   );
 }
 
 // A shelf of the library: one kind and how many records it holds under the
-// other filters. The selected chip is filled; an empty shelf is dimmed.
+// other filters, styled like a segmented tab. An empty shelf is dimmed.
 function KindChip({ active, n, title, onClick, children }: { active: boolean; n?: number; title?: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -279,13 +277,13 @@ function KindChip({ active, n, title, onClick, children }: { active: boolean; n?
       title={title}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-        active ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
-        !active && n === 0 && "opacity-50",
+        "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset motion-reduce:transition-none",
+        active ? "border-border bg-card text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.08)]" : "text-muted-foreground hover:text-foreground",
+        !active && n === 0 && "opacity-60",
       )}
     >
       {children}
-      {n !== undefined ? <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px]", active ? "bg-primary/10 text-primary" : "text-muted-foreground")}>{n}</span> : null}
+      {n !== undefined ? <span className={cn("tnum text-xs font-normal", active ? "text-primary" : "text-muted-foreground")}>{n}</span> : null}
     </button>
   );
 }

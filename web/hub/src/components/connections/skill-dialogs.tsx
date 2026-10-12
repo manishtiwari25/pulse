@@ -16,7 +16,7 @@ import { Notice } from "@/components/pulse/panel";
 import { Mono, StatusBadge, When } from "@/components/pulse/who";
 import { writes, type ProjectsPayload, type Skill } from "@/lib/api";
 import { plural } from "@/lib/format";
-import { EMPTY_SKILL_FORM, formFromSkill, scopeLabel, skillInput, skillPatch, validateSkillForm, type SkillForm } from "@/lib/mcp";
+import { EMPTY_SKILL_FORM, formFromSkill, scopeLabel, scopeTitle, skillFormReady, skillInput, skillPatch, validateSkillForm, type SkillForm } from "@/lib/mcp";
 import { invalidate, useApi } from "@/lib/use-api";
 
 // A skill is a markdown recipe every worker of a project (or of every
@@ -31,7 +31,7 @@ const ALL = "__all__";
 export function SkillDialog({ open, onOpenChange, skill, project }: { open: boolean; onOpenChange: (o: boolean) => void; skill?: Skill | null; project?: string }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">{open ? <SkillFormBody skill={skill ?? null} project={project ?? ""} close={() => onOpenChange(false)} /> : null}</DialogContent>
+      <DialogContent className="sm:max-w-2xl">{open ? <SkillFormBody skill={skill ?? null} project={project ?? ""} close={() => onOpenChange(false)} /> : null}</DialogContent>
     </Dialog>
   );
 }
@@ -64,13 +64,13 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
         toast.success(r.skill.name + " saved.", { id });
       } else {
         const r = await writes.addSkill(skillInput(f));
-        toast.success(r.skill.id + " added.", { id, description: "Workers of " + scopeLabel(r.skill.project) + " see it in their brief from their next job." });
+        toast.success(r.skill.name + " added.", { id, description: "Agents of " + scopeLabel(r.skill.project) + " see it in their brief from their next job." });
       }
       refreshSkills();
       close();
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, skill ? "The skill was not saved" : "The skill was not added");
+      showApiError(e, skill ? "The skill wasn't saved" : "The skill wasn't added");
     } finally {
       setBusy(false);
     }
@@ -80,19 +80,17 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
     <>
       <DialogHeader>
         <DialogTitle>{skill ? "Edit " + skill.name : "Add a skill"}</DialogTitle>
-        <DialogDescription>
-          A recipe other workers will repeat here - a setup, a debugging path, a check. Markdown; agents read it with <Mono>pulse skill show NAME</Mono> before work it covers.
-        </DialogDescription>
+        <DialogDescription>A set of instructions agents read before work it covers: a setup, a debugging path, a check. Write it in Markdown.</DialogDescription>
       </DialogHeader>
       <div className="grid gap-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-1.5">
+          <div className="grid content-start gap-1.5">
             <Label htmlFor="skill-name">Name</Label>
             <Input id="skill-name" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="release-check" maxLength={64} spellCheck={false} autoFocus={!skill} className="font-mono text-[13px]" />
-            <p className="text-xs text-muted-foreground">A slug, unique across projects.</p>
+            <p className="text-xs text-muted-foreground">Short and lowercase, like release-check. Unique across projects.</p>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="skill-project">Project</Label>
+          <div className="grid content-start gap-1.5">
+            <Label htmlFor="skill-project">Who can use it</Label>
             <Select value={f.project || ALL} onValueChange={(v) => set("project", v === ALL ? "" : v)}>
               <SelectTrigger id="skill-project" className="w-full">
                 <SelectValue />
@@ -107,18 +105,18 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Whose workers hear about it.</p>
+            <p className="text-xs text-muted-foreground">Agents of every project, or of one.</p>
           </div>
         </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="skill-description">Description</Label>
+        <div className="grid content-start gap-1.5">
+          <Label htmlFor="skill-description">When to use it</Label>
           <Input id="skill-description" value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="How to verify a release before tagging it" maxLength={200} />
-          <p className="text-xs text-muted-foreground">One line; this is what the brief lists, so say when to read the skill.</p>
+          <p className="text-xs text-muted-foreground">One line. Agents see it in their brief, so say what the skill covers and when to read it.</p>
         </div>
-        <div className="grid gap-1.5">
+        <div className="grid content-start gap-1.5">
           <div className="flex items-center justify-between">
-            <Label htmlFor="skill-body">Body (Markdown)</Label>
-            <span className="text-xs text-muted-foreground tnum">{f.body.length} chars</span>
+            <Label htmlFor="skill-body">Instructions (Markdown)</Label>
+            <span className="text-xs text-muted-foreground tnum">{plural(f.body.length, "character")}</span>
           </div>
           <Tabs defaultValue="write">
             <TabsList className="h-7">
@@ -138,7 +136,7 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
               </div>
             </TabsContent>
           </Tabs>
-          <p className="text-xs text-muted-foreground">Name where a secret lives (a reference, an env var) instead of pasting it - skills are shared with every agent.</p>
+          <p className="text-xs text-muted-foreground">Never paste a secret here: every agent can read skills. Say where it is kept instead (a reference or an environment variable).</p>
         </div>
         {touched && errors.length ? (
           <Notice tone="warn">
@@ -154,7 +152,7 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
         <Button variant="ghost" onClick={close} disabled={busy}>
           Cancel
         </Button>
-        <Button onClick={() => void submit()} disabled={busy || (touched && errors.length > 0)}>
+        <Button onClick={() => void submit()} disabled={busy || !skillFormReady(f) || (touched && errors.length > 0)}>
           {busy ? <Loader2Icon className="animate-spin" /> : skill ? <CheckIcon /> : <PlusIcon />}
           {skill ? "Save" : "Add skill"}
         </Button>
@@ -167,33 +165,34 @@ function SkillFormBody({ skill, project, close }: { skill: Skill | null; project
 export function SkillViewDialog({ skill, onOpenChange, onEdit }: { skill: Skill | null; onOpenChange: (o: boolean) => void; onEdit?: (k: Skill) => void }) {
   return (
     <Dialog open={!!skill} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl">
         {skill ? (
           <>
             <DialogHeader>
               <DialogTitle className="flex flex-wrap items-center gap-2">
-                <Mono>{skill.name}</Mono>
+                <span className="anywhere">{skill.name}</span>
                 <StatusBadge status={skill.status} />
               </DialogTitle>
               <DialogDescription className="anywhere">{skill.description}</DialogDescription>
             </DialogHeader>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span>{skill.id}</span>
-              <span>{scopeLabel(skill.project)}</span>
-              <span>{plural(skill.uses, "read")}</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
+              <span>{scopeTitle(skill.project)}</span>
+              <span>{skill.uses ? "Read " + (skill.uses === 1 ? "once" : skill.uses + " times") : "Not read yet"}</span>
               <span>
-                by {skill.created_by}, updated <When d={skill.updated_at} />
+                {"Added by " + (skill.created_by === "human" || skill.created_by === "owner" ? "you" : skill.created_by) + ", updated "}
+                <When d={skill.updated_at} />
               </span>
+              <span className="text-xs">{skill.id}</span>
             </div>
             <div className="rounded-xl border px-4 py-3">
               <Markdown source={skill.body} />
             </div>
             <p className="text-xs text-muted-foreground">
-              Agents read it with <Mono>pulse skill show {skill.name}</Mono>; each read counts.
+              Agents read it with <Mono>pulse skill show {skill.name}</Mono>; each read is counted.
             </p>
             <DialogFooter>
               {onEdit ? (
-                <Button variant="outline" size="sm" onClick={() => onEdit(skill)}>
+                <Button variant="outline" size="sm" onClick={() => onEdit(skill)} aria-label={"Edit " + skill.name}>
                   Edit
                 </Button>
               ) : null}

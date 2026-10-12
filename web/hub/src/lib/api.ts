@@ -789,7 +789,7 @@ export interface Hygiene {
   events: StoreEvent[];
 }
 
-export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fraction" | "switch" | "choice" | "command" | "text" | "identifier" | "reference";
+export type SettingKind = "count" | "count-or-none" | "credits" | "number" | "fraction" | "decimal" | "switch" | "choice" | "command" | "text" | "identifier" | "reference";
 
 // One of the owner's caps as the store holds it (ADR-025). `secret` marks
 // keys whose values the API never returns (compute credentials never live

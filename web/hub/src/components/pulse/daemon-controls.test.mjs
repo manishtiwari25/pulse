@@ -100,7 +100,7 @@ test("partial hub setup cannot bypass guards for a foreground or unknown-managed
     assert.equal(ready({ disabled: !state.canPreview, blockedReason: state.setupBlock }), false);
   }
   const unknown = daemonControlState(inputs({ service: snapshot(service({ loaded: false, hubLoaded: false })), runner: snapshot(runner("unreadable")) }));
-  assert.match(unknown.setupBlock, /not proof that no daemon is running/);
+  assert.match(unknown.setupBlock, /not proof that the runner is off/);
   assert.equal(ready({ disabled: !unknown.canPreview, blockedReason: unknown.setupBlock }), false);
 });
 
@@ -146,8 +146,8 @@ test("a fresh heartbeat is ok and reads running; a pending update and an exit ar
   assert.equal(alive.label, "alive");
   assert.equal(alive.tone, "ok");
   assert.equal(alive.update, null);
-  assert.equal(daemonHeadline(alive), "Daemon running");
-  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("running")) }))), "Daemon running");
+  assert.equal(daemonHeadline(alive), "Runner on");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("running")) }))), "Runner on");
 
   // An older daemon only writes the count; the console still calls it running
   // and says what it waits for, instead of a bare "restarting" that reads as stuck.
@@ -158,11 +158,11 @@ test("a fresh heartbeat is ok and reads running; a pending update and an exit ar
   assert.equal(restarting.tone, "ok");
   assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [] });
   assert.match(restarting.description, /newer pulse built/);
-  assert.match(restarting.description, /2 runs in flight/);
+  assert.match(restarting.description, /2 runs in progress/);
   assert.match(restarting.description, /nothing to start by hand/);
   assert.equal(restarting.setup, null, "a draining daemon is alive: no start action");
-  assert.equal(daemonHeadline(restarting), "Daemon running");
-  assert.equal(daemonUpdateText(restarting.update), "New build waits for 2 runs in flight");
+  assert.equal(daemonHeadline(restarting), "Runner on");
+  assert.equal(daemonUpdateText(restarting.update), "A new version waits for 2 runs in progress");
   const silentNote = runner("silent");
   silentNote.daemon.note = "restarting: 1 in flight";
   const silent = daemonControlState(inputs({ runner: snapshot(silentNote) }));
@@ -172,15 +172,15 @@ test("a fresh heartbeat is ok and reads running; a pending update and an exit ar
   const exited = daemonControlState(inputs({ runner: snapshot(runner("exited")) }));
   assert.equal(exited.label, "stopped");
   assert.match(exited.description, /started again within seconds/);
-  assert.equal(daemonHeadline(exited), "Daemon off");
+  assert.equal(daemonHeadline(exited), "Runner off");
   const blocked = daemonControlState(inputs({ runner: snapshot(runner("exited")), service: snapshot(service({ present: true, loaded: false })) }));
   assert.equal(blocked.setupBlock, "", "an exited daemon is a known stop: service setup may start one");
 
-  assert.equal(daemonHeadline(daemonControlState(inputs())), "Daemon silent");
-  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(undefined) }))), "Checking daemon…");
-  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("alive"), "offline") }))), "Daemon status unknown");
-  assert.equal(daemonHeadline(daemonControlState(inputs({ settings: snapshot(settings("1")), runner: snapshot(runner("alive")) }))), "Daemon paused");
-  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("never started")) }))), "Daemon off");
+  assert.equal(daemonHeadline(daemonControlState(inputs())), "Runner not responding");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(undefined) }))), "Checking the runner…");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("alive"), "offline") }))), "Runner status unknown");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ settings: snapshot(settings("1")), runner: snapshot(runner("alive")) }))), "Runner paused");
+  assert.equal(daemonHeadline(daemonControlState(inputs({ runner: snapshot(runner("never started")) }))), "Runner off");
 });
 
 // "Daemon restarting" read as stuck while a self-update waited an hour for one
@@ -194,12 +194,12 @@ test("a pending self-update names the run the new build waits for", () => {
   const state = daemonControlState(inputs({ runner: snapshot(named) }), now);
   assert.equal(state.label, "alive");
   assert.equal(state.tone, "ok");
-  assert.equal(daemonHeadline(state), "Daemon running");
+  assert.equal(daemonHeadline(state), "Runner on");
   assert.equal(state.update?.since, "2026-10-04T06:42:03Z");
   assert.equal(state.update?.inflight, 1);
   assert.equal(state.update?.dispatching, true);
-  assert.equal(daemonUpdateText(state.update, now), "New build waits for fjord's improve (44m so far)");
-  assert.match(state.description, /fjord's improve on amistio-template \(44m so far\)/);
+  assert.equal(daemonUpdateText(state.update, now), "A new version waits for fjord's self-improvement run (44 minutes so far)");
+  assert.match(state.description, /fjord's self-improvement run on amistio-template \(44 minutes so far\)/);
   assert.match(state.description, /starts only runs that end before/);
   assert.doesNotMatch(state.description, /restarting/);
 
@@ -214,12 +214,12 @@ test("a pending self-update names the run the new build waits for", () => {
     ],
   };
   const exit = daemonControlState(inputs({ runner: snapshot(waiting) }), now);
-  assert.equal(daemonUpdateText(exit.update, now), "New build waits for 2 runs, the longest fjord's improve (44m so far)");
-  assert.match(exit.description, /fjord's improve on amistio-template \(44m so far\), umber's task on amistio-template \(16m so far\)/);
+  assert.equal(daemonUpdateText(exit.update, now), "A new version waits for 2 runs, the longest fjord's self-improvement run (44 minutes so far)");
+  assert.match(exit.description, /fjord's self-improvement run on amistio-template \(44 minutes so far\), umber's task on amistio-template \(16 minutes so far\)/);
   assert.match(exit.description, /stopped taking new work/);
 
   // A record without names falls back to the count; a silent heartbeat shows no update at all.
-  assert.equal(daemonUpdateText(pendingUpdate({ note: "restarting: 0 in flight", restart: { since: "2026-10-04T06:42:03Z", inflight: 0, waits_for: [] } }, now), now), "New build swapping in");
+  assert.equal(daemonUpdateText(pendingUpdate({ note: "restarting: 0 in flight", restart: { since: "2026-10-04T06:42:03Z", inflight: 0, waits_for: [] } }, now), now), "A new version is swapping in");
   assert.equal(pendingUpdate({ note: "idle" }, now), null);
   const stale = runner("silent");
   stale.daemon.restart = named.daemon.restart;
@@ -281,7 +281,7 @@ test("unreadable and unknown heartbeat states require inspection, not a guessed 
   for (const heartbeat of ["unreadable", "future-state", ""]) {
     const state = daemonControlState(inputs({ runner: snapshot(runner(heartbeat)), service: snapshot(service({ loaded: false })) }));
     assert.equal(state.label, "unknown");
-    assert.match(state.setupBlock, /not proof that no daemon is running/);
+    assert.match(state.setupBlock, /not proof that the runner is off/);
     assert.equal(ready({ blockedReason: state.setupBlock }), false);
   }
 });

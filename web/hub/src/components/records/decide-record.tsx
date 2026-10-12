@@ -1,16 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpenIcon, CheckIcon, ClockIcon, Loader2Icon, XIcon } from "lucide-react";
+import { BookOpenIcon, CheckIcon, ClockIcon, Loader2Icon, ScaleIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { showApiError } from "@/components/pulse/confirm";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { Mono, ProjectLink, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
-import { RecordKindBadge } from "@/components/records/records";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
+import { ProjectLink, When } from "@/components/pulse/who";
+import { tierWord } from "@/lib/words";
 import { writes, type RecordDecision, type RecordRow } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 import { sentence } from "@/lib/format";
@@ -20,27 +20,33 @@ import { sentence } from "@/lib/format";
 // records as the revision note (author `human`, "(via console)"). Nothing
 // runs from the click itself: accepting unblocks the plan for the lead agent.
 
-const TEXT: Record<RecordDecision, { verb: string; doing: string; done: string; placeholder: string; happens: string }> = {
+const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string; done: string; label: string; placeholder: string; happens: string }> = {
   accept: {
     verb: "Accept",
-    doing: "Accepting",
-    done: "accepted",
-    placeholder: "Approved because …",
-    happens: "The decision becomes Accepted with your words in its history. Its plan is unblocked; the lead agent may start. Nothing runs from this click by itself.",
+    title: "Accept this decision?",
+    doing: "Accepting the decision…",
+    done: "Accepted. The lead agent may now start on its plan.",
+    label: "Why do you accept it?",
+    placeholder: "I accept because …",
+    happens: "The decision becomes Accepted, with your words in its history. Its plan is unblocked, so the lead agent may start on it. Nothing runs from this click by itself.",
   },
   Deferred: {
     verb: "Defer",
-    doing: "Deferring",
-    done: "deferred",
-    placeholder: "Later because …",
-    happens: "Status becomes Deferred with your words. Agents will not build it; it can be reopened later.",
+    title: "Defer this decision?",
+    doing: "Deferring the decision…",
+    done: "Deferred. Agents won't build it for now.",
+    label: "Why not now?",
+    placeholder: "Later, because …",
+    happens: "The decision is put on hold, with your words in its history. Agents won't build it, and it can be reopened later.",
   },
   Rejected: {
     verb: "Decline",
-    doing: "Declining",
-    done: "declined",
-    placeholder: "No because …",
-    happens: "Status becomes Rejected with your words. The record stays for the reasoning.",
+    title: "Decline this decision?",
+    doing: "Declining the decision…",
+    done: "Declined. The record keeps your reasoning.",
+    label: "Why do you decline it?",
+    placeholder: "No, because …",
+    happens: "The decision is turned down, with your words in its history. The record stays, so the reasoning isn't lost.",
   },
 };
 
@@ -77,16 +83,16 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
   const submit = async () => {
     if (!ready) return;
     setBusy(true);
-    const id = toast.loading(t.doing + " " + record.id + "…");
+    const id = toast.loading(t.doing);
     try {
       const res = action === "accept" ? await writes.acceptRecord(record.id, trimmed) : await writes.setRecordStatus(record.id, action, trimmed);
-      toast.success(record.id + " " + t.done, { id });
+      toast.success(t.done, { id, description: sentence(record.title) });
       invalidate(CHANGES);
       onOpenChange(false);
       onDone?.(res.record ?? record);
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "Could not " + t.verb.toLowerCase() + " " + record.id);
+      showApiError(e, "Couldn't " + t.verb.toLowerCase() + " this decision (" + record.id + ")");
     } finally {
       setBusy(false);
     }
@@ -95,20 +101,19 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{t.verb + " " + record.id}</DialogTitle>
-        <DialogDescription className="anywhere">
-          {record.title}
-          {record.project ? (
-            <>
-              {" · "}
-              <Mono>{record.project}</Mono>
-            </>
-          ) : null}
+        <DialogTitle>{t.title}</DialogTitle>
+        <DialogDescription asChild>
+          <div className="grid gap-0.5">
+            <span className="text-[15px] font-medium text-foreground anywhere">{sentence(record.title)}</span>
+            <span className="text-[13px]" title={"Record " + record.id}>
+              {(record.project ? "In " + record.project + ", " : "") + record.id}
+            </span>
+          </div>
         </DialogDescription>
       </DialogHeader>
-      <div className="grid gap-3">
+      <div className="grid gap-4">
         <div className="grid gap-1.5">
-          <Label htmlFor="decide-words">Your words</Label>
+          <Label htmlFor="decide-words">{t.label}</Label>
           <Textarea
             id="decide-words"
             value={words}
@@ -117,6 +122,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
             rows={3}
             autoFocus
             required
+            aria-describedby="decide-words-help"
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
@@ -124,11 +130,13 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
               }
             }}
           />
-          <p className="text-xs text-muted-foreground">Required - recorded in the record&apos;s history as your revision note. ⌘↩ submits.</p>
+          <p id="decide-words-help" className="text-xs text-muted-foreground">
+            A few words are required. They go into the decision&apos;s history as your note. Press ⌘ Enter to send.
+          </p>
         </div>
-        <div className="rounded-md border bg-muted/30 px-3 py-2">
-          <div className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">What happens</div>
-          <p className="text-[12.5px] leading-snug text-muted-foreground">{t.happens}</p>
+        <div className="rounded-xl bg-muted/60 px-3.5 py-3">
+          <div className="mb-0.5 text-[13px] font-medium text-foreground">What happens next</div>
+          <p className="text-[13px] leading-relaxed text-muted-foreground">{t.happens}</p>
         </div>
       </div>
       <DialogFooter className="items-center gap-2">
@@ -147,7 +155,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
 // Accept / Defer / Decline for one Proposed ADR; nothing for any other
 // record. Each opens the dialog with its action. `sm` by default for cards,
 // `xs` for the sheet header.
-export function RecordDecisionButtons({ record, size = "sm", onDone }: { record: RecordRow; size?: "xs" | "sm"; onDone?: (r: RecordRow) => void }) {
+export function RecordDecisionButtons({ record, size = "sm", onDone }: { record: RecordRow; size?: "xs" | "sm" | "default"; onDone?: (r: RecordRow) => void }) {
   // The action stays put while the dialog animates out, so the title does not flip.
   const [action, setAction] = useState<RecordDecision>("accept");
   const [open, setOpen] = useState(false);
@@ -157,47 +165,49 @@ export function RecordDecisionButtons({ record, size = "sm", onDone }: { record:
     setOpen(true);
   };
   return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
-      <Button size={size} onClick={() => start("accept")} aria-label={"Accept " + record.id}>
-        <CheckIcon /> Accept
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button size={size} variant="ghost" className="text-bad hover:bg-bad/10 hover:text-bad" onClick={() => start("Rejected")} aria-label={"Decline " + record.id}>
+        <XIcon /> Decline
       </Button>
       <Button size={size} variant="outline" onClick={() => start("Deferred")} aria-label={"Defer " + record.id}>
         <ClockIcon /> Defer
       </Button>
-      <Button size={size} variant="ghost" className="text-bad hover:text-bad" onClick={() => start("Rejected")} aria-label={"Decline " + record.id}>
-        <XIcon /> Decline
+      <Button size={size} onClick={() => start("accept")} aria-label={"Accept " + record.id}>
+        <CheckIcon /> Accept
       </Button>
       <DecideRecordDialog record={record} action={action} open={open} onOpenChange={setOpen} onDone={onDone} />
     </span>
   );
 }
 
-// One Proposed ADR as an inbox card on the hub: what it is and where, one
-// line saying what it waits for, Read to open the record and the three
-// answers in reach. The title opens the record too, like every record card.
+// One Proposed ADR as an inbox card on the hub: a decision to make, what it
+// is about, Read to open the record and the three answers in reach. The
+// title opens the record too, like every record card. The record id rides in
+// the tooltip and the accessible name, not in the owner's way.
 export function ProposedRecordCard({ r, onOpen }: { r: RecordRow; onOpen: (r: RecordRow) => void }) {
   const areas = r.areas || [];
+  const tier = r.tier !== null && r.tier !== undefined ? tierWord(r.tier) : null;
   return (
-    <ItemCard highlight onOpen={() => onOpen(r)} ariaLabel={r.id + " " + r.title}>
-      <ItemCardHeader>
-        <ProjectLink slug={r.project} />
+    <ItemCard highlight onOpen={() => onOpen(r)} ariaLabel={"Decision " + r.id + ": " + r.title}>
+      <ItemCardHeader right={<When d={r.updated_at || r.date} />}>
+        <ItemCardKind icon={ScaleIcon} tone="you">Decision to make</ItemCardKind>
+        <ProjectLink slug={r.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
-      <ItemCardTitle chevron>{"A decision record waits for your read: " + sentence(r.title)}</ItemCardTitle>
-      <ItemCardBody clamp={2}>Read the decision, then accept it, defer it, or decline it for the agents.</ItemCardBody>
-      <ItemCardMeta>
-        <RecordKindBadge kind={r.kind} />
-        <Mono>{r.id}</Mono>
-        <StatusBadge status={r.status} />
-        {r.tier !== null && r.tier !== undefined ? <ToneBadge tone="neutral">{"Tier " + r.tier}</ToneBadge> : null}
-        {areas.length ? <span>{areas.join(", ")}</span> : null}
-        <When d={r.updated_at || r.date} />
-      </ItemCardMeta>
+      <ItemCardTitle chevron>{sentence(r.title)}</ItemCardTitle>
+      <ItemCardBody clamp={2}>The agents wrote this decision and wait for yours. Read it, then accept, defer or decline it.</ItemCardBody>
+      {areas.length || tier ? (
+        <ItemCardMeta>
+          {areas.length ? <span>{"About " + areas.join(", ")}</span> : null}
+          {tier?.short ? <span title={tier.long}>{tier.short}</span> : null}
+          <span title={"Record " + r.id}>{r.id}</span>
+        </ItemCardMeta>
+      ) : null}
       <ItemCardActions>
-        <Button variant="outline" size="default" onClick={() => onOpen(r)} aria-label={"Read " + r.id}>
+        <Button variant="outline" onClick={() => onOpen(r)} aria-label={"Read " + r.id}>
           <BookOpenIcon /> Read it
         </Button>
         <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
-          <RecordDecisionButtons record={r} />
+          <RecordDecisionButtons record={r} size="default" />
         </span>
       </ItemCardActions>
     </ItemCard>

@@ -52,22 +52,22 @@ export function useViewMode(key: string, initial: ViewMode = "cards"): [ViewMode
 
 export function ViewToggle({ value, onChange, className }: { value: ViewMode; onChange: (v: ViewMode) => void; className?: string }) {
   return (
-    <div role="group" aria-label="View" className={cn("surface-glass ring-soft inline-flex rounded-full border border-transparent bg-muted/35 p-1", className)}>
+    <div role="group" aria-label="View" className={cn("inline-flex rounded-lg bg-muted p-0.5 ring-1 ring-border/70 ring-inset", className)}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button size="icon-xs" variant="ghost" aria-pressed={value === "cards"} aria-label="Cards" onClick={() => onChange("cards")} className={cn("rounded-full", value === "cards" ? "bg-card/90 text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+          <Button size="icon-xs" variant="ghost" aria-pressed={value === "cards"} aria-label="Show as cards" onClick={() => onChange("cards")} className={cn("rounded-md", value === "cards" ? "bg-card text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.08)] ring-1 ring-border hover:bg-card" : "text-muted-foreground hover:bg-transparent hover:text-foreground")}>
             <LayoutGridIcon />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Cards</TooltipContent>
+        <TooltipContent>Show as cards</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button size="icon-xs" variant="ghost" aria-pressed={value === "table"} aria-label="Table" onClick={() => onChange("table")} className={cn("rounded-full", value === "table" ? "bg-card/90 text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
+          <Button size="icon-xs" variant="ghost" aria-pressed={value === "table"} aria-label="Show as a table" onClick={() => onChange("table")} className={cn("rounded-md", value === "table" ? "bg-card text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.08)] ring-1 ring-border hover:bg-card" : "text-muted-foreground hover:bg-transparent hover:text-foreground")}>
             <TableIcon />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Table</TooltipContent>
+        <TooltipContent>Show as a table</TooltipContent>
       </Tooltip>
     </div>
   );

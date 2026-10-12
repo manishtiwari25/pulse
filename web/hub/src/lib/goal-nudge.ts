@@ -65,4 +65,4 @@ export function dismissGoalNudge(storage: NudgeStorage, slug: string): void {
 
 // What follows the project's name in the note: the project runs on a
 // generated goal, and why setting one matters.
-export const GOAL_NUDGE_WHY = "runs on a generated goal — set yours so the lead plans, votes and researches toward an outcome you chose.";
+export const GOAL_NUDGE_WHY = "runs on a generated goal, one PULSE wrote for it. Set your own, so its agents plan, vote and research toward what you want.";

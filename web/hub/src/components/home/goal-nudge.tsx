@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { ArrowUpRightIcon } from "lucide-react";
+import { ArrowRightIcon } from "lucide-react";
 import { Notice } from "@/components/pulse/panel";
 import { ProjectLink } from "@/components/pulse/who";
 import type { ProjectCardData } from "@/lib/api";
@@ -60,8 +60,8 @@ export function GoalNudge({ p, onDismiss }: { p: ProjectCardData; onDismiss: () 
   return (
     <Notice tone="info" onDismiss={onDismiss} dismissLabel={"Dismiss the goal note for " + p.slug}>
       <ProjectLink slug={p.slug} /> <span className="text-muted-foreground">{GOAL_NUDGE_WHY}</span>{" "}
-      <Link href={hrefs.project(p.slug) + "#goal"} className="inline-flex items-center gap-0.5 rounded-sm font-medium text-info underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        Set the goal <ArrowUpRightIcon className="size-3.5" aria-hidden />
+      <Link href={hrefs.project(p.slug) + "#goal"} className="inline-flex items-center gap-1 rounded-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        Set the goal <ArrowRightIcon className="size-3.5" aria-hidden />
       </Link>
     </Notice>
   );

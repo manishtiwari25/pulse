@@ -18,39 +18,41 @@ test("code delivery path uses the frozen query contract", () => {
 
 test("coverage text does not collapse unknown evidence to zero", () => {
   const text = codeDeliveryCoverageText(payload({ summary: { unknown: 2, docs_only: 1, non_code: 1, duplicates: 1 } }));
-  assert.match(text, /2 unknown evidence rows not counted as zero/);
-  assert.match(text, /1 docs-only landing and 1 non-code landing excluded/);
-  assert.match(text, /1 duplicate deduped/);
-  assert.doesNotMatch(text, /complete evidence/);
+  assert.match(text, /2 merges couldn't be checked, so they aren't counted, not even as zero/);
+  assert.match(text, /Left out 1 merge that only changed docs and 1 merge with no code in it/);
+  assert.match(text, /Counted 1 repeated merge once/);
+  assert.doesNotMatch(text, /zero really means none/);
 });
 
 test("zero state is explicit only when the window evidence is complete", () => {
-  assert.match(codeDeliveryCoverageText(payload()), /zero is based on complete evidence/);
-  assert.doesNotMatch(codeDeliveryCoverageText(payload({ unavailable: [{ event_seq: 3, project: "demo", at: "2026-09-01T00:00:00Z", reason: "legacy" }] })), /complete evidence/);
+  assert.match(codeDeliveryCoverageText(payload()), /Every merge here was checked, so zero really means none/);
+  assert.doesNotMatch(codeDeliveryCoverageText(payload({ unavailable: [{ event_seq: 3, project: "demo", at: "2026-09-01T00:00:00Z", reason: "legacy" }] })), /zero really means none/);
 });
 
 test("sparse bounded scan is an incomplete search window, not zero", () => {
   const d = payload({ scope: { scanned: 0, has_more: true, next_before: 42 } });
   assert.equal(codeDeliveryIncompleteWindow(d), true);
-  assert.match(codeDeliveryCoverageText(d), /Incomplete search window/);
-  assert.match(codeDeliveryCoverageText(d), /not a definitive zero/);
-  assert.doesNotMatch(codeDeliveryCoverageText(d), /complete evidence/);
-  assert.deepEqual(codeDeliveryKpiState(d, false, ""), { n: "—", sub: "incomplete search window · older evidence available", tone: "warn" });
+  assert.match(codeDeliveryCoverageText(d), /The search stopped before it reached any merges/);
+  assert.match(codeDeliveryCoverageText(d), /This is not a real zero/);
+  assert.doesNotMatch(codeDeliveryCoverageText(d), /zero really means none/);
+  assert.deepEqual(codeDeliveryKpiState(d, false, ""), { n: "—", sub: "The search stopped early; older merges are left to check", tone: "warn" });
 });
 
-test("KPI and window labels name bounded landing windows", () => {
+test("KPI and window labels name the bounded window of merges", () => {
   const d = payload({ scope: { project: "demo-lib", scanned: 8 }, summary: { code_deliveries: 2, code_files: 3 } });
-  assert.equal(codeDeliveryWindowLabel(d, 2), "older landing window 2 for demo-lib · scanned 8 landing events · limit 100");
-  assert.equal(codeDeliveryKpiSub(d, false, ""), "3 source-file changes · 8 landing events scanned");
-  assert.equal(codeDeliveryKpiSub(undefined, true, ""), "loading recent landings");
-  assert.equal(codeDeliveryKpiSub(undefined, false, "offline"), "unavailable");
+  assert.equal(codeDeliveryWindowLabel(d, 2), "Older merges, page 2 in demo-lib: 8 merges checked, up to 100 at a time");
+  assert.equal(codeDeliveryWindowLabel(d, 1), "Latest merges in demo-lib: 8 merges checked, up to 100 at a time");
+  assert.equal(codeDeliveryKpiSub(d, false, ""), "3 source files changed in 8 merges checked");
+  assert.equal(codeDeliveryKpiSub(payload({ summary: { unknown: 1 } }), false, ""), "0 source files changed in 4 merges checked; 1 couldn't be checked");
+  assert.equal(codeDeliveryKpiSub(undefined, true, ""), "Loading the latest merges");
+  assert.equal(codeDeliveryKpiSub(undefined, false, "offline"), "Couldn't load");
 });
 
 test("KPI state marks cached refresh failures stale and warning", () => {
   const d = payload({ summary: { code_deliveries: 1, code_files: 2 } });
-  assert.deepEqual(codeDeliveryKpiState(undefined, false, "offline"), { n: "—", sub: "unavailable", tone: "warn" });
-  assert.deepEqual(codeDeliveryKpiState(d, false, ""), { n: 1, sub: "2 source-file changes · 4 landing events scanned", tone: "ok" });
-  assert.deepEqual(codeDeliveryKpiState(d, false, "offline"), { n: 1, sub: "stale - refresh failed · 2 source-file changes · 4 landing events scanned", tone: "warn" });
+  assert.deepEqual(codeDeliveryKpiState(undefined, false, "offline"), { n: "—", sub: "Couldn't load", tone: "warn" });
+  assert.deepEqual(codeDeliveryKpiState(d, false, ""), { n: 1, sub: "2 source files changed in 4 merges checked", tone: "ok" });
+  assert.deepEqual(codeDeliveryKpiState(d, false, "offline"), { n: 1, sub: "Not refreshed, showing earlier numbers. 2 source files changed in 4 merges checked", tone: "warn" });
 });
 
 test("commit display is bounded", () => {

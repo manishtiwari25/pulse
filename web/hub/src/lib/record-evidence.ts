@@ -47,3 +47,25 @@ export function recordEvidence(slug: string, body: string, frontmatter: Record<s
   for (const m of text.match(POST_RE) || []) push("post", m, boardHref(slug, "post", m));
   return out;
 }
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "20261004T221802Z" -> "4 Oct 2026, 22:18 UTC".
+function stampWords(stamp: string): string {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})\d{2}Z$/.exec(stamp);
+  if (!m) return "";
+  const month = MONTHS[Number(m[2]) - 1];
+  if (!month) return "";
+  return Number(m[3]) + " " + month + " " + m[1] + ", " + m[4] + ":" + m[5] + " UTC";
+}
+
+// How the sheet names one evidence link in plain words; the id stays in the
+// link's tooltip. A post's agent is the id after its stamp, without the
+// long numeric suffix some agents add.
+export function evidenceLabel(e: EvidenceLink): { label: string; when: string } {
+  const m = /^(?:job-)?(\d{8}T\d{6}Z)-(.+)$/.exec(e.id);
+  const when = m ? stampWords(m[1]) : "";
+  if (e.kind === "job") return { label: "What the job found, on the board", when };
+  const agent = m ? m[2].replace(/-\d{6,}$/, "") : "";
+  return { label: agent ? "Board post by " + agent : "Board post", when };
+}

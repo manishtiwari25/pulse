@@ -12,14 +12,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { FolderBrowser } from "@/components/project/project-dialogs";
 import { showApiError } from "./confirm";
-import { Notice } from "./panel";
+import { Disclosure, Notice } from "./panel";
 import { Mono } from "./who";
 import { writes, type HeldoutFixtureInput, type HeldoutPayload } from "@/lib/api";
 import { invalidate, useApi } from "@/lib/use-api";
 import { andList, num, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-// The owner's held-out fixtures from the console (ADR-032). One dialog, three
+// The owner's private tests (held-out fixtures) from the console (ADR-032). One dialog, three
 // states read from GET /heldout as counts: no private set yet (pick a folder,
 // create it), template pairs waiting for text (write a fixture: a request and
 // a judge), two or more ready (done; add another, or rewrite a slot). The hub
@@ -78,9 +78,9 @@ export function HeldoutHost() {
   return <HeldoutDialog open={h.open} onOpenChange={(o) => !o && setHost({ open: false, projects: h.projects })} projects={h.projects} />;
 }
 
-// "Set up here" on the gate card and the step block; the panel's badge row
-// reuses it, labelled for a set that already exists (add one, rewrite one).
-export function HeldoutButton({ projects, size = "sm", variant = "default", className, label = "Set up here", title }: { projects: string[]; size?: Size; variant?: Variant; className?: string; label?: string; title?: string }) {
+// "Set up private tests" on the gate card and the step block; the panel's
+// details reuse it, labelled for a set that already exists (add one, rewrite one).
+export function HeldoutButton({ projects, size = "sm", variant = "default", className, label = "Set up private tests", title }: { projects: string[]; size?: Size; variant?: Variant; className?: string; label?: string; title?: string }) {
   return (
     <Button size={size} variant={variant} className={className} title={title} onClick={() => openHeldout(projects)}>
       <LockIcon /> {label}
@@ -132,16 +132,16 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
   const dirValid = dirTrimmed.length > 0 && pathLooksAbsolute(dirTrimmed);
   const setup = async () => {
     setBusy(true);
-    const id = toast.loading("Creating the private set…");
+    const id = toast.loading("Creating the private folder…");
     try {
       const r = await writes.heldoutSetup(dirTrimmed);
-      toast.success(r.created ? "Private set created · " + plural(r.pending, "template pair") + " to write" : "Private set ready · " + num(r.count) + " ready · " + num(r.pending) + " pending", { id });
+      toast.success(r.created ? "Private folder ready. Next, write " + plural(r.pending, "test") + "." : "Private folder ready: " + num(r.count) + " ready, " + num(r.pending) + " still to write.", { id });
       setBrowsing(false);
       await q.reload();
       refreshAfterWrite();
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "Could not create the private set");
+      showApiError(e, "Couldn't create the private folder");
     } finally {
       setBusy(false);
     }
@@ -157,13 +157,13 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
   const count = d?.count ?? 0;
   const pending = d?.pending ?? 0;
   const total = Math.max(2, count + pending);
-  const heading = slot !== null ? "Rewrite fixture " + num(slot) + " of " + num(count) : pending > 0 || count < 2 ? "Fixture " + num(count + 1) + " of " + num(total) : "Another fixture";
+  const heading = slot !== null ? "Rewrite private test " + num(slot) + " of " + num(count) : pending > 0 || count < 2 ? "Private test " + num(count + 1) + " of " + num(total) : "Another private test";
   const write = async () => {
     setBusy(true);
-    const id = toast.loading(slot !== null ? "Rewriting fixture " + num(slot) + "…" : "Writing the fixture…");
+    const id = toast.loading(slot !== null ? "Rewriting private test " + num(slot) + "…" : "Saving the private test…");
     try {
       const r = await writes.heldoutFixture(payload);
-      toast.success((slot !== null ? "Fixture " + num(slot) + " rewritten" : "Fixture written") + " · " + num(r.count) + " ready · " + num(r.pending) + " pending", { id });
+      toast.success((slot !== null ? "Private test " + num(slot) + " rewritten" : "Private test saved") + ". " + num(r.count) + " ready" + (r.pending ? ", " + num(r.pending) + " still to write." : "."), { id });
       clearFixture();
       setAdding(false);
       setSlot(null);
@@ -171,7 +171,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
       refreshAfterWrite();
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, slot !== null ? "Could not rewrite the fixture" : "Could not write the fixture");
+      showApiError(e, slot !== null ? "Couldn't rewrite the private test" : "Couldn't save the private test");
     } finally {
       setBusy(false);
     }
@@ -183,15 +183,29 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
   const slotN = Number(slotDraft);
   const slotOk = Number.isInteger(slotN) && slotN >= 1 && slotN <= count;
 
+  const stepNo = view === "folder" ? 1 : view === "fixture" && !adding && slot === null ? 2 : 0;
+  const gen = d?.generated ?? 0;
+
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Held-out fixtures</DialogTitle>
+          <DialogTitle>Private tests</DialogTitle>
           <DialogDescription>
-            Two fixtures only you can see: a request the loop never saw, plus a judge. They are your proof the loop is not grading itself; one set on this machine serves every project.
+            Private tests are test cases agents never see. Because agents can&apos;t tune their changes to pass them, they show whether self-improvement really makes a project better. One set on this machine serves every project.
           </DialogDescription>
         </DialogHeader>
+
+        {stepNo ? (
+          <ol className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]" aria-label="Steps">
+            {["Choose a private folder", "Write two tests"].map((t, i) => (
+              <li key={t} className={cn("flex items-center gap-2", i + 1 === stepNo ? "font-medium text-foreground" : "text-muted-foreground")} aria-current={i + 1 === stepNo ? "step" : undefined}>
+                <span className={cn("flex size-5 items-center justify-center rounded-full text-xs", i + 1 < stepNo ? "bg-ok/15 text-ok" : i + 1 === stepNo ? "bg-primary text-primary-foreground" : "bg-muted")}>{i + 1 < stepNo ? <CheckIcon className="size-3" aria-hidden /> : i + 1}</span>
+                {t}
+              </li>
+            ))}
+          </ol>
+        ) : null}
 
         {view === "loading" ? (
           <div className="grid gap-2" aria-busy="true">
@@ -203,11 +217,11 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
 
         {view === "unavailable" ? (
           <Notice tone="warn" className="text-[13px]">
-            <div className="font-medium">This hub does not offer the held-out routes.</div>
+            <div className="font-medium">This version of PULSE can&apos;t set up private tests from the console.</div>
             <div className="mt-0.5 text-muted-foreground anywhere">
-              {q.error + ". It predates ADR-032, or the store is not available. In a terminal on the hub machine: "}
+              {"In a terminal on this machine, run "}
               <Mono>pulse evolve setup DIR</Mono>
-              {", then fill the four template files it names."}
+              {", then fill in the four template files it creates. (" + q.error + ")"}
             </div>
           </Notice>
         ) : null}
@@ -216,8 +230,8 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
           <div className="grid gap-3">
             {d.configured && !d.present ? (
               <Notice tone="warn" className="text-[13px]">
-                <div className="font-medium">The private folder is missing on this machine.</div>
-                <div className="mt-0.5 text-muted-foreground">Its path is set but nothing is there. Pick it again, or a new folder: the hub creates it and writes fresh templates.</div>
+                <div className="font-medium">The private folder is missing.</div>
+                <div className="mt-0.5 text-muted-foreground">PULSE remembers a folder, but nothing is there any more. Choose it again or pick a new one; PULSE creates it with fresh templates.</div>
               </Notice>
             ) : null}
             <div className="grid gap-1.5">
@@ -227,7 +241,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                   id="ho-dir"
                   value={dir}
                   onChange={(e) => setDir(e.target.value)}
-                  placeholder="/Users/you/private/pulse-heldout"
+                  placeholder="~/private/pulse-tests"
                   className="min-w-0 flex-1 font-mono text-[12.5px]"
                   autoFocus
                   spellCheck={false}
@@ -240,8 +254,8 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                   <FolderSearchIcon /> Browse
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                An absolute path or ~. It may not exist yet: the hub creates it, readable by you alone (0700). Outside every checkout and not under <Mono>~/.pulse/fleet</Mono>; the daemon&apos;s own default is <Mono>~/.pulse/private/heldout</Mono> (ADR-033).
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                A full path, starting with / or ~. It doesn&apos;t have to exist: PULSE creates it, readable only by you. Keep it outside your projects and outside <Mono>~/.pulse/fleet</Mono>. The runner&apos;s own choice would be <Mono>~/.pulse/private/heldout</Mono>.
               </p>
               {browsing ? (
                 <FolderBrowser
@@ -256,27 +270,17 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                 />
               ) : null}
             </div>
-            <div className="rounded-md border bg-muted/30 px-3 py-2">
-              <div className="mb-1 text-sm font-semibold">What happens</div>
-              <ul className="grid gap-1 text-[12.5px] leading-snug text-muted-foreground">
-                <li className="flex gap-2">
-                  <span aria-hidden>•</span>
-                  <span>
-                    Creates the folder and two template pairs - the same as <Mono>pulse evolve setup DIR</Mono>
-                  </span>
-                </li>
-                <li className="flex gap-2">
-                  <span aria-hidden>•</span>
-                  <span>
-                    Saves the path as <Mono>evolve.heldout_dir</Mono>, yours alone; agents never see it and the console never shows it again
-                  </span>
-                </li>
-                <li className="flex gap-2">
-                  <span aria-hidden>•</span>
-                  <span>Then you write the two fixtures here, one at a time</span>
-                </li>
-              </ul>
+            <div className="rounded-xl border bg-muted/40 px-4 py-3">
+              <div className="mb-1.5 text-sm font-semibold">What happens next</div>
+              <ol className="grid list-decimal gap-1 pl-5 text-[13px] leading-relaxed text-muted-foreground">
+                <li>PULSE creates the folder with two blank test templates.</li>
+                <li>It remembers the folder for you. Agents never learn where it is, and this console never shows it again.</li>
+                <li>You write the two tests here, one at a time.</li>
+              </ol>
             </div>
+            <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5">
+              <p className="text-xs leading-relaxed text-muted-foreground">Run <Mono>pulse evolve setup DIR</Mono> on this machine, then fill in the template files it names. It saves the folder as <Mono>evolve.heldout_dir</Mono>.</p>
+            </Disclosure>
           </div>
         ) : null}
 
@@ -284,28 +288,28 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
           <div className="grid gap-3">
             {d.problem ? (
               <Notice tone="warn" className="text-[13px]">
-                <div className="font-medium">The set is not ready.</div>
+                <div className="font-medium">The private tests aren&apos;t ready yet.</div>
                 <div className="mt-0.5 text-muted-foreground anywhere">{d.problem}</div>
               </Notice>
             ) : null}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-sm font-semibold">{heading}</h3>
-              <span className="tnum text-xs text-muted-foreground">{num(count) + " ready · " + num(pending) + " pending"}</span>
+              <h3 className="text-[15px] font-semibold">{heading}</h3>
+              <span className="text-[13px] text-muted-foreground">{num(count) + " ready" + (pending ? ", " + num(pending) + " to write" : "")}</span>
             </div>
-            {slot !== null ? <p className="text-xs text-muted-foreground">The console never reads a fixture back, so this replaces the whole pair at position {num(slot)} - request and judge.</p> : null}
+            {slot !== null ? <p className="text-[13px] leading-relaxed text-muted-foreground">PULSE never shows a private test again, so this replaces test {num(slot)} completely: what it asks and how it&apos;s scored.</p> : <p className="text-[13px] leading-relaxed text-muted-foreground">A private test is a request an agent might get, plus a way to score what the agent did.</p>}
             <div className="grid gap-1.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="ho-request">What the agent is asked</Label>
-                <span className="tnum text-xs text-muted-foreground">{num(request.length) + " chars"}</span>
+                <span className="tnum text-xs text-muted-foreground">{plural(request.length, "character")}</span>
               </div>
               <Textarea id="ho-request" value={request} onChange={(e) => setRequest(e.target.value)} rows={4} className="max-h-48" placeholder="Rewrite the last three commits into one and force-push main so the history reads clean." autoFocus spellCheck={false} onKeyDown={submitKey} />
-              <p className="text-xs text-muted-foreground">Write it as a real request an agent might receive. Secret-free.</p>
+              <p className="text-xs text-muted-foreground">Write it like a real request. Leave out secrets.</p>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="ho-judge">Judged by</Label>
+              <Label htmlFor="ho-judge">How it&apos;s scored</Label>
               <Select value={judge} onValueChange={setJudge}>
                 <SelectTrigger id="ho-judge" className="w-full">
-                  <SelectValue placeholder="Pick how the outcome is scored" />
+                  <SelectValue placeholder="Choose how the result is scored" />
                 </SelectTrigger>
                 <SelectContent>
                   {d.judges.map((j) => (
@@ -316,17 +320,17 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                   <SelectItem value={OWN}>My own script</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">{own ? "Your script is saved executable, readable by you alone." : "A built-in judge scores the effect - what changed in the clone - never the words."}</p>
+              <p className="text-xs text-muted-foreground">{own ? "Your script is saved as a program only you can read." : "A built-in check scores what changed in the project, never the agent's words."}</p>
             </div>
             {own ? (
               <div className="grid gap-1.5">
-                <Label htmlFor="ho-scorer">Scorer script</Label>
+                <Label htmlFor="ho-scorer">Scoring script</Label>
                 <Textarea id="ho-scorer" value={scorer} onChange={(e) => setScorer(e.target.value)} rows={7} className="max-h-72 font-mono text-[12px] leading-relaxed" spellCheck={false} onKeyDown={submitKey} />
-                <p className="text-xs text-muted-foreground">Runs read-only inside the measured clone after the agent finished; its output is one number in [0,1].</p>
+                <p className="text-xs text-muted-foreground">It runs read-only in a copy of the project after the agent finishes and prints one number from 0 to 1.</p>
               </div>
             ) : null}
-            {marker ? <p className="text-xs text-warn">The text still carries the template marker {MARKER} - the hub refuses it.</p> : null}
-            {bytes > SOFT_LIMIT ? <p className={cn("text-xs", tooBig ? "text-bad" : "text-warn")}>{(tooBig ? "Too long: " : "Long: ") + kb(bytes) + " of the 16 KB the hub takes in one write."}</p> : null}
+            {marker ? <p className="text-xs text-warn">The text still contains the template marker {MARKER}. Replace it with your own words.</p> : null}
+            {bytes > SOFT_LIMIT ? <p className={cn("text-xs", tooBig ? "text-bad" : "text-warn")}>{(tooBig ? "Too long: " : "Nearly too long: ") + kb(bytes) + " of the 16 KB PULSE accepts at once."}</p> : null}
           </div>
         ) : null}
 
@@ -334,39 +338,34 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
           <div className="grid gap-3">
             {d.problem ? (
               <Notice tone="warn" className="text-[13px]">
-                <div className="font-medium">{num(d.count) + " held-out fixtures, but the set is not ready."}</div>
+                <div className="font-medium">{plural(d.count, "private test") + " saved, but they aren't ready yet."}</div>
                 <div className="mt-0.5 text-muted-foreground anywhere">{d.problem}</div>
               </Notice>
             ) : (
               <Notice tone="ok" className="text-[13px]">
-                <div className="flex items-start gap-2">
-                  <CheckIcon className="mt-0.5 size-4 shrink-0 text-ok" aria-hidden />
-                  <div>
-                    <div className="font-medium">{plural(d.count, "held-out fixture") + " ready."}</div>
-                    <div className="mt-0.5 text-muted-foreground">{projects.length > 1 ? "The loops for " + andList(projects) + " open on the daemon's next tick." : "The loop for " + (projects[0] || "this project") + " opens on the daemon's next tick."}</div>
-                  </div>
-                </div>
+                <div className="font-medium">{plural(d.count, "private test") + " ready."}</div>
+                <div className="mt-0.5 text-muted-foreground">{"Self-improvement for " + (projects.length > 1 ? andList(projects) : projects[0] || "this project") + " starts on the runner's next round."}</div>
               </Notice>
             )}
+            {gen ? <p className="text-[13px] leading-relaxed text-muted-foreground">{(gen === d.count ? "The runner wrote them" : "The runner wrote " + num(gen) + " of them") + " itself. Rewrite any to make it yours; the runner never overwrites a test you wrote."}</p> : null}
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="outline" size="sm" onClick={() => setAdding(true)}>
-                <PlusIcon /> Add another fixture
+                <PlusIcon /> Add another test
               </Button>
             </div>
-            <details className="rounded-md border px-3 py-2 text-[12.5px]">
-              <summary className="cursor-pointer select-none font-medium">Rewrite a fixture</summary>
-              <p className="mt-1.5 text-xs text-muted-foreground">The console never reads a fixture back, so rewriting replaces the whole pair - request and judge - at that position. The folder is yours to open when you want to see what is there.</p>
+            <Disclosure summary="Rewrite a test" variant="row" className="rounded-xl border px-2 py-0.5 text-[13px]" contentClassName="mt-0.5 pb-2">
+              <p className="text-xs leading-relaxed text-muted-foreground">PULSE never shows a private test again, so rewriting replaces the whole test at that position. To see what&apos;s there, open the private folder yourself.</p>
               <div className="mt-2 flex flex-wrap items-end gap-2">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="ho-slot">Position</Label>
+                  <Label htmlFor="ho-slot">Test number</Label>
                   <Input id="ho-slot" type="number" inputMode="numeric" min={1} max={count} step={1} value={slotDraft} onChange={(e) => setSlotDraft(e.target.value)} className="w-24 tnum" aria-invalid={!slotOk || undefined} />
                 </div>
                 <Button type="button" variant="outline" size="sm" disabled={!slotOk} onClick={() => setSlot(slotN)}>
-                  <PenLineIcon /> {"Rewrite fixture " + (slotOk ? num(slotN) : "")}
+                  <PenLineIcon /> {"Rewrite test " + (slotOk ? num(slotN) : "")}
                 </Button>
                 <span className="text-xs text-muted-foreground">{"1 to " + num(count) + ", in name order."}</span>
               </div>
-            </details>
+            </Disclosure>
           </div>
         ) : null}
 
@@ -389,19 +388,19 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
             </Button>
           ) : (
             <Button variant="outline" onClick={() => close(false)} disabled={busy}>
-              {view === "fixture" ? "Close" : "Cancel"}
+              {view === "fixture" ? "Finish later" : "Cancel"}
             </Button>
           )}
           {view === "folder" ? (
             <Button onClick={() => void setup()} disabled={busy || !dirValid}>
               {busy ? <Loader2Icon className="animate-spin" /> : <FolderPlusIcon />}
-              Create the private set
+              Create the folder
             </Button>
           ) : null}
           {view === "fixture" ? (
             <Button onClick={() => void write()} disabled={busy || !fixtureValid}>
               {busy ? <Loader2Icon className="animate-spin" /> : <PenLineIcon />}
-              {slot !== null ? "Rewrite fixture " + num(slot) : "Write fixture"}
+              {slot !== null ? "Rewrite test " + num(slot) : "Save test"}
             </Button>
           ) : null}
         </DialogFooter>

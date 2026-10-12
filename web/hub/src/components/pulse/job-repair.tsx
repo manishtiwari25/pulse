@@ -1,22 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon, WrenchIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, CircleXIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { errorText, registeredProjects, type Org } from "@/lib/api";
-import { num } from "@/lib/format";
+import { num, plural, sentence } from "@/lib/format";
 import {
-  failedJobsPath, JOB_REPAIR_CATEGORIES, JOB_REPAIR_MAX_SELECTION, repairFailedJobs,
-  type FailedJob, type FailedJobsPage, type JobRepairResponse,
+  failedJobsPath, JOB_FAILURE_CLASS, JOB_REPAIR_CATEGORIES, JOB_REPAIR_MAX_SELECTION, JOB_REPAIR_SENTENCE, repairFailedJobs,
+  type FailedJob, type FailedJobsPage, type JobRepairResponse, type JobRepairResult,
 } from "@/lib/job-repair";
 import { useApi } from "@/lib/use-api";
 import { ConfirmDialog } from "./confirm";
-import { ItemCard, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
-import { EmptyState, ErrorNotice, Notice, Panel, SkeletonRows, Stack, Toolbar } from "./panel";
+import { ItemCard, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "./item-card";
+import { Disclosure, EmptyState, ErrorNotice, Notice, Panel, SkeletonRows, Stack, Toolbar } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When } from "./who";
 
-export function FailedJobsPanel({ project }: { project?: string }) {
+const OUTCOME_WORD: Record<JobRepairResult["outcome"], string> = { requeued: "Queued again", replanned: "Queued with a fix", skipped: "Skipped", error: "Didn't work" };
+
+// `folded`: shown under FailedJobsSection's own heading and count, so the
+// panel drops its title and opening sentence instead of repeating them.
+export function FailedJobsPanel({ project, folded }: { project?: string; folded?: boolean }) {
   const [filter, setFilter] = useState("");
   const projects = useApi<Org>(project ? null : "org");
   const scope = project || filter;
@@ -24,6 +28,7 @@ export function FailedJobsPanel({ project }: { project?: string }) {
     <FailedJobsContent
       key={scope}
       project={scope}
+      folded={folded}
       projectFilter={!project ? (disabled) => (
         <div className="grid gap-1">
           <Select value={filter || "__all__"} onValueChange={(value) => setFilter(value === "__all__" ? "" : value)} disabled={disabled}>
@@ -33,14 +38,14 @@ export function FailedJobsPanel({ project }: { project?: string }) {
               {registeredProjects(projects.data).map((p) => <SelectItem key={p.slug} value={p.slug}>{p.name || p.slug}</SelectItem>)}
             </SelectContent>
           </Select>
-          {projects.error ? <span role="alert" className="text-xs text-bad">Project filters unavailable: {projects.error}</span> : null}
+          {projects.error ? <span role="alert" className="text-xs text-bad">Couldn&apos;t load the project list: {projects.error}</span> : null}
         </div>
       ) : undefined}
     />
   );
 }
 
-function FailedJobsContent({ project, projectFilter }: { project: string; projectFilter?: (disabled: boolean) => React.ReactNode }) {
+function FailedJobsContent({ project, projectFilter, folded }: { project: string; projectFilter?: (disabled: boolean) => React.ReactNode; folded?: boolean }) {
   const [cursors, setCursors] = useState<string[]>([""]);
   const [category, setCategory] = useState("all");
   const [selected, setSelected] = useState<string[]>([]);
@@ -57,6 +62,8 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
   const selectedJobs = visible.filter((job) => job.eligible && selected.includes(job.id));
   const busy = refreshing || submitting || !!pending;
   const stale = view.loading || !!view.error;
+  const retryable = page?.page_counts.eligible ?? 0;
+  const titles = new Map(jobs.map((j) => [j.id, j.title]));
 
   const refresh = async () => {
     setRefreshing(true);
@@ -70,7 +77,7 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
 
   const repair = async () => {
     if (!pending?.length || stale || pending.some((job) => !jobs.some((current) => current.id === job.id && current.eligible))) {
-      throw new Error("The selection changed or could not be refreshed. Close this dialog and refresh before selecting jobs again.");
+      throw new Error("The list changed or couldn't be refreshed. Close this, refresh, and pick the jobs again.");
     }
     setSubmitting(true);
     setWriteError("");
@@ -95,63 +102,70 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
       : [...selectedJobs.map((item) => item.id), job.id].slice(0, maxSelection));
   };
 
+  const refreshButton = (
+    <Button size="xs" variant="outline" disabled={busy} onClick={() => void refresh()}>
+      <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Refreshing…" : "Refresh"}
+    </Button>
+  );
   return (
     <Panel
-      title="Jobs that need a hand"
-      icon={WrenchIcon}
-      actions={
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}>
-          <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Refreshing..." : "Refresh"}
-        </Button>
-      }
-      footer="Repair queues work; it does not promise a successful run. No history is deleted, no budgets or gates are changed, and structural or owner-only holds are never overridden."
+      title={folded ? undefined : "Jobs that failed"}
+      icon={CircleXIcon}
+      actions={folded ? undefined : refreshButton}
+      className={folded ? "rounded-none rounded-b-2xl border-0 border-t bg-transparent shadow-none ring-0" : undefined}
+      footer="Retrying puts a job back in line; it doesn't guarantee it works this time. Nothing is deleted, no limits change, and holds that only you can lift stay in place."
     >
       <Stack gap={4}>
-        <p className="text-sm text-muted-foreground">
-          {page ? <><strong className="text-foreground">{num(page.historical_total)}</strong> past failed jobs{project ? " in " + project : " across projects"}. </> : null}
-          Pick the ones that still look useful to retry. PULSE rechecks each one before queueing new work.
-        </p>
-        <Toolbar>
+        {folded ? (
+          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">PULSE retries temporary problems on its own. Pick the ones that still matter and retry them.</p>
+            {refreshButton}
+          </div>
+        ) : <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+          {page ? <><strong className="font-semibold text-foreground">{plural(page.historical_total, "job")}</strong>{" failed in the past" + (project ? " in " + project : "") + ". "}</> : null}
+          Most need nothing from you: PULSE retries temporary problems on its own. Look here when a task seems stuck, and retry the ones that still matter.
+        </p>}
+        <Toolbar className="mb-0">
           {projectFilter?.(busy)}
           <Select value={category} onValueChange={(value) => { setCategory(value); setSelected([]); }} disabled={busy}>
-            <SelectTrigger aria-label="Current recovery category on this page"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Filter by reason on this page"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All categories on this page</SelectItem>
+              <SelectItem value="all">All reasons</SelectItem>
               {Object.entries(JOB_REPAIR_CATEGORIES).map(([key, label]) => (
                 <SelectItem key={key} value={key}>{label} ({num(page?.page_counts[key] ?? 0)})</SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" disabled={busy || stale || !selectedJobs.length} onClick={() => { setReport(null); setPending(selectedJobs); }}>
-            <WrenchIcon /> Repair selected ({selectedJobs.length}/{maxSelection})
+          <Button className="sm:ml-auto" disabled={busy || stale || !selectedJobs.length} onClick={() => { setReport(null); setPending(selectedJobs); }}>
+            <RotateCcwIcon /> {selectedJobs.length ? "Retry " + plural(selectedJobs.length, "job") : "Retry selected"}
           </Button>
         </Toolbar>
-        {view.error ? <ErrorNotice error={view.error} onRetry={() => void refresh()} /> : null}
-        {writeError ? <ErrorNotice>Repair request error: {writeError} Refresh before retrying; any completed work is protected by the recovery ledger.</ErrorNotice> : null}
-        {refreshing || submitting ? <p role="status" className="text-sm text-muted-foreground">{submitting ? "Requesting bounded repair..." : "Refreshing current eligibility..."}</p> : null}
+        {view.error ? <ErrorNotice error={view.error} onRetry={() => void refresh()}>Couldn&apos;t load the failed jobs: {view.error}</ErrorNotice> : null}
+        {writeError ? <ErrorNotice>The retry didn&apos;t go through: {writeError} Refresh before trying again; anything that already went through is kept.</ErrorNotice> : null}
+        {refreshing || submitting ? <p role="status" className="text-sm text-muted-foreground">{submitting ? "Sending the retry…" : "Checking which jobs can be retried…"}</p> : null}
         {report ? (
-          <div role="status" aria-live="polite" className="grid gap-3">
+          <div role="status" aria-live="polite" className="grid gap-2">
             <Notice tone={report.errors ? "bad" : report.skipped ? "warn" : "ok"}>
-              Requested {num(report.requested)}: {num(report.queued)} queued, {num(report.skipped)} skipped, {num(report.errors)} errors. Queued does not mean fixed.
+              {"Asked to retry " + plural(report.requested, "job") + ": " + num(report.queued) + " queued, " + num(report.skipped) + " skipped" + (report.errors ? ", " + num(report.errors) + " didn't work" : "") + ". Queued means it runs again, not that it's fixed."}
             </Notice>
             {report.results.map((item) => (
-              <div key={item.job_id} className="rounded-lg border p-3 text-sm anywhere">
+              <div key={item.job_id} className="rounded-xl border bg-card px-4 py-3 text-sm anywhere">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Mono>{item.job_id}</Mono>
-                  <ToneBadge tone={item.outcome === "error" ? "bad" : item.outcome === "skipped" ? "warn" : "ok"}>{item.outcome}</ToneBadge>
-                  {item.carrier_id ? <span>Carrier: <Mono>{item.carrier_id}</Mono> ({item.carrier_status})</span> : null}
+                  <ToneBadge tone={item.outcome === "error" ? "bad" : item.outcome === "skipped" ? "warn" : "ok"} title={item.outcome}>{OUTCOME_WORD[item.outcome] ?? sentence(item.outcome)}</ToneBadge>
+                  <span className="min-w-0 font-medium anywhere" title={item.job_id}>{titles.get(item.job_id) || "A failed job"}</span>
                 </div>
-                <p className="mt-2">{item.reason}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{item.fix}</p>
+                <p className="mt-1.5 leading-relaxed">{item.reason}</p>
+                {item.fix ? <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">{item.fix}</p> : null}
+                {item.carrier_id ? <p className="mt-1 text-xs text-muted-foreground">Now carried by <Mono>{item.carrier_id}</Mono>{item.carrier_status ? " (" + item.carrier_status + ")" : ""}</p> : null}
               </div>
             ))}
           </div>
         ) : null}
         {view.loading ? <SkeletonRows n={3} /> : (
           <>
-            <p className="text-xs text-muted-foreground">
-              {num(page?.page_counts.eligible ?? 0)} eligible on this page, before queue and lineage rechecks.
-              Select up to {maxSelection} explicitly. Category counts and filtering apply only to this page, not the historical total.
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
+              {retryable ? plural(retryable, "job") + " on this page can be retried. " : "None on this page can be retried right now. "}
+              {"Pick up to " + num(maxSelection) + " at a time; PULSE checks each one again before it runs. The reason filter covers this page only."}
             </p>
             {visible.length ? (
               <div className="grid gap-3" aria-busy={refreshing || submitting}>
@@ -167,13 +181,13 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
               </div>
             ) : !view.error ? (
               <EmptyState>
-                {jobs.length ? "No entries in this category on this page. Choose another category or page." : "No failed jobs on this page."}
+                {jobs.length ? "No job on this page fails for that reason. Pick another reason or page." : "No failed jobs here."}
               </EmptyState>
             ) : null}
           </>
         )}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">Page {cursors.length}: {visible.length} shown, {jobs.length} fetched{page ? " (limit " + page.limit + ")" : ""}.</p>
+          <p className="text-[13px] text-muted-foreground">{"Page " + num(cursors.length) + ": showing " + num(visible.length) + " of " + num(jobs.length)}</p>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" disabled={busy || view.loading || cursors.length < 2} onClick={() => { setCursors((current) => current.slice(0, -1)); setSelected([]); }}>
               <ChevronLeftIcon /> Newer
@@ -187,15 +201,15 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
       <ConfirmDialog
         open={!!pending}
         onOpenChange={(open) => { if (!open) setPending(null); }}
-        title={"Queue repair for " + (pending?.length ?? 0) + " selected job(s)?"}
-        description="The server rechecks each current failure. Deterministic failures get one corrected copy with earlier evidence; transient failures may reuse the job. Holds, cancellations, STOP, backoff, queue limits and existing carriers can cause individual skips. No historical bulk retry or prerequisite override is authorized."
-        action="Queue selected repairs"
-        success="Repair request completed - see the per-job outcomes."
+        title={"Retry " + plural(pending?.length ?? 0, "job") + "?"}
+        description="PULSE checks each one again first. A job that failed because of its work gets one corrected copy that carries what went wrong; a temporary failure simply runs again. Some may be skipped, for example when work is stopped, a job is waiting before its next retry, or another job already carries the work. Nothing is deleted and no limits are raised."
+        action="Retry"
+        success="Sent. See what happened to each job below."
         onConfirm={repair}
         invalidates={(path) => /^(jobs\/failed|runner|tasks|org|events)/.test(path)}
       >
-        <ul className="max-h-48 space-y-2 overflow-auto text-sm">
-          {pending?.map((job) => <li key={job.id}><Mono>{job.id}</Mono> - {job.title} <span className="text-muted-foreground">({job.project}, {job.class})</span></li>)}
+        <ul className="max-h-48 space-y-1.5 overflow-auto text-sm">
+          {pending?.map((job) => <li key={job.id} title={job.id}>{job.title} <span className="text-muted-foreground">({job.project})</span></li>)}
         </ul>
       </ConfirmDialog>
     </Panel>
@@ -203,35 +217,39 @@ function FailedJobsContent({ project, projectFilter }: { project: string; projec
 }
 
 function FailedJobCard({ job, checked, disabled, onToggle }: { job: FailedJob; checked: boolean; disabled: boolean; onToggle: () => void }) {
+  const why = JOB_REPAIR_CATEGORIES[job.category] ?? sentence(job.category);
   return (
-    <ItemCard ariaLabel={"Historical failure " + job.id} active={checked}>
+    <ItemCard ariaLabel={"Failed job: " + job.title} active={checked}>
       <ItemCardHeader right={<When d={job.finished_at} />}>
-        <ToneBadge tone={job.eligible ? "ok" : "neutral"}>{JOB_REPAIR_CATEGORIES[job.category]}</ToneBadge>
-        <ToneBadge>{job.class}</ToneBadge>
-        <span>{job.kind}, Tier {job.tier}</span>
+        <ItemCardKind icon={CircleXIcon} tone="bad">{JOB_FAILURE_CLASS[job.class] ?? "Failed"}</ItemCardKind>
+        <ProjectLink slug={job.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
       <ItemCardTitle>{job.title}</ItemCardTitle>
+      <ItemCardBody clamp={0}>
+        <p className="text-foreground/85">{JOB_REPAIR_SENTENCE[job.category] ?? job.reason}</p>
+        {job.reason && JOB_REPAIR_SENTENCE[job.category] ? <p className="mt-1 whitespace-pre-wrap text-[13px] anywhere" title="What PULSE recorded">{"What PULSE recorded: " + job.reason}</p> : null}
+      </ItemCardBody>
       <ItemCardMeta>
-        <Mono>{job.id}</Mono><ProjectLink slug={job.project} />
-        {job.carrier_id ? <span>Current carrier: <Mono>{job.carrier_id}</Mono> ({job.carrier_status})</span> : null}
+        <ToneBadge tone={job.eligible ? "ok" : "neutral"} dot>{why}</ToneBadge>
+        {job.retry_at && job.category === "backoff" ? <span>Next automatic retry <When d={job.retry_at} /></span> : null}
+        {job.recoveries ? <span>{"Retried " + num(job.recoveries) + " of " + num(job.recovery_limit) + " times"}</span> : null}
       </ItemCardMeta>
-      <p className="whitespace-pre-wrap text-sm anywhere">{job.reason}</p>
-      <p className="text-xs text-muted-foreground anywhere">{job.fix}</p>
-      {job.retry_at ? <p className="text-xs text-muted-foreground">Backoff due: <When d={job.retry_at} exact /></p> : null}
-      <details className="text-xs">
-        <summary className="cursor-pointer font-medium">Earlier failure and recovery context</summary>
-        <div className="mt-2 grid gap-2">
-          <p>Source: <Mono>{job.source || "(no source; deduped by lineage)"}</Mono></p>
-          <p>Chain root: <Mono>{job.root}</Mono>. Recoveries: {job.recoveries}/{job.recovery_limit}.</p>
+      {/* rotate-0 while closed: an open Disclosure around this one would otherwise turn its chevron too. */}
+      <Disclosure summary="Technical details" className="text-[13px] [&:not([open])>summary>svg]:rotate-0" contentClassName="grid gap-2 text-muted-foreground">
+          {job.fix ? <p>Suggested fix: {job.fix}</p> : null}
+          <p>Job <Mono>{job.id}</Mono>, {job.kind}, Tier {job.tier}, {job.class}</p>
+          <p>Source: <Mono>{job.source || "(none; matched by its chain)"}</Mono></p>
+          <p>Chain root: <Mono>{job.root}</Mono>. Recoveries: {job.recoveries} of {job.recovery_limit}.</p>
+          {job.carrier_id ? <p>Now carried by <Mono>{job.carrier_id}</Mono> ({job.carrier_status})</p> : null}
+          {job.retry_at ? <p>Backoff due: <When d={job.retry_at} exact /></p> : null}
           <p>Recorded result:</p>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 p-2 anywhere">{job.result || "(no result recorded)"}</pre>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-xs text-foreground/85 anywhere">{job.result || "(no result recorded)"}</pre>
           {job.last_run_id ? <p>Last run: <Mono>{job.last_run_id}</Mono> ({job.last_run_status})</p> : null}
-          {job.last_run_summary ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 p-2 anywhere">{job.last_run_summary}</pre> : null}
-        </div>
-      </details>
-      <label className="flex items-center gap-2 pt-1 text-sm">
-        <input type="checkbox" className="size-4 accent-primary" checked={checked} disabled={disabled} onChange={onToggle} aria-label={"Select " + job.id + " for repair"} />
-        {job.eligible ? "Select for bounded repair" : "Not eligible for repair"}
+          {job.last_run_summary ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-xs text-foreground/85 anywhere">{job.last_run_summary}</pre> : null}
+      </Disclosure>
+      <label className={"flex w-fit items-center gap-2 pt-1 text-sm " + (job.eligible ? "cursor-pointer font-medium" : "text-muted-foreground")}>
+        <input type="checkbox" className="size-4 accent-primary" checked={checked} disabled={disabled} onChange={onToggle} aria-label={"Retry " + job.title} />
+        {job.eligible ? "Retry this job" : "Can't be retried: " + why.charAt(0).toLowerCase() + why.slice(1)}
       </label>
     </ItemCard>
   );

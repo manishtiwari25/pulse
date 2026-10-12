@@ -103,12 +103,13 @@ pulse hub                                      # the console opens at http://127
 
 Everything else happens in the console. **Add project** registers a checkout
 and queues its onboarding (`pulse init --name my-app --verify 'npm test'` in
-the checkout is the same step from a terminal). Home's **Daemon** status links
-to **Daemon controls**. **Keep running** previews and installs the daemon and
+the checkout is the same step from a terminal). Home's **Runner** status (the
+console's word for the daemon) links to **Runner controls** under **Details for
+this machine**. **Keep PULSE running** previews and installs the daemon and
 console as user services (launchd / systemd --user) so neither dies with a
-terminal; **Start daemon** loads an existing, unloaded service. **Finish service
-setup** completes a partial installation when the daemon is managed but the
-console service is missing or unloaded. The `pulse hub` you started hands over
+terminal; **Start the runner** loads an existing, unloaded service. **Finish
+service setup** completes a partial installation when the daemon is managed but
+the console service is missing or unloaded. The `pulse hub` you started hands over
 to the service's at the same address (`pulse service
 install` in a terminal does the same). A fresh copy carries the framework's
 records inside the binary, so nothing has to be imported first (see
@@ -122,9 +123,12 @@ login from then on (`pulse harness login` is the same flow in a terminal).
 The account needs a GitHub Copilot seat or plan; the card says so when it
 does not, and `pulse status` carries the same `harness` line.
 
-Everything else happens in the console. The Home page starts with **For you**,
-**Your projects** and **What's happening**; the machine details, service
-controls and raw activity fold under **Show details**.
+Everything else happens in the console. It speaks plainly - the runner, not
+the daemon; machines, not executors; private tests, not held-out fixtures - and
+keeps ids, commands and the store's own terms in tooltips and folded
+**Technical details**. The Home page starts with **For you**, **Your projects**
+and **What's happening**; the machine details, service controls and raw
+activity fold under **Details for this machine**.
 
 - **For you** - everything waiting on the owner in one place: proposed
   decisions (ADRs) to accept, defer or decline with your own words - the same
@@ -190,7 +194,8 @@ controls and raw activity fold under **Show details**.
   decision with ordinary work gets its Tier 0/1 parts planned now and one doc
   job drafting the decision record, never a second round of questions.
 - **Votes** - everything in vote across projects: suggestions still needing
-  votes, suggestions decided eligible or rejected, and open amendments. At
+  votes, suggestions decided eligible or rejected (the console says **Agreed**
+  and **Turned down**), and open amendments (**Rule changes**). At
   quorum, more ups make a suggestion `eligible`, more downs make it `rejected`,
   and a tie stays `needs votes`. Each eligible card says whether the daemon
   will plan it or which gate holds it back - addressed to the owner, no
@@ -209,7 +214,7 @@ controls and raw activity fold under **Show details**.
   constitutional amendments; a yes queues one job. With `owner.presence` set to
   `away`, each project's lead answers its board proposals here in your stead,
   signed as the lead.
-- **Compute** - agents' requests for more machines (size, hours, why). Approve
+- **Machines** (`/compute/`) - agents' requests for more machines (size, hours, why). Approve
   or deny; approved requests are provisioned by the configured provider
   (`compute.provider`: `azure`, `aws`, `gcp`, or `multipass` for a VM on the
   hub machine itself; `pulse compute providers` lists them) inside the caps
@@ -237,18 +242,21 @@ controls and raw activity fold under **Show details**.
   stored but never echoed; the held-out
   evaluator directory is owner-private and is masked in every agent-facing
   view and event.
-- **Harness** - every worker run as the harness saw it: which job, agent,
-  executor and model, how many model calls and commands, tokens, how it ended
-  (`submitted`, or why it stopped: step limit, time limit, format errors,
+- **Runs** (`/harness/`) - every worker run as the harness saw it: which job,
+  agent, machine and model, how many model calls and commands, tokens, how it
+  ended (finished, or why it stopped: step limit, time limit, format errors,
   provider error, not signed in), and the transcript step by step - the
-  model's message, the command, the observation - live while it runs. The
-  same page holds the sign-in card, the provider's models and the limits.
+  model's message, the command, the output - live while it runs. Its
+  **Sign-in & models** button opens **Settings → Harness**, which holds the
+  sign-in card, the provider's models and the limits.
 - **Records** - ADRs, plans, features, guides, memory, prompts, environment
   recipes, the constitution and the evolution archive, with revisions and
   delivery marks.
-- **Live** - the board, threads, agents, jobs, hooks and a live event feed
-  (server-sent events over the store's event log); each thread shows its
-  status, participants, last activity and the questions and claims still open.
+- **What just happened** - the live event feed (server-sent events over the
+  store's event log) under Home's **Details for this machine**, and a
+  project's **History → Timeline**; the project's **Board** tab lists every
+  thread with its status, participants, last activity and the questions and
+  claims still open.
 
 The console binds to `127.0.0.1` only. Nothing in it is a wrapper around an
 agent command; it calls the same store helpers the CLI uses.
@@ -2241,8 +2249,8 @@ copies, and only an executable's debug map names the live ones, so a checkout
 built a few times a day otherwise carries gigabytes of them. Each object is
 checked against the debug map of the binary that owns it, so a live one is
 never touched, and a binary the sweep cannot read keeps all of its objects.
-`pulse sweep --dry-run` shows all of it before it happens; the Hygiene panel
-lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
+`pulse sweep --dry-run` shows all of it before it happens; the console's
+**Cleanup** panel lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
 
 Each agent cleans up after itself first, and the record says whether it did.
 The brief's rule 9 tells a worker to remove every worktree it added
@@ -2260,10 +2268,10 @@ what is held, each with its reason), a per-agent tally over the last 30 days
 freed) and the cleaning events newest first (`daemon.sweep`,
 `worktree.swept`, `land.swept`, `agent.cleanup`; `?project=` narrows,
 `?action=` picks one, `?limit=` caps at 500); `/api/v1/runner` carries the
-`hygiene` status line; the Compute page's **Hygiene** panel renders it next to
+`hygiene` status line; the Machines page's **Cleanup** panel renders it next to
 the machine and refreshes the moment a cleaning event lands, a project's
-Overview shows the same panel narrowed to that checkout, and the home feed
-lists the events as housekeeping.
+**History → Cleanup** shows the same panel narrowed to that checkout, and the
+home feed lists the events as routine cleanup.
 
 ### Executor self-heal and self-retire
 

@@ -3,25 +3,53 @@ import { api, query } from "./api";
 export const JOB_REPAIR_MAX_SELECTION = 5;
 export const FAILED_JOBS_PAGE_SIZE = 50;
 
+// Why a failed job can or can't be retried, as the owner reads it.
 export const JOB_REPAIR_CATEGORIES = {
-  eligible: "Eligible for repair",
-  structural: "Prerequisite or owner action",
-  manual_controller: "Separate controller / lead",
-  superseded: "Work has another carrier",
-  active_run: "Run still active",
-  recovery_cap: "Recovery cap reached",
-  backoff: "Waiting for backoff",
-  queue_full: "Project queue full",
-  outside_window: "Outside recovery window",
-  held: "Recorded recovery hold",
-  cancelled: "Owner cancelled",
-  stopped: "STOP",
-  recovery_off: "Recovery disabled",
-  inactive_project: "Project inactive",
+  eligible: "Can be retried",
+  structural: "Needs a fix first",
+  manual_controller: "Handled by its lead",
+  superseded: "Another job carries the work",
+  active_run: "Still running",
+  recovery_cap: "Retried too many times",
+  backoff: "Waiting before the next retry",
+  queue_full: "Project queue is full",
+  outside_window: "Too old to retry",
+  held: "On hold",
+  cancelled: "You cancelled it",
+  stopped: "Work is stopped",
+  recovery_off: "Automatic retries are off",
+  inactive_project: "Project is inactive",
   not_failed: "No longer failed",
 } as const;
 
 export type FailedJobCategory = keyof typeof JOB_REPAIR_CATEGORIES;
+
+// The same reasons as one plain sentence for a failed job's card: what it
+// means for the owner and whether anything is needed from them.
+export const JOB_REPAIR_SENTENCE: Record<FailedJobCategory, string> = {
+  eligible: "It stopped before finishing. You can retry it if the work still matters.",
+  structural: "It keeps failing the same way, so retrying won't help until the cause is fixed.",
+  manual_controller: "Its lead agent decides what happens next, so there's nothing to do here.",
+  superseded: "A newer job already picked up this work. Nothing to do.",
+  active_run: "It's running again right now. Check back when it finishes.",
+  recovery_cap: "PULSE already retried it as many times as allowed. Look at why before trying again.",
+  backoff: "PULSE will retry it on its own shortly. Nothing to do.",
+  queue_full: "The project has too much waiting right now. Retry once the queue clears.",
+  outside_window: "It failed too long ago to retry. Give the task again if it still matters.",
+  held: "It's on hold, so it can't be retried until the hold is lifted.",
+  cancelled: "You cancelled it, so PULSE leaves it alone.",
+  stopped: "Work is stopped on this machine, so nothing can be retried until it's resumed.",
+  recovery_off: "Automatic retries are off for this project. You can still retry it by hand.",
+  inactive_project: "Its project isn't active, so it can't run right now.",
+  not_failed: "It finished after all. Nothing to do.",
+};
+
+// What kind of failure it was (ADR-036), in plain words.
+export const JOB_FAILURE_CLASS: Record<string, string> = {
+  transient: "Temporary problem",
+  deterministic: "Problem in the work",
+  structural: "Needs a fix first",
+};
 
 export interface FailedJob {
   id: string;
@@ -84,7 +112,7 @@ export function failedJobsPath(project?: string, before?: string, limit = FAILED
 
 export function repairFailedJobs(jobIDs: string[], project?: string): Promise<JobRepairResponse> {
   if (jobIDs.length < 1 || jobIDs.length > JOB_REPAIR_MAX_SELECTION || new Set(jobIDs).size !== jobIDs.length || jobIDs.some((id) => !id.trim())) {
-    return Promise.reject(new Error("Select 1 to 5 distinct eligible jobs."));
+    return Promise.reject(new Error("Pick 1 to 5 different jobs that can be retried."));
   }
   return api<JobRepairResponse>("jobs/repair", {
     method: "POST",

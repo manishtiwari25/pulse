@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
-import { PanelClose, PanelDepth, panelFrame, panelTop, usePanelSlot } from "@/components/ui/panel"
+import { PanelClose, PanelDepth, PanelSlot, panelFrame, panelTop, useFocusReturn } from "@/components/ui/panel"
 import { XIcon } from "lucide-react"
 
 // A sheet is the reading panel: a task, a record, a thread. It is not modal -
@@ -47,19 +47,25 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
 }) {
   const depth = React.useContext(PanelDepth)
-  usePanelSlot(React.useContext(PanelClose), depth > 0)
+  // A sheet is for reading: it takes focus itself, keyboard users tab on from there.
+  const focus = useFocusReturn(onOpenAutoFocus, onCloseAutoFocus, true)
   return (
     <SheetPortal>
       <PanelDepth.Provider value={depth + 1}>
         <SheetPrimitive.Content
           data-slot="sheet-content"
           data-side={side}
+          tabIndex={-1}
+          onOpenAutoFocus={focus.onOpenAutoFocus}
+          onCloseAutoFocus={focus.onCloseAutoFocus}
           className={cn(
             panelFrame,
             "flex flex-col gap-4 data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:rounded-t-2xl data-[side=bottom]:border-t data-[side=left]:bottom-0 data-[side=left]:left-0 data-[side=left]:w-3/4 data-[side=left]:rounded-r-2xl data-[side=left]:border-r data-[side=right]:bottom-0 data-[side=right]:right-0 data-[side=right]:w-3/4 data-[side=right]:rounded-l-2xl data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:top-0 data-[side=top]:h-auto data-[side=top]:rounded-b-2xl data-[side=top]:border-b data-[side=left]:sm:max-w-sm data-[side=right]:sm:max-w-sm",
@@ -68,6 +74,7 @@ function SheetContent({
           )}
           {...props}
         >
+          <PanelSlot nested={depth > 0} />
           {children}
           {showCloseButton && (
             <SheetPrimitive.Close data-slot="sheet-close" asChild>
@@ -116,7 +123,7 @@ function SheetTitle({
     <SheetPrimitive.Title
       data-slot="sheet-title"
       className={cn(
-        "font-heading text-base font-semibold tracking-tight text-foreground",
+        "font-heading text-lg leading-snug font-semibold tracking-tight text-foreground",
         className
       )}
       {...props}

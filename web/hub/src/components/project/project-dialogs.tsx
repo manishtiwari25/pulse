@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { showApiError } from "@/components/pulse/confirm";
-import { Notice } from "@/components/pulse/panel";
+import { Disclosure, Notice } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
 import { api, enc, errorText, writes, type FoldersPayload, type InitResult, type RemovePreview } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
@@ -52,11 +52,11 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
 
   const submit = async () => {
     setBusy(true);
-    const id = toast.loading("Registering " + trimmed + "…");
+    const id = toast.loading("Adding " + trimmed + "…");
     try {
       const r = await writes.registerProject({ path: trimmed, name: name.trim() || undefined, verify: verify.trim() || undefined });
-      const job = r.job ? " · onboarding job " + r.job.id + (r.job_queued ? " queued" : " already queued") : "";
-      toast.success(r.project.slug + (r.created ? " registered" : " refreshed") + job, { id });
+      const job = r.job ? (r.job_queued ? " An agent sets it up as soon as the runner is on." : " Its setup is already waiting for the runner.") : "";
+      toast.success((r.created ? "Added " : "Refreshed ") + r.project.slug + "." + job, { id });
       invalidate((p) => p === "org" || p === "projects" || p.startsWith("events") || p.startsWith("projects/") || p.startsWith("tasks"));
       onOpenChange(false);
       setPath("");
@@ -76,14 +76,14 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Add project</DialogTitle>
+          <DialogTitle>Add a project</DialogTitle>
           <DialogDescription>
-            Register a git checkout on this machine so the hub lists it, its lead can work in it and you can give it tasks. The same as <Mono>pulse init</Mono> in that folder.
+            Pick the folder of a git checkout on this machine. PULSE adds it as a project, and its lead agent starts on the tasks you give it.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
           <div className="grid gap-1.5">
-            <Label htmlFor="ap-path">Checkout path</Label>
+            <Label htmlFor="ap-path">Folder</Label>
             <div className="flex gap-2">
               <Input
                 id="ap-path"
@@ -101,7 +101,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
                 <FolderSearchIcon /> Browse
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">An absolute path to a git checkout on this machine. ~ is allowed, or browse the machine.</p>
+            <p className="text-[13px] text-muted-foreground">The full path, starting with / or ~. Or press Browse to find it.</p>
             {browsing ? (
               <FolderBrowser
                 id="ap-browser"
@@ -116,38 +116,34 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
-              <Label htmlFor="ap-name">Name (optional)</Label>
+              <Label htmlFor="ap-name">Name <span className="font-normal text-muted-foreground">(optional)</span></Label>
               <Input id="ap-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-app" maxLength={100} />
-              <p className="text-xs text-muted-foreground">Defaults to the folder name; the slug is derived from it.</p>
+              <p className="text-[13px] text-muted-foreground">Leave it empty to use the folder&apos;s name.</p>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="ap-verify">Verify command (optional)</Label>
+              <Label htmlFor="ap-verify">Test command <span className="font-normal text-muted-foreground">(optional)</span></Label>
               <Input id="ap-verify" value={verify} onChange={(e) => setVerify(e.target.value)} placeholder="go test ./... or npm test" className="font-mono text-[12.5px]" spellCheck={false} />
-              <p className="text-xs text-muted-foreground">The command the runner uses to check a job before it lands.</p>
+              <p className="text-[13px] text-muted-foreground">Checks an agent&apos;s work before it is merged.</p>
             </div>
           </div>
-          <div className="rounded-md border bg-muted/30 px-3 py-2">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">What happens</div>
-            <ul className="grid gap-1 text-[12.5px] leading-snug text-muted-foreground">
-              <li className="flex gap-2">
-                <span aria-hidden>•</span>
-                <span>Registers the checkout as a project (or refreshes it when the path is already known)</span>
+          <div className="rounded-xl border bg-muted/40 px-4 py-3">
+            <div className="mb-1.5 text-[13px] font-medium text-foreground">What happens next</div>
+            <ol className="grid list-decimal gap-1 pl-4 text-[13px] leading-relaxed text-muted-foreground marker:text-muted-foreground/70">
+              <li>PULSE adds the folder as a project. If it already knows the folder, it refreshes it instead.</li>
+              <li>
+                If the checkout has <Mono>docs/context/environment.md</Mono>, agents read it to learn how to build and run the project.
               </li>
-              <li className="flex gap-2">
-                <span aria-hidden>•</span>
-                <span>
-                  Imports <Mono>docs/context/environment.md</Mono> as the project&apos;s environment recipe when the checkout has one
-                </span>
-              </li>
-              <li className="flex gap-2">
-                <span aria-hidden>•</span>
-                <span>Queues the onboarding job - the runner picks it up when it is on</span>
-              </li>
-            </ul>
+              <li>An agent sets the project up as soon as the runner is on. Nothing in the folder changes until you give a task.</li>
+            </ol>
           </div>
+          <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5 text-[13px] text-muted-foreground">
+            <p>
+              Run <Mono>pulse init</Mono> in the folder. It does the same thing.
+            </p>
+          </Disclosure>
         </div>
         <DialogFooter className="items-center gap-2">
-          {trimmed && !valid ? <span className="mr-auto text-xs text-warn">The path must start with / or ~.</span> : null}
+          {trimmed && !valid ? <span className="mr-auto text-[13px] text-bad">Start the path with / or ~.</span> : null}
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
@@ -211,7 +207,7 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
   const crumbPath = (i: number) => "/" + segments.slice(0, i + 1).join("/");
 
   return (
-    <div id={id} className="grid gap-2 rounded-md border bg-muted/20 p-2" aria-label="Folder browser">
+    <div id={id} className="grid gap-2 rounded-xl border bg-muted/30 p-2" aria-label="Folder browser">
       <div className="flex flex-wrap items-center gap-1">
         {data?.roots.map((r) => (
           <Button key={r.path} type="button" size="xs" variant={here === r.path ? "secondary" : "ghost"} onClick={() => setCursor(r.path)} title={r.path}>
@@ -227,7 +223,7 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
         </Button>
       </div>
 
-      <nav aria-label="Current folder" className="flex items-center gap-0.5 overflow-x-auto whitespace-nowrap font-mono text-[11.5px] text-muted-foreground">
+      <nav aria-label="Current folder" className="flex items-center gap-0.5 overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground">
         <button type="button" className="rounded px-1 hover:bg-muted hover:text-foreground" onClick={() => setCursor("/")}>
           /
         </button>
@@ -241,15 +237,15 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
         ))}
       </nav>
 
-      <div className="max-h-44 overflow-y-auto rounded-md border bg-background">
+      <div className="max-h-56 overflow-y-auto rounded-lg border bg-card">
         {error ? (
           <div className="p-2">
             <Notice tone="warn">
-              <div className="text-[12.5px] font-medium">{error.what}</div>
+              <div className="text-[13px] font-medium">{error.what}</div>
               {error.why ? <div className="text-xs text-muted-foreground">{error.why}</div> : null}
               <div className="mt-1.5 flex gap-1.5">
                 <Button type="button" size="xs" variant="outline" onClick={() => setCursor(data?.home || "~")}>
-                  <HomeIcon /> Home
+                  <HomeIcon /> Go to your home folder
                 </Button>
               </div>
             </Notice>
@@ -264,14 +260,14 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
             ))}
           </ul>
         ) : data && data.entries.length === 0 ? (
-          <p className="px-3 py-4 text-center text-xs text-muted-foreground">No folders here.</p>
+          <p className="px-3 py-4 text-center text-[13px] text-muted-foreground">This folder has no folders inside.</p>
         ) : (
           <ul className={cn("divide-y", loading && "opacity-60")}>
             {data?.entries.map((e) => (
               <li key={e.path} className="flex items-center gap-1.5 pr-1.5">
                 <button
                   type="button"
-                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-[12.5px] hover:bg-muted/60"
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm hover:bg-muted/60"
                   onClick={() => setCursor(e.path)}
                   onDoubleClick={() => usable(e) && onPick(e.path)}
                   title={e.path}
@@ -279,22 +275,22 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
                   {e.checkout ? <GitBranchIcon className="size-4 shrink-0 text-ok" /> : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />}
                   <span className="truncate">{e.name}</span>
                   {e.registered ? (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">
-                      registered · {e.registered}
+                    <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-xs font-normal">
+                      {"Added as " + e.registered}
                     </Badge>
                   ) : folderMode && owner(e) ? (
-                    <Badge variant="secondary" className="h-4 px-1.5 text-[11px]">
-                      inside · {owner(e)}
+                    <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-xs font-normal">
+                      {"Inside " + owner(e)}
                     </Badge>
                   ) : e.checkout ? (
-                    <Badge variant="outline" className="h-4 px-1.5 text-[11px] text-ok">
-                      git
+                    <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-xs font-normal text-ok">
+                      Git checkout
                     </Badge>
                   ) : null}
                   <ChevronRightIcon className="ml-auto size-3.5 shrink-0 opacity-40" />
                 </button>
                 {folderMode ? (
-                  <Button type="button" size="xs" variant="outline" onClick={() => onPick(e.path)} disabled={!usable(e)} title={usable(e) ? undefined : "a registered project - the hub will refuse it"}>
+                  <Button type="button" size="xs" variant="outline" onClick={() => onPick(e.path)} disabled={!usable(e)} title={usable(e) ? undefined : "This folder belongs to a project. Pick one outside every project."}>
                     Use
                   </Button>
                 ) : usable(e) ? (
@@ -311,31 +307,31 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
 
       {data && !error ? (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+          <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">
             {folderMode ? (
               data.registered ? (
                 <>
-                  Registered as <Mono>{data.registered}</Mono> - the hub will refuse it.
+                  This is the project <span className="font-medium text-foreground">{data.registered}</span>. Pick a folder outside every project.
                 </>
               ) : data.inside ? (
                 <>
-                  Inside the project <Mono>{data.inside}</Mono> - the hub will refuse it.
+                  This folder is inside the project <span className="font-medium text-foreground">{data.inside}</span>. Pick one outside every project.
                 </>
               ) : (
-                "This folder is fine for a private set."
+                "This folder works for private tests."
               )
             ) : data.registered ? (
               <>
-                Already registered as <Mono>{data.registered}</Mono>; using it refreshes that project.
+                Already added as <span className="font-medium text-foreground">{data.registered}</span>. Using it again refreshes that project.
               </>
             ) : data.checkout ? (
-              "This folder is a git checkout."
+              "This folder is a git checkout. You can add it."
             ) : (
-              "Not a git checkout - the hub will refuse it; open a folder with a repository."
+              "This folder isn't a git checkout. Open the folder that holds the repository."
             )}
           </span>
           {folderMode ? (
-            <Button type="button" size="sm" variant={hereOwner ? "outline" : "default"} onClick={() => onPick(data.path)} disabled={!data.path || !!hereOwner} title={hereOwner ? "a registered project - the hub will refuse it" : undefined}>
+            <Button type="button" size="sm" variant={hereOwner ? "outline" : "default"} onClick={() => onPick(data.path)} disabled={!data.path || !!hereOwner} title={hereOwner ? "This folder belongs to a project. Pick one outside every project." : undefined}>
               <FolderIcon /> Use this folder
             </Button>
           ) : (
@@ -353,18 +349,20 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
 
 type RemoveKind = "project" | "executor";
 
-const REMOVE_TEXT: Record<RemoveKind, { title: string; description: string; action: string; done: string }> = {
+const REMOVE_TEXT: Record<RemoveKind, { title: string; description: string; action: string; keep: string; done: string }> = {
   project: {
     title: "Remove project",
-    description: "Nothing is deleted. The project turns inactive: its queued jobs are cancelled, executors that named it stop serving it, and its posts, runs and checkout stay. You can restore it later.",
+    description: "Nothing is deleted. PULSE stops working on this project: jobs waiting to start are cancelled and no machine takes its work. Its folder, posts, runs and records all stay, and you can restore it later from the project list.",
     action: "Remove project",
-    done: "restore it from the project picker any time.",
+    keep: "Keep the project",
+    done: "You can restore it from the project list any time.",
   },
   executor: {
-    title: "Remove executor",
-    description: "The hub forgets this machine: its row turns removed and no job is sent there again. Runs it made keep its name. The machine itself is untouched.",
-    action: "Remove executor",
-    done: "the machine is untouched.",
+    title: "Remove machine",
+    description: "PULSE forgets this machine and sends it no more work. Runs it made keep its name, and nothing on the machine itself changes.",
+    action: "Remove machine",
+    keep: "Keep the machine",
+    done: "Nothing on the machine itself changed.",
   },
 };
 
@@ -409,13 +407,13 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
     const id = toast.loading("Removing " + name + "…");
     try {
       const p = await removeWrite(kind, name, false);
-      toast.success(name + " removed - " + text.done, { id });
+      toast.success("Removed " + name + ". " + text.done, { id });
       invalidate();
       onOpenChange(false);
       onApplied?.(p);
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "Could not remove " + name);
+      showApiError(e, name + " wasn't removed");
     } finally {
       setBusy(false);
     }
@@ -425,39 +423,36 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
   return (
     <>
       <DialogHeader>
-        <DialogTitle>
-          {text.title + " "}
-          <Mono className="text-[15px]">{name}</Mono>
-        </DialogTitle>
+        <DialogTitle className="anywhere">{"Remove " + name + "?"}</DialogTitle>
         <DialogDescription className="anywhere">{text.description}</DialogDescription>
       </DialogHeader>
       {refusal ? (
         <Notice tone="bad" className="text-[13px]">
-          <div className="font-medium">{refusal.error || "The hub refused the preview."}</div>
-          {refusal.why ? <div className="mt-0.5 text-muted-foreground">why: {refusal.why}</div> : null}
-          {refusal.fix ? <div className="mt-0.5 text-muted-foreground">fix: {refusal.fix}</div> : null}
+          <div className="font-medium">{refusal.error || "PULSE couldn't work out what removing it would change."}</div>
+          {refusal.why ? <div className="mt-0.5 text-muted-foreground">Why: {refusal.why}</div> : null}
+          {refusal.fix ? <div className="mt-0.5 text-muted-foreground">What to do: {refusal.fix}</div> : null}
         </Notice>
       ) : preview ? (
         <div className="grid gap-3" aria-live="polite">
-          <PreviewList title="Changes" items={preview.changes} empty="Nothing changes." />
-          <PreviewList title="Stays" items={preview.stays} empty="Nothing else is touched." />
+          <PreviewList title="What stops" items={preview.changes} empty="Nothing is running or waiting, so nothing stops." tone="stop" />
+          <PreviewList title="What stays" items={preview.stays} empty="Nothing else is touched." tone="stay" />
           {preview.yours?.length ? (
             <section>
-              <PreviewTitle>Yours to run</PreviewTitle>
+              <PreviewTitle>Left for you to do</PreviewTitle>
+              <p className="mb-1.5 text-[13px] text-muted-foreground">PULSE doesn&apos;t run these for you. Run them in a terminal if they apply.</p>
               <ul className="grid gap-1">
                 {preview.yours.map((cmd, i) => (
                   <li key={i}>
-                    <code className="block rounded bg-muted px-2 py-1 font-mono text-[11.5px] anywhere">{cmd}</code>
+                    <code className="block rounded-md bg-muted px-2 py-1 font-mono text-[12.5px] anywhere">{cmd}</code>
                   </li>
                 ))}
               </ul>
-              <p className="mt-1 text-[11.5px] text-muted-foreground">Commands the hub does not run for you; run them yourself if they apply.</p>
             </section>
           ) : null}
-          {leased ? <p className="text-xs text-warn">{leased + " leased job" + (leased === 1 ? " is" : "s are") + " left to finish; nothing new is leased."}</p> : null}
+          {leased ? <Notice tone="warn" className="text-[13px]">{(leased === 1 ? "1 job has" : leased + " jobs have") + " already started. " + (leased === 1 ? "It finishes" : "They finish") + " on its own; nothing new starts."}</Notice> : null}
         </div>
       ) : (
-        <div className="grid gap-2" aria-busy="true" aria-label="Loading the preview">
+        <div className="grid gap-2" aria-busy="true" aria-label="Working out what changes">
           <Skeleton className="h-4 w-24" />
           <Skeleton className="h-8" />
           <Skeleton className="h-4 w-20" />
@@ -465,7 +460,9 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
         </div>
       )}
       <DialogFooter>
-        <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+          {text.keep}
+        </Button>
         <Button variant="destructive" disabled={busy || !preview} onClick={() => void apply()}>
           {busy ? <Loader2Icon className="animate-spin" /> : <Trash2Icon />}
           {text.action}
@@ -476,35 +473,51 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
 }
 
 function PreviewTitle({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+  return <div className="mb-1.5 text-[13px] font-semibold text-foreground">{children}</div>;
 }
 
-function PreviewList({ title, items, empty }: { title: string; items: RemovePreview["changes"]; empty: string }) {
+// The preview speaks the CLI's words; the owner reads the console's.
+const plainWords = (s: string) =>
+  s
+    .replace(/\s+->\s+/g, " to ")
+    .replace(/\bqueued\b/g, "waiting")
+    .replace(/\bleased\b/g, "started")
+    .replace(/\bexecutors?\b/g, (m) => (m.endsWith("s") ? "machines" : "machine"));
+
+function PreviewList({ title, items, empty, tone }: { title: string; items: RemovePreview["changes"]; empty: string; tone: "stop" | "stay" }) {
   return (
-    <section>
+    <section className="rounded-xl border px-4 py-3">
       <PreviewTitle>{title}</PreviewTitle>
       {items?.length ? (
-        <ul className="grid gap-1 text-[12.5px] leading-snug">
-          {items.map((it, i) => (
-            <li key={i} className="flex flex-wrap gap-x-1.5 anywhere">
-              {/* The CLI indents a job under its "N queued jobs" line with two spaces; keep them. */}
-              <Mono className="whitespace-pre-wrap">{it.label}</Mono>
-              {it.detail ? <span className="text-muted-foreground">{"- " + it.detail}</span> : null}
-            </li>
-          ))}
+        <ul className="grid gap-1.5 text-sm leading-snug">
+          {items.map((it, i) => {
+            // The CLI indents a job under its "N queued jobs" line; such a line is an id, kept small and set in mono.
+            const sub = /^\s+/.test(it.label);
+            return (
+              <li key={i} className={cn("flex min-w-0 items-start gap-2 anywhere", sub && "pl-4")}>
+                {sub ? null : <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", tone === "stop" ? "bg-bad" : "bg-ok")} aria-hidden />}
+                <span className="min-w-0">
+                  {sub ? <Mono className="text-xs text-muted-foreground">{it.label.trim()}</Mono> : <span className="text-foreground">{sentenceCase(plainWords(it.label))}</span>}
+                  {it.detail ? <span className="text-muted-foreground">{": " + plainWords(it.detail)}</span> : null}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : (
-        <p className="text-[12.5px] text-muted-foreground">{empty}</p>
+        <p className="text-[13px] text-muted-foreground">{empty}</p>
       )}
     </section>
   );
 }
 
+const sentenceCase = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
 // "Remove…" in a project header or at the end of an executor row. Executor
 // rows are one line, so there it is an icon button with a tooltip.
 export function RemoveMenuButton({ kind, name, onApplied, compact }: { kind: RemoveKind; name: string; onApplied?: (p: RemovePreview) => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
-  const label = "Remove " + kind + " " + name;
+  const label = (kind === "executor" ? "Remove machine " : "Remove project ") + name;
   return (
     <>
       {compact ? (
@@ -514,11 +527,11 @@ export function RemoveMenuButton({ kind, name, onApplied, compact }: { kind: Rem
               <Trash2Icon />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>{"Remove " + kind + "…"}</TooltipContent>
+          <TooltipContent>{kind === "executor" ? "Remove machine…" : "Remove project…"}</TooltipContent>
         </Tooltip>
       ) : (
         <Button variant="outline" size="sm" aria-label={label} className="text-muted-foreground hover:text-foreground" onClick={() => setOpen(true)}>
-          <Trash2Icon /> Remove…
+          <Trash2Icon /> {kind === "executor" ? "Remove machine…" : "Remove project…"}
         </Button>
       )}
       <RemoveDialog open={open} onOpenChange={setOpen} kind={kind} name={name} onApplied={onApplied} />
@@ -535,13 +548,13 @@ export function RestoreButton({ slug, onRestored }: { slug: string; onRestored?:
     const id = toast.loading("Restoring " + slug + "…");
     try {
       const r = await writes.restoreProject(slug);
-      const job = r.job ? " · onboarding job " + r.job.id + (r.job_queued ? " queued" : " already queued") : "";
-      toast.success(slug + " restored" + job, { id });
+      const job = r.job ? (r.job_queued ? " An agent sets it up again as soon as the runner is on." : " Its setup is already waiting for the runner.") : "";
+      toast.success(slug + " is back." + job, { id });
       invalidate();
       onRestored?.(r);
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "Could not restore " + slug);
+      showApiError(e, slug + " wasn't restored");
     } finally {
       setBusy(false);
     }

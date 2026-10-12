@@ -2,17 +2,19 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderIcon, InboxIcon, ListTodoIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, ServerIcon, SettingsIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, ArrowRightIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, SearchIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
-import { AmendmentCard, FeedList, ProposalCard, QuestionCard, SuggestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { FeedList, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { AmendmentCard, SuggestionCard } from "@/components/board/vote-cards";
 import { HygienePanel } from "@/components/pulse/hygiene";
 import { DataTable } from "@/components/pulse/data-table";
 import { DocRev, GateCard, SelfImprovementPanel } from "@/components/pulse/evolve";
-import { inboxBreakdown, useInbox } from "@/components/pulse/inbox";
+import { useInbox } from "@/components/pulse/inbox";
 import { ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
@@ -20,20 +22,22 @@ import { LiveFeed } from "@/components/pulse/live-feed";
 import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
 import { ProjectGoalPanel } from "@/components/project/goal";
-import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
+import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { Check, Mono, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
-import { THREAD_COLUMNS, ThreadCards, ThreadLastBy, ThreadParticipants, ThreadSignals } from "@/components/board/sheets";
+import { Avatar, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
+import { THREAD_COLUMNS, ThreadCards, ThreadParticipants, ThreadSignals, threadTitle } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
-import { SectionHeading } from "@/components/pulse/item-card";
+import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-sheet";
 import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
-import { num, plural, statusTone, type Tone } from "@/lib/format";
-import { isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { num, plural, rel, sentence } from "@/lib/format";
+import { statusWord } from "@/lib/words";
+import { codeDeliveryKpiState } from "@/lib/code-deliveries";
+import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
@@ -42,21 +46,52 @@ function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; child
   return <>{children(q.data)}</>;
 }
 
-// A one-of filter as a row of chips: every choice is visible and one tap
-// away, which a Select is not on a phone. Counts ride along when known.
-function Chips({ label, value, onChange, options, className }: { label: string; value: string; onChange: (v: string) => void; options: { id: string; label: string; n?: number }[]; className?: string }) {
+// A one-of filter as the segmented control /tasks uses: every choice is
+// visible and one tap away, with its count inside. On a phone the row
+// scrolls sideways. `you` marks a count that waits for the owner.
+function Segments({ label, value, onChange, options, className }: { label: string; value: string; onChange: (v: string) => void; options: { id: string; label: string; n?: number; you?: boolean }[]; className?: string }) {
   return (
-    <div role="group" aria-label={label} className={cn("flex flex-wrap items-center gap-1", className)}>
-      {options.map((o) => {
-        const on = o.id === value;
-        return (
-          <Button key={o.id} size="sm" variant={on ? "default" : "outline"} aria-pressed={on} onClick={() => onChange(o.id)} className="h-7 rounded-full px-2.5">
-            {o.label}
-            {o.n !== undefined ? <span className={cn("tnum text-[11px]", on ? "opacity-75" : "text-muted-foreground")}>{num(o.n)}</span> : null}
-          </Button>
-        );
-      })}
-    </div>
+    <Tabs value={value} onValueChange={onChange} className={cn("min-w-0 max-w-full", className)}>
+      <div className="scroll-strip min-w-0 max-w-full">
+        <TabsList aria-label={label}>
+          {options.map((o) => (
+            <TabsTrigger key={o.id} value={o.id} className="flex-none px-2.5">
+              {o.label}
+              {o.n !== undefined ? <span className={cn("tnum min-w-4 rounded-full px-1.5 text-xs font-normal leading-5", o.you && o.n ? "bg-you-soft text-you-ink" : "bg-background/70 text-muted-foreground")}>{num(o.n)}</span> : null}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </div>
+    </Tabs>
+  );
+}
+
+// A search box with its magnifier, like the one on /tasks.
+function Search({ label, value, onChange, className }: { label: string; value: string; onChange: (v: string) => void; className?: string }) {
+  return (
+    <span className={cn("relative min-w-0", className)}>
+      <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+      <Input type="search" aria-label={label} placeholder={label} value={value} onChange={(e) => onChange(e.target.value)} className="h-9 pl-8" />
+    </span>
+  );
+}
+
+// A quiet "See all" link for a panel's title row.
+function SeeAll({ href, children = "See all" }: { href: string; children?: React.ReactNode }) {
+  return (
+    <Link href={href} className="inline-flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline">
+      {children}
+      <ArrowRightIcon className="size-3.5" aria-hidden />
+    </Link>
+  );
+}
+
+// "Prefer the terminal?" - the CLI way, folded under the plain instruction.
+function Terminal({ children }: { children: React.ReactNode }) {
+  return (
+    <Disclosure summary="Prefer the terminal?" className="mt-2 text-left" contentClassName="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+      {children}
+    </Disclosure>
   );
 }
 
@@ -66,103 +101,89 @@ const NONE: never[] = [];
 
 // ----- overview -----------------------------------------------------------
 
-export function OverviewTab({ slug }: { slug: string }) {
+// A project's home: what waits for you first, then the goal and the work in
+// motion; the repository, the agents and the activity sit in a side column.
+// Cleanup and the full event log live under History.
+export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecide?: boolean }) {
   const ov = useApi<Overview>(projectPath(slug, "overview"));
   const info = useApi<ProjectInfo>(projectPath(slug, "project"), { refresh: 60000 });
   const tasks = useApi<TasksPayload>("tasks?project=" + encodeURIComponent(slug));
   const tl = useApi<Timeline>(projectPath(slug, "timeline"), { refresh: 60000 });
+  const compute = useApi<Compute>("compute");
   const inbox = useInbox();
+  const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
+  const commons = slug === "commons";
   return (
     <Wait q={ov} rows={8}>
       {(o) => {
-        const open = (tasks.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
-        const i = info.data;
-        const bp = i?.board_params;
-        // The same number the hero and the sidebar show, with the breakdown as its sub line.
+        const open = (tasks.data?.tasks ?? []).filter(isActiveTask);
         const mine = inbox.forProject(slug);
-        const inVote = o.suggestions_needing_votes + o.amendments_open;
-        const inVoteSub = [o.suggestions_needing_votes ? plural(o.suggestions_needing_votes, "suggestion") : "", o.amendments_open ? plural(o.amendments_open, "amendment") : ""].filter(Boolean).join(" · ") || "nothing to vote on";
+        // The first asks, in the inbox's order; the For you tab holds them all.
+        const asks = [
+          ...mine.decisions.map((r) => <ProposedRecordCard key={"d" + r.id} r={r} onOpen={setOpenRecord} />),
+          ...mine.proposals.map((p) => <ProposalCard key={"p" + p.id} r={p} slug={slug} canDecide={canDecide} />),
+          ...mine.questions.map((x) => <QuestionCard key={"q" + x.id} q={x} slug={slug} canDecide={canDecide} />),
+          ...mine.compute.map((cr) => <ComputeInboxCard key={"c" + cr.id} r={cr} caps={compute.data?.caps} />),
+          ...mine.drafts.map(({ r }) => <DraftCard key={"r" + r.id} slug={slug} r={r} />),
+          ...mine.steps.map((st) => <GateCard key={"s" + st.kind} step={st} />),
+        ];
+        const working = workingRows(o.active_claims, open, slug);
         return (
-          <div className="grid gap-4">
-            <FailedJobsSection key={"repairs-" + slug} project={slug} />
-            <KpiGrid className="md:grid-cols-3">
-              <Kpi icon={InboxIcon} n={mine.total} label="For you" sub={inbox.ready ? inboxBreakdown(mine) : "checking"} tone={mine.total ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
-              <Kpi icon={ListTodoIcon} n={open.length} label="Open tasks" sub={tasks.data ? plural(open.filter((t) => t.status === "in_progress").length, "in progress") : "loading"} href={hrefs.project(slug, "work")} />
-              <Kpi icon={ActivityIcon} n={o.claims_active} label="Working now" sub={o.claims_active ? "agents on a thread" : "nobody right now"} tone={o.claims_active ? "ok" : "neutral"} />
-              <Kpi icon={MessagesSquareIcon} n={o.threads_open} label="Open threads" sub={o.threads_stale ? num(o.threads_stale) + " gone quiet" : "all moving"} tone={o.threads_stale ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: "threads" })} />
-              <Kpi icon={VoteIcon} n={inVote} label="In vote" sub={inVoteSub} tone={inVote ? "warn" : "neutral"} href={hrefs.project(slug, "board", { sub: o.amendments_open && !o.suggestions_needing_votes ? "amendments" : "suggestions" })} />
-              <CodeDeliveredKpi project={slug} />
-            </KpiGrid>
-            {!o.board_present ? (
-              <Notice tone="warn">
-                This project has no board yet. Run <Mono>pulse init</Mono> in its checkout; the hub picks it up on the next refresh.
-              </Notice>
-            ) : null}
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-              <div className="grid gap-4 content-start">
-                {/* The direction every run reads (ADR-040) - the home page's "generated goal" note lands here. */}
-                <ProjectGoalPanel key={"goal-" + slug} slug={slug} />
-                {tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={180} /> : null}
-                <Panel title={o.open_threads.length ? "Open threads (" + num(o.threads_open) + ")" : "Open threads"} icon={MessagesSquareIcon} actions={<Link href={hrefs.project(slug, "board", { sub: "threads" })} className="hover:underline">all</Link>} dense>
-                  {o.open_threads.length ? <OpenThreads rows={o.open_threads} slug={slug} limit={6} /> : <p className="px-4 py-3 text-[12.5px] text-muted-foreground">No open thread. Threads open when an agent posts a claim, question or suggestion.</p>}
-                </Panel>
-                <Panel title="Recent posts" icon={MessageSquareIcon} actions={<Link href={hrefs.project(slug, "history", { sub: "timeline" })} className="hover:underline">all</Link>}>
-                  <FeedList rows={o.recent_posts} slug={slug} limit={8} />
-                </Panel>
-              </div>
-              <div className="grid gap-4 content-start">
-                <LiveFeed project={slug} limit={30} height={360} />
-                <Panel title="Working now" icon={RadioIcon} dense={!o.active_claims.length} actions={o.active_claims.length ? <span className="tnum">{workingSummary(workingRows(o.active_claims, [], slug), o.active_claims.length)}</span> : undefined}>
-                  {o.active_claims.length ? <WorkingNow claims={o.active_claims} slug={slug} /> : <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">Nobody holds a claim right now - a claim is an agent saying &quot;I am on this thread&quot; for a few hours.</p>}
-                </Panel>
-                {o.stale_claims.length ? (
-                  <Panel title={"Stale claims (" + o.stale_claims.length + ")"} icon={RadioIcon}>
-                    <ul className="grid gap-1 text-[12.5px]">
-                      {o.stale_claims.map((c) => (
-                        <li key={c.id} className="anywhere">
-                          <Who row={c} compact /> on <ThreadLink slug={slug} k={c.thread_key} /> - expired <When d={c.expires} />
-                        </li>
-                      ))}
-                    </ul>
-                  </Panel>
-                ) : null}
-                <Panel title="Repository" icon={ServerIcon}>
-                  {i ? (
-                    <Kv
-                      rows={[
-                        ["path", <Mono key="p">{i.repo}</Mono>],
-                        ["branch", <span key="b"><Mono>{i.branch}</Mono> <Mono className="text-muted-foreground">{i.head}</Mono>{i.dirty === "1" ? <span className="ml-1 text-warn">dirty</span> : null}</span>],
-                        ["remote", <span key="r" className="anywhere">{i.remote || "(none)"}</span>],
-                        ["board", <Check key="bd" on={i.board_present === "1"} />],
-                        ["evolution", <Check key="e" on={i.evolution_present === "1"} />],
-                        ["quorum", bp ? num(bp.quorum ?? 0) + " · expiry " + num(bp.expiry_days ?? 0) + " d · stale " + num(bp.stale_days ?? 0) + " d" : "…"],
-                        ["amendments", bp ? "quorum " + num(bp.amend_quorum ?? 0) + " · majority " + (bp.amend_majority || "") : "…"],
-                        ["snapshot", <When key="s" d={i.built_at} exact />],
-                      ]}
-                    />
-                  ) : (
-                    <SkeletonRows n={4} />
-                  )}
-                  {i?.last_error ? <p className="mt-2 text-xs text-bad anywhere">{i.last_error}</p> : null}
-                </Panel>
-                <Panel title="Agents on this board" icon={BotIcon} dense>
-                  {o.agents.length ? (
-                    <ul className="grid text-[12.5px] sm:grid-cols-2">
-                      {o.agents.map((a, i) => (
-                        <li key={[a.agent, a.name, a.session, a.runner, a.model, i].join("|")} className="flex items-center gap-2 border-t px-3 py-1.5 first:border-t-0 sm:odd:border-r sm:nth-[-n+2]:border-t-0">
-                          <Who row={a} compact />
-                          <span className="ml-auto tnum text-muted-foreground">{plural(a.posts, "post")}</span>
-                          <When d={a.last} className="text-muted-foreground" />
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="px-4 py-2.5 text-[12.5px] text-muted-foreground">No agent has posted here yet.</p>
-                  )}
-                </Panel>
-                <HygienePanel project={slug} limit={15} />
-              </div>
+          <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid min-w-0 content-start gap-8">
+              {!o.board_present ? (
+                <Notice tone="warn">
+                  This project has no board yet, so agents can&apos;t post or pick up work here. Re-add the project from Home, or run <Mono>pulse init</Mono> in its folder.
+                </Notice>
+              ) : null}
+              {asks.length ? (
+                <section aria-label="For you">
+                  <SectionHeading
+                    count={mine.total}
+                    note="These wait for your answer. Nothing here moves until you decide."
+                    action={
+                      asks.length > 2 ? (
+                        <Button asChild size="sm" variant="outline">
+                          <Link href={hrefs.project(slug, "for-you")}>
+                            See all {num(mine.total)} <ArrowRightIcon />
+                          </Link>
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    For you
+                  </SectionHeading>
+                  <div className="grid gap-3">{asks.slice(0, 2)}</div>
+                </section>
+              ) : null}
+              {commons ? null : <ProjectGoalPanel key={"goal-" + slug} slug={slug} />}
+              <Panel title="Working now" icon={RadioIcon} actions={working.length ? <span>{workingSummary(working, o.active_claims.length)}</span> : undefined}>
+                {working.length ? (
+                  <WorkingNow claims={o.active_claims} slug={slug} tasks={open} />
+                ) : (
+                  <p className="text-sm leading-relaxed text-muted-foreground">Nobody is working on {commons ? "the shared board" : slug} right now. When an agent starts a job or picks up a thread, it shows up here.</p>
+                )}
+                {o.stale_claims.length ? <StaleClaims claims={o.stale_claims} slug={slug} /> : null}
+              </Panel>
+              <Panel title="Open threads" icon={MessagesSquareIcon} actions={o.open_threads.length ? <SeeAll href={hrefs.project(slug, "board", { sub: "threads" })}>{"See all " + num(o.threads_open)}</SeeAll> : undefined} dense>
+                {o.open_threads.length ? (
+                  <OpenThreads rows={o.open_threads} slug={slug} limit={5} />
+                ) : (
+                  <p className="px-4 py-4 text-sm leading-relaxed text-muted-foreground sm:px-5">No open threads. A thread starts when an agent picks up work, asks another agent something or makes a suggestion.</p>
+                )}
+              </Panel>
+              <Panel title="Recent posts" icon={MessageSquareIcon} actions={o.recent_posts.length ? <SeeAll href={hrefs.project(slug, "history", { sub: "timeline" })} /> : undefined}>
+                <FeedList rows={o.recent_posts} slug={slug} limit={8} />
+              </Panel>
+              <FailedJobsSection key={"repairs-" + slug} project={slug} />
             </div>
+            <aside className="grid min-w-0 content-start gap-4" aria-label={commons ? "About the shared board" : "About this project"}>
+              <RepositoryPanel q={info} commons={commons} />
+              <OverviewStats o={o} slug={slug} commons={commons} />
+              <AgentsPanel agents={o.agents} />
+              {tl.data ? <ActivityChart tl={tl.data} bys={["total"]} height={140} title="Posts per day" /> : null}
+            </aside>
+            <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
           </div>
         );
       }}
@@ -170,30 +191,177 @@ export function OverviewTab({ slug }: { slug: string }) {
   );
 }
 
+// The side column's numbers, each only when it is not zero: a big 0 says
+// nothing the owner needs.
+function OverviewStats({ o, slug, commons }: { o: Overview; slug: string; commons: boolean }) {
+  // The same request the Code delivered tile makes (it shares the cache), read here only to know whether there is anything to show.
+  const cd = useApi<CodeDeliveriesPayload>(commons ? null : codeDeliveriesPath({ project: slug, limit: 100 }), { refresh: 30000 });
+  const votes = o.suggestions_needing_votes + o.amendments_open;
+  const code = commons ? null : codeDeliveryKpiState(cd.data, cd.loading, cd.error).n;
+  const showCode = !commons && code !== 0;
+  if (!votes && !showCode) return null;
+  return (
+    <KpiGrid className={cn("mb-0", votes && showCode ? "md:grid-cols-2" : "grid-cols-1 md:grid-cols-1")}>
+      {votes ? <Kpi icon={VoteIcon} n={votes} label="Open votes" sub={voteLine(o)} href={hrefs.project(slug, "board", { sub: o.amendments_open && !o.suggestions_needing_votes ? "amendments" : "suggestions" })} /> : null}
+      {showCode ? <CodeDeliveredKpi project={slug} /> : null}
+    </KpiGrid>
+  );
+}
+
+function voteLine(o: Overview): string {
+  return [o.suggestions_needing_votes ? plural(o.suggestions_needing_votes, "suggestion") : "", o.amendments_open ? plural(o.amendments_open, "rule change") : ""].filter(Boolean).join(", ");
+}
+
+// Things an agent picked up and then went quiet on: worth a look, folded.
+function StaleClaims({ claims, slug }: { claims: Overview["stale_claims"]; slug: string }) {
+  return (
+    <Disclosure className="mt-4 border-t pt-3 text-sm" summary={(claims.length === 1 ? "1 thing was" : plural(claims.length, "thing") + " were") + " picked up and then went quiet"}>
+      <ul className="grid gap-2">
+        {claims.map((c) => (
+          <li key={c.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+            <Who row={c} compact />
+            <span>on</span>
+            <ThreadLink slug={slug} k={c.thread_key} />
+            <span>
+              , ran out <When d={c.expires} />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Disclosure>
+  );
+}
+
+// A folder path that wraps only after a slash, never inside a name
+// ("/home/owner/src/" then "demo-app"), with the whole path in the tooltip.
+function FolderPath({ path }: { path: string }) {
+  const parts = path.split("/");
+  return (
+    <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[12.5px] text-foreground/85" title={path}>
+      {parts.map((p, i) => (
+        <span key={i}>
+          <span className="whitespace-nowrap">{p + (i < parts.length - 1 ? "/" : "")}</span>
+          {i < parts.length - 1 ? <wbr /> : null}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+// The repository in words: where it lives, which branch, how votes work.
+function RepositoryPanel({ q, commons }: { q: Loaded<ProjectInfo>; commons: boolean }) {
+  const i = q.data;
+  const bp = i?.board_params;
+  const rows: [React.ReactNode, React.ReactNode][] = i
+    ? [
+        ...(commons
+          ? []
+          : ([
+              ["Folder", <FolderPath key="p" path={i.repo} />],
+              [
+                "Branch",
+                <span key="b" title={i.head ? "At commit " + i.head : undefined}>
+                  {i.branch || "—"}
+                  {i.dirty === "1" ? <span className="text-warn">, with uncommitted changes</span> : null}
+                </span>,
+              ],
+              ["Remote", <span key="r" className="anywhere">{i.remote || "None"}</span>],
+            ] as [React.ReactNode, React.ReactNode][])),
+        ["Board", i.board_present === "1" ? "Set up" : <span key="bd" className="text-warn">Not set up</span>],
+        ...(commons ? [] : ([["Self-improvement", i.evolution_present === "1" ? "Set up" : "Not set up"]] as [React.ReactNode, React.ReactNode][])),
+        ["Votes needed", bp ? <span key="q" title="How many agents must vote before a suggestion is decided (quorum)">{plural(bp.quorum ?? 0, "vote") + " per suggestion"}</span> : "…"],
+        ["Rule changes", bp ? <span key="a" title="Votes and majority an amendment to the constitution needs">{"Need " + plural(bp.amend_quorum ?? 0, "vote") + (bp.amend_majority ? " and a " + bp.amend_majority + " majority" : "")}</span> : "…"],
+        ["Time limits", bp ? <span key="t">{"Suggestions close after " + plural(bp.expiry_days ?? 0, "day") + "; threads go quiet after " + plural(bp.stale_days ?? 0, "day")}</span> : "…"],
+        ["Last checked", <When key="s" d={i.built_at} />],
+      ]
+    : [];
+  return (
+    <Panel title={commons ? "About the shared board" : "Repository"} icon={FolderGit2Icon}>
+      {q.error && !i ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : i ? <Kv rows={rows} className="grid-cols-[minmax(6.5rem,auto)_1fr] gap-y-2" /> : <SkeletonRows n={4} />}
+      {i?.last_error ? (
+        <Notice tone="bad" className="mt-3 text-[13px]">
+          {"The last check failed: " + i.last_error}
+        </Notice>
+      ) : null}
+    </Panel>
+  );
+}
+
+// Who posts on this board: full names that wrap rather than clip, their
+// post count and when they were last here.
+function AgentsPanel({ agents }: { agents: Overview["agents"] }) {
+  const [all, setAll] = useState(false);
+  const LIMIT = 8;
+  // One row per name: an agent that ran under several runners or models posts as several identities.
+  const list = useMemo(() => {
+    const by = new Map<string, { name: string; posts: number; last: string; meta: Set<string> }>();
+    for (const a of agents) {
+      const name = a.agent || a.name || a.session || "An agent";
+      const r = by.get(name) ?? { name, posts: 0, last: "", meta: new Set<string>() };
+      r.posts += a.posts || 0;
+      if ((a.last || "") > r.last) r.last = a.last || "";
+      const m = [a.runner, a.model].filter(Boolean).join(", ");
+      if (m) r.meta.add(m);
+      by.set(name, r);
+    }
+    return [...by.values()].sort((a, b) => (a.last < b.last ? 1 : a.last > b.last ? -1 : 0));
+  }, [agents]);
+  const shown = all ? list : list.slice(0, LIMIT);
+  return (
+    <Panel title="Who posts here" icon={BotIcon} actions={list.length ? <span className="tnum">{num(list.length)}</span> : undefined}>
+      {list.length ? (
+        <>
+          <ul className="grid gap-3">
+            {shown.map((a) => {
+              const human = a.name === "human" || a.name === "owner";
+              const meta = [...a.meta].join("; ");
+              return (
+                <li key={a.name} className="flex min-w-0 items-start gap-2.5" title={meta ? a.name + " (" + meta + ")" : a.name}>
+                  <Avatar seed={a.name} size={28} human={human} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium leading-snug anywhere">{human ? "You" : a.name}</div>
+                    <div className="text-[13px] leading-snug text-muted-foreground">
+                      {plural(a.posts, "post")}
+                      {a.last ? ", last " + rel(a.last) : ""}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {list.length > LIMIT ? (
+            <button type="button" aria-expanded={all} className="mt-3 text-[13px] font-medium text-primary underline-offset-2 hover:underline" onClick={() => setAll((v) => !v)}>
+              {all ? "Show fewer" : "Show all " + plural(list.length, "agent")}
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <p className="text-sm leading-relaxed text-muted-foreground">No agent has posted here yet. They appear once they start working on this board.</p>
+      )}
+    </Panel>
+  );
+}
+
 // The overview's digest of open threads: one row each, newest first, the
-// whole row a link into the thread. Cards live on the Threads tab.
+// whole row a link into the thread. Cards live on the Board tab.
 function OpenThreads({ rows, slug, limit }: { rows: ThreadRow[]; slug: string; limit: number }) {
   const list = [...rows].sort(byNewest((t) => t.last)).slice(0, limit);
   return (
-    <ul className="divide-y">
+    <ul className="divide-y divide-border/70">
       {list.map((t) => (
         <li key={t.key}>
-          <Link href={hrefs.thread(slug, t.key)} className="block px-4 py-2 transition-colors hover:bg-muted/40">
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <Link href={hrefs.thread(slug, t.key)} title={"Thread " + t.key} className="block px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none sm:px-5">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <StatusBadge status={t.status} />
-              <Mono className="font-semibold">{t.key}</Mono>
-              {t.resolution ? <ToneBadge tone={statusTone(t.resolution)}>{t.resolution}</ToneBadge> : null}
-              <ThreadSignals t={t} />
-              <span className="ml-auto flex items-center gap-2 text-muted-foreground">
-                <span className="tnum">{plural(t.posts, "post")}</span>
-                <When d={t.last} />
-              </span>
+              <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground anywhere">{threadTitle(t)}</span>
+              <When d={t.last} className="text-xs text-muted-foreground" />
             </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+            {t.summary ? <p className="mt-1 line-clamp-1 text-[13px] text-muted-foreground anywhere">{sentence(t.summary)}</p> : null}
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted-foreground">
               <ThreadParticipants t={t} />
-              <ThreadLastBy t={t} />
+              <span className="tnum">{plural(t.posts, "post")}</span>
+              <ThreadSignals t={t} />
             </div>
-            {t.summary ? <p className="mt-0.5 line-clamp-1 text-[12.5px] text-muted-foreground anywhere">{t.summary}</p> : null}
           </Link>
         </li>
       ))}
@@ -217,34 +385,32 @@ export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id
       .sort(byNewest((x) => x.updated_at));
   }, [all, status, text]);
   const chips = [
-    { id: "active", label: "active", n: all.filter(isActiveTask).length },
-    { id: "all", label: "all", n: all.length },
-    ...TASK_STATUSES.map((s) => ({ id: s, label: s.replace("_", " "), n: all.filter((x) => x.status === s).length })).filter((c) => c.n || c.id === status),
+    { id: "active", label: "Open", n: all.filter(isActiveTask).length },
+    { id: "all", label: "All", n: all.length },
+    ...TASK_STATUSES.map((s) => ({ id: s, label: statusWord(s), n: all.filter((x) => x.status === s).length, you: s === "review" })).filter((c) => c.n || c.id === status),
   ];
   return (
     <div>
-      <Toolbar className="mb-2">
-        <NewTaskButton project={slug} onCreated={(t: Task) => onOpen(t.id)} />
-        <Input aria-label="Filter tasks" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
-        <span className="ml-auto flex items-center gap-2">
-          <Count>{q.data ? plural(rows.length, "task") : ""}</Count>
-          <ViewToggle value={view} onChange={setView} />
+      <Toolbar className="mb-4">
+        <Segments label="Status" value={status} onChange={setStatus} options={chips} />
+        <span className="flex min-w-0 flex-1 basis-56 items-center gap-2">
+          <Search label="Search tasks" value={text} onChange={setText} className="flex-1 lg:max-w-64" />
+          <ViewToggle value={view} onChange={setView} className="ml-auto shrink-0" />
         </span>
       </Toolbar>
-      <Chips label="Status" value={status} onChange={setStatus} options={chips} className="mb-3" />
       <Wait q={q}>
         {() => {
           const empty =
             status === "active" && !text ? (
               <>
-                No open task for <b>{slug}</b>. Click <b>New task</b>, write what you want, and the lead starts the work. Questions and progress land in chat.
+                {slug} has no open task. Press <b>New task</b>, say what you want, and the lead agent starts on it. Its questions and progress show up in the chat.
               </>
             ) : (
-              "Nothing matches this filter."
+              "No task matches. Try another word or status."
             );
           if (view === "table")
             return rows.length ? (
-              <div className="rounded-lg border bg-card">
+              <div className="overflow-x-auto rounded-2xl border bg-card">
                 <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
               </div>
             ) : (
@@ -267,28 +433,29 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
   return (
     <div className="grid gap-3">
       <Toolbar className="mb-0">
-        <span className="text-sm">
-          Talking with <Mono className="font-semibold">{lead}</Mono>
+        <span className="inline-flex min-w-0 items-center gap-2 text-sm">
+          <Avatar seed={lead} size={24} />
+          <span className="text-muted-foreground">Talking with</span>
+          <span className="font-medium anywhere">{lead}</span>
         </span>
         <Select value={taskId || "__all"} onValueChange={(v) => onPickTask(v === "__all" ? null : v)}>
-          <SelectTrigger aria-label="Scope" className="h-8 w-72">
+          <SelectTrigger aria-label="What the chat is about" className="h-9 w-full sm:w-72">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__all">whole project</SelectItem>
+            <SelectItem value="__all">Whole project</SelectItem>
             {(tasks.data?.tasks ?? []).map((t) => (
               <SelectItem key={t.id} value={t.id}>
-                {t.id + " · " + t.title}
+                {t.title + " (" + t.id + ")"}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
         {scoped ? (
           <Button asChild size="sm" variant="ghost">
-            <Link href={hrefs.task(slug, scoped.id)}>open task</Link>
+            <Link href={hrefs.task(slug, scoped.id)}>Open the task</Link>
           </Button>
         ) : null}
-        <Count>{msgs.data ? plural(msgs.data.messages.length, "message") : ""}</Count>
       </Toolbar>
       {msgs.error && !msgs.data ? <ErrorNotice error={msgs.error} onRetry={() => void msgs.reload()} /> : msgs.data === undefined ? <SkeletonRows n={6} /> : <ChatPane project={slug} taskId={taskId} messages={msgs.data.messages} tasks={tasks.data?.tasks} lead={lead} />}
     </div>
@@ -310,41 +477,41 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
     return all.filter((x) => (status === "all" || x.status === status) && (area === "all" || x.area === area) && (!t || x.key.toLowerCase().includes(t) || x.summary.toLowerCase().includes(t))).sort(byNewest((x) => x.last));
   }, [all, status, area, text]);
   const chips = [
-    { id: "all", label: "all", n: all.length },
-    { id: "open", label: "open", n: all.filter((x) => x.status === "open").length },
-    { id: "closed", label: "closed", n: all.filter((x) => x.status === "closed").length },
+    { id: "all", label: "All", n: all.length },
+    { id: "open", label: "Open", n: all.filter((x) => x.status === "open").length },
+    { id: "closed", label: "Closed", n: all.filter((x) => x.status === "closed").length },
   ];
   return (
     <div>
-      <Toolbar className="mb-2">
-        <Chips label="Status" value={status} onChange={setStatus} options={chips} />
+      <Toolbar className="mb-4">
+        <Segments label="Status" value={status} onChange={setStatus} options={chips} />
         {areas.length > 1 ? (
           <Select value={area} onValueChange={setArea}>
-            <SelectTrigger aria-label="Area" className="h-8 w-36">
+            <SelectTrigger aria-label="Area" className="h-9 w-40">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">all areas</SelectItem>
+              <SelectItem value="all">All areas</SelectItem>
               {areas.map((a) => (
                 <SelectItem key={a} value={a}>
-                  {a}
+                  {sentence(a)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         ) : null}
-        <Input aria-label="Filter threads" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
+        <Search label="Search threads" value={text} onChange={setText} className="w-full sm:w-56" />
         <span className="ml-auto flex items-center gap-2">
-          <Count>{q.data ? plural(rows.length, "thread") : ""}</Count>
+          {text.trim() ? <Count>{plural(rows.length, "thread")}</Count> : null}
           <ViewToggle value={view} onChange={setView} />
         </span>
       </Toolbar>
       <Wait q={q} rows={8}>
         {() => {
-          const empty = all.length ? "Nothing matches this filter." : "No threads yet. Agents open threads when they claim work, ask, or suggest.";
+          const empty = all.length ? "No thread matches. Try another word, status or area." : "No threads yet. A thread starts when an agent picks up work, asks another agent something or makes a suggestion.";
           if (view === "table")
             return rows.length ? (
-              <div className="rounded-lg border bg-card">
+              <div className="overflow-x-auto rounded-2xl border bg-card">
                 <DataTable columns={THREAD_COLUMNS(slug)} rows={rows} rowKey={(t) => t.key} onRow={(t) => onOpen(t.key)} initialSort="last" />
               </div>
             ) : (
@@ -383,20 +550,20 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
         const rows = show === "awaiting" ? awaiting : all;
         return (
           <div>
-            <Toolbar>
-              <Chips
+            <Toolbar className="mb-4">
+              <Segments
                 label="Show"
                 value={show}
                 onChange={(v) => setShow(v === "all" ? "all" : "awaiting")}
                 options={[
-                  { id: "awaiting", label: "waiting for you", n: waiting },
-                  { id: "all", label: "all", n: waiting + decided.length },
+                  { id: "awaiting", label: "Waiting for you", n: waiting, you: true },
+                  { id: "all", label: "All, with answered ones", n: waiting + decided.length },
                 ]}
               />
-              {!canDecide ? <ToneBadge tone="warn">deciding is off on this hub</ToneBadge> : null}
+              {!canDecide ? <span className="text-[13px] text-muted-foreground">To answer, open PULSE on the machine that runs it.</span> : null}
             </Toolbar>
             {waiting || rows.length ? (
-              <div className="grid gap-3 lg:grid-cols-2">
+              <CardGrid cols={2}>
                 {mine.decisions.map((r) => (
                   <ProposedRecordCard key={r.id} r={r} onOpen={setOpenRecord} />
                 ))}
@@ -415,9 +582,11 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                 {mine.steps.map((st) => (
                   <GateCard key={st.kind} step={st} />
                 ))}
-              </div>
+              </CardGrid>
             ) : (
-              <EmptyState title={show === "awaiting" ? "Nothing waits for you" : "No proposals"}>{show === "awaiting" ? "Nothing here needs your yes or no right now. Agents post a card when they do." : "No proposal has been raised on this board yet. Agents post one when they need a human decision."}</EmptyState>
+              <EmptyState icon={<CheckCircle2Icon className="size-[18px]" />} title={show === "awaiting" ? "Nothing waits for you" : "No proposals yet"}>
+                {show === "awaiting" ? "You're all caught up on " + slug + ". When an agent needs your yes or no, its card shows up here." : "No agent has asked for a decision on this board yet. When one does, its card shows up here."}
+              </EmptyState>
             )}
             <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
           </div>
@@ -441,19 +610,19 @@ export function SuggestionsTab({ slug }: { slug: string }) {
         const rows = status === "all" ? all : all.filter((s) => s.status === status);
         return (
           <div>
-            <Toolbar>
-              <Chips label="Status" value={status} onChange={setStatus} options={[{ id: "all", label: "all", n: all.length }, ...statuses.map((s) => ({ id: s, label: s, n: all.filter((x) => x.status === s).length }))]} />
-              <span className="text-xs text-muted-foreground">quorum {num(quorum)} · higher score runs sooner</span>
-              <Count>{plural(rows.length, "suggestion")}</Count>
+            <Toolbar className="mb-4">
+              <Segments label="Status" value={status} onChange={setStatus} options={[{ id: "all", label: "All", n: all.length }, ...statuses.map((s) => ({ id: s, label: statusWord(s), n: all.filter((x) => x.status === s).length }))]} />
             </Toolbar>
             {rows.length ? (
-              <div className="grid gap-3 lg:grid-cols-2">
+              <CardGrid cols={2}>
                 {rows.map((s) => (
                   <SuggestionCard key={s.id} s={s} quorum={quorum} slug={slug} />
                 ))}
-              </div>
+              </CardGrid>
             ) : (
-              <EmptyState title="No suggestions">No suggestion here. Agents post suggestions on the board; other agents vote; suggestions past quorum still pass the planner gates before becoming jobs.</EmptyState>
+              <EmptyState icon={<VoteIcon className="size-[18px]" />} title="No suggestions">
+                Agents post ideas here and vote on each other&apos;s. Once a suggestion has enough votes and passes the checks, it becomes a job.
+              </EmptyState>
             )}
           </div>
         );
@@ -470,35 +639,57 @@ export function AmendmentsTab({ slug }: { slug: string }) {
   return (
     <Wait q={q}>
       {(all) => (
-        <div className="grid gap-4">
+        <div className="grid gap-6">
           {all.length ? (
-            <div className="grid gap-3 lg:grid-cols-2">
+            <CardGrid cols={2}>
               {all.map((a) => (
                 <AmendmentCard key={a.id} a={a} slug={slug} />
               ))}
-            </div>
+            </CardGrid>
           ) : (
-            <EmptyState title="No amendments">No amendment proposed. An agent amends the constitution by posting kind: amendment on the board; it passes with the amendment quorum and majority in Settings.</EmptyState>
+            <EmptyState icon={<FileDiffIcon className="size-[18px]" />} title="No rule changes">
+              Nobody has proposed a change to the rules. An agent proposes one on the board; it passes when enough agents vote for it.
+            </EmptyState>
           )}
-          <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} icon={FileDiffIcon} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
-            {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>This project has no constitution record yet.</EmptyState>}
-            {c.data?.amendments?.length ? (
-              <ul className="mt-3 grid gap-1 border-t pt-3 text-[12.5px]">
-                {c.data.amendments.map((a) => (
-                  <li key={a.id} className="flex flex-wrap items-center gap-2">
-                    <Mono>{a.id}</Mono>
-                    <StatusBadge status={a.status} />
-                    <span className="tnum text-muted-foreground">{num(a.votes_up) + " up · " + num(a.votes_down) + " down · quorum " + num(a.quorum)}</span>
-                    {a.passed ? <ToneBadge tone="ok">passed</ToneBadge> : null}
-                    {a.protected ? <ToneBadge tone="bad">protected section</ToneBadge> : null}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </Panel>
+          <ConstitutionPanel c={c} slug={slug} />
         </div>
       )}
     </Wait>
+  );
+}
+
+// The rules the project's self-improvement follows, with the rule changes made so far.
+function ConstitutionPanel({ c, slug }: { c: Loaded<Constitution>; slug: string }) {
+  return (
+    <Panel title="The rules (constitution)" icon={FileDiffIcon} actions={c.data?.record ? <SeeAll href={hrefs.record(c.data.record.id, slug)}>Open the record</SeeAll> : null}>
+      {c.error && !c.data && !noRecord(c.error) ? (
+        <ErrorNotice error={c.error} onRetry={() => void c.reload()} />
+      ) : c.data === undefined && !c.error ? (
+        <SkeletonRows n={4} />
+      ) : c.data?.body ? (
+        <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" />
+      ) : (
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {slug} has no constitution yet. It holds the limits every agent works inside; PULSE writes one from its template when the project is set up.
+        </p>
+      )}
+      {c.data?.amendments?.length ? (
+        <div className="mt-4 border-t pt-3">
+          <div className="mb-2 text-[13px] font-semibold">Rule changes so far</div>
+          <ul className="grid gap-2 text-[13px]">
+            {c.data.amendments.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center gap-2">
+                <PostLink slug={slug} id={a.id} label={"Rule change by " + (a.id.replace(/^\d{8}T\d{6}Z-?/, "") || "an agent")} className="font-medium text-foreground" />
+                <StatusBadge status={a.status} />
+                <span className="tnum text-muted-foreground">{num(a.votes_up) + " for, " + num(a.votes_down) + " against, " + num(a.quorum) + " needed"}</span>
+                {a.passed ? <ToneBadge tone="ok">Passed</ToneBadge> : null}
+                {a.protected ? <ToneBadge tone="bad" title="This part of the rules only you can change">Protected section</ToneBadge> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </Panel>
   );
 }
 
@@ -524,124 +715,114 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
         const baselineRow = rows.find(isBaselineRow);
         const loop = e.loop ?? { loop: "", limits: "", tolerance: "", stop: "", heldout_present: false };
         const present = !!(e.constitution || e.evaluators || e.archive?.record || rows.length);
-        const on = loop.loop === "1";
         const stopped = loop.stop === "1";
         const keptN = cycles.filter(kept).length;
-        const last = cycles[0];
         // The gates and fixtures (ADR-029) show whenever the hub reports them, set up or not: they are what the owner asked about.
         const fixtures = e.fixtures ?? [];
         const gated = e.gates !== undefined || !!e.gates_error || fixtures.length > 0;
         // The loop's records (ADR-030): onboarding seeds them from the template; agents draft the project's own text and the owner adopts it (ADR-046).
         const docs = { constitution: e.constitution ?? null, evaluators: e.evaluators ?? null };
-        const docKpi = (doc: Evolution["constitution"]) => ({
-          n: doc ? "r" + num(doc.record.current_rev) : "missing",
-          tone: (!doc ? "warn" : !doc.seeded ? "ok" : doc.draft || doc.draft_job ? "info" : "warn") as Tone,
-          sub: !doc
-            ? "seed it, or write your own"
-            : !doc.seeded
-              ? doc.draft
-                ? "your own text · a new draft waits"
-                : doc.seeded_from
-                  ? "edited copy of the template"
-                  : "your own text"
-              : doc.draft
-                ? "seeded · draft ready to adopt"
-                : doc.draft_job
-                  ? "seeded · an agent is drafting"
-                  : "seeded · ask for a draft",
-        });
+        const docWord = (doc: Evolution["constitution"]) =>
+          !doc ? "Missing" : !doc.seeded ? (doc.draft ? "Your own text, with a new draft to review" : doc.seeded_from ? "Your edited copy of the template" : "Your own text") : doc.draft ? "Template text, with a draft to review" : doc.draft_job ? "Template text; an agent is drafting your own" : "Template text";
         const empty = (
-          <EmptyState>
-            Evolution is not set up for <b>{slug}</b>. Onboarding seeds the <Mono>EVO-constitution</Mono> and <Mono>EVO-evaluators</Mono> records from the template (<Mono>{"pulse evolve seed --project " + slug}</Mono> does it for a project registered earlier); once both are in the store and you turn <Mono>evolve.loop</Mono> on in{" "}
-            <Link href={hrefs.settings("evolve")} className="underline">
+          <EmptyState icon={<ActivityIcon className="size-[18px]" />} title="Self-improvement isn't set up">
+            Self-improvement lets agents try changes to {slug} on their own and keep only the ones that score better. It needs the project&apos;s rules and scoring rules. PULSE adds both when it sets a project up; for an older project, add them from a terminal. Then turn it on in{" "}
+            <Link href={hrefs.settings("evolve")} className="font-medium text-foreground underline underline-offset-2">
               Settings
             </Link>
-            , every measured cycle lands in the archive here.
+            .
+            <Terminal>
+              For a project added before this existed, run <Mono>{"pulse evolve seed --project " + slug}</Mono>.
+            </Terminal>
           </EmptyState>
         );
+        // The empty state is the whole tab only when there is nothing else: with the setup step showing, that step is the one call to action.
         if (!present && !gated) return empty;
         return (
-          <div className="grid gap-4">
+          <div className="grid gap-6">
             {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} docs={docs} canDecide={canDecide} /> : null}
-            {!present ? (
-              empty
-            ) : (
+            {!present ? null : (
               <>
-                <KpiGrid>
-                  <Kpi n={on ? "on" : "off"} label="loop" tone={stopped ? "bad" : on ? "ok" : "neutral"} sub={stopped ? "STOP is set" : undefined} href={hrefs.settings("evolve")} />
-                  <Kpi n={cycles.length} label="cycles" sub={cycles.length ? keptN + " kept · " + (cycles.length - keptN) + " discarded" : baselineRow ? "none yet · baseline " + score(baselineRow.variant_score) : "none yet"} />
-                  <Kpi n={loop.tolerance || "—"} label="tolerance" sub="allowed regression" />
-                  <Kpi n={loop.limits || "none"} label="limits" />
-                  <Kpi n={loop.heldout_present ? "present" : "absent"} label="held-out evaluators" tone={loop.heldout_present ? "ok" : "warn"} sub="owner-private; path never shown" />
-                  <Kpi {...docKpi(e.constitution)} label="constitution" />
-                  <Kpi {...docKpi(e.evaluators)} label="evaluators" />
-                  <Kpi n={last ? last.at.slice(0, 10) : baselineRow ? baselineRow.at.slice(0, 10) : "—"} label={last || !baselineRow ? "last cycle" : "baseline"} sub={last ? (kept(last) ? "kept" : "discarded") : baselineRow ? "measured by the daemon" : undefined} />
-                </KpiGrid>
-                {stopped ? <Notice tone="bad">STOP is set - the loop halts until you clear it in Settings.</Notice> : null}
+                {stopped ? <Notice tone="bad">Self-improvement is stopped. It stays stopped until you clear the stop in Settings.</Notice> : null}
                 {!e.constitution || !e.evaluators ? (
                   <Notice tone="warn">
-                    {[!e.constitution ? "EVO-constitution" : "", !e.evaluators ? "EVO-evaluators" : ""].filter(Boolean).join(" and ")} not in the store yet - the loop refuses to run without both. Onboarding seeds them from the template&apos;s text; when it could not, <Mono>{"pulse evolve seed --project " + slug}</Mono> seeds what is missing, or write your own and index it with <Mono>pulse record new evolution</Mono>.
+                    {"Self-improvement can't run yet: " + [!e.constitution ? "the rules (constitution)" : "", !e.evaluators ? "the scoring rules" : ""].filter(Boolean).join(" and ") + (!e.constitution && !e.evaluators ? " are" : " is") + " missing. " + (gated ? "Add them with the setup step above." : "PULSE adds them when it sets a project up.")}
+                    <Terminal>
+                      Run <Mono>{"pulse evolve seed --project " + slug}</Mono> to add what is missing, or write your own and add it with <Mono>pulse record new evolution</Mono>.
+                    </Terminal>
                   </Notice>
                 ) : null}
-                <Panel title="Archive - measured cycles" icon={ActivityIcon} actions={<span>{plural(cycles.length, "cycle") + (baselineRow ? " · measured baseline " + score(baselineRow.variant_score) : "")}</span>} dense>
+                <Panel title="Experiments so far" icon={ActivityIcon} actions={<span>{plural(cycles.length, "experiment") + (cycles.length ? ", " + keptN + " kept" : "") + (baselineRow ? ", starting score " + score(baselineRow.variant_score) : "")}</span>} dense>
                   {rows.length ? (
                     <DataTable
                       dense
                       rows={rows}
                       rowKey={(r) => r.id}
                       columns={[
-                        { key: "at", label: "when", render: (r) => <When d={r.at} /> },
+                        { key: "at", label: "When", render: (r) => <When d={r.at} /> },
                         // The daemon's baseline reads as what it is (ADR-031), never as a kept experiment.
                         {
                           key: "hypothesis",
-                          label: "hypothesis",
+                          label: "What it tried",
                           render: (r) =>
                             isBaselineRow(r) ? (
-                              <ToneBadge tone="info" title="the daemon measured the default branch as it stood - every variant is scored against this">
-                                Baseline
+                              <ToneBadge tone="info" title="The runner measured the project as it stood; every experiment is scored against this">
+                                Starting score
                               </ToneBadge>
                             ) : (
-                              <span className="anywhere">{r.hypothesis || <Mono>{r.id}</Mono>}</span>
+                              <span className="anywhere" title={r.id}>{r.hypothesis || "An experiment"}</span>
                             ),
                         },
-                        { key: "score", label: "baseline → variant", align: "right", render: (r) => <Mono>{isBaselineRow(r) ? score(r.variant_score) : score(r.baseline_score) + " → " + score(r.variant_score)}</Mono> },
-                        { key: "kept", label: "verdict", render: (r) => (isBaselineRow(r) ? <ToneBadge tone="neutral">recorded</ToneBadge> : <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "kept" : "discarded"}</ToneBadge>) },
-                        { key: "branch", label: "branch", render: (r) => (r.branch ? <Mono>{r.branch}</Mono> : "") },
-                        { key: "sandbox", label: "sandbox", render: (r) => r.sandbox || "" },
-                        { key: "note", label: "note", render: (r) => <span className="anywhere text-muted-foreground">{r.note}</span> },
+                        { key: "score", label: "Score", align: "right", render: (r) => <span className="tnum">{isBaselineRow(r) ? score(r.variant_score) : score(r.baseline_score) + " → " + score(r.variant_score)}</span> },
+                        { key: "kept", label: "Result", render: (r) => (isBaselineRow(r) ? <ToneBadge tone="neutral">Measured</ToneBadge> : <ToneBadge tone={kept(r) ? "ok" : "neutral"}>{kept(r) ? "Kept" : "Dropped"}</ToneBadge>) },
+                        { key: "branch", label: "Branch", render: (r) => (r.branch ? <Mono>{r.branch}</Mono> : "") },
+                        { key: "sandbox", label: "Where it ran", render: (r) => r.sandbox || "" },
+                        { key: "note", label: "Note", render: (r) => <span className="anywhere text-muted-foreground">{r.note}</span> },
                       ]}
                     />
                   ) : (
-                    <EmptyState className="m-3">No measurement yet. The daemon&apos;s baseline lands here first; with the loop on, each experiment branch follows with its scores and verdict.</EmptyState>
+                    <EmptyState className="m-4">No experiments yet. The runner first measures a starting score; with self-improvement on, every experiment follows here with its score and whether it was kept.</EmptyState>
                   )}
                 </Panel>
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <Panel title="Constitution" icon={FileDiffIcon} actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined}>
+                  <Panel title="The rules (constitution)" icon={FileDiffIcon} actions={e.constitution ? <DocRev doc={e.constitution} slug={slug} /> : undefined} footer={<span>{docWord(e.constitution)}</span>}>
                     {e.constitution ? (
                       <>
                         <RecordDraftPanel r={{ id: e.constitution.record.id, rev: e.constitution.record.current_rev, seeded: e.constitution.seeded === true, seeded_from: e.constitution.seeded_from ?? "", draft: e.constitution.draft, draft_job: e.constitution.draft_job }} body={e.constitution.draft?.body} className="mb-3" />
                         <Markdown source={e.constitution.body} className="max-h-[50vh] overflow-y-auto" />
                       </>
                     ) : (
-                      <EmptyState>Not indexed yet. The bounds the loop runs inside - seeded from the template at onboarding, or written in your words.</EmptyState>
+                      <p className="text-sm leading-relaxed text-muted-foreground">Not written yet. These are the limits experiments must stay inside: from the template, or in your own words.</p>
                     )}
                   </Panel>
-                  <Panel title="Evaluators" icon={CheckCircle2Icon} actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined}>
+                  <Panel title="Scoring rules" icon={CheckCircle2Icon} actions={e.evaluators ? <DocRev doc={e.evaluators} slug={slug} /> : undefined} footer={<span>{docWord(e.evaluators)}</span>}>
                     {e.evaluators ? (
                       <>
                         <RecordDraftPanel r={{ id: e.evaluators.record.id, rev: e.evaluators.record.current_rev, seeded: e.evaluators.seeded === true, seeded_from: e.evaluators.seeded_from ?? "", draft: e.evaluators.draft, draft_job: e.evaluators.draft_job }} body={e.evaluators.draft?.body} className="mb-3" />
                         <Markdown source={e.evaluators.body} className="max-h-[50vh] overflow-y-auto" />
                       </>
                     ) : (
-                      <EmptyState>Not indexed yet. The held-out set stays on your machine; only the checks agents may see are described here.</EmptyState>
+                      <p className="text-sm leading-relaxed text-muted-foreground">Not written yet. It describes the checks agents may see; the private tests stay on your machine.</p>
                     )}
                   </Panel>
                 </div>
-                {e.archive?.record && e.archive.body ? (
-                  <Panel title="Historical archive" icon={ActivityIcon} actions={<Link href={hrefs.record(e.archive.record.id, slug)} className="hover:underline">{e.archive.record.id}</Link>}>
-                    <Markdown source={e.archive.body} className="max-h-[50vh] overflow-y-auto" />
-                  </Panel>
-                ) : null}
+                <Disclosure variant="row" summary="Limits and older history" className="rounded-2xl border bg-card px-3 py-1.5 text-sm sm:px-4" contentClassName="pb-3">
+                  <Kv
+                    rows={[
+                      ["Allowed drop in score", loop.tolerance || "—"],
+                      ["Limits", loop.limits || "None"],
+                    ]}
+                  />
+                  {e.archive?.record && e.archive.body ? (
+                    <div className="mt-4 border-t pt-3">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[13px] font-semibold">Older history</span>
+                        <SeeAll href={hrefs.record(e.archive.record.id, slug)}>Open the record</SeeAll>
+                      </div>
+                      <Markdown source={e.archive.body} className="max-h-[50vh] overflow-y-auto" />
+                    </div>
+                  ) : null}
+                </Disclosure>
               </>
             )}
           </div>
@@ -660,14 +841,14 @@ export function TimelineTab({ slug }: { slug: string }) {
   const ov = useApi<Overview>(projectPath(slug, "overview"), { refresh: 30000 });
   return (
     <div className="grid gap-4">
-      {tl.error && !tl.data ? <ErrorNotice error={tl.error} onRetry={() => void tl.reload()} /> : tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={240} title="Posts over time" /> : <SkeletonRows n={4} />}
+      {tl.error && !tl.data ? <ErrorNotice error={tl.error} onRetry={() => void tl.reload()} /> : tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={220} title="Posts per day" /> : <SkeletonRows n={4} />}
       <div className="grid gap-4 xl:grid-cols-2">
-        <LiveFeed project={slug} limit={60} height={560} title="Store events" />
-        <Panel title="Board activity" icon={MessageSquareIcon} dense>
+        <Panel title="Board posts" icon={MessageSquareIcon}>
           <Wait q={ov} rows={8}>
             {(o) => <FeedList rows={o.recent_posts} slug={slug} limit={60} />}
           </Wait>
         </Panel>
+        <LiveFeed project={slug} limit={60} height={640} title="Everything that happened" />
       </div>
     </div>
   );
@@ -681,32 +862,50 @@ export function NoticesTab({ slug }: { slug: string }) {
     <Wait q={q}>
       {(n) => (
         <div className="grid gap-4">
-          <KpiGrid>
-            <Kpi icon={VoteIcon} n={n.votes_open} label="votes open" tone={n.votes_open ? "warn" : "neutral"} />
-            <Kpi icon={InboxIcon} n={n.proposals_awaiting} label="proposals for you" tone={n.proposals_awaiting ? "ok" : "neutral"} href={hrefs.project(slug, "for-you")} />
-            <Kpi icon={MessageSquareIcon} n={n.commons_questions ?? 0} label="commons questions" sub={n.commons_present ? "commons present" : "no commons"} />
-            <Kpi icon={BotIcon} n={n.brain || "—"} label="PULSE framework" />
-          </KpiGrid>
-          <Panel title="Ballot - what agents are asked to vote on next" icon={BellIcon} dense>
+          <NoticeStats n={n} slug={slug} />
+          <Panel title="What agents vote on next" icon={BellIcon} dense>
             {n.ballot.length ? (
               <DataTable
                 dense
                 rows={n.ballot}
                 rowKey={(b) => b.slug}
                 columns={[
-                  { key: "slug", label: "project", render: (b) => <ProjectLink slug={b.slug} brain={b.brain} /> },
-                  { key: "suggestions", label: "suggestions", align: "right", render: (b) => num(b.suggestions) },
-                  { key: "amendments", label: "amendments", align: "right", render: (b) => num(b.amendments) },
-                  { key: "proposals", label: "proposals", align: "right", render: (b) => num(b.proposals) },
+                  { key: "slug", label: "Project", render: (b) => <ProjectLink slug={b.slug} brain={b.brain} /> },
+                  { key: "suggestions", label: "Suggestions", align: "right", render: (b) => num(b.suggestions) },
+                  { key: "amendments", label: "Rule changes", align: "right", render: (b) => num(b.amendments) },
+                  { key: "proposals", label: "Proposals", align: "right", render: (b) => num(b.proposals) },
                 ]}
               />
             ) : (
-              <EmptyState className="m-3">Nothing on the ballot: no suggestion or amendment needs votes right now.</EmptyState>
+              <EmptyState className="m-4">Nothing to vote on: no suggestion or rule change needs votes right now.</EmptyState>
             )}
           </Panel>
         </div>
       )}
     </Wait>
+  );
+}
+
+// The notice numbers that are not zero; when all are, one sentence says so.
+function NoticeStats({ n, slug }: { n: Notices; slug: string }) {
+  const tiles = [
+    n.votes_open ? <Kpi key="v" icon={VoteIcon} n={n.votes_open} label="Open votes" sub="Agents are voting" /> : null,
+    n.proposals_awaiting ? <Kpi key="p" icon={MessagesSquareIcon} n={n.proposals_awaiting} label="Proposals for you" sub="Waiting for your answer" href={hrefs.project(slug, "for-you")} tone="you" /> : null,
+    n.commons_questions ? <Kpi key="q" icon={MessageSquareIcon} n={n.commons_questions} label="Questions on the shared board" sub="Across all projects" href={hrefs.project("commons")} /> : null,
+  ].filter(Boolean);
+  if (!tiles.length) return <p className="text-sm text-muted-foreground">Nothing waits right now: no open votes, no proposals for you and no questions on the shared board.</p>;
+  return <KpiGrid className={cn("mb-0", tiles.length === 3 ? "md:grid-cols-3" : tiles.length === 2 ? "md:grid-cols-2" : "grid-cols-1 md:grid-cols-1")}>{tiles}</KpiGrid>;
+}
+
+// ----- cleanup ----------------------------------------------------------------
+
+// Routine housekeeping (the runner's sweep), kept off the Overview.
+export function CleanupTab({ slug }: { slug: string }) {
+  return (
+    <div className="grid gap-4">
+      <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">PULSE tidies up after agents on its own: old branches, finished worktrees and threads that went quiet. This is what it found and did.</p>
+      <HygienePanel project={slug} limit={30} />
+    </div>
   );
 }
 
@@ -718,14 +917,22 @@ export function EnvTab({ slug }: { slug: string }) {
   const c = useApi<Constitution>("constitution?project=" + encodeURIComponent(slug), { refresh: 60000 });
   const env = (recs.data?.records ?? []).find((r) => /environment/i.test(r.slug) || /environment/i.test(r.title));
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-8">
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title={env ? "Environment · " + env.id : "Environment"} icon={SettingsIcon} actions={env ? <Link href={hrefs.record(env.id, slug)} className="hover:underline">open record</Link> : null}>
-          {recs.error && !recs.data ? <ErrorNotice error={recs.error} onRetry={() => void recs.reload()} /> : recs.data === undefined ? <SkeletonRows n={4} /> : env ? <EnvBody id={env.id} slug={slug} /> : <EmptyState>No CTX-environment record. Agents write one from <Mono>docs/context/environment.md</Mono> the first time they run in this checkout.</EmptyState>}
+        <Panel title="How to build and run it" icon={SettingsIcon} actions={env ? <SeeAll href={hrefs.record(env.id, slug)}>Open the record</SeeAll> : null}>
+          {recs.error && !recs.data ? (
+            <ErrorNotice error={recs.error} onRetry={() => void recs.reload()} />
+          ) : recs.data === undefined ? (
+            <SkeletonRows n={4} />
+          ) : env ? (
+            <EnvBody id={env.id} slug={slug} />
+          ) : (
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              No notes yet. Agents write them from <Mono>docs/context/environment.md</Mono> the first time they work in this folder.
+            </p>
+          )}
         </Panel>
-        <Panel title={c.data?.record ? "Constitution · " + c.data.record.id : "Constitution"} icon={FileDiffIcon} actions={c.data?.record ? <Link href={hrefs.record(c.data.record.id, slug)} className="hover:underline">open record</Link> : null}>
-          {c.error && !c.data && !noRecord(c.error) ? <ErrorNotice error={c.error} onRetry={() => void c.reload()} /> : c.data === undefined && !c.error ? <SkeletonRows n={4} /> : c.data?.body ? <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" /> : <EmptyState>No constitution yet. It is the <Mono>EVO-constitution</Mono> record - the boundary every agent runs inside; onboarding seeds it from the template, <Mono>{"pulse evolve seed --project " + slug}</Mono> does when it could not.</EmptyState>}
-        </Panel>
+        <ConstitutionPanel c={c} slug={slug} />
       </div>
       <ProjectRecords slug={slug} q={all} />
     </div>
@@ -761,23 +968,15 @@ function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }
   };
   return (
     <section aria-label="Records of this project">
-      <SectionHeading
-        icon={FolderIcon}
-        count={q.data ? all.length : undefined}
-        action={
-          <Link href={hrefs.records({ project: slug })} className="hover:underline">
-            browse the library
-          </Link>
-        }
-      >
-        Records of this project
+      <SectionHeading icon={FolderIcon} count={q.data ? all.length : undefined} note="Decisions, plans and notes the agents keep about this project." action={<SeeAll href={hrefs.records({ project: slug })}>Open in Records</SeeAll>}>
+        Records
       </SectionHeading>
       {all.length ? (
-        <Toolbar className="mb-3">
-          <Chips label="Kind" value={kind} onChange={setKind} options={chips} />
-          <Input aria-label="Filter records" placeholder="filter…" value={text} onChange={(e) => setText(e.target.value)} className="h-8 w-44 sm:w-56" />
+        <Toolbar className="mb-4">
+          <Segments label="Kind" value={kind} onChange={setKind} options={chips} />
+          <Search label="Search records" value={text} onChange={setText} className="w-full sm:w-56" />
           <span className="ml-auto flex items-center gap-2">
-            <Count>{plural(rows.length, "record")}</Count>
+            {text.trim() ? <Count>{plural(rows.length, "record")}</Count> : null}
             <ViewToggle value={view} onChange={setView} />
           </span>
         </Toolbar>
@@ -787,7 +986,7 @@ function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }
           if (!all.length)
             return (
               <EmptyState title="No records yet">
-                Nothing is indexed for <b>{slug}</b> yet. <Mono>pulse init</Mono> in its checkout indexes docs/ (ADRs, plans, work units, features, memory…) into the store; agents add records as they work.
+                Nothing is saved for {slug} yet. When PULSE sets a project up it reads the decisions, plans and notes in its docs folder; agents add more as they work.
               </EmptyState>
             );
           if (!rows.length)
@@ -795,17 +994,17 @@ function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }
               <EmptyState
                 title="No matching records"
                 action={
-                  <Button size="xs" variant="outline" onClick={clear}>
-                    clear filters
+                  <Button size="sm" variant="outline" onClick={clear}>
+                    Clear filters
                   </Button>
                 }
               >
-                Nothing matches this filter.
+                No record matches. Try another word or kind.
               </EmptyState>
             );
           if (view === "table")
             return (
-              <div className="rounded-lg border bg-card">
+              <div className="overflow-x-auto rounded-2xl border bg-card">
                 <DataTable columns={RECORD_COLUMNS(false)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setOpen(r.id)} initialSort="updated" caption={"Records of " + slug} />
               </div>
             );
@@ -821,3 +1020,4 @@ function EnvBody({ id, slug }: { id: string; slug: string }) {
   const q = useApi<{ body: string }>("records/" + encodeURIComponent(id) + "?project=" + encodeURIComponent(slug), { refresh: 60000 });
   return <Wait q={q}>{(d) => <Markdown source={d.body} className="max-h-[60vh] overflow-y-auto" />}</Wait>;
 }
+

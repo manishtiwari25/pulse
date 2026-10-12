@@ -25,18 +25,21 @@ export interface ConfirmProps {
   onConfirm: (words: string) => Promise<unknown>;
   success: string;
   invalidates?: string | RegExp | ((p: string) => boolean);
+  // The button that closes without doing anything. "Cancel" by default; say
+  // "Keep the task" when the action itself is a cancel, so the two can't be confused.
+  dismiss?: string;
   children?: React.ReactNode;
 }
 
-export function showApiError(e: unknown, what = "That did not work") {
+export function showApiError(e: unknown, what = "PULSE couldn't save that. Try again.") {
   const t = errorText(e);
   toast.error(t.error || what, {
-    description: [t.why && "why: " + t.why, t.fix && "fix: " + t.fix].filter(Boolean).join("\n") || undefined,
+    description: [t.why && "Why: " + t.why, t.fix && "What to do: " + t.fix].filter(Boolean).join("\n") || undefined,
     duration: 9000,
   });
 }
 
-export function ConfirmDialog({ open, onOpenChange, title, description, action, destructive, words, onConfirm, success, invalidates, children }: ConfirmProps) {
+export function ConfirmDialog({ open, onOpenChange, title, description, action, destructive, words, onConfirm, success, invalidates, dismiss = "Cancel", children }: ConfirmProps) {
   const [text, setText] = useState(words?.initial ?? "");
   const [busy, setBusy] = useState(false);
   const missing = !!words?.required && !text.trim();
@@ -80,11 +83,11 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !missing && !busy) void run();
               }}
             />
-            <p className="text-xs text-muted-foreground">{words.required ? "Required - your words are recorded with the decision." : "Optional - recorded with the decision."} ⌘↩ confirms.</p>
+            <p className="text-xs text-muted-foreground">{words.required ? "Required. Your words are kept with your answer." : "Your words are kept with your answer."}<span className="pointer-coarse:hidden"> Press ⌘↩ to confirm.</span></p>
           </div>
         ) : null}
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={() => close(false)}>Cancel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => close(false)}>{dismiss}</Button>
           <Button variant={destructive ? "destructive" : "default"} disabled={busy || missing} onClick={() => void run()}>
             {busy ? <Loader2Icon className="animate-spin" /> : null}
             {action}

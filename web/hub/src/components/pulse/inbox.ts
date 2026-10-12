@@ -6,7 +6,7 @@ import { foldSteps, gateStep, type GateStep } from "./evolve";
 import { awaitsDecision } from "@/components/records/decide-record";
 import { draftState, type DraftState } from "@/components/records/draft-panel";
 import { evolveGate, registeredProjects, type Compute, type ComputeRequest, type EvolveGate, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type Proposal, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload } from "@/lib/api";
-import { plural } from "@/lib/format";
+import { andList, plural } from "@/lib/format";
 import { sortOwnerQuestions } from "@/lib/owner-questions";
 import { useApi, type Loaded } from "@/lib/use-api";
 
@@ -100,7 +100,7 @@ export function buildInbox(q: InboxSources): Inbox {
   };
 }
 
-// The breakdown as one short line: "1 proposal · 2 questions", or the fallback when nothing waits.
+// The breakdown as one short sentence: "1 proposal and 2 questions", or the fallback when nothing waits.
 export function inboxBreakdown(items: InboxItems, empty = "nothing waits"): string {
   const parts = [
     items.decisions.length ? plural(items.decisions.length, "decision") : "",
@@ -110,7 +110,7 @@ export function inboxBreakdown(items: InboxItems, empty = "nothing waits"): stri
     items.drafts.length ? plural(items.drafts.length, "draft") : "",
     items.steps.length + (items.machine ? 1 : 0) ? plural(items.steps.length + (items.machine ? 1 : 0), "step") : "",
   ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : empty;
+  return parts.length ? andList(parts) : empty;
 }
 
 // Every path below is shared through useApi's cache, so a second caller on

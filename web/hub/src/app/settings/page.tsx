@@ -1,104 +1,143 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIcon, CloudIcon, GaugeIcon, PlugIcon, PowerIcon, RefreshCwIcon, SettingsIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
+import { ChevronRightIcon, CirclePauseIcon, GaugeIcon, MonitorIcon, PlugIcon, SearchIcon, ServerIcon, SettingsIcon, SlidersHorizontalIcon, SparklesIcon, TerminalIcon, UserRoundIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Clamp } from "@/components/pulse/clamp";
+import { SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
 import { RunningStrip } from "@/components/settings/running";
 import { CredentialRow } from "@/components/settings/credential";
-import { HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
-import { SettingRow } from "@/components/settings/setting-row";
+import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
+import { PauseCard, SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
+type Icon = React.ComponentType<{ className?: string }>;
+
+interface Cluster {
+  title: string;
+  keys: string[];
+  // A cluster with a provider shows only while compute.provider names it (ADR-042 D6).
+  provider?: string;
+}
+
 interface Group {
   id: string;
   title: string;
-  blurb: string;
+  note: string;
   keys: string[];
   match?: (name: string) => boolean;
-  // Clusters inside a section: a heading and the keys under it. A cluster
-  // with a provider shows only while compute.provider names it (ADR-042 D6).
-  clusters?: { title: string; keys: string[]; provider?: string }[];
-  // A read-only strip rendered above the rows (the daemon section's "Running").
+  // Clusters inside a section: a heading and the keys under it.
+  clusters?: Cluster[];
+  // The rows most people need. The rest wait behind "Show N more".
+  primary?: string[];
+  // A read-only block above the rows (This machine's "which PULSE runs").
   strip?: () => React.ReactNode;
 }
 
-// Four sections, as the store groups them: the 16 legacy rows every store
-// has (Runner caps), then store.ExtraSettingNames() - compute.*, evolve.*
-// and daemon.* - which are not written at Create. Unknown keys fall into
-// "Other" so a new cap the daemon learns never disappears from the owner's
-// view.
-const RUNNER_CLUSTERS = [
-  { title: "Work on this machine", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
-  { title: "Agent model and landing", keys: ["worker_model", "light_model", "landing", "landing.push", "push.credential"] },
-  { title: "Suggestions", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "lead.ballot_hours", "lead.ballot_cap"] },
-  { title: "Project lead", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "plan.operating_layer_per_day"] },
+// The sections, in the order the owner needs them: the brake, you, the
+// harness, then the caps (Limits), machines, self-improvement, this machine
+// and the advanced provider address. Keys the store knows that no section
+// claims fall into "Other", so a new cap the runner learns never disappears
+// from the owner's view. Anchors (#stop #owner #harness #runner #compute
+// #evolve #daemon #provider #other) are linked from other pages.
+const RUNNER_CLUSTERS: Cluster[] = [
+  { title: "How much work runs", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "max_ai_credits", "runner_cmd", "prune_after_days"] },
+  { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.parallel", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
+  { title: "Votes on suggestions", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "board.stale_days", "lead.ballot_hours", "lead.ballot_cap"] },
+  { title: "Lead agents", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "lead.idle_factor", "plan.operating_layer_per_day", "plan.operating_layer_fill"] },
   { title: "Rule changes", keys: ["amend_quorum", "amend_majority"] },
 ];
+const COMPUTE_CLUSTERS: Cluster[] = [
+  { title: "Limits", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
+  { title: "Azure details", provider: "azure", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
+  { title: "AWS details", provider: "aws", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
+  { title: "Google Cloud details", provider: "gcp", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
+  { title: "Multipass details (virtual machines on this computer)", provider: "multipass", keys: ["compute.multipass.size", "compute.multipass.image"] },
+  { title: "When a machine refuses to log in", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
+];
+const DAEMON_CLUSTERS: Cluster[] = [
+  { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes"] },
+  { title: "Failed work", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
+  { title: "Cleanup and disk space", keys: ["daemon.sweep", "daemon.min_free_mb", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.log_keep_days", "daemon.log_max_mb", "daemon.transcript_keep_days", "daemon.vacuum_free_mb", "daemon.build_cache", "daemon.build_cache_keep_days", "hygiene.cargo_target", "hygiene.cargo_target_hours"] },
+  { title: "Agent check-ins", keys: ["heartbeat.dead_after"] },
+];
+const keysOf = (cs: Cluster[]) => cs.flatMap((c) => c.keys);
+
 const GROUPS: Group[] = [
   {
-    id: "provider",
-    title: "Advanced: model provider",
-    blurb: "Where model calls go when you use an OpenAI-compatible provider. The API key stays on this machine.",
-    keys: ["provider.openai.base_url"],
-    match: (n) => n.startsWith("provider."),
-  },
-  {
     id: "owner",
-    title: "Your presence",
-    blurb: "Tell PULSE whether you are here to answer. When you are away, routine agent suggestions can be decided for you; money, hard stops and protected decisions still wait for you.",
-    keys: ["owner.presence"],
-    match: (n) => n.startsWith("owner."),
+    title: "You",
+    note: "Tell PULSE whether you're around to answer.",
+    keys: ["owner.presence", "records.auto_adopt"],
+    match: (n) => n.startsWith("owner.") || n.startsWith("records."),
   },
   {
     id: "runner",
-    title: "Safety limits",
-    blurb: "How much work agents may do on this machine, how long a run may take, and when suggestions have enough support.",
-    keys: RUNNER_CLUSTERS.flatMap((c) => c.keys),
-    match: (n) => n.startsWith("lead."),
+    title: "Limits",
+    note: "How much agents may do on this machine, how finished work gets merged, and how suggestions get votes.",
+    keys: keysOf(RUNNER_CLUSTERS),
+    match: (n) => n.startsWith("lead.") || n.startsWith("landing.") || n.startsWith("plan.") || n.startsWith("board.") || n.startsWith("verify."),
     clusters: RUNNER_CLUSTERS,
+    primary: ["workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "landing", "landing.push", "push.credential", "quorum"],
   },
   {
     id: "compute",
     title: "Machines",
-    blurb: "Limits for extra machines agents may ask for, plus the cloud or local provider that creates them. Credentials stay on this machine.",
-    keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits", "compute.self_heal", "compute.self_retire", "compute.retire_grace_hours", "compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image", "compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group", "compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network", "compute.multipass.size", "compute.multipass.image"],
+    note: "Limits for the extra machines agents may ask for, and where those machines come from. Cloud sign-ins stay on this machine.",
+    keys: keysOf(COMPUTE_CLUSTERS),
     match: (n) => n.startsWith("compute."),
-    clusters: [
-      { title: "Safety limits", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
-      { title: "Login problems", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
-      { title: "Azure target", provider: "azure", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
-      { title: "AWS target", provider: "aws", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
-      { title: "GCP target", provider: "gcp", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
-      { title: "Multipass target (local VMs)", provider: "multipass", keys: ["compute.multipass.size", "compute.multipass.image"] },
-    ],
+    clusters: COMPUTE_CLUSTERS,
+    primary: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"],
   },
   {
     id: "evolve",
-    title: "Advanced: self-improvement",
-    blurb: "Limits for automatic improvement experiments. Private evaluator paths stay hidden from agents.",
-    keys: ["evolve.loop", "evolve.limits", "evolve.tolerance", "evolve.heldout", "evolve.heldout_dir", "evolve.draft_hours"],
-    match: (n) => n.startsWith("evolve."),
+    title: "Self-improvement",
+    note: "Experiments where agents try changes and keep the ones that score better on tests. Your private tests stay hidden from agents.",
+    keys: ["evolve.loop", "evolve.heldout", "evolve.tolerance", "evolve.limits", "evolve.heldout_dir", "evolve.draft_hours"],
+    match: (n) => n.startsWith("evolve.") || n.startsWith("baseline.") || n.startsWith("lane."),
+    primary: ["evolve.loop", "evolve.heldout", "evolve.tolerance"],
   },
   {
     id: "daemon",
     title: "This machine",
-    blurb: "How PULSE starts, updates itself, recovers failed work and keeps enough disk space free on this machine.",
-    keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.recover", "daemon.recover_days", "daemon.recover_limit", "daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb", "heartbeat.dead_after"],
-    match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat."),
-    clusters: [
-      { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes"] },
-      { title: "Work that failed", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
-      { title: "Cleanup", keys: ["daemon.sweep", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.min_free_mb"] },
-      { title: "Agent check-ins", keys: ["heartbeat.dead_after"] },
-    ],
+    note: "Which PULSE runs here, how it updates itself, retries failed work and cleans up after runs.",
+    keys: keysOf(DAEMON_CLUSTERS),
+    match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene."),
+    clusters: DAEMON_CLUSTERS,
+    primary: ["daemon.self_update", "daemon.recover", "daemon.sweep", "daemon.min_free_mb"],
     strip: () => <RunningStrip />,
   },
+  {
+    id: "provider",
+    title: "Model provider",
+    note: "Advanced. Where model calls go when you use an OpenAI-compatible provider. The API key stays on this machine.",
+    keys: ["provider.openai.base_url"],
+    match: (n) => n.startsWith("provider."),
+  },
 ];
+const OTHER: Group = { id: "other", title: "Other", note: "Settings this page doesn't group yet. Each one shows PULSE's own description.", keys: [] };
+
+// The section picker, in page order. Pause and Harness are their own blocks.
+const NAV: { id: string; title: string; icon: Icon }[] = [
+  { id: "stop", title: "Pause all work", icon: CirclePauseIcon },
+  { id: "owner", title: "You", icon: UserRoundIcon },
+  { id: "harness", title: "Harness", icon: TerminalIcon },
+  { id: "runner", title: "Limits", icon: GaugeIcon },
+  { id: "compute", title: "Machines", icon: ServerIcon },
+  { id: "evolve", title: "Self-improvement", icon: SparklesIcon },
+  { id: "daemon", title: "This machine", icon: MonitorIcon },
+  { id: "provider", title: "Model provider", icon: PlugIcon },
+  { id: "other", title: "Other", icon: SlidersHorizontalIcon },
+];
+const ICON: Record<string, Icon> = Object.fromEntries(NAV.map((n) => [n.id, n.icon]));
+
+// What the Harness section answers to in the search box besides its own
+// settings (matched like every other row): the card's headings and words.
+const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github copilot token openai model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview";
 
 // Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/pulse-store).
 // These rows are not inserted at Create, so when the hub omits one the
@@ -153,105 +192,170 @@ function withExtraDefaults(rows: Setting[]): Setting[] {
   return missing.length ? [...rows, ...missing] : rows;
 }
 
+const ON_OFF = { on: "On", off: "Off" };
 const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Record<string, string> }> = {
-  stop: { on: "STOPPED - nothing runs", off: "running" },
-  "owner.presence": { choices: { present: "present — proposals wait for you", away: "away — the leads decide for you" } },
-  "compute.auto_approve": { on: "on - within-cap requests start without you", off: "off - every request waits for you" },
-  "compute.self_heal": { on: "on - a refused login is replaced from the executor token", off: "off - a refused login stays refused" },
-  "compute.self_retire": { on: "on - a refused VM PULSE created is deallocated, retired, then deleted", off: "off - a refused VM is left running" },
-  "evolve.loop": { on: "on - cycles run back to back", off: "off - the loop waits" },
+  stop: { on: "Paused: nothing new starts", off: "Running" },
+  "owner.presence": { choices: { present: "I'm here", away: "I'm away: lead agents decide for me" } },
+  landing: { choices: { agents: "Agents merge it themselves", human: "I merge it myself" } },
+  "landing.push": { choices: { off: "Don't push, I push myself", main: "Push the main branch" } },
+  "landing.auto_stash": { choices: ON_OFF },
+  "compute.provider": { choices: { azure: "Azure", aws: "AWS", gcp: "Google Cloud", multipass: "Multipass (on this computer)" } },
+  "compute.auto_approve": { on: "On: requests within the limits start by themselves", off: "Off: every request waits for you" },
+  "compute.self_heal": { on: "On: PULSE gives it a fresh login", off: "Off: a refused login stays refused" },
+  "compute.self_retire": { on: "On: PULSE stops it, then deletes it later", off: "Off: the machine is left running" },
+  "evolve.loop": { on: "On: experiments run back to back", off: "Off: no experiments run" },
+  "evolve.heldout": { choices: { auto: "PULSE writes them", owner: "I write them myself" } },
+  "daemon.self_update": { choices: ON_OFF },
+  "daemon.recover": { choices: ON_OFF },
+  "daemon.sweep": { choices: ON_OFF },
 };
 
-// Section margins complement the shell's scroll padding so headings clear
-// the sticky page title and section pills.
-const ANCHOR = "scroll-mt-32";
-const PILL = "surface-glass inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-xs hover:bg-muted";
-const SECTION_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  stop: PowerIcon,
-  provider: PlugIcon,
-  owner: UserRoundIcon,
-  runner: GaugeIcon,
-  compute: CloudIcon,
-  evolve: SparklesIcon,
-  daemon: ActivityIcon,
-  other: SettingsIcon,
-};
-const SECTION_TONES: Record<string, string> = {
-  stop: "bg-bad/10 text-bad",
-  provider: "bg-muted text-foreground",
-  owner: "bg-info/10 text-info",
-  runner: "bg-primary/10 text-primary",
-  compute: "bg-accent-2/10 text-accent-2",
-  evolve: "bg-ok/10 text-ok",
-  daemon: "bg-warn/10 text-warn",
-  other: "bg-muted text-muted-foreground",
-};
+// Anchor margins: on phones the shell header and the section picker stick
+// to the top, so a jump lands below both.
+const ANCHOR = "scroll-mt-16 lg:scroll-mt-4";
 
 // The rows of one section. The push key has its own row (a picker, not a
-// text field). When the section knows compute providers, only the chosen
-// provider's target shows - unless the owner is searching, when every match
-// counts.
-function GroupRows({ g, rows, canEdit, provider, searching }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean }) {
+// text field). Only the chosen compute provider's details show - unless the
+// owner is searching, when every match counts. Big sections show their
+// common rows first and fold the rest behind "Show N more".
+function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean; expanded: boolean; onToggle: () => void }) {
   const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} />);
-  const clusters = g.clusters;
+  const primary = g.primary;
+  const folded = rows.filter((s) => primary && !primary.includes(s.name)).length;
+  // Folding one row away saves nothing; show it.
+  const open = searching || expanded || !primary || folded < 2;
+  const visible = (s: Setting) => open || !!primary?.includes(s.name);
   const strip = g.strip ? <div className="border-b">{g.strip()}</div> : null;
+  const toggle =
+    !searching && primary && folded >= 2 ? (
+      <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex w-full items-center gap-2 border-t px-4 py-3 text-left text-sm font-medium text-primary hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5">
+        <ChevronRightIcon className={cn("size-4 transition-transform duration-150 motion-reduce:transition-none", expanded && "rotate-90")} aria-hidden />
+        {expanded ? "Show fewer settings" : "Show " + folded + " more " + (folded === 1 ? "setting" : "settings")}
+      </button>
+    ) : null;
+  const clusters = g.clusters;
   if (!clusters)
     return (
       <>
         {strip}
-        <div className="divide-y">{rows.map(row)}</div>
+        <div className="divide-y">{rows.filter(visible).map(row)}</div>
+        {toggle}
       </>
     );
-  const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name)));
+  const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name))).filter(visible);
   const others = clusters.filter((c) => c.provider && c.provider !== provider).map((c) => COMPUTE_PROVIDERS[c.provider!] ?? c.provider!);
+  const chosenName = COMPUTE_PROVIDERS[provider] ?? provider;
+  const blocks: { title: string; note?: string; warn?: boolean; rows: Setting[] }[] = [];
+  for (const c of clusters) {
+    if (c.provider && c.provider !== provider && !searching) continue;
+    const inCluster = rows.filter((s) => c.keys.includes(s.name)).filter(visible);
+    if (!inCluster.length) continue;
+    const chosen = c.provider && c.provider === provider;
+    const note = chosen && others.length && !searching ? "Only " + chosenName + "'s details are shown. Pick another option under Where extra machines come from to set that one up." : c.provider && !chosen ? "Not in use: these apply only when " + (COMPUTE_PROVIDERS[c.provider] ?? c.provider) + " is chosen." : undefined;
+    blocks.push({ title: c.title, note, warn: !!c.provider && !chosen, rows: inCluster });
+  }
+  if (loose.length) blocks.push({ title: "More " + g.title.toLowerCase(), rows: loose });
   return (
     <>
       {strip}
-      {clusters.map((c) => {
-        if (c.provider && c.provider !== provider && !searching) return null;
-        const inCluster = rows.filter((s) => c.keys.includes(s.name));
-        if (!inCluster.length) return null;
-        const chosen = c.provider && c.provider === provider;
-        return (
-          <div key={c.title} className="border-t first:border-t-0">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-4 pt-3">
-              <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{c.title}</h3>
-              {chosen && others.length && !searching ? <span className="text-[11.5px] text-muted-foreground">Only the chosen provider&apos;s target is shown - pick {others.join(", ")} above to set up another.</span> : null}
-              {c.provider && !chosen ? <span className="text-[11.5px] text-warn">Not the chosen provider - these rows sleep until Cloud provider says {COMPUTE_PROVIDERS[c.provider] ?? c.provider}.</span> : null}
-            </div>
-            <div className="divide-y">{inCluster.map(row)}</div>
+      {blocks.map((b, i) => (
+        <div key={b.title}>
+          <div className={cn("grid gap-0.5 px-4 pb-1 sm:px-5", i === 0 ? "pt-4" : "border-t pt-5")}>
+            <h3 className="text-sm font-semibold text-foreground">{b.title}</h3>
+            {b.note ? <p className={cn("text-[13px] leading-relaxed anywhere", b.warn ? "text-warn" : "text-muted-foreground")}>{b.note}</p> : null}
           </div>
-        );
-      })}
-      {loose.length ? <div className="divide-y border-t first:border-t-0">{loose.map(row)}</div> : null}
+          <div className="divide-y">{b.rows.map(row)}</div>
+        </div>
+      ))}
+      {toggle}
     </>
   );
 }
 
-function SectionCard({ id, title, blurb, count, children, alert }: { id: string; title: React.ReactNode; blurb: React.ReactNode; count?: React.ReactNode; children: React.ReactNode; alert?: boolean }) {
-  const Icon = SECTION_ICONS[id] ?? RefreshCwIcon;
+function Section({ id, title, note, count, children }: { id: string; title: string; note?: React.ReactNode; count?: string; children: React.ReactNode }) {
   return (
-    <div className={cn("surface-raised overflow-hidden rounded-2xl border shadow-card", alert && "bg-bad/5 ring-1 ring-bad/40")}>
-      <header className="flex items-start gap-3 border-b px-4 py-3">
-        <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-md", SECTION_TONES[id] ?? SECTION_TONES.other)} aria-hidden>
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold tracking-tight">
-            {title}
-            {count}
-          </h2>
-          <Clamp className="mt-0.5">{blurb}</Clamp>
-        </div>
-      </header>
+    <section id={id} aria-label={title} className={ANCHOR}>
+      <SectionHeading icon={ICON[id]} note={note} count={count}>
+        {title}
+      </SectionHeading>
       {children}
-    </div>
+    </section>
+  );
+}
+
+// The section picker: a sticky list on the left from lg up, a row of chips
+// that sticks under the phone header below that. The section in view is
+// marked (aria-current) in both.
+function SectionNav({ items, active, stopped, onPick }: { items: { id: string; title: string; icon: Icon; hit: boolean; count?: number }[]; active: string; stopped: boolean; onPick: (id: string) => void }) {
+  const chips = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = chips.current?.querySelector<HTMLElement>('[aria-current="true"]');
+    if (!el || !chips.current || chips.current.offsetParent === null) return;
+    const box = chips.current;
+    const left = el.offsetLeft - box.clientWidth / 2 + el.clientWidth / 2;
+    box.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+  }, [active]);
+  const dot = (id: string) => (id === "stop" ? <span className={cn("size-2 shrink-0 rounded-full", stopped ? "bg-bad" : "bg-ok")} aria-hidden /> : null);
+  return (
+    <>
+      <nav aria-label="Settings sections" className="sticky top-[calc(3.5rem+1px+env(safe-area-inset-top))] z-30 -mx-4 mb-5 border-b bg-background sm:-mx-6 lg:hidden">
+        <div ref={chips} className="scroll-strip flex gap-1.5 px-4 py-2.5 sm:px-6">
+          {items.map((n) => (
+            <a
+              key={n.id}
+              href={"#" + n.id}
+              onClick={() => onPick(n.id)}
+              aria-current={active === n.id ? "true" : undefined}
+              aria-disabled={!n.hit || undefined}
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                active === n.id ? "border-foreground/20 bg-card font-medium text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.06)]" : "border-transparent text-muted-foreground hover:text-foreground",
+                !n.hit && "pointer-events-none opacity-40",
+              )}
+            >
+              {dot(n.id)}
+              {n.title}
+              {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : null}
+            </a>
+          ))}
+        </div>
+      </nav>
+      <nav aria-label="Settings sections" className="sticky top-6 hidden self-start lg:block">
+        <ul className="grid gap-0.5">
+          {items.map((n) => {
+            const Icon = n.icon;
+            const on = active === n.id;
+            return (
+              <li key={n.id}>
+                <a
+                  href={"#" + n.id}
+                  onClick={() => onPick(n.id)}
+                  aria-current={on ? "true" : undefined}
+                  aria-disabled={!n.hit || undefined}
+                  className={cn(
+                    "flex min-w-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    on ? "bg-card font-medium text-foreground ring-1 ring-border" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    !n.hit && "pointer-events-none opacity-40",
+                  )}
+                >
+                  <Icon className={cn("size-4 shrink-0", on ? "text-primary" : "text-muted-foreground", n.id === "stop" && stopped && "text-bad")} />
+                  <span className="min-w-0 flex-1 truncate">{n.title}</span>
+                  {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : n.id === "stop" ? dot(n.id) : null}
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </>
   );
 }
 
 export default function SettingsPage() {
   const q = useApi<SettingsPayload>("settings", { refresh: 30000 });
   const [find, setFind] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [active, setActive] = useState("stop");
   const jumped = useRef(false);
   useEffect(() => {
     // The sections exist only once settings arrive, so the browser's own
@@ -259,7 +363,24 @@ export default function SettingsPage() {
     if (jumped.current || !q.data) return;
     jumped.current = true;
     const id = window.location.hash.slice(1);
-    if (id) document.getElementById(id)?.scrollIntoView();
+    if (!id) return;
+    const go = () => document.getElementById(id)?.scrollIntoView();
+    go();
+    // The harness card and the push-key row load on their own and grow the
+    // page above later sections; keep the target in place for a few seconds
+    // unless the owner starts scrolling. Deliberately not tied to this
+    // effect's cleanup (the 30s refresh re-runs it); the timer ends it.
+    if (typeof ResizeObserver === "undefined") return;
+    let done = false;
+    const ro = new ResizeObserver(() => !done && go());
+    const quit = () => {
+      done = true;
+      ro.disconnect();
+      for (const ev of ["wheel", "touchstart", "keydown", "mousedown"]) window.removeEventListener(ev, quit);
+    };
+    ro.observe(document.body);
+    for (const ev of ["wheel", "touchstart", "keydown", "mousedown"]) window.addEventListener(ev, quit, { passive: true });
+    window.setTimeout(quit, 4000);
   }, [q.data]);
   const groups = useMemo(() => {
     const all = q.data ? withExtraDefaults(q.data.settings) : [];
@@ -269,109 +390,201 @@ export default function SettingsPage() {
       const rows: Setting[] = [];
       for (const k of g.keys) {
         const s = all.find((x) => x.name === k);
-        if (s) {
+        if (s && !used.has(s.name)) {
           rows.push(s);
           used.add(s.name);
         }
       }
-      if (g.match) for (const s of all) if (!used.has(s.name) && g.match(s.name)) { rows.push(s); used.add(s.name); }
+      if (g.match)
+        for (const s of all)
+          if (!used.has(s.name) && g.match(s.name)) {
+            rows.push(s);
+            used.add(s.name);
+          }
       if (rows.length) out.push({ g, rows });
     }
     const rest = all.filter((s) => !used.has(s.name)).sort((a, b) => a.name.localeCompare(b.name));
-    if (rest.length) out.push({ g: { id: "other", title: "Other", blurb: "Keys the store knows that this UI has no group for yet; each row shows the store's own description of the key.", keys: [] }, rows: rest });
+    if (rest.length) out.push({ g: OTHER, rows: rest });
     return out;
   }, [q.data]);
 
-  if (q.error && !q.data)
+  const d = q.data;
+  const stop = d?.settings.find((s) => s.name === "stop");
+  const stopped = stop?.value === "1";
+  const needle = find.trim().toLowerCase();
+  // A key also answers to its words: "max steps" finds harness.max_steps.
+  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || s.name.toLowerCase().replace(/[._]+/g, " ").includes(needle) || settingLabel(s.name).toLowerCase().includes(needle) || settingHelp(s.name).toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
+  const provider = d?.settings.find((s) => s.name === "compute.provider")?.value || "azure";
+  // Sleeping provider rows leave the count too, unless a search wakes them.
+  const awake = (s: Setting) => !!needle || !GROUPS.some((g) => g.clusters?.some((c) => c.provider && c.provider !== provider && c.keys.includes(s.name)));
+  // The Harness card lists its own settings; they search and count like the rest.
+  // minutes_per_job shows there too but is counted once, under Limits.
+  const everything = d ? withExtraDefaults(d.settings) : [];
+  const harnessRows = HARNESS_SETTING_KEYS.map((k) => everything.find((s) => s.name === k)).filter((s): s is Setting => !!s);
+  const harnessHits = harnessRows.filter(match).length;
+  const harnessShown = !needle || harnessHits > 0 || HARNESS_WORDS.includes(needle);
+  // The kill switch has its own card at the top, so it leaves the Limits section.
+  const killShown = !!stop && (match(stop) || "pause stop kill switch emergency brake resume".includes(needle));
+  const base = groups.map(({ g, rows }) => ({ g, rows: rows.filter((s) => (!stop || s.name !== "stop") && awake(s)) }));
+  const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0) + harnessRows.length;
+  const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
+  const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
+  const present = new Set<string>(["harness", ...groups.map((x) => x.g.id), ...(stop ? ["stop"] : [])]);
+  const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
+  const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
+    const hit = n.id === "stop" ? killShown : n.id === "harness" ? harnessShown : !!hits[n.id];
+    return { ...n, hit, count: needle && n.id !== "stop" && hit && hits[n.id] ? hits[n.id] : undefined };
+  });
+  const order = navItems.filter((n) => n.hit).map((n) => n.id).join(" ");
+  // A search can hide the section last in view; then the first one with hits
+  // is the current one (or none when nothing matches).
+  const current = order.split(" ").includes(active) ? active : order.split(" ")[0] || "";
+
+  // Mark the section in view: the last one whose top has passed the upper
+  // part of the screen (or the last one at the very bottom of the page).
+  useEffect(() => {
+    if (!order) return;
+    const ids = order.split(" ");
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const line = window.innerWidth >= 1024 ? 120 : 150;
+      let cur = ids[0]!;
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top <= line) cur = id;
+      }
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = ids[ids.length - 1]!;
+      setActive(cur);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+    frame = requestAnimationFrame(measure);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [order]);
+
+  const title = (
+    <PageTitle icon={SettingsIcon} sub="How PULSE behaves on this machine. Limits and rules ask you to confirm before they change; model choices save as soon as you pick them.">
+      Settings
+    </PageTitle>
+  );
+  if (q.error && !d)
     return (
       <>
-        <PageTitle icon={SettingsIcon} sub="How PULSE behaves on this machine. Each change is previewed before it applies.">Settings</PageTitle>
+        {title}
         <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
       </>
     );
-  if (!q.data) return <SkeletonPage rows={4} />;
-  const d = q.data;
-  const stop = d.settings.find((s) => s.name === "stop");
-  const stopped = stop?.value === "1";
-  const needle = find.trim().toLowerCase();
-  const match = (s: Setting) => !needle || s.name.toLowerCase().includes(needle) || settingLabel(s.name).toLowerCase().includes(needle) || settingHelp(s.name).toLowerCase().includes(needle) || s.description.toLowerCase().includes(needle);
-  const provider = d.settings.find((s) => s.name === "compute.provider")?.value || "azure";
-  // Sleeping provider rows leave the count too, unless a search wakes them.
-  const awake = (s: Setting) => !!needle || !GROUPS.some((g) => g.clusters?.some((c) => c.provider && c.provider !== provider && c.keys.includes(s.name)));
-  const harnessShown = !needle || "harness built-in native copilot github model provider login max steps timeout output limit".includes(needle);
-  // The kill switch has its own card at the top, so it leaves the runner cluster.
-  const killShown = !!stop && match(stop);
-  const base = groups.map(({ g, rows }) => ({ g, rows: rows.filter((s) => (!stop || s.name !== "stop") && awake(s)) }));
-  const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0);
-  const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
-  const hit = new Set(shown.map((x) => x.g.id));
-  const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0);
+  if (!d) return <SkeletonPage rows={4} />;
+
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   return (
     <>
-      <PageTitle
-        icon={SettingsIcon}
-        sub="How PULSE behaves on this machine. Each change is previewed before it applies."
-        actions={
-          <>
-            {needle ? <span className="tnum whitespace-nowrap text-xs text-muted-foreground">{matched} of {total}</span> : null}
-            <Input
-              value={find}
-              onChange={(e) => setFind(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setFind("");
-              }}
-              placeholder="find a setting…"
-              aria-label="Find a setting"
-              className="h-7 w-36 sm:w-56"
-            />
-          </>
-        }
-        bar={
-          <nav aria-label="Sections" className="flex items-center gap-1.5 text-xs">
-            {stop ? (
-              <a href="#stop" className={cn(PILL, stopped && "border-bad/40 text-bad", !killShown && "pointer-events-none opacity-40")} aria-disabled={!killShown || undefined}>
-                <span className={cn("size-1.5 rounded-full", stopped ? "bg-bad" : "bg-ok")} aria-hidden />
-                Pause all work
-              </a>
-            ) : null}
-            {groups.map(({ g }) => (
-              <a key={g.id} href={"#" + g.id} className={cn(PILL, !hit.has(g.id) && "pointer-events-none opacity-40")} aria-disabled={!hit.has(g.id) || undefined}>
-                {g.title}
-              </a>
+      {title}
+      <div className="mb-6 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="relative w-full max-w-xl">
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-3.5 size-[18px] -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input
+            type="search"
+            value={find}
+            onChange={(e) => setFind(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setFind("");
+            }}
+            placeholder="Search settings"
+            aria-label="Search settings"
+            aria-describedby="settings-search-hint"
+            className="h-11 rounded-xl bg-card pl-11 text-[15px]"
+          />
+        </div>
+        <p id="settings-search-hint" className="text-[13px] text-muted-foreground" aria-live="polite">
+          {needle ? (
+            matched || !harnessShown ? (
+              <span className="tnum">
+                {matched} of {total} settings match
+              </span>
+            ) : (
+              "No single setting matches, but the Harness section does."
+            )
+          ) : (
+            "Search by name, by what it does, or by its key."
+          )}
+        </p>
+      </div>
+
+      <div className="min-w-0 lg:grid lg:grid-cols-[13.5rem_minmax(0,1fr)] lg:gap-10">
+        <SectionNav items={navItems} active={current} stopped={stopped} onPick={setActive} />
+
+        <div className="grid min-w-0 gap-10">
+          {!d.available || (d.available && !d.can_edit) || stopped ? (
+            <div className="grid gap-2 empty:hidden">
+              {!d.available ? <Notice tone="warn">Settings aren&apos;t available on this console, so this page is read-only.</Notice> : null}
+              {d.available && !d.can_edit ? <Notice tone="info">This console can&apos;t change settings. Open the console on the machine PULSE runs on to change them.</Notice> : null}
+              {stopped ? <Notice tone="bad">All work is paused. Agents won&apos;t start anything new until you resume it under Pause all work.</Notice> : null}
+            </div>
+          ) : null}
+
+          {killShown && stop ? (
+            <section id="stop" aria-label="Pause all work" className={ANCHOR}>
+              <h2 className="sr-only">Pause all work</h2>
+              <PauseCard s={stop} canEdit={d.can_edit} />
+            </section>
+          ) : null}
+
+          {shown
+            .filter((x) => x.g.id === "owner")
+            .map(({ g, rows, all }) => (
+              <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
+                <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
+                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} />
+                </div>
+              </Section>
             ))}
-            <a href="#harness" className={cn(PILL, !harnessShown && "pointer-events-none opacity-40")} aria-disabled={!harnessShown || undefined}>
-              How agents run
-            </a>
-          </nav>
-        }
-      >
-        Settings
-      </PageTitle>
-      {!d.available ? <Notice tone="warn" className="mb-3">Settings are not available on this console — it is read-only.</Notice> : null}
-      {d.available && !d.can_edit ? <Notice tone="info" className="mb-3">This console cannot change settings. Use the owner machine.</Notice> : null}
-      {stopped ? <Notice tone="bad" className="mb-3">Pause is on: agents will not start more work until you turn it off below.</Notice> : null}
-      <div className="grid gap-3">
-        {killShown && stop ? (
-          <section id="stop" className={ANCHOR}>
-            <SectionCard id="stop" title="Pause all work" blurb="Stop or resume agent work immediately. This stays separate because it is your emergency brake." alert={stopped}>
-              <SettingRow s={stop} canEdit={d.can_edit} labels={SETTING_LABELS.stop} title="Pause all work" />
-            </SectionCard>
-          </section>
-        ) : null}
-        {harnessShown ? <HarnessSettingsCard /> : null}
-        {shown.map(({ g, rows, all }) => (
-          <section key={g.id} id={g.id} className={ANCHOR}>
-            <SectionCard
-              id={g.id}
-              title={g.title}
-              blurb={g.blurb}
-              count={needle ? <span className="tnum ml-2 font-normal text-muted-foreground">{rows.length} of {all}</span> : null}
+
+          {harnessShown ? (
+            <Section id="harness" title="Harness" note="Sign-in, models and limits for agent runs." count={needle && harnessHits ? harnessHits + " of " + harnessRows.length : undefined}>
+              <HarnessSettingsCard />
+            </Section>
+          ) : null}
+
+          {shown
+            .filter((x) => x.g.id !== "owner")
+            .map(({ g, rows, all }) => (
+              <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
+                <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
+                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} />
+                </div>
+              </Section>
+            ))}
+
+          {needle && !matched && !harnessShown ? (
+            <EmptyState
+              icon={<SearchIcon className="size-[18px]" />}
+              title={<>No setting matches &ldquo;{find.trim()}&rdquo;</>}
+              action={
+                <Button variant="outline" size="sm" onClick={() => setFind("")}>
+                  Clear the search
+                </Button>
+              }
             >
-              <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} />
-            </SectionCard>
-          </section>
-        ))}
-        {needle && !matched ? <EmptyState>No setting matches &ldquo;{find.trim()}&rdquo;. Try words like push, model or region.</EmptyState> : null}
+              Try a plain word like push, model, region or disk, or a key such as compute.max_vms.
+            </EmptyState>
+          ) : null}
+        </div>
       </div>
     </>
   );

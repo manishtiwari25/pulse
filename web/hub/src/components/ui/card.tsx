@@ -1,6 +1,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
+// A white card on the paper background: one hairline, 14px corners, no glow.
 function Card({
   className,
   size = "default",
@@ -83,7 +84,7 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-footer"
       className={cn(
-        "flex items-center rounded-b-2xl border-t bg-muted/35 p-(--card-spacing)",
+        "flex items-center rounded-b-2xl border-t bg-muted/40 p-(--card-spacing)",
         className
       )}
       {...props}

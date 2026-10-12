@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_OPTIONS, authFieldLabel, authsFor, endpoint, envObject, envRows, formFromServer, lastCheck, mcpInput, mcpPatch, parseArgs, skillPatch, sortScoped, toolNames, validateMcpForm, validateSkillForm } from "./mcp.ts";
+import { DEFAULT_OPTIONS, authFieldLabel, authsFor, endpoint, envObject, envRows, formFromServer, lastCheck, mcpFormReady, mcpInput, mcpPatch, parseArgs, skillFormReady, skillPatch, sortScoped, toolNames, validateMcpForm, validateSkillForm } from "./mcp.ts";
 
 const server = {
   id: "MCP-001",
@@ -45,12 +45,12 @@ test("each transport offers only the auths the hub accepts for it", () => {
 
 test("the form refuses what the hub would refuse, before the request", () => {
   assert.deepEqual(validateMcpForm(form()), []);
-  assert.match(validateMcpForm(form({ name: "GitHub!" }))[0], /slug/);
+  assert.match(validateMcpForm(form({ name: "GitHub!" }))[0], /lowercase letters/);
   assert.match(validateMcpForm(form({ name: "" }))[0], /name/);
   assert.match(validateMcpForm(form({ command: "" }))[0], /command/);
   assert.match(validateMcpForm(form({ transport: "http", auth: "none", url: "" }))[0], /URL/);
   assert.match(validateMcpForm(form({ transport: "http", auth: "none", url: "ftp://x" }))[0], /http/);
-  assert.match(validateMcpForm(form({ transport: "http", auth: "env", url: "https://x" }))[0], /does not fit/);
+  assert.match(validateMcpForm(form({ transport: "http", auth: "env", url: "https://x" }))[0], /doesn't work with/);
   assert.match(validateMcpForm(form({ secret_ref: "" }))[0], /secret reference/);
   assert.match(validateMcpForm(form({ secret_ref: "ghp_abcdefghijklmnopqrstuvwxyz" }))[0], /never the secret itself/);
   assert.match(validateMcpForm(form({ auth_header: "" }))[0], /environment variable/);
@@ -99,10 +99,10 @@ test("a row reads its endpoint and last check", () => {
 test("skills validate and patch like servers", () => {
   const skill = { id: "SKILL-001", name: "release-check", project: "", description: "How to verify a release.", body: "# Release\n\nRun the checks.\n", status: "enabled", created_by: "human", created_at: "", updated_at: "", uses: 2 };
   assert.deepEqual(validateSkillForm({ name: "release-check", project: "", description: "ok", body: "x" }), []);
-  assert.match(validateSkillForm({ name: "Bad Name", project: "", description: "ok", body: "x" })[0], /slug/);
+  assert.match(validateSkillForm({ name: "Bad Name", project: "", description: "ok", body: "x" })[0], /lowercase letters/);
   assert.match(validateSkillForm({ name: "ok", project: "", description: "", body: "x" })[0], /one line/);
   assert.match(validateSkillForm({ name: "ok", project: "", description: "a".repeat(201), body: "x" })[0], /200/);
-  assert.match(validateSkillForm({ name: "ok", project: "", description: "ok", body: "  " })[0], /body/);
+  assert.match(validateSkillForm({ name: "ok", project: "", description: "ok", body: "  " })[0], /instructions/);
   assert.deepEqual(skillPatch(skill, { name: "release-check", project: "", description: "How to verify a release.", body: "# Release\n\nRun the checks." }), {});
   assert.deepEqual(skillPatch(skill, { name: "release-check", project: "demo-app", description: "How to verify a release.", body: "# Release\n\nRun the checks.\n" }), { project: "demo-app" });
   assert.deepEqual(skillPatch(skill, { name: "release-check", project: "", description: "Verify.", body: "new" }), { description: "Verify.", body: "new\n" });
@@ -120,4 +120,14 @@ test("rows sort global first, then by project and name, as the brief lists them"
     sortScoped(rows).map((r) => r.project + "/" + r.name),
     ["/c", "/z", "blog/q", "demo-app/a", "demo-app/b"],
   );
+});
+
+test("the primary button waits for the required fields", () => {
+  assert.equal(mcpFormReady({ name: "", transport: "stdio", command: "", url: "" }), false);
+  assert.equal(mcpFormReady({ name: "github", transport: "stdio", command: " ", url: "" }), false);
+  assert.equal(mcpFormReady({ name: "github", transport: "stdio", command: "npx", url: "" }), true);
+  assert.equal(mcpFormReady({ name: "linear", transport: "http", command: "npx", url: "" }), false);
+  assert.equal(mcpFormReady({ name: "linear", transport: "http", command: "", url: "https://mcp.linear.app/mcp" }), true);
+  assert.equal(skillFormReady({ name: "release-check", description: "How to tag", body: "" }), false);
+  assert.equal(skillFormReady({ name: "release-check", description: "How to tag", body: "## Steps" }), true);
 });

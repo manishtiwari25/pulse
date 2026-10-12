@@ -2,19 +2,22 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { AlertTriangleIcon, ArrowUpRightIcon, BotIcon, BriefcaseBusinessIcon, ChevronLeftIcon, ChevronRightIcon, FileDiffIcon, FileTextIcon, ListTodoIcon, MessageSquareIcon, RefreshCwIcon, VoteIcon } from "lucide-react";
+import { AlertTriangleIcon, ChevronLeftIcon, ChevronRightIcon, FileDiffIcon, GitMergeIcon, ListTodoIcon, RefreshCwIcon, ThumbsUpIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { CardGrid, Fact, ItemCard, ItemCardActions, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { EmptyState, ErrorNotice, Kpi, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
-import { Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
+import { Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
+import { Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, When, Who } from "@/components/pulse/who";
 import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
 import { codeDeliveriesPath, type CodeDeliveriesPayload, type CodeDelivery, type CodeDeliveryJob, type CodeDeliverySuggestion, type CodeDeliveryTask, type CodeDeliveryWorker, type ProjectsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
-import { num, plural, truncate } from "@/lib/format";
+import { plural, sentence, truncate } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
 const LIMIT = 100;
+
+// How a delivery's file list was known, in words.
+const EVIDENCE: Record<string, string> = { git: "Read from git", recorded: "From the run's own record" };
 
 export function CodeDeliveredKpi({ project }: { project?: string }) {
   const q = useApi<CodeDeliveriesPayload>(codeDeliveriesPath({ project: project || undefined, limit: LIMIT }), { refresh: 30000 });
@@ -36,127 +39,159 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
   const coverageTone = incomplete ? "warn" : d ? codeDeliveryCoverageTone(d.summary) : "neutral";
   const canOlder = !!d?.scope.has_more && d.scope.next_before !== null;
   const projectCount = d ? new Set(d.deliveries.map((row) => row.project)).size : 0;
+  const leftOut = d ? d.summary.docs_only + d.summary.non_code : 0;
 
   return (
-    <section id="code-deliveries" aria-label="Code deliveries" className="scroll-mt-32">
-      <Panel
-        title="Code delivered"
-        icon={FileDiffIcon}
-        actions={
-          <span className="flex flex-wrap items-center justify-end gap-2">
-            <span>{codeDeliveryWindowLabel(d, page)}</span>
-            <Button size="xs" variant="outline" onClick={() => void q.reload()} disabled={q.loading}>
-              <RefreshCwIcon className={q.loading ? "animate-spin" : ""} /> Refresh
-            </Button>
-          </span>
-        }
-        footer="Counts come from recent land.landed evidence only. Mixed source/docs deliveries count once; docs-only and non-code-only landings are excluded. Votes are provenance/current votes, not approval or quality. Hosted commit links require the commit to have been pushed."
-      >
-        {q.error && !d ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : null}
-        {!d ? q.error ? null : (
-          <SkeletonRows n={4} />
-        ) : (
-          <Stack gap={4}>
-            {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()}>Showing cached code-delivery data; refresh failed ({q.error}).</ErrorNotice> : null}
-            {registry.error ? <ErrorNotice error={registry.error} onRetry={() => void registry.reload()}>Commit links unavailable: repository details could not be loaded ({registry.error}).</ErrorNotice> : null}
-            <div className="surface-hero glossy rounded-3xl border px-5 py-4 shadow-card">
-              <h2 className="text-2xl font-semibold tracking-tight">
-                {num(d.summary.code_deliveries)} {d.summary.code_deliveries === 1 ? "change" : "changes"} landed in this window
-                {projectCount ? " across " + plural(projectCount, "project") : ""}
-              </h2>
-              <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                <ToneBadge tone={coverageTone}>Evidence</ToneBadge>
-                <span>{coverage}</span>
-              </p>
-            </div>
-            <CardGrid cols={3}>
-              <Fact n={num(d.summary.code_deliveries)} label="code deliveries" tone={d.summary.code_deliveries ? "ok" : undefined} />
-              <Fact n={num(d.summary.code_files)} label="source-file changes" tone={d.summary.code_files ? "accent" : undefined} />
-              <Fact n={num(d.summary.docs_only)} label="docs-only excluded" />
-              <Fact n={num(d.summary.non_code)} label="non-code excluded" />
-              <Fact n={num(d.summary.unknown)} label="unknown evidence" tone={d.summary.unknown ? "warn" : undefined} />
-              <Fact n={num(d.summary.duplicates)} label="duplicates deduped" tone={d.summary.duplicates ? "warn" : undefined} />
-            </CardGrid>
+    <section id="code-deliveries" aria-label="Code delivered" className="scroll-mt-32">
+      {q.error && !d ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : null}
+      {!d ? (
+        q.error ? null : <SkeletonRows n={4} />
+      ) : (
+        <Stack gap={4}>
+          {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()}>{"Couldn't refresh, so these are the earlier numbers (" + q.error + ")."}</ErrorNotice> : null}
+          {registry.error ? <ErrorNotice error={registry.error} onRetry={() => void registry.reload()}>{"Commit links are missing: the project's repository details didn't load (" + registry.error + ")."}</ErrorNotice> : null}
+          <div>
+            <KpiGrid className="mb-3">
+              <Kpi n={incomplete ? "—" : d.summary.code_deliveries} label="Changes delivered" sub={projectCount ? "Across " + plural(projectCount, "project") : "Merges that changed source files"} />
+              <Kpi n={d.summary.code_files} label="Source files changed" sub="Code, tests and styles" />
+              <Kpi n={leftOut} label="Left out" sub="Docs-only or no code" />
+              <Kpi n={d.summary.unknown} label="Couldn't check" sub={d.summary.unknown ? "Left out of the count" : "Every merge was checked"} tone={d.summary.unknown ? "warn" : "neutral"} />
+            </KpiGrid>
+            {coverageTone === "warn" ? <Notice tone="warn">{coverage}</Notice> : <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{coverage}</p>}
+          </div>
+          <div>
+            <SectionHeading
+              note={codeDeliveryWindowLabel(d, page) + "."}
+              action={
+                <Button size="sm" variant="outline" onClick={() => void q.reload()} disabled={q.loading}>
+                  <RefreshCwIcon className={q.loading ? "animate-spin motion-reduce:animate-none" : ""} /> Refresh
+                </Button>
+              }
+            >
+              What was delivered
+            </SectionHeading>
             {d.deliveries.length ? (
-              <div className="grid gap-3">
+              <CardGrid cols={2}>
                 {d.deliveries.map((row) => (
                   <CodeDeliveryCard key={row.project + "/" + row.event_seq + "/" + row.commit} row={row} remote={remotes.get(row.project)} onOpenJob={() => setJobDelivery(row)} />
                 ))}
-              </div>
+              </CardGrid>
             ) : incomplete ? (
-              <EmptyState title="Incomplete search window" icon={<AlertTriangleIcon className="size-[18px]" />}>
-                The bounded history scan stopped before finding landing events for this scope. This is not a zero; use Older window to continue from the provided cursor.
+              <EmptyState title="The search stopped early" icon={<AlertTriangleIcon className="size-[18px]" />}>
+                It ran out of room before it reached any merges, so this is not a real zero. Use Older to keep looking further back.
               </EmptyState>
             ) : d.summary.unknown || d.unavailable.length ? (
-              <EmptyState title="No proven code delivery in this window" icon={<AlertTriangleIcon className="size-[18px]" />}>
-                The window has unavailable changed-file evidence, so this is not a proven zero. Review the unavailable rows below or load an older window.
+              <EmptyState title="Nothing proven yet" icon={<AlertTriangleIcon className="size-[18px]" />}>
+                Some merges here couldn&apos;t be checked, so this is not a real zero. See the list below, or look at older merges.
               </EmptyState>
             ) : (
-              <EmptyState title="No source-code delivery in this window" icon={<FileDiffIcon className="size-[18px]" />}>
-                The scanned landing events had complete evidence and no source, test or UI styling file changes.
+              <EmptyState title="No code changes here" icon={<FileDiffIcon className="size-[18px]" />}>
+                Every merge here was checked, and none of them changed source code, tests or styles. Finished work that changes code shows up here as it merges.
               </EmptyState>
             )}
-            {d.unavailable.length ? <UnavailableRows rows={d.unavailable} /> : null}
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>{page === 1 ? "Recent window" : "Older window " + page}: {plural(d.deliveries.length, "shown delivery")}.</span>
-              <span className="flex gap-2">
-                <Button size="sm" variant="outline" disabled={page < 2} onClick={() => setCursors((cur) => cur.slice(0, -1))}>
-                  <ChevronLeftIcon /> Newer
-                </Button>
-                <Button size="sm" variant="outline" disabled={!canOlder} onClick={() => { if (d.scope.next_before !== null) setCursors((cur) => [...cur, d.scope.next_before]); }}>
-                  Older window <ChevronRightIcon />
-                </Button>
-              </span>
-            </div>
-          </Stack>
-        )}
-      </Panel>
+          </div>
+          {d.unavailable.length ? <UnavailableRows rows={d.unavailable} /> : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted-foreground">
+            <span>{(page === 1 ? "Latest merges" : "Older merges, page " + page) + ": " + plural(d.deliveries.length, "change") + " shown."}</span>
+            <span className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={page < 2} onClick={() => setCursors((cur) => cur.slice(0, -1))}>
+                <ChevronLeftIcon /> Newer
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!canOlder}
+                onClick={() => {
+                  if (d.scope.next_before !== null) setCursors((cur) => [...cur, d.scope.next_before]);
+                }}
+              >
+                Older <ChevronRightIcon />
+              </Button>
+            </span>
+          </div>
+          <Disclosure summary="How this is counted" className="rounded-xl border bg-card px-4 py-3" contentClassName="text-[13px] leading-relaxed text-muted-foreground">
+            <ul className="grid list-disc gap-1 pl-5">
+              <li>Only recent merges of finished work count. A merge that changes both code and docs counts once.</li>
+              <li>Merges that only change docs, or change no code at all, are left out.</li>
+              <li>Votes show what the agents thought of the idea, not whether the change is good.</li>
+              <li>Commit links work once the commit has been pushed to the project&apos;s repository.</li>
+            </ul>
+          </Disclosure>
+        </Stack>
+      )}
       <JobEvidenceSheet delivery={jobDelivery} remote={jobDelivery ? remotes.get(jobDelivery.project) : undefined} onClose={() => setJobDelivery(null)} />
     </section>
   );
 }
 
+// The job's or suggestion's words; task titles are the owner's own and stay as typed.
+const deliveryTitle = (row: CodeDelivery) => (row.job?.title || row.suggestion?.summary ? sentence(row.job?.title || row.suggestion?.summary || "") : row.tasks.map((t) => t.title).filter(Boolean).join(", ") || "A change to the source code");
+
+// The quiet look every secondary link in a card's action row shares.
+const ROW_LINK = "inline-flex items-center gap-1 rounded-sm text-[13px] font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 function CodeDeliveryCard({ row, remote, onOpenJob }: { row: CodeDelivery; remote?: string; onOpenJob: () => void }) {
-  const title = row.job?.title || row.suggestion?.summary || row.tasks.map((t) => t.title).filter(Boolean).join(", ") || "Recorded source-code delivery";
+  const title = deliveryTitle(row);
   return (
-    <ItemCard onOpen={row.job ? onOpenJob : undefined} ariaLabel={"Code delivery " + row.event_seq} className="min-w-0">
-      <ItemCardHeader
-        right={
-          <>
-            <When d={row.at} />
-            <CommitLink commit={row.commit} remote={remote} />
-          </>
-        }
-      >
-        <ToneBadge tone="ok">source</ToneBadge>
-        <ToneBadge tone={row.evidence === "git" ? "info" : "neutral"}>{row.evidence}</ToneBadge>
-        <ProjectLink slug={row.project} className="text-xs" />
-        <span className="tnum text-muted-foreground">event {row.event_seq}</span>
+    <ItemCard onOpen={row.job ? onOpenJob : undefined} ariaLabel={"Change delivered to " + row.project + ": " + title} className="min-w-0">
+      <ItemCardHeader right={<When d={row.at} />}>
+        <span title={"Event " + row.event_seq}>
+          <ItemCardKind icon={GitMergeIcon}>Merged into</ItemCardKind>
+        </span>
+        <ProjectLink slug={row.project} className="-ml-0.5" />
       </ItemCardHeader>
       <ItemCardTitle chevron={!!row.job}>{title}</ItemCardTitle>
       <ItemCardMeta>
-        <span>{plural(row.code_files, "source-file change")} in {plural(row.files_changed, "changed file")}</span>
-        {row.paths_truncated ? <ToneBadge tone="warn">paths truncated</ToneBadge> : null}
+        <span title={plural(row.files_changed, "file") + " changed in all"}>{plural(row.code_files, "source file") + " changed"}</span>
+        {row.worker ? <WorkerLink project={row.project} worker={row.worker} /> : null}
+        {row.tasks.map((task) => (
+          <TaskLink key={task.id} project={row.project} task={task} />
+        ))}
+        {row.suggestion?.votes ? <VotesLine project={row.project} votes={row.suggestion.votes} /> : null}
+        {!row.job && row.suggestion?.thread ? (
+          // Without a job there is no sheet, so the board thread stays on the card.
+          <span className="inline-flex min-w-0 items-center gap-1">
+            {"In "}
+            <ThreadLink slug={row.project} k={row.suggestion.thread} />
+          </span>
+        ) : null}
       </ItemCardMeta>
       <PathPreview paths={row.code_paths} truncated={row.paths_truncated} />
-      <Lineage row={row} onOpenJob={onOpenJob} />
+      <ItemCardActions className="gap-x-4">
+        {row.job ? (
+          <Button size="sm" variant="outline" onClick={onOpenJob} title={"Job " + row.job.id}>
+            See the details
+          </Button>
+        ) : null}
+        <CommitLink commit={row.commit} remote={remote} evidence={row.evidence} />
+        {row.suggestion ? <PostLink slug={row.project} id={row.suggestion.id} label="The suggestion behind it" className={ROW_LINK} /> : null}
+      </ItemCardActions>
     </ItemCard>
   );
 }
 
-function CommitLink({ commit, remote }: { commit: string; remote?: string }) {
+// A link to the commit on the project's host; the bare short hash when there is no link to make.
+// `hash` prints the short hash as the link text too (the sheet's fact list).
+function CommitLink({ commit, remote, hash, evidence }: { commit: string; remote?: string; hash?: boolean; evidence?: string }) {
   const url = codeDeliveryCommitURL(remote, commit);
-  if (!url) return <span title={commit + " (repository link unavailable)"}><Mono>{shortCommit(commit)}</Mono></span>;
+  const how = evidence ? " " + (EVIDENCE[evidence] || sentence(evidence)) + "." : "";
+  if (!url)
+    return (
+      <span className="text-[13px] text-muted-foreground" title={"Commit " + commit + ". There's no link: the repository isn't on a known host, or its details didn't load." + how}>
+        {hash ? null : "Commit "}
+        <Mono>{shortCommit(commit)}</Mono>
+      </span>
+    );
   return (
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={"View commit " + commit + " (opens in a new tab)"}
-      title={"View commit " + commit + " in the configured repository; available after push"}
-      className="inline-flex items-center gap-1 rounded-sm text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={"View commit " + commit + " in the project's repository. It works once the commit is pushed." + how}
+      className={ROW_LINK}
     >
-      <Mono>{shortCommit(commit)}</Mono><ArrowUpRightIcon className="size-3" aria-hidden />
+      {hash ? <Mono>{shortCommit(commit)}</Mono> : "View commit"}
     </a>
   );
 }
@@ -164,12 +199,11 @@ function CommitLink({ commit, remote }: { commit: string; remote?: string }) {
 function PathPreview({ paths, truncated }: { paths: string[]; truncated: boolean }) {
   const shown = paths.slice(0, 5);
   return (
-    <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
-      <summary className="cursor-pointer font-medium text-foreground">{plural(paths.length, "source path")} recorded</summary>
+    <Disclosure summary={paths.length === 1 ? "Show the file" : paths.length ? "Show the " + plural(paths.length, "file") : "Which files?"} className="rounded-xl bg-muted/50 px-3 py-2" contentClassName="text-[13px]">
       {shown.length ? (
-        <ul className="mt-2 grid gap-1">
+        <ul className="grid gap-1">
           {shown.map((p) => (
-            <li key={p}>
+            <li key={p} className="min-w-0">
               <span title={p} className="block max-w-full truncate">
                 <Mono className="text-muted-foreground">{p}</Mono>
               </span>
@@ -177,83 +211,54 @@ function PathPreview({ paths, truncated }: { paths: string[]; truncated: boolean
           ))}
         </ul>
       ) : (
-        <p className="mt-2 text-muted-foreground">No path names were included with this delivery.</p>
+        <p className="text-muted-foreground">No file names were recorded for this change.</p>
       )}
-      {paths.length > shown.length || truncated ? <p className="mt-2 text-muted-foreground">{truncated ? "The server truncated a large path list." : plural(paths.length - shown.length, "more path") + " hidden in the preview."}</p> : null}
-    </details>
-  );
-}
-
-function Lineage({ row, onOpenJob }: { row: CodeDelivery; onOpenJob: () => void }) {
-  return (
-    <ItemCardActions className="gap-2">
-      {row.job ? (
-        <Button size="xs" variant="outline" onClick={onOpenJob}>
-          <BriefcaseBusinessIcon /> Job <Mono>{row.job.id}</Mono>
-        </Button>
-      ) : (
-        <Missing label="job" />
-      )}
-      {row.tasks.length ? row.tasks.map((task) => <TaskLink key={task.id} project={row.project} task={task} />) : <Missing label="task" />}
-      {row.worker ? <WorkerLink project={row.project} worker={row.worker} /> : <Missing label="worker" />}
-      {row.suggestion ? (
-        <>
-          <PostLink slug={row.project} id={row.suggestion.id} label="source suggestion" />
-          <ThreadLink slug={row.project} k={row.suggestion.thread} />
-          <VotesLine project={row.project} votes={row.suggestion.votes} />
-        </>
-      ) : (
-        <Missing label="suggestion" />
-      )}
-    </ItemCardActions>
+      {paths.length > shown.length || truncated ? <p className="mt-2 text-muted-foreground">{truncated ? "The list was cut short because it was long." : "And " + plural(paths.length - shown.length, "more file") + "."}</p> : null}
+    </Disclosure>
   );
 }
 
 function TaskLink({ project, task }: { project: string; task: CodeDeliveryTask }) {
   return (
-    <Button asChild size="xs" variant="ghost" className="text-muted-foreground">
-      <Link href={hrefs.task(project, task.id)} title={task.title}>
-        <ListTodoIcon /> <Mono>{task.id}</Mono>
-      </Link>
-    </Button>
+    <Link href={hrefs.task(project, task.id)} title={task.title} className="inline-flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline">
+      <ListTodoIcon className="size-3.5" aria-hidden /> {task.id}
+    </Link>
   );
 }
 
 function WorkerLink({ project, worker }: { project: string; worker: CodeDeliveryWorker }) {
   return (
-    <Button asChild size="xs" variant="ghost" className="text-muted-foreground">
-      <Link href={hrefs.harness({ project, agent: worker.name })} title={[worker.name, worker.runner, worker.model].filter(Boolean).join(" · ")}>
-        <BotIcon /> {worker.name}
-      </Link>
-    </Button>
-  );
-}
-
-function VotesLine({ project, votes }: { project: string; votes: CodeDeliverySuggestion["votes"] }) {
-  if (!votes) return <ToneBadge tone="neutral">votes unavailable</ToneBadge>;
-  return (
-    <Link href={hrefs.votes({ project, kind: "suggestion" })} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline" title="Current suggestion votes, not approval or quality">
-      <VoteIcon className="size-3.5" /> {votes.up + " up / " + votes.down + " down · score " + votes.score}
+    <Link href={hrefs.harness({ project, agent: worker.name })} title={[worker.name, worker.runner, worker.model].filter(Boolean).join(", ")} className="underline-offset-2 hover:text-foreground hover:underline">
+      {"By " + worker.name}
     </Link>
   );
 }
 
-function Missing({ label }: { label: string }) {
-  return <ToneBadge tone="neutral" title={label + " relationship was not recorded"}>{label + " missing"}</ToneBadge>;
+function votesWords(v: NonNullable<CodeDeliverySuggestion["votes"]>): string {
+  return v.up + " for, " + v.down + " against";
+}
+
+function VotesLine({ project, votes }: { project: string; votes: CodeDeliverySuggestion["votes"] }) {
+  if (!votes) return <span>No votes recorded</span>;
+  return (
+    <Link href={hrefs.votes({ project, kind: "suggestion" })} className="inline-flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline" title={"Agents' votes on the suggestion (score " + votes.score + "), not a review of the change"}>
+      <ThumbsUpIcon className="size-3.5" aria-hidden /> {votesWords(votes)}
+    </Link>
+  );
 }
 
 function UnavailableRows({ rows }: { rows: CodeDeliveriesPayload["unavailable"] }) {
   return (
-    <Panel title="Unavailable delivery evidence" icon={AlertTriangleIcon} dense>
+    <Panel title="Merges that couldn't be checked" icon={AlertTriangleIcon} dense>
       <ul className="divide-y">
         {rows.map((row) => (
-          <li key={row.project + "/" + row.event_seq} className="grid gap-1 px-4 py-2.5 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <ProjectLink slug={row.project} className="text-xs" />
-              <Mono>event {row.event_seq}</Mono>
+          <li key={row.project + "/" + row.event_seq} className="grid gap-1 px-4 py-3 text-sm sm:px-5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+              <ProjectLink slug={row.project} />
               <When d={row.at} />
+              <span className="text-xs" title="Event number in the project's history">{"Event " + row.event_seq}</span>
             </div>
-            <p className="text-muted-foreground anywhere">{row.reason}</p>
+            <p className="text-muted-foreground anywhere">{sentence(row.reason)}</p>
           </li>
         ))}
       </ul>
@@ -275,73 +280,90 @@ function JobEvidenceSheet({ delivery, remote, onClose }: { delivery: CodeDeliver
 function JobEvidenceBody({ delivery, job, remote }: { delivery: CodeDelivery; job: CodeDeliveryJob; remote?: string }) {
   return (
     <>
-      <SheetHeader className="border-b bg-card px-4 py-3">
-        <div className="flex flex-wrap items-center gap-1.5 pr-8 text-xs">
-          <Mono className="font-semibold">{job.id}</Mono>
-          <StatusBadge status={job.status} />
-          <ToneBadge tone="neutral">{job.kind}</ToneBadge>
-          <ProjectLink slug={delivery.project} className="text-xs" />
-        </div>
-        <SheetTitle className="text-lg font-semibold leading-snug anywhere">{job.title}</SheetTitle>
-        <SheetDescription>Landing evidence and recorded work provenance for event {delivery.event_seq}.</SheetDescription>
+      <SheetHeader className="gap-2 border-b bg-card px-5 pb-4 pt-5">
+        <SheetTitle className="pr-8 text-xl font-semibold leading-snug tracking-tight anywhere">{sentence(job.title)}</SheetTitle>
+        <SheetDescription asChild>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted-foreground">
+            <StatusBadge status={job.status} />
+            <ProjectLink slug={delivery.project} className="font-normal" />
+            <span>
+              {"Merged "}
+              <When d={delivery.at} />
+            </span>
+          </div>
+        </SheetDescription>
       </SheetHeader>
-      <div className="scroll-thin grid min-h-0 flex-1 gap-4 overflow-y-auto p-4">
-        <Panel title="Landing evidence" icon={FileDiffIcon}>
-          <div className="grid gap-3 text-sm">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
-              <dt className="text-muted-foreground">event</dt>
-              <dd><Mono>{delivery.event_seq}</Mono></dd>
-              <dt className="text-muted-foreground">commit</dt>
-              <dd><CommitLink commit={delivery.commit} remote={remote} /></dd>
-              <dt className="text-muted-foreground">landed</dt>
-              <dd><When d={delivery.at} exact /></dd>
-              <dt className="text-muted-foreground">evidence</dt>
-              <dd><ToneBadge tone={delivery.evidence === "git" ? "info" : "neutral"}>{delivery.evidence}</ToneBadge></dd>
-              <dt className="text-muted-foreground">changes</dt>
-              <dd>{plural(delivery.code_files, "source-file change")} in {plural(delivery.files_changed, "changed file")}</dd>
-            </dl>
+      <div className="scroll-thin grid min-h-0 flex-1 content-start gap-4 overflow-y-auto p-5">
+        <Panel title="What changed" icon={FileDiffIcon}>
+          <div className="grid gap-3">
+            <Kv
+              rows={[
+                ["Merged", <When key="at" d={delivery.at} exact />],
+                ["Files", plural(delivery.code_files, "source file") + " changed, of " + plural(delivery.files_changed, "file") + " in all"],
+                ["Commit", <CommitLink key="c" commit={delivery.commit} remote={remote} hash />],
+                ["How we know", <span key="e" title={delivery.evidence}>{EVIDENCE[delivery.evidence] || sentence(delivery.evidence)}</span>],
+              ]}
+            />
             <PathPreview paths={delivery.code_paths} truncated={delivery.paths_truncated} />
           </div>
         </Panel>
-        <Panel title="Work links" icon={BriefcaseBusinessIcon}>
+        <Panel title="The work behind it" icon={ListTodoIcon}>
           <Stack>
-            <div className="flex flex-wrap items-center gap-2">
-              {delivery.tasks.length ? delivery.tasks.map((task) => <TaskLink key={task.id} project={delivery.project} task={task} />) : <Missing label="task" />}
-              {delivery.worker ? <WorkerLink project={delivery.project} worker={delivery.worker} /> : <Missing label="worker" />}
-            </div>
             {delivery.tasks.length ? (
-              <p className="text-xs text-muted-foreground">Task links open the existing task sheet; job rows are shown on the task&apos;s Jobs tab when recorded there.</p>
-            ) : null}
+              <ul className="grid gap-1.5 text-sm">
+                {delivery.tasks.map((task) => (
+                  <li key={task.id} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                    <Link href={hrefs.task(delivery.project, task.id)} className="font-medium underline-offset-2 hover:underline anywhere">
+                      {task.title || task.id}
+                    </Link>
+                    <span className="text-xs text-muted-foreground">{task.id}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">No task was recorded for this change.</p>
+            )}
             {delivery.worker ? (
-              <div className="flex flex-wrap items-center gap-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <Who row={{ agent: delivery.worker.name, runner: delivery.worker.runner, model: delivery.worker.model }} />
                 <Button asChild size="sm" variant="outline">
                   <Link href={hrefs.harness({ project: delivery.project, agent: delivery.worker.name })}>
-                    Worker harness sessions <ArrowUpRightIcon />
+                    {"See " + delivery.worker.name + "'s runs"}
                   </Link>
                 </Button>
               </div>
-            ) : null}
+            ) : (
+              <p className="text-sm text-muted-foreground">No agent was recorded for this change.</p>
+            )}
           </Stack>
         </Panel>
-        <Panel title="Suggestion provenance" icon={MessageSquareIcon}>
+        <Panel title="Where the idea came from">
           {delivery.suggestion ? (
             <Stack>
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <PostLink slug={delivery.project} id={delivery.suggestion.id} label={truncate(delivery.suggestion.summary, 90)} />
-                <ThreadLink slug={delivery.project} k={delivery.suggestion.thread} />
-                {delivery.suggestion.area ? <ToneBadge tone="neutral">{delivery.suggestion.area}</ToneBadge> : null}
+              <PostLink slug={delivery.project} id={delivery.suggestion.id} label={truncate(sentence(delivery.suggestion.summary), 120)} className="text-sm font-medium" />
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  On the board: <ThreadLink slug={delivery.project} k={delivery.suggestion.thread} />
+                </span>
+                {delivery.suggestion.area ? <span>{"About " + delivery.suggestion.area}</span> : null}
+                <VotesLine project={delivery.project} votes={delivery.suggestion.votes} />
               </div>
-              <p className="text-xs text-muted-foreground">
-                {delivery.suggestion.votes ? "Current votes: " + delivery.suggestion.votes.up + " up / " + delivery.suggestion.votes.down + " down, score " + delivery.suggestion.votes.score + ". Votes are provenance only." : "Votes were not recorded for this source."}
-              </p>
+              <p className="text-xs text-muted-foreground">Votes show what the agents thought of the idea, not a review of the change.</p>
             </Stack>
           ) : (
-            <EmptyState title="No source suggestion recorded" icon={<FileTextIcon className="size-[18px]" />}>
-              This delivery has recorded code evidence, but no project-bound originating suggestion relationship.
-            </EmptyState>
+            <p className="text-sm text-muted-foreground">No suggestion was recorded for this change. It came from a task or a job directly.</p>
           )}
         </Panel>
+        <Disclosure summary="Technical details" className="rounded-xl border bg-card px-4 py-3" contentClassName="text-[13px]">
+          <Kv
+            rows={[
+              ["Job", <Mono key="j">{job.id}</Mono>],
+              ["Job kind", job.kind],
+              ["Event", <Mono key="e">{String(delivery.event_seq)}</Mono>],
+              ["Commit", <Mono key="c">{delivery.commit}</Mono>],
+            ]}
+          />
+        </Disclosure>
       </div>
     </>
   );

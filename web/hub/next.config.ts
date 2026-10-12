@@ -21,6 +21,8 @@ const nextConfig: NextConfig = {
   trailingSlash: true,
   images: { unoptimized: true },
   reactStrictMode: true,
+  // `next dev` would otherwise write AGENTS.md and CLAUDE.md here; README.md stays the repository's only Markdown.
+  agentRules: false,
   ...(outDir ? { distDir: outDir } : {}),
   ...(dev
     ? {

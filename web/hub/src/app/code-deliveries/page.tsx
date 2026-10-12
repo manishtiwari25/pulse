@@ -42,21 +42,22 @@ function CodeDeliveriesScreen() {
         icon={FileDiffIcon}
         crumb={
           <>
-            <Link href={hrefs.home()} className="hover:underline">
-              Home
-            </Link>{" "}
-            / code delivered
+            <Link href={hrefs.records()} className="hover:underline">
+              Records
+            </Link>
+            <span aria-hidden className="mx-1.5 text-muted-foreground/60">/</span>
+            Code delivered
           </>
         }
-        sub="What the agents shipped to your projects, week by week."
+        sub="How much of the agents’ finished work actually changed your projects’ source files. Changes to docs alone don’t count."
         bar={
           <div className="flex w-max items-center gap-2 md:w-auto md:flex-wrap">
             <Select value={project || "__all"} onValueChange={(v) => setProject(v === "__all" ? "" : v)}>
-              <SelectTrigger size="sm" aria-label="Project" className="w-44">
+              <SelectTrigger aria-label="Project" className="h-9 w-48">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all">all projects</SelectItem>
+                <SelectItem value="__all">All projects</SelectItem>
                 {projects.map((p) => (
                   <SelectItem key={p.slug} value={p.slug}>
                     {p.name || p.slug}
@@ -64,7 +65,7 @@ function CodeDeliveriesScreen() {
                 ))}
               </SelectContent>
             </Select>
-            {org.error ? <span role="alert" className="text-xs text-bad">Project filters unavailable: {org.error}</span> : null}
+            {org.error ? <span role="alert" className="text-[13px] text-bad">{"The project list didn't load: " + org.error}</span> : null}
           </div>
         }
       >

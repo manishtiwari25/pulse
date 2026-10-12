@@ -2,15 +2,15 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CheckIcon, CopyIcon, ExternalLinkIcon, XIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, ListChecksIcon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "./item-card";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "./item-card";
 import { DecideButtons } from "./decide-buttons";
 import { HeldoutButton } from "./heldout";
 import { evolvePlanningView } from "./evolve-planning";
-import { Notice, Panel } from "./panel";
+import { Disclosure, Kv, Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
 import { andList, fmtDate, num, parseDate, plural, rel, sentence } from "@/lib/format";
@@ -18,24 +18,32 @@ import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
 import { projectPath, type EvolutionDoc, type EvolveFixture, type EvolveGate, type EvolveGates, type EvolveLevel, type EvolveRecordRef, type OwnerQuestion } from "@/lib/api";
 
-// The self-improvement surfaces (ADR-029, ADR-030, ADR-031, ADR-032). A
-// project's loop opens with enabled public fixtures and a recorded baseline;
-// the console shows both and lists the fixtures. The loop's two records
-// (constitution, evaluators) are seeded at onboarding from the template's
-// text; the console shows their revision and whether they are still that
-// text. The baseline is the daemon's to measure (ADR-031): the console
-// reports where that stands and asks nothing. The two private held-out
-// fixtures (ADR-012) are the daemon's too since ADR-033: under
-// evolve.heldout auto it writes them sealed and the hub counts them as
-// generated, so no step is named; under owner they are the one human step
-// left, named as such and taken here (ADR-032): a dialog has the hub write
-// the two files, never read back, with the command kept as the terminal
-// alternative. Nothing here starts a measurement or edits a record.
+// The self-improvement surfaces (ADR-029 to ADR-033). Agents try small
+// changes, measure them against test cases (public fixtures) and keep only
+// what measures better. The console says where a project stands in plain
+// words - how far it may go (the level), how many test cases and private
+// tests (held-out fixtures) it has, and the starting score (baseline) the
+// runner measured - and names the one step that is the owner's, if any. The
+// runner (daemon) measures the starting score itself (ADR-031) and, under
+// evolve.heldout auto, writes the private tests too (ADR-033); under owner
+// they are the owner's one step, taken in the private-tests dialog
+// (ADR-032), with the command kept as the terminal alternative. Nothing
+// here starts a measurement or edits a record. Technical names (level
+// letters, record ids, setting keys) stay in tooltips and "Show details".
 
-const LEVELS = "A observe · B record · C rehearse · D evolve";
-const LEVEL_TITLE = "highest self-improvement level allowed right now (" + LEVELS + ")";
+// The four levels, A to D, as the owner reads them.
+const LEVELS: Record<string, { word: string; now: string }> = {
+  A: { word: "Watching only", now: "Agents only watch for now; nothing is measured or changed yet." },
+  B: { word: "Measuring only", now: "Agents measure and record results for now, but don't try changes yet." },
+  C: { word: "Trial runs", now: "Agents try changes in trial runs for now; none are kept yet." },
+  D: { word: "Improving", now: "Agents may try changes and keep the ones that measure better." },
+};
+const LEVEL_ORDER = ["A", "B", "C", "D"] as const;
 const LEVEL_PROGRESS: Record<string, number> = { A: 25, B: 50, C: 75, D: 100 };
+const levelWord = (level: string) => LEVELS[level]?.word ?? "Not known";
+const levelTitle = (level: string) => (LEVELS[level] ? "Self-improvement level " + level + " of A to D: " + LEVELS[level].now : "PULSE could not work out how far self-improvement may go");
 const score = (n: number) => (Number.isFinite(n) ? n.toFixed(3).replace(/\.?0+$/, "") : "—");
+const INTRO = "Agents try small changes, measure them against test cases, and keep only what makes the project measurably better.";
 
 // ----- copy ------------------------------------------------------------------
 
@@ -60,17 +68,17 @@ export function commandOnly(s: string): string {
   return s.trim().split(/\s{2,}/)[0] ?? "";
 }
 
-export function CopyButton({ text, label = "Copy", size = "sm", variant = "default", className }: { text: string; label?: string; size?: "xs" | "sm"; variant?: "default" | "outline" | "ghost"; className?: string }) {
+export function CopyButton({ text, label = "Copy", size = "sm", variant = "default", className }: { text: string; label?: string; size?: "xs" | "sm" | "default"; variant?: "default" | "outline" | "ghost"; className?: string }) {
   const [copied, setCopied] = useState(false);
   const cmd = commandOnly(text);
   const onClick = () => {
     void copyText(cmd)
       .then(() => {
         setCopied(true);
-        toast.success("Copied - paste it in a terminal on the hub machine.");
+        toast.success("Copied. Paste it in a terminal on this machine.");
         setTimeout(() => setCopied(false), 1800);
       })
-      .catch(() => toast.error("Could not copy - select the command and copy it yourself."));
+      .catch(() => toast.error("Couldn't copy. Select the command and copy it yourself."));
   };
   return (
     <Button size={size} variant={variant} onClick={onClick} aria-label={label + ": " + cmd} title={cmd} className={className}>
@@ -83,31 +91,39 @@ export function CopyButton({ text, label = "Copy", size = "sm", variant = "defau
 // that is the point: the console names the step, the human takes it.
 export function CommandBox({ command, copy, className }: { command: string; copy?: boolean; className?: string }) {
   return (
-    <div className={cn("flex items-start gap-2 rounded-lg border bg-muted/60 p-3", className)}>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-[12.5px] leading-5 anywhere">{command}</code>
+    <div className={cn("flex items-start gap-2 rounded-lg border bg-muted/60 p-2.5 pl-3", className)}>
+      <code className="min-w-0 flex-1 self-center whitespace-pre-wrap font-mono text-[12.5px] leading-5 text-foreground anywhere">{command}</code>
       {copy ? <CopyButton text={command} size="xs" variant="outline" className="shrink-0" /> : null}
     </div>
   );
 }
 
-// The same step as a command, kept under the console's own button (ADR-032):
-// quieter, still copyable, so the terminal stays the owner's other way.
-export function TerminalAlternative({ command, className }: { command: string; className?: string }) {
+// The same step as a command, folded under the console's own button
+// (ADR-032): the terminal stays the owner's other way, never the first one.
+// `also` is a second, optional way to the same step ("Or write your own text").
+export function TerminalAlternative({ command, className, summary = "Prefer the terminal?", also }: { command: string; className?: string; summary?: string; also?: { label: string; command: string } }) {
   return (
-    <div className={cn("grid gap-1", className)}>
-      <span className="text-[11px] text-muted-foreground">or in a terminal:</span>
-      <CommandBox command={command} copy className="border-dashed bg-transparent text-muted-foreground" />
-    </div>
+    // rotate-0 while closed: an open Disclosure around this one (Show details) would otherwise turn its chevron too.
+    <Disclosure summary={summary} className={cn("text-[13px] [&:not([open])>summary>svg]:rotate-0", className)} contentClassName="grid gap-1.5">
+      <span className="text-xs text-muted-foreground">Run this in a terminal on this machine:</span>
+      <CommandBox command={command} copy />
+      {also ? (
+        <>
+          <span className="mt-1 text-xs text-muted-foreground">{also.label}</span>
+          <CommandBox command={also.command} copy />
+        </>
+      ) : null}
+    </Disclosure>
   );
 }
 
 // ----- badges -----------------------------------------------------------------
 
 export function LevelBadge({ level, className }: { level: EvolveLevel | string; className?: string }) {
-  if (!level) return <ToneBadge tone="warn" title="the hub could not evaluate the self-improvement gates" className={className}>level ?</ToneBadge>;
+  if (!level) return <ToneBadge tone="warn" title={levelTitle("")} className={className}>Level unknown</ToneBadge>;
   return (
-    <ToneBadge tone={level === "D" ? "ok" : "neutral"} title={LEVEL_TITLE} className={className}>
-      {"level " + level}
+    <ToneBadge tone={level === "D" ? "ok" : "neutral"} dot title={levelTitle(level)} className={className}>
+      {levelWord(level)}
     </ToneBadge>
   );
 }
@@ -117,56 +133,60 @@ export const seedName = (from: string) => from.split("/").pop() || from;
 // The one way a record's text changes: the owner amends it in a terminal.
 export const amendCommand = (id: string) => "pulse record amend " + id + " --body-file FILE";
 
-const seededTitle = (from: string) => "still the template's text" + (from ? " (seeded from " + from + ")" : "") + " - the daemon has an agent draft it for you to adopt, or edit it yourself";
-const ownTitle = (r: EvolveRecordRef, what: string) => "the " + r.id + " record, revision " + num(r.rev) + (r.seeded_from ? " - started as a copy of " + r.seeded_from + ", edited since" : " - " + what + " in your own words");
+// The two records self-improvement reads, by what they are for.
+const RECORD_WORD = { constitution: "Constitution", evaluators: "Scoring rules" } as const;
+const RECORD_HINT = { constitution: "the rules self-improvement follows: what agents may change and how far", evaluators: "how each experiment is judged" } as const;
+const seededTitle = (from: string) => "Still the template's text" + (from ? " (copied from " + seedName(from) + ")" : "") + ". An agent drafts a version for this project for you to adopt, or you can edit it yourself.";
+const ownTitle = (r: EvolveRecordRef, what: "constitution" | "evaluators") => r.id + ", version " + num(r.rev) + (r.seeded_from ? ": started as the template's text and edited since" : ": " + RECORD_HINT[what]);
 
-// The constitution as one chip (ADR-030): its revision, and whether the text is
-// still the seeded copy. Nothing when the hub does not report the record.
+// A record as one chip (ADR-030): its version and whether the text is still
+// the template's. Nothing when the hub does not report the record.
 export function RecordChip({ r, what, className }: { r: EvolveRecordRef | null | undefined; what: "constitution" | "evaluators"; className?: string }) {
   if (r === undefined) return null;
+  const word = RECORD_WORD[what];
   if (r === null)
     return (
-      <ToneBadge tone="warn" title={"no " + what + " record - " + (what === "constitution" ? "the loop has no bounds to read" : "the loop has no checks to read") + "; seed it or write your own"} className={className}>
-        {"no " + what}
+      <ToneBadge tone="warn" title={"No " + word.toLowerCase() + " yet. " + sentence(RECORD_HINT[what]) + "."} className={className}>
+        {"No " + word.toLowerCase()}
       </ToneBadge>
     );
   // ADR-046: a seeded record says what waits on it - a draft to adopt, a drafting job, or nothing yet.
   if (r.draft)
     return (
-      <ToneBadge tone="info" title={"an agent (" + r.draft.author + ") drafted the " + what + " from the repository - read and adopt it on the Evolution tab"} className={className}>
-        {what + " r" + num(r.rev) + " · draft ready"}
+      <ToneBadge tone="info" title={r.draft.author + " drafted it from the repository. Read and adopt it on the Self-improvement tab."} className={className}>
+        {word + ": draft to review"}
       </ToneBadge>
     );
   if (r.seeded && r.draft_job)
     return (
-      <ToneBadge tone="info" title={"an agent is drafting the " + what + " from the repository (job " + r.draft_job.id + ", " + r.draft_job.status + ")"} className={className}>
-        {what + " r" + num(r.rev) + " · drafting…"}
+      <ToneBadge tone="info" title={"An agent is drafting it from the repository (job " + r.draft_job.id + ")"} className={className}>
+        {word + ": being drafted"}
       </ToneBadge>
     );
   if (r.seeded)
     return (
       <ToneBadge tone="warn" title={seededTitle(r.seeded_from)} className={className}>
-        {what + " r" + num(r.rev) + " · seeded"}
+        {word + ": template text"}
       </ToneBadge>
     );
   return (
     <ToneBadge tone="ok" title={ownTitle(r, what)} className={className}>
-      {what + " r" + num(r.rev)}
+      {word + " v" + num(r.rev)}
     </ToneBadge>
   );
 }
 
 // One line under a project card's tiles: how far the loop may go and why.
-// The constitution leads (it is the first gate); the evaluators only speak
+// The constitution leads (it is the first gate); the scoring rules only speak
 // up when they alone are missing - one seed fills both - so the line stays short.
-// The baseline chip reports the daemon's progress (ADR-031), never a step.
+// The starting-score chip reports the runner's progress (ADR-031), never a step.
 export function EvolveBadges({ g, className }: { g: EvolveGate; className?: string }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", className)}>
       <RecordChip r={g.constitution} what="constitution" />
       {g.evaluators === null && g.constitution ? <RecordChip r={null} what="evaluators" /> : null}
-      <ToneBadge tone={g.fixtures_enabled ? "ok" : "neutral"} className={g.fixtures_enabled ? undefined : "text-muted-foreground"} title="enabled public fixtures - the checks agents may see; every experiment is measured against them">
-        {plural(g.fixtures_enabled, "fixture")}
+      <ToneBadge tone={g.fixtures_enabled ? "ok" : "neutral"} className={g.fixtures_enabled ? undefined : "text-muted-foreground"} title="Test cases agents may see; every experiment is measured against them">
+        {plural(g.fixtures_enabled, "test case")}
       </ToneBadge>
       <BaselineChip g={g} />
       <LevelBadge level={g.evolve_level} />
@@ -174,7 +194,7 @@ export function EvolveBadges({ g, className }: { g: EvolveGate; className?: stri
   );
 }
 
-// ----- the baseline (ADR-031) --------------------------------------------------
+// ----- the starting score (baseline, ADR-031) ----------------------------------
 
 // A next step that asks nothing of the owner: "none", or "none - <what the
 // daemon does instead>". The part after the dash, when there is one.
@@ -207,9 +227,25 @@ export const retryHours = (failedAt: string, now: number): number => {
   return t ? Math.max(0, Math.round(24 - (now - t.getTime()) / 3600000)) : 24;
 };
 
-const baselineJobWord = (status: string) => (status === "leased" ? "measuring" : "queued");
-// A job id already reads as one (`job-2026...`); a bare id gets the word.
-const jobRef = (id: string) => (/^job/i.test(id) ? id : "job " + id);
+// The starting score in words, for a chip or a sentence.
+function baselineWords(st: BaselineState, now: number, s?: number | null): { text: string; title: string; tone: "ok" | "info" | "warn" | "neutral" } {
+  switch (st.kind) {
+    case "recorded":
+      return { text: typeof s === "number" && Number.isFinite(s) ? "Starting score " + score(s) : "Starting score measured", title: "Measured by the runner. Every experiment is compared with it.", tone: "ok" };
+    case "measuring":
+      return { text: st.status === "leased" ? "Measuring the starting score" : "Starting score: about to be measured", title: "The runner's measuring job (" + st.id + ")", tone: "info" };
+    case "failed": {
+      const h = retryHours(st.at, now);
+      return { text: "Starting score failed " + rel(st.at, now) + ", " + (h ? "retry in " + plural(h, "hour") : "retrying soon"), title: "The runner's measurement failed at " + fmtDate(st.at) + ". It tries again after 24 hours. Nothing for you to do.", tone: "warn" };
+    }
+    case "waiting":
+      return st.on === "loop"
+        ? { text: "Starting score: once self-improvement is on", title: "Test cases are ready. The runner measures the starting score once self-improvement is switched on in Settings (evolve.loop).", tone: "neutral" }
+        : { text: "Starting score: the runner measures it next", title: "Test cases are ready. The runner measures the starting score on its next round. Nothing for you to do.", tone: "neutral" };
+    default:
+      return { text: "No starting score yet", title: "The runner measures it once the rules and test cases are in place.", tone: "neutral" };
+  }
+}
 
 // The baseline as one quiet chip: recorded (with the score when the panel
 // knows it), measuring, failed and retrying, waiting for the daemon, or not
@@ -217,45 +253,12 @@ const jobRef = (id: string) => (/^job/i.test(id) ? id : "job " + id);
 // louder than a failure.
 export function BaselineChip({ g, score: s, recordedBy, className }: { g: EvolveGate; score?: number | null; recordedBy?: string; className?: string }) {
   const now = useNow();
-  const st = baselineState(g);
-  switch (st.kind) {
-    case "recorded":
-      return (
-        <ToneBadge tone="ok" title={recordedBy ? "recorded by " + recordedBy + " - every variant is measured against it" : "the baseline is recorded - every variant is measured against it"} className={className}>
-          {typeof s === "number" && Number.isFinite(s) ? "baseline " + score(s) : "baseline"}
-        </ToneBadge>
-      );
-    case "measuring":
-      return (
-        <ToneBadge tone="info" dot title={"the daemon's baseline job is " + st.status + " - pulse job show " + st.id} className={className}>
-          {"baseline: " + baselineJobWord(st.status) + " (" + jobRef(st.id) + ")"}
-        </ToneBadge>
-      );
-    case "failed": {
-      const h = retryHours(st.at, now);
-      return (
-        <ToneBadge tone="warn" title={"the daemon's baseline job failed at " + fmtDate(st.at) + "; it retries after 24 hours - nothing for you to do"} className={className}>
-          {"baseline failed " + rel(st.at, now) + "; " + (h ? "retry in " + num(h) + " h" : "retry due")}
-        </ToneBadge>
-      );
-    }
-    case "waiting":
-      return st.on === "loop" ? (
-        <ToneBadge tone="neutral" title="fixtures are ready; the daemon records the baseline once evolve.loop is on (Settings, or pulse settings set evolve.loop 1)" className={cn("text-muted-foreground", className)}>
-          baseline: once the loop is on
-        </ToneBadge>
-      ) : (
-        <ToneBadge tone="neutral" title="fixtures are ready; the daemon plans the baseline job on its next tick (pulse daemon) - nothing for you to do" className={cn("text-muted-foreground", className)}>
-          baseline: waiting for the daemon
-        </ToneBadge>
-      );
-    default:
-      return (
-        <ToneBadge tone="neutral" title="the daemon records the baseline once the loop's records and fixtures are in place" className={cn("text-muted-foreground", className)}>
-          no baseline
-        </ToneBadge>
-      );
-  }
+  const w = baselineWords(baselineState(g), now, s);
+  return (
+    <ToneBadge tone={w.tone} dot={w.tone === "info"} title={recordedBy ? w.title + " (" + recordedBy + ")" : w.title} className={cn(w.tone === "neutral" && "text-muted-foreground", className)}>
+      {w.text}
+    </ToneBadge>
+  );
 }
 
 // The project-row view of the loop's status, so the panel derives the same
@@ -278,14 +281,14 @@ export function gateOfStatus(s: EvolveGates, docs?: { constitution: EvolutionDoc
 }
 
 // A gate as a flag: open or not. With the record's doc (ADR-030) the flag
-// carries its revision, and a seeded copy says so instead of a plain check.
-function GateFlag({ on, label, title, doc }: { on: boolean; label: string; title?: string; doc?: EvolutionDoc | null }) {
+// carries its version, and a template copy says so instead of a plain check.
+function GateFlag({ on, what, doc }: { on: boolean; what: "constitution" | "evaluators"; doc?: EvolutionDoc | null }) {
   const rev = doc?.record.current_rev;
   const seeded = on && !!doc?.seeded;
+  const word = RECORD_WORD[what];
   return (
-    <ToneBadge tone={!on || seeded ? "warn" : "ok"} title={seeded ? seededTitle(doc?.seeded_from ?? "") : title}>
-      {on ? <CheckIcon className="size-3" aria-label="yes" /> : <XIcon className="size-3" aria-label="no" />}
-      {label + (on && rev ? " r" + num(rev) : "") + (seeded ? " · seeded" : "")}
+    <ToneBadge tone={!on || seeded ? "warn" : "ok"} title={seeded ? seededTitle(doc?.seeded_from ?? "") : sentence(RECORD_HINT[what])}>
+      {!on ? "No " + word.toLowerCase() : seeded ? word + ": template text" : word + (rev ? " v" + num(rev) : "")}
     </ToneBadge>
   );
 }
@@ -298,23 +301,33 @@ export type GateKind = "seed" | "constitution" | "records" | "heldout";
 
 export interface GateStep {
   kind: GateKind;
-  label: string; // the short "what is missing" badge
+  label: string; // the short "what is missing" phrase ("Next step: Set up private tests")
   slug: string;
   slugs?: string[]; // every project one shared step serves, when the inbox folds them (the held-out set is one per machine)
   level: EvolveLevel;
   title: string;
   body: string;
-  command: string;
+  command: string; // one command, ready to paste
+  alt?: string; // the other way to the same step, when the hub names one ("or pulse record new ...")
 }
 
-const GATE_LABEL: Record<GateKind, string> = { seed: "no fixtures", constitution: "no constitution", records: "records missing", heldout: "your one step" };
+// The hub writes the seed step as `seed-cmd  (template copy), or write-cmd`:
+// two commands joined by prose. Split it so each copies on its own.
+export function splitAlternative(next: string): { command: string; alt: string } {
+  const [command, alt = ""] = next.trim().split(/\s+\(template copy\),?\s+or\s+/, 2);
+  return { command: command.trim(), alt: alt.trim() };
+}
+
+const GATE_LABEL: Record<GateKind, string> = { seed: "add test cases", constitution: "write a constitution", records: "add the self-improvement rules", heldout: "set up private tests" };
 
 // Which of the loop's two records a project lacks: what the row says first
 // (null is "none"), the title the seed command names when the row is silent.
-function missingRecords(g: EvolveGate, next: string): string[] {
-  const fromRow = [g.constitution === null ? "constitution" : "", g.evaluators === null ? "evaluators" : ""].filter(Boolean);
+function missingRecords(g: EvolveGate, next: string): ("constitution" | "evaluators")[] {
+  const fromRow = ([g.constitution === null ? "constitution" : "", g.evaluators === null ? "evaluators" : ""] as const).filter((x): x is "constitution" | "evaluators" => !!x);
   return fromRow.length ? fromRow : [/--title Evaluators\b/.test(next) ? "evaluators" : "constitution"];
 }
+
+const HELDOUT_WHY = "Private tests are two test cases agents never see, so self-improvement can't tune itself to pass them.";
 
 // Which human step, if any, a project waits for. One card per project: the
 // hub's `evolve_next` names the step. A project the record seed did not reach
@@ -332,13 +345,15 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
   if (next.startsWith("pulse evolve seed")) {
     const missing = missingRecords(g, next);
     const one = missing.length === 1 ? missing[0] : undefined;
+    const { command, alt } = splitAlternative(next);
     return {
       ...base,
       kind: "records",
-      label: one ? "no " + one : GATE_LABEL.records,
-      title: "Seed the loop's records for " + slug,
-      body: "The loop reads its bounds from the constitution and evaluators records. Onboarding seeds a copy of the template's text; this project has " + (one ? "no " + one + " record" : "neither") + " yet, so seed it with the command below and make the text yours from the Evolution tab.",
-      command: next,
+      label: one ? "add " + (one === "constitution" ? "a constitution" : "scoring rules") : GATE_LABEL.records,
+      title: one ? "Add " + (one === "constitution" ? "a constitution" : "scoring rules") + " for " + slug : "Add the self-improvement rules for " + slug,
+      body: "Self-improvement follows two short records: a constitution (what agents may change) and scoring rules (how a change is judged). This project has " + (one ? "no " + RECORD_WORD[one].toLowerCase() : "neither") + " yet. Run the command once to start from the template, then make the text yours under the project's Self-improvement tab.",
+      command,
+      ...(alt ? { alt } : {}),
     };
   }
   if (next.startsWith("pulse record new evolution"))
@@ -346,8 +361,8 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       ...base,
       kind: "constitution",
       label: GATE_LABEL.constitution,
-      title: "Give " + slug + " a constitution",
-      body: "The loop reads its bounds from the constitution record and stays at level B (record only) without one. Write it in your words, then index it with the command below.",
+      title: "Write a constitution for " + slug,
+      body: "The constitution holds the rules self-improvement follows. Without one, agents only measure and never try a change. Write it in your own words, then add it with the command.",
       command: next,
     };
   if (next.startsWith("pulse evolve fixture seed"))
@@ -355,8 +370,8 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       ...base,
       kind: "seed",
       label: GATE_LABEL.seed,
-      title: "Seed the starter fixtures for " + slug,
-      body: "No enabled public fixture yet, so nothing can be measured. The starter set gives the loop six small checks to begin with; your own fixtures can join them later.",
+      title: "Add starter test cases for " + slug,
+      body: "There are no test cases yet, so nothing can be measured. The starter set adds six small ones to begin with; you can add your own later.",
       command: next,
     };
   if (next.startsWith("pulse evolve setup"))
@@ -364,8 +379,8 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       ...base,
       kind: "heldout",
       label: GATE_LABEL.heldout,
-      title: "Your one step: two private held-out fixtures",
-      body: "The daemon does everything else - it measured the baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). evolve.heldout is on owner, so they are yours: write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; the loop for " + slug + " opens from there. On auto the daemon writes them itself (ADR-033).",
+      title: "Set up two private tests",
+      body: HELDOUT_WHY + " You write them once, PULSE keeps them outside every project, and the runner does everything else. Self-improvement for " + slug + " starts once they're in.",
       command: next,
     };
   return null;
@@ -381,108 +396,90 @@ export function foldSteps(steps: GateStep[]): GateStep[] {
   const one: GateStep = {
     ...shared[0],
     slugs,
-    body: "The daemon does everything else - it measured each baseline and runs each cycle. Two fixtures only you can see are your proof the loop is not grading itself (ADR-012). Write them here, outside every checkout - the hub writes the files and never reads them back - or with the command; one set serves every project, so the loops for " + andList(slugs) + " open from there.",
+    body: HELDOUT_WHY + " You write them once and the runner does everything else. One set on this machine serves " + andList(slugs) + "; self-improvement starts once they're in.",
   };
   const rest = steps.filter((s) => s.kind !== "heldout");
   const at = steps.indexOf(shared[0]);
   return [...rest.slice(0, at), one, ...rest.slice(at)];
 }
 
-// One waiting human step as an inbox card: what, where, why, the way to take
-// it, and the way to the project's self-improvement view. The held-out card
-// (ADR-012) says it is the one step that is the owner's and opens the
-// Held-out fixtures dialog (ADR-032), the command kept as the terminal
-// alternative; the rest name what is missing with the command to copy. A
-// folded held-out card links every project it serves.
+// One waiting human step as an ask card: what, where, why, the button that
+// takes it, and the way to the project's self-improvement view. The private
+// tests card (ADR-012) is the owner's one step and opens the private-tests
+// dialog (ADR-032); the rest copy the command. Either way the command itself
+// folds under "Prefer the terminal?". A folded card links every project it serves.
 export function GateCard({ step }: { step: GateStep }) {
   const heldout = step.kind === "heldout";
   const slugs = step.slugs && step.slugs.length > 1 ? step.slugs : [step.slug];
-  const title = (slugs.length > 1 ? "Several projects" : step.slug) + " needs you to " + plainGateStep(step);
   return (
-    <ItemCard highlight ariaLabel={title}>
-      <ItemCardHeader right={<LevelBadge level={step.level} />}>
-        {slugs.length > 1 ? <span className="text-xs text-muted-foreground">{plural(slugs.length, "project")}</span> : <ProjectLink slug={step.slug} className="text-xs" />}
+    <ItemCard highlight ariaLabel={(heldout ? "Your one step: " : "Setup step: ") + step.title + (slugs.length > 1 ? " (" + andList(slugs) + ")" : " (" + step.slug + ")")}>
+      <ItemCardHeader>
+        <ItemCardKind icon={ListChecksIcon} tone="you">{heldout ? "Your one step" : "Setup step"}</ItemCardKind>
+        {slugs.length > 1 ? <span title={andList(slugs)}>{plural(slugs.length, "project")}</span> : <ProjectLink slug={step.slug} className="font-normal text-muted-foreground" />}
       </ItemCardHeader>
-      <ItemCardTitle>{title}</ItemCardTitle>
-      <ItemCardBody clamp={3}>{step.body}</ItemCardBody>
-      <CommandBox command={step.command} />
-      <ItemCardMeta>
-        <ToneBadge tone="accent">self-improvement</ToneBadge>
-        <ToneBadge tone="warn">{step.label}</ToneBadge>
-      </ItemCardMeta>
+      <ItemCardTitle>{step.title}</ItemCardTitle>
+      <ItemCardBody clamp={0}>{step.body}</ItemCardBody>
+      <TerminalAlternative command={step.command} summary={heldout ? "Prefer the terminal?" : "Show the command"} also={step.alt ? { label: "Or write your own text and add it:", command: step.alt } : undefined} />
       <ItemCardActions>
-        <span className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
+        <span className="flex min-w-0 flex-wrap items-center gap-2">
           {slugs.map((slug) => (
-            <Button key={slug} asChild variant="ghost" size="xs" className="text-muted-foreground">
-              <Link href={hrefs.project(slug, "evolution")} title={"self-improvement for " + slug}>
-                {slugs.length > 1 ? slug : "self-improvement"} <ExternalLinkIcon />
+            <Button key={slug} asChild variant="outline">
+              <Link href={hrefs.project(slug, "evolution")} title={"Self-improvement for " + slug}>
+                {slugs.length > 1 ? slug : "Self-improvement"}
               </Link>
             </Button>
           ))}
         </span>
-        <span className="ml-auto shrink-0">{heldout ? <HeldoutButton projects={slugs} variant="outline" /> : <CopyButton text={step.command} variant="outline" />}</span>
+        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
+          {heldout ? <HeldoutButton projects={slugs} size="default" label="Set up private tests" /> : <CopyButton text={step.command} size="default" label="Copy command" />}
+        </span>
       </ItemCardActions>
     </ItemCard>
   );
 }
 
-function plainGateStep(step: GateStep): string {
-  if (step.kind === "heldout") return "add two private held-out fixtures";
-  if (step.kind === "seed") return "seed starter fixtures";
-  if (step.kind === "records") return "seed the loop records";
-  return "write a constitution";
-}
-
 // ----- the project's panel -----------------------------------------------------
 
 // The named step (title, why, the way to take it) the way the inbox card says
-// it, for the panel's "next human step": the same words in both places. The
-// held-out step has its button here too, the command under it.
+// it, for the panel: the same words in both places, marked as the owner's.
 function StepBlock({ step }: { step: GateStep }) {
   const heldout = step.kind === "heldout";
   return (
-    <div className={cn("rounded-md border px-3 py-2.5", heldout && "border-primary/40 bg-primary/[0.03]")}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <ToneBadge tone={heldout ? "ok" : "warn"}>{step.label}</ToneBadge>
-        <span className="text-[13px] font-medium leading-snug">{step.title}</span>
-      </div>
-      <p className="mt-1 text-xs leading-snug text-muted-foreground anywhere">{step.body}</p>
-      {heldout ? (
-        <>
-          <div className="mt-2">
-            <HeldoutButton projects={[step.slug]} />
-          </div>
-          <TerminalAlternative command={step.command} className="mt-2" />
-        </>
-      ) : (
-        <CommandBox command={step.command} copy className="mt-2 bg-background/60" />
-      )}
-    </div>
+    <ItemCard highlight ariaLabel={(heldout ? "Your one step: " : "Setup step: ") + step.title}>
+      <ItemCardHeader>
+        <ItemCardKind icon={ListChecksIcon} tone="you">{heldout ? "Your one step" : "Setup step"}</ItemCardKind>
+      </ItemCardHeader>
+      <ItemCardTitle>{step.title}</ItemCardTitle>
+      <ItemCardBody clamp={0} className="max-w-3xl">{step.body}</ItemCardBody>
+      <TerminalAlternative command={step.command} summary={heldout ? "Prefer the terminal?" : "Show the command"} also={step.alt ? { label: "Or write your own text and add it:", command: step.alt } : undefined} />
+      <ItemCardActions>
+        {heldout ? <HeldoutButton projects={[step.slug]} size="default" label="Set up private tests" /> : <CopyButton text={step.command} size="default" label="Copy command" />}
+      </ItemCardActions>
+    </ItemCard>
   );
 }
 
-// What the panel says under a named step: the held-out step is taken here or
-// in a terminal (ADR-032); every other step is the owner's to run in a terminal.
-const stepFootnote = (kind: GateKind | null) => (kind === "heldout" ? "Done here or in a terminal; the console writes the two files and never reads them back." : "Yours to run in a terminal on the hub machine. The console names the step and never starts a measurement.");
-
-// The held-out badge: counts only, and since ADR-033 how many of the ready
-// fixtures the daemon wrote sealed - weaker evidence than yours, so it is
-// said where the count is said. An older hub sends no `generated`.
+// The held-out count in words: "2 private tests, written by the runner".
+// Since ADR-033 the runner may write them sealed - weaker evidence than the
+// owner's own, so it is said where the count is said. An older hub sends no `generated`.
 type HeldoutCounts = { count: number; pending: number; generated?: number };
 export function heldoutLabel(h: HeldoutCounts): string {
   const gen = h.generated ?? 0;
-  return "held-out " + num(h.count) + (gen ? " (" + (gen === h.count ? "generated" : num(gen) + " generated") + ")" : "") + (h.pending ? " · " + num(h.pending) + " pending" : "");
+  const who = gen ? (gen === h.count ? ", written by the runner" : ", " + num(gen) + " written by the runner") : h.count ? ", written by you" : "";
+  return (h.count ? plural(h.count, "private test") : "No private tests yet") + who + (h.pending ? " (" + num(h.pending) + " still to write)" : "");
 }
 export function heldoutTitle(h: HeldoutCounts): string {
   const gen = h.generated ?? 0;
-  if (!gen) return "your held-out evaluators - counted here, never named";
-  return (gen === h.count ? "all " : num(gen) + " of ") + plural(h.count, "held-out fixture") + " written by the daemon, sealed (ADR-033) - rewrite any from the dialog to make it yours; a fixture you write is never overwritten";
+  if (!gen) return "Test cases agents never see. Only their number shows here.";
+  return (gen === h.count ? "All " : num(gen) + " of ") + plural(h.count, "private test") + " were written by the runner and sealed (ADR-033). Rewrite any of them to make it yours; the runner never overwrites a test you wrote.";
 }
 
-// Level, reason and next step, every gate as a badge, then the fixtures.
-// `gates` null means the hub could not evaluate them: the error shows, the
-// fixtures still list. `docs` (the constitution and evaluators as the
-// evolution payload carries them) lets the record flags show revision and seed state.
+// Where self-improvement stands in one sentence, then the step that is the
+// owner's (if any), the facts in words, and every technical gate, count and
+// planning reason under "Show details". `gates` null means the hub could not
+// evaluate them: the error shows, the test cases still list. `docs` (the
+// constitution and evaluators as the evolution payload carries them) lets
+// the record flags show version and template state.
 export function SelfImprovementPanel({ gates, error, fixtures, docs, className, canDecide = true }: { gates: EvolveGates | null | undefined; error?: string; fixtures: EvolveFixture[]; docs?: { constitution: EvolutionDoc | null; evaluators: EvolutionDoc | null }; className?: string; canDecide?: boolean }) {
   const now = useNow();
   const [details, setDetails] = useState(false);
@@ -503,197 +500,204 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
   const idle = (): string => {
     if (bl?.kind === "failed") {
       const hrs = retryHours(bl.at, now);
-      return "Nothing waits for you - the baseline measurement failed " + rel(bl.at, now) + "; the daemon retries " + (hrs ? "in about " + num(hrs) + " h" : "on its next tick") + ".";
+      return "Nothing waits for you. Measuring the starting score failed " + rel(bl.at, now) + "; the runner tries again " + (hrs ? "in about " + plural(hrs, "hour") : "on its next round") + ".";
     }
-    if (bl?.kind === "measuring") return "Nothing waits for you - the daemon is " + baselineJobWord(bl.status) + (bl.status === "leased" ? " the baseline" : " to measure the baseline") + " (" + jobRef(bl.id) + ").";
-    if (none.why && !optional) return "Nothing waits for you - " + none.why.replace(/\.$/, "") + ".";
+    if (bl?.kind === "measuring") return "Nothing waits for you. The runner is " + (bl.status === "leased" ? "measuring" : "about to measure") + " the starting score.";
+    if (none.why && !optional) return "Nothing waits for you: " + none.why.replace(/\.$/, "") + ".";
     if (gates?.level === "D") return planning.next;
-    return "Nothing waits for you - every gate is open" + (gates?.loop ? " and the loop is on." : "; cycles run once evolve.loop is on in Settings.");
+    return "Nothing waits for you" + (gates?.loop ? " and self-improvement is on." : ". Experiments start once self-improvement is switched on in Settings.");
   };
-  const stateLine = gates ? selfImprovementState(gates, planning, step, openQuestion?.summary) : "Self-improvement status is unavailable.";
+  const stateLine = gates ? selfImprovementState(gates, planning, step, openQuestion?.summary) : "PULSE couldn't read where self-improvement stands.";
+  const tried = gates ? gates.kept + gates.discarded : 0;
+  const recordedBy = gates?.baseline_id;
+  const blWords = bl ? baselineWords(bl, now, gates?.baseline) : null;
   return (
-    <Panel title="Self-improvement" actions={gates ? <LevelBadge level={gates.level} /> : undefined} className={className}>
+    <Panel title="Self-improvement" icon={SparklesIcon} actions={gates ? <LevelBadge level={gates.level} /> : undefined} className={className}>
+      <p className="mb-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{INTRO}</p>
       {gates && g ? (
-        <div className="grid gap-3">
-          <p className="text-base font-semibold leading-snug anywhere">{stateLine}</p>
+        <div className="grid gap-4">
+          <p className="max-w-3xl text-base font-semibold leading-snug anywhere">{stateLine}</p>
           {openQuestion ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-warn/40 bg-warn/5 px-3 py-2 text-sm">
-              <span className="min-w-0 flex-1 anywhere">{sentence(openQuestion.summary)}</span>
+            <div className="surface-you flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-4 py-3 text-sm">
+              <span className="min-w-0 flex-1 basis-60 anywhere">
+                {sentence(openQuestion.summary)}{" "}
+                <Link href={hrefs.post(gates.project, openQuestion.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">Read the post</Link>
+              </span>
               <DecideButtons id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} yesLabel={openQuestion.stop ? "Yes, continue" : "Yes"} noLabel={openQuestion.stop ? "No, keep it stopped" : "No"} />
             </div>
           ) : null}
-          <details open={details} onToggle={(e) => setDetails(e.currentTarget.open)} className="grid gap-3">
-            <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground" aria-expanded={details}>Show details</summary>
-            <div className="mt-3 grid gap-3">
-          <p className="text-[13px] leading-snug anywhere">
-            <b>{"Level " + (gates.level || "?")}</b>
-            {gates.reason ? <span className="text-muted-foreground">{" · " + gates.reason}</span> : null}
-          </p>
-          <div className="grid gap-1.5 rounded-lg border bg-muted/30 px-3 py-2">
-            <div className="flex items-center justify-between gap-2 text-xs">
-              <span className="text-muted-foreground">{LEVELS}</span>
-              <LevelBadge level={gates.level} />
-            </div>
-            <Progress value={LEVEL_PROGRESS[gates.level] ?? 0} className="h-1.5" />
-            <p className="text-[11px] text-muted-foreground">Gate readiness, not measured improvement. A baseline is not a completed cycle.</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            {gates.stop ? <ToneBadge tone="bad" title="STOP is set - the loop halts until you clear it">STOP</ToneBadge> : null}
-            <ToneBadge tone={gates.loop ? "ok" : "neutral"} dot title="evolve.loop - whether cycles may run back to back">
-              {gates.loop ? "loop on" : "loop off"}
-            </ToneBadge>
-            <GateFlag on={gates.constitution} label="constitution" title="the EVO-constitution record is in the store" doc={docs?.constitution} />
-            <GateFlag on={gates.evaluators} label="evaluators" title="the EVO-evaluators record is in the store" doc={docs?.evaluators} />
-            <ToneBadge tone={gates.public_fixtures ? "ok" : "warn"} title="enabled public fixtures - the checks agents may see">
-              {plural(gates.public_fixtures, "fixture")}
-            </ToneBadge>
-            <BaselineChip g={g} score={gates.baseline} recordedBy={gates.baseline_id} />
-            {h ? (
-              <ToneBadge tone={h.problem ? "warn" : "neutral"} title={h.problem || heldoutTitle(h)}>
-                {heldoutLabel(h)}
-              </ToneBadge>
-            ) : null}
-            {/* The set exists and the gate has moved on: the dialog's done state (add one, rewrite one) stays reachable from here (ADR-032). */}
-            {h && h.count > 0 && step?.kind !== "heldout" ? <HeldoutButton projects={[gates.project]} size="xs" variant="ghost" label="Add or rewrite…" title="Held-out fixtures: add another or rewrite one - the console never reads them back" className="h-5 px-1.5 text-[11px] text-muted-foreground" /> : null}
-            {gates.product_scope ? (
-              <ToneBadge tone={gates.product_scope.allowed ? "ok" : "neutral"} title={gates.product_scope.reason || undefined}>
-                {gates.product_scope.allowed ? "product changes allowed" : "operating layer only"}
-              </ToneBadge>
-            ) : null}
-            {gates.scope ? (
-              <ToneBadge tone={gates.scope.editable.length ? "ok" : "warn"} title={gates.scope.reason || undefined}>
-                {gates.scope.editable.length
-                  ? plural(gates.scope.editable.length, "editable class") + " of " + num(gates.scope.classes)
-                  : "no editable file class"}
-              </ToneBadge>
-            ) : null}
-            {gates.cap_reached ? <ToneBadge tone="bad" title={gates.limit_problem || "a cap the constitution writes is reached"}>cap reached</ToneBadge> : null}
-          </div>
-          <ItemCardMeta>
-            <span className="tnum" title="Non-baseline measured archives since the current loop-enable event. Landing may still be pending or fail.">{plural(gates.cycles, "experiment archive") + " since loop enabled" + (gates.hours ? " (" + num(Math.round(gates.hours)) + " h)" : "")}</span>
-            <span className="tnum" title="All non-baseline archive history. Kept does not mean landed or published.">{num(gates.kept) + " kept · " + num(gates.discarded) + " discarded (all history)"}</span>
-            {gates.voted?.tried ? <span className="tnum" title="suggestions the board voted for that were tried">{"voted " + num(gates.voted.kept) + "/" + num(gates.voted.tried) + " kept"}</span> : null}
-            {gates.signal?.tried ? <span className="tnum" title="signal fixtures tried">{"signal " + num(gates.signal.kept) + "/" + num(gates.signal.tried) + " kept"}</span> : null}
-            {gates.limits && gates.limits !== "none" ? <Mono>{"limits " + gates.limits}</Mono> : null}
-            {gates.tolerance ? <span className="tnum">{"tolerance " + gates.tolerance}</span> : null}
-          </ItemCardMeta>
-          <div className="grid gap-1.5 rounded-md border px-3 py-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Experiment planning</span>
-              <ToneBadge tone={planning.tone}>{planning.label}</ToneBadge>
-            </div>
-            <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground anywhere">{planning.reason}</p>
-            {openQuestion ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-2.5 py-2 text-xs">
-                <span className="min-w-0 flex-1 anywhere">
-                  <b>Waiting for your yes or no:</b> {openQuestion.summary}{" "}
-                  <Link href={hrefs.post(gates.project, openQuestion.id)} className="underline underline-offset-2">
-                    open the post
-                  </Link>
-                </span>
-                <DecideButtons id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} size="xs" />
+          {waits && step ? <StepBlock step={step} /> : null}
+
+          <Kv
+            className="max-w-3xl gap-y-2"
+            rows={[
+              ["How far it may go", <span key="lvl" title={levelTitle(gates.level)}>{levelWord(gates.level)}{LEVELS[gates.level] ? <span className="text-muted-foreground">{". " + LEVELS[gates.level].now.replace(/ for now/, "")}</span> : null}</span>],
+              ["Test cases", gates.public_fixtures ? plural(gates.public_fixtures, "test case") + " agents can see" : "None yet"],
+              ["Private tests", h ? <span key="ho" title={h.problem || heldoutTitle(h)}>{heldoutLabel(h)}{h.problem ? <span className="text-warn">{h.count ? ". Not ready yet." : ""}</span> : null}</span> : "Not reported"],
+              ["Starting score", blWords ? <span key="bl" title={blWords.title}>{gates.baseline !== null && gates.baseline !== undefined ? "Starting score " + score(gates.baseline) + ", measured by the runner" : blWords.text}</span> : "—"],
+              ["Results so far", tried ? num(gates.kept) + " of " + plural(tried, "change") + " kept" : "No experiments yet"],
+            ]}
+          />
+
+          <Disclosure summary="Show details" open={details} onToggle={setDetails} contentClassName="mt-3 grid gap-4 rounded-xl border bg-muted/30 p-4">
+              <div className="grid gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                  <span className="font-medium">{"Level " + (gates.level || "?") + " of A to D"}</span>
+                  <span className="text-muted-foreground">{LEVEL_ORDER.map((l) => l + " " + levelWord(l).toLowerCase()).join(", ")}</span>
+                </div>
+                <Progress value={LEVEL_PROGRESS[gates.level] ?? 0} className="h-1.5" aria-label={"Level " + (gates.level || "unknown") + " of A to D"} />
+                <p className="text-xs leading-relaxed text-muted-foreground">How far self-improvement may go right now, not how much it has improved. A starting score is not a finished experiment.</p>
+                {gates.reason ? <p className="text-[13px] leading-relaxed anywhere"><span className="text-muted-foreground">Why: </span>{gates.reason}</p> : null}
               </div>
-            ) : questionId && questions.data && !openQuestion ? (
-              <p className="text-[11.5px] text-muted-foreground">Question {questionId} is already decided or closed; the loop plans past it on the daemon&apos;s next tick.</p>
-            ) : null}
-            {gates.planning?.job || gates.planning?.suggestion ? (
-              <ItemCardMeta>
-                {gates.planning.job ? <Mono>{gates.planning.job}</Mono> : null}
-                {gates.planning.suggestion ? <Link href={hrefs.post(gates.project, gates.planning.suggestion)} className="hover:underline">View suggestion</Link> : null}
-              </ItemCardMeta>
-            ) : null}
-          </div>
-          <div>
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Next human step</div>
-            {waits && step ? (
-              <>
-                <StepBlock step={step} />
-                <p className="mt-1 text-[11.5px] text-muted-foreground">{stepFootnote(step.kind)}</p>
-              </>
-            ) : waits ? (
-              <>
-                <CommandBox command={next} copy />
-                <p className="mt-1 text-[11.5px] text-muted-foreground">{stepFootnote(null)}</p>
-              </>
-            ) : (
-              <>
-                <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">{idle()}</p>
-                {optional ? (
-                  <>
-                    <CommandBox command={optional} copy className="mt-1.5" />
-                    <p className="mt-1 text-[11.5px] text-muted-foreground">Optional: queues the measurement now instead of waiting for the daemon&apos;s retry.</p>
-                  </>
+
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                {gates.stop ? <ToneBadge tone="bad" title="Self-improvement is stopped until you clear the stop">Stopped</ToneBadge> : null}
+                <ToneBadge tone={gates.loop ? "ok" : "neutral"} dot title="evolve.loop: whether experiments may run back to back">
+                  {gates.loop ? "Switched on" : "Switched off"}
+                </ToneBadge>
+                <GateFlag on={gates.constitution} what="constitution" doc={docs?.constitution} />
+                <GateFlag on={gates.evaluators} what="evaluators" doc={docs?.evaluators} />
+                <ToneBadge tone={gates.public_fixtures ? "ok" : "warn"} title="Test cases agents may see (public fixtures)">
+                  {plural(gates.public_fixtures, "test case")}
+                </ToneBadge>
+                <BaselineChip g={g} score={gates.baseline} recordedBy={recordedBy} />
+                {h ? (
+                  <ToneBadge tone={h.problem ? "warn" : "neutral"} title={h.problem || heldoutTitle(h)}>
+                    {heldoutLabel(h)}
+                  </ToneBadge>
                 ) : null}
-              </>
-            )}
-          </div>
-            </div>
-          </details>
+                {gates.product_scope ? (
+                  <ToneBadge tone={gates.product_scope.allowed ? "ok" : "neutral"} title={gates.product_scope.reason || undefined}>
+                    {gates.product_scope.allowed ? "May change product code" : "May change agent setup only"}
+                  </ToneBadge>
+                ) : null}
+                {gates.scope ? (
+                  <ToneBadge tone={gates.scope.editable.length ? "ok" : "warn"} title={gates.scope.reason || undefined}>
+                    {gates.scope.editable.length ? num(gates.scope.editable.length) + " of " + num(gates.scope.classes) + " file groups may change" : "No file group may change"}
+                  </ToneBadge>
+                ) : null}
+                {gates.cap_reached ? <ToneBadge tone="bad" title={gates.limit_problem || "A limit the constitution sets is reached"}>Limit reached</ToneBadge> : null}
+              </div>
+              {/* The set exists and the gate has moved on: the dialog's done state (add one, rewrite one) stays reachable from here (ADR-032). */}
+              {h && h.count > 0 && step?.kind !== "heldout" ? (
+                <div>
+                  <HeldoutButton projects={[gates.project]} size="xs" variant="outline" label="Add or rewrite private tests" title="Add another private test or rewrite one. The console never shows them." />
+                </div>
+              ) : null}
+
+              <ItemCardMeta>
+                <span title="Measured experiments since self-improvement was last switched on. Merging may still be pending or fail.">{plural(gates.cycles, "experiment") + " since it was switched on" + (gates.hours ? " (" + plural(Math.round(gates.hours), "hour") + ")" : "")}</span>
+                <span title="All experiments ever. Kept does not mean merged or published.">{num(gates.kept) + " kept, " + num(gates.discarded) + " dropped in all"}</span>
+                {gates.voted?.tried ? <span title="Suggestions the board voted for that were tried">{"Voted suggestions: " + num(gates.voted.kept) + " of " + num(gates.voted.tried) + " kept"}</span> : null}
+                {gates.signal?.tried ? <span title="Hint test cases tried">{"Hints: " + num(gates.signal.kept) + " of " + num(gates.signal.tried) + " kept"}</span> : null}
+                {gates.limits && gates.limits !== "none" ? <span>Limits <Mono>{gates.limits}</Mono></span> : null}
+                {gates.tolerance ? <span title="How much worse a score may be and still count as no change">{"Tolerance " + gates.tolerance}</span> : null}
+              </ItemCardMeta>
+
+              <div className="grid gap-1.5">
+                <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                  <span className="font-medium">Next experiment</span>
+                  <ToneBadge tone={planning.tone}>{planning.label}</ToneBadge>
+                </div>
+                <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">{planning.next}</p>
+                <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground anywhere"><span className="font-medium">Planning note: </span>{planning.reason}</p>
+                {questionId && questions.data && !openQuestion ? (
+                  <p className="text-xs text-muted-foreground">That question is already answered or closed; planning moves past it on the runner&apos;s next round.</p>
+                ) : null}
+                {gates.planning?.job || gates.planning?.suggestion ? (
+                  <ItemCardMeta>
+                    {gates.planning.job ? <span title={gates.planning.job}>Job <Mono>{gates.planning.job}</Mono></span> : null}
+                    {gates.planning.suggestion ? <Link href={hrefs.post(gates.project, gates.planning.suggestion)} className="underline-offset-2 hover:underline">Read the suggestion</Link> : null}
+                  </ItemCardMeta>
+                ) : null}
+              </div>
+
+              <div className="grid gap-1.5">
+                <div className="text-[13px] font-medium">Your next step</div>
+                {waits && step ? (
+                  <p className="text-[13px] text-muted-foreground">{sentence(step.label)}: see the setup step above.</p>
+                ) : waits ? (
+                  <>
+                    <p className="text-[13px] text-muted-foreground">Run this in a terminal on this machine. The console names the step and never starts a measurement.</p>
+                    <CommandBox command={next} copy />
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">{idle()}</p>
+                    {optional ? <TerminalAlternative command={optional} summary="Measure it now instead of waiting" /> : null}
+                  </>
+                )}
+              </div>
+          </Disclosure>
         </div>
       ) : (
         <Notice tone="warn" className="text-[13px]">
-          <div className="font-medium">The hub could not evaluate the self-improvement gates.</div>
-          <div className="mt-0.5 text-muted-foreground">{error || "It gave no reason."}</div>
+          <div className="font-medium">PULSE couldn&apos;t check where self-improvement stands.</div>
+          <div className="mt-0.5 text-muted-foreground">{error || "It gave no reason."} Try again in a moment.</div>
         </Notice>
       )}
-      <FixtureList fixtures={fixtures} className="mt-4" />
+      <FixtureList fixtures={fixtures} className="mt-5 border-t pt-4" />
     </Panel>
   );
 }
 
 function selfImprovementState(gates: EvolveGates, planning: ReturnType<typeof evolvePlanningView>, step: GateStep | null, question?: string): string {
-  if (question) return "Stopped — waiting for your yes";
-  if (step) return "Needs a step only you can take: " + plainGateStep(step);
-  if (gates.stop) return "Stopped — waiting for your yes";
-  if (planning.label === "Waiting for suggestions") return "Waiting for a voted suggestion";
-  if (planning.label === "Experiment in flight") return "Running — " + num(gates.kept) + " experiments kept, " + num(gates.kept + gates.discarded) + " tried";
-  if (gates.loop) return "Running — " + num(gates.kept) + " experiments kept, " + num(gates.kept + gates.discarded) + " tried";
-  return planning.label + " — " + planning.next;
+  const state = gates.planning?.state ?? "";
+  const results = num(gates.kept) + " of " + plural(gates.kept + gates.discarded, "change") + " kept so far.";
+  if (question) return "Self-improvement stopped and waits for your yes or no.";
+  if (step) return "Waiting for one step from you: " + step.label + ".";
+  if (gates.stop) return "Self-improvement is stopped until you lift the stop.";
+  if (gates.level !== "D") return LEVELS[gates.level]?.now ?? "PULSE couldn't work out how far self-improvement may go.";
+  if (!gates.loop) return "Ready, but switched off. Turn self-improvement on in Settings to start.";
+  if (state === "leased" || state === "finalizing" || state === "queued") return planning.label + ". " + results;
+  if (state === "waiting") return "On. Waiting for the board to agree on a suggestion to try.";
+  if (state === "") return "On. " + results;
+  return planning.label + ". " + planning.next;
 }
 
 // ----- the record's provenance (ADR-030) --------------------------------------
 
-// The revision and id of a constitution or evaluators record, for a panel's
-// header: `r1 · seeded` warns that the text is still the template's.
+// The version and record of a constitution or scoring-rules record, for a
+// panel's header: "Version 1, template text" warns that the text is still the template's.
 export function DocRev({ doc, slug }: { doc: EvolutionDoc; slug: string }) {
   const r = doc.record;
-  const waiting = doc.draft ? " · draft ready" : doc.seeded && doc.draft_job ? " · drafting…" : doc.seeded ? " · seeded" : "";
+  const waiting = doc.draft ? "draft to review" : doc.seeded && doc.draft_job ? "being drafted" : doc.seeded ? "template text" : "";
   return (
     <>
-      <span className="tnum" title={doc.draft ? "an agent drafted the text - read and adopt it below" : doc.seeded ? seededTitle(doc.seeded_from ?? "") : doc.seeded_from ? "started as a copy of " + doc.seeded_from + ", edited since" : "revision " + num(r.current_rev)}>
-        {"r" + num(r.current_rev) + waiting}
+      <span title={doc.draft ? "An agent drafted the text. Read it and adopt it below." : doc.seeded ? seededTitle(doc.seeded_from ?? "") : doc.seeded_from ? "Started as the template's text, edited since" : "Version " + num(r.current_rev)}>
+        {"Version " + num(r.current_rev) + (waiting ? ", " + waiting : "")}
       </span>
-      <Link href={hrefs.record(r.id, slug)} className="hover:underline">
-        {r.id}
+      <Link href={hrefs.record(r.id, slug)} title={r.id} className="underline-offset-2 hover:text-foreground hover:underline">
+        Open the record
       </Link>
     </>
   );
 }
 
-// The fixtures as compact rows: name, origin, kind, state, weight and who
-// added it when. Never the request or the scorer, never an edit control.
+// The test cases as compact rows: name, origin, who may see it, state, weight
+// and who added it when. Never the request or the scorer, never an edit control.
 export function FixtureList({ fixtures, className }: { fixtures: EvolveFixture[]; className?: string }) {
   const enabled = fixtures.filter((f) => f.enabled).length;
   return (
-    <section className={className} aria-label="Fixtures">
-      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        <span>Fixtures</span>
-        <span className="tnum normal-case tracking-normal">{fixtures.length ? num(enabled) + " enabled of " + num(fixtures.length) : ""}</span>
+    <section className={className} aria-label="Test cases">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="text-[15px] font-semibold">Test cases</h3>
+        {fixtures.length ? <span className="text-[13px] text-muted-foreground">{enabled === fixtures.length ? plural(fixtures.length, "test case") + ", all on" : num(enabled) + " of " + plural(fixtures.length, "test case") + " on"}</span> : null}
       </div>
       {fixtures.length ? (
         <ul className="grid gap-1.5">
           {fixtures.map((f) => (
-            <li key={f.kind + "/" + f.name} className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2.5 py-1.5 text-xs", !f.enabled && "opacity-60")}>
-              <Mono className="font-medium">{f.name}</Mono>
-              {f.starter ? <ToneBadge tone="info" title="part of the starter set seeded at onboarding">starter</ToneBadge> : null}
-              <ToneBadge tone={f.kind === "public" ? "accent" : "neutral"} title={f.kind === "public" ? "public: agents may see it; it counts in the score" : "signal: a hint the loop reads; it does not count in the score"}>
-                {f.kind}
-              </ToneBadge>
-              <ToneBadge tone={f.enabled ? "ok" : "neutral"} dot>
-                {f.enabled ? "enabled" : "disabled"}
-              </ToneBadge>
-              <span className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">
-                <span className="tnum" title="weight in the score">{"weight " + f.weight}</span>
+            <li key={f.kind + "/" + f.name} title={f.kind === "public" ? "Agents may see it; it counts in the score" : undefined} className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-[13px]", !f.enabled && "opacity-60")}>
+              <span className="min-w-0 font-mono text-[12.5px] font-medium anywhere">{f.name}</span>
+              {f.starter ? <ToneBadge tone="info" title="Part of the starter set added when the project was set up">Starter</ToneBadge> : null}
+              {f.kind !== "public" ? (
+                <ToneBadge tone="neutral" title={f.kind === "signal" ? "A hint agents read; it does not count in the score" : f.kind}>
+                  {f.kind === "signal" ? "Hint only" : sentence(f.kind)}
+                </ToneBadge>
+              ) : null}
+              {!f.enabled ? <ToneBadge tone="neutral">Off</ToneBadge> : null}
+              <span className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+                <span title="How much it counts in the score">{"Weight " + f.weight}</span>
                 <Who row={{ agent: f.created_by }} compact />
                 <When d={f.at} />
               </span>
@@ -701,11 +705,12 @@ export function FixtureList({ fixtures, className }: { fixtures: EvolveFixture[]
           ))}
         </ul>
       ) : (
-        <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground anywhere">
-          No fixture yet, so the loop has nothing to measure against. <Mono>pulse evolve fixture seed</Mono> gives it the starter set of six small checks.
-        </p>
+        <div className="grid gap-2 rounded-xl border border-dashed px-4 py-3 text-[13px] leading-relaxed text-muted-foreground">
+          <p>No test cases yet, so there&apos;s nothing to measure against. The starter set adds six small ones.</p>
+          <TerminalAlternative command="pulse evolve fixture seed" summary="Show the command" />
+        </div>
       )}
-      <p className="mt-1.5 text-[11.5px] text-muted-foreground">Names and provenance only: what a fixture asks and how it scores stay in the store, and fixtures are added or changed from the terminal.</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Only names show here. What each test case asks and how it&apos;s scored stays inside PULSE; add or change test cases from a terminal.</p>
     </section>
   );
 }

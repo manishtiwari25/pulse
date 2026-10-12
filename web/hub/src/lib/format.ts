@@ -18,12 +18,15 @@ export function parseDate(d?: string | null): Date | null {
   return isNaN(t) ? null : new Date(t);
 }
 
+// A duration in words: "40 seconds", "9 minutes", "3 hours", "26 days", "1 month", "2 years".
 export function span(sec: number): string {
-  if (sec < 90) return Math.max(1, Math.round(sec)) + "s";
-  if (sec < 3600) return Math.round(sec / 60) + "m";
-  if (sec < 86400) return Math.round(sec / 3600) + "h";
-  if (sec < 86400 * 30) return Math.round(sec / 86400) + "d";
-  return Math.round(sec / (86400 * 30)) + "mo";
+  const unit = (n: number, word: string) => n + " " + word + (n === 1 ? "" : "s");
+  if (sec < 60) return unit(Math.max(1, Math.round(sec)), "second");
+  if (sec < 3600) return unit(Math.max(1, Math.round(sec / 60)), "minute");
+  if (sec < 86400) return unit(Math.round(sec / 3600), "hour");
+  if (sec < 86400 * 30) return unit(Math.round(sec / 86400), "day");
+  if (sec < 86400 * 365) return unit(Math.round(sec / (86400 * 30)), "month");
+  return unit(Math.round(sec / (86400 * 365)), "year");
 }
 
 export function rel(d?: string | null, now: number = Date.now()): string {
@@ -76,14 +79,20 @@ export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "\u2026" : s;
 }
 
-export type Tone = "neutral" | "ok" | "warn" | "bad" | "info" | "accent";
+// `you` is marigold: the one tone for "waits for the owner's answer".
+export type Tone = "neutral" | "ok" | "warn" | "bad" | "info" | "accent" | "you";
 
+// A state's colour says who has to act and whether something is wrong:
+// marigold when it waits for the owner, red only when it broke, amber when it
+// needs a look, blue while work moves, green when it is good, grey when it is
+// simply settled (including the owner's own "no").
 export function statusTone(s?: string | null): Tone {
   const v = (s || "").toLowerCase();
-  if (/^(active|eligible|open|passed|ready|done|accepted|delivered|approved|proceeded|live|working)/.test(v)) return "ok";
-  if (/^(needs|stale|short|no expiry|expired|closed|pending|review|planned|provisioning|proposed|silent|idle|recent|awaiting|partially)/.test(v)) return "warn";
-  if (/^(blocked|malformed|ambiguous|unchecked|failed|denied|cancelled|declined|stopped|unreachable|pruned|retired|superseded|dormant)/.test(v)) return "bad";
-  if (/^(in_progress|running|leased|queued|released|drained)/.test(v)) return "info";
+  if (/^(awaiting|pending|review|needs[ _]owner|needs you|proposed|waiting for you)/.test(v)) return "you";
+  if (/^(active|eligible|agreed|open|passed|ready|done|accepted|delivered|approved|proceeded|live|working|online|enabled|submitted|finished|landed|connected)/.test(v)) return "ok";
+  if (/^(blocked|malformed|ambiguous|unchecked|failed|stopped|unreachable|provider_error|error)/.test(v) || /(^|_)error$/.test(v)) return "bad";
+  if (/^(stale|short|no expiry|expired|silent|partially|step_limit|time_limit|format_errors|not_signed_in|lost)/.test(v)) return "warn";
+  if (/^(in_progress|running|leased|queued|released|drained|provisioning|starting|cancelling)/.test(v)) return "info";
   return "neutral";
 }
 

@@ -20,7 +20,7 @@ const COLS = {
 } as const;
 
 export function CardGrid({ children, cols = 2, className }: { children: React.ReactNode; cols?: keyof typeof COLS; className?: string }) {
-  return <div className={cn("grid min-w-0 gap-4", COLS[cols], className)}>{children}</div>;
+  return <div className={cn("grid min-w-0 gap-3", COLS[cols], className)}>{children}</div>;
 }
 
 // A click that starts on a control inside the card (a link, a button, a menu
@@ -41,12 +41,14 @@ function opensCard(e: React.MouseEvent<HTMLElement>) {
 const OpenContext = createContext<{ open: () => void; label?: string } | null>(null);
 
 export function ItemCard({ children, href, onOpen, active, highlight, className, ariaLabel }: { children: React.ReactNode; href?: string; onOpen?: () => void; active?: boolean; highlight?: boolean; className?: string; ariaLabel?: string }) {
+  // `highlight` marks a card that waits for the owner: a marigold rule down
+  // its left edge (the one warm colour means "you").
   const cls = cn(
-    "group/item surface-raised relative flex min-w-0 flex-col gap-3 rounded-2xl border p-5 text-left",
-    (href || onOpen) && "lift cursor-pointer hover:border-primary/30 motion-reduce:transition-none",
+    "group/item surface-raised relative flex min-w-0 flex-col gap-2.5 overflow-hidden rounded-2xl border p-4 text-left sm:p-5",
+    (href || onOpen) && "lift cursor-pointer motion-reduce:transition-none",
     href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
     onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
-    highlight && "glossy border-primary/35 bg-[linear-gradient(180deg,color-mix(in_oklch,var(--primary)_8%,var(--card)),color-mix(in_oklch,var(--brand-sky)_4%,var(--card)))] after:absolute after:inset-y-0 after:left-0 after:w-1 after:bg-[linear-gradient(180deg,var(--brand-mint),var(--brand-sky),var(--brand-violet))] after:content-['']",
+    highlight && "border-[color-mix(in_oklch,var(--you)_45%,var(--border))] pl-5 before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-you before:content-[''] sm:pl-6 dark:border-[color-mix(in_oklch,var(--you)_24%,var(--border))]",
     active && "ring-2 ring-ring",
     className,
   );
@@ -79,15 +81,35 @@ export function ItemCard({ children, href, onOpen, active, highlight, className,
 // Top line: badges on the left, the quiet meta (who, when) on the right.
 export function ItemCardHeader({ children, right, className }: { children: React.ReactNode; right?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 text-xs leading-relaxed anywhere", className)}>
+    <div className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px] leading-relaxed text-muted-foreground anywhere", className)}>
       {children}
       {right ? <span className="ml-auto flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">{right}</span> : null}
     </div>
   );
 }
 
+// What kind of thing a card is, as its first words: "Decision to make",
+// "Question for you", "Compute request". The icon carries the tone - marigold
+// for what waits on you, red for a stop, quiet grey otherwise.
+const KIND_TONE = {
+  you: "text-you-ink",
+  bad: "text-bad",
+  ok: "text-ok",
+  accent: "text-accent-2",
+  neutral: "text-muted-foreground",
+} as const;
+
+export function ItemCardKind({ icon: Icon, children, tone = "neutral", className }: { icon?: React.ComponentType<{ className?: string }>; children: React.ReactNode; tone?: keyof typeof KIND_TONE; className?: string }) {
+  return (
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground", className)}>
+      {Icon ? <Icon className={cn("size-4 shrink-0", KIND_TONE[tone])} aria-hidden /> : null}
+      <span className="min-w-0 anywhere">{children}</span>
+    </span>
+  );
+}
+
 // Inside an openable card the title is the button that opens it.
-export function ItemCardTitle({ children, className, chevron }: { children: React.ReactNode; className?: string; chevron?: boolean }) {
+export function ItemCardTitle({ children, className, chevron, as: Heading = "h3" }: { children: React.ReactNode; className?: string; chevron?: boolean; as?: "h2" | "h3" | "h4" }) {
   const ctx = useContext(OpenContext);
   const inner = (
     <>
@@ -96,7 +118,7 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
     </>
   );
   return (
-    <h3 className={cn("min-w-0 text-[15px] font-semibold leading-snug tracking-tight anywhere", className)}>
+    <Heading className={cn("min-w-0 text-base font-semibold leading-snug tracking-[-0.005em] text-foreground anywhere", className)}>
       {ctx ? (
         <button
           type="button"
@@ -113,17 +135,18 @@ export function ItemCardTitle({ children, className, chevron }: { children: Reac
       ) : (
         <span className="flex items-start gap-2">{inner}</span>
       )}
-    </h3>
+    </Heading>
   );
 }
 
 export function ItemCardBody({ children, className, clamp = 2 }: { children: React.ReactNode; className?: string; clamp?: 0 | 1 | 2 | 3 | 5 }) {
-  return <div className={cn("min-w-0 text-[13.5px] leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
+  return <div className={cn("min-w-0 text-sm leading-relaxed text-muted-foreground anywhere", clamp === 1 && "line-clamp-1", clamp === 2 && "line-clamp-2", clamp === 3 && "line-clamp-3", clamp === 5 && "line-clamp-5", className)}>{children}</div>;
 }
 
-// Small facts in a row: "3 posts · quorum 2 · expires in 4 d".
+// Small facts in a row ("3 posts", "2 votes needed", "closes in 4 days"),
+// spaced apart rather than strung together with dots.
 export function ItemCardMeta({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs leading-relaxed text-muted-foreground anywhere", className)}>{children}</div>;
+  return <div className={cn("flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] leading-relaxed text-muted-foreground anywhere", className)}>{children}</div>;
 }
 
 // Bottom line with the card's buttons. Clicks here never open the card.
@@ -144,23 +167,27 @@ export function ItemCardActions({ children, className }: { children: React.React
 // A compact fact tile for the inside of a card (used by project cards).
 export function Fact({ n, label, tone, className }: { n: React.ReactNode; label: string; tone?: "ok" | "warn" | "bad" | "accent" | "info"; className?: string }) {
   return (
-    <div className={cn("surface-glass min-w-0 rounded-xl border border-border/50 bg-muted/35 px-2 py-2.5 text-center", className)}>
+    <div className={cn("min-w-0 rounded-lg bg-muted/60 px-2 py-2 text-center", className)}>
       <div className={cn("tnum text-base font-semibold leading-tight tracking-tight anywhere", tone === "ok" && "text-ok", tone === "warn" && "text-warn", tone === "bad" && "text-bad", tone === "accent" && "text-accent-2", tone === "info" && "text-info")}>{n}</div>
-      <div className="mt-1 text-[11px] leading-tight text-muted-foreground anywhere">{label}</div>
+      <div className="mt-0.5 text-xs leading-tight text-muted-foreground anywhere">{label}</div>
     </div>
   );
 }
 
-// Section heading for a card group: title, count, and an optional link.
-export function SectionHeading({ children, count, action, className, icon: Icon }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }> }) {
+// Section heading for a card group: title, count, a one-line explanation
+// (`note`) under it, and an optional action on the right.
+export function SectionHeading({ children, count, action, note, className, icon: Icon, as: Heading = "h2" }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; note?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }>; as?: "h2" | "h3" }) {
   return (
-    <div className={cn("mb-3 flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2", className)}>
-      <h2 className="flex min-w-0 items-center gap-2 text-lg font-semibold leading-snug tracking-tight anywhere">
-        {Icon ? <Icon className="size-4 shrink-0 text-primary" aria-hidden /> : null}
-        {children}
-        {count !== undefined && count !== "" ? <span className="ring-soft tnum rounded-full bg-muted/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{count}</span> : null}
-      </h2>
-      {action ? <div className="min-w-0 max-w-full text-xs leading-relaxed text-muted-foreground anywhere">{action}</div> : null}
+    <div className={cn("mb-3 flex min-w-0 flex-wrap items-end justify-between gap-x-4 gap-y-2", className)}>
+      <div className="min-w-0">
+        <Heading className="flex min-w-0 items-center gap-2 text-lg font-semibold leading-snug tracking-tight anywhere">
+          {Icon ? <Icon className="size-[18px] shrink-0 text-muted-foreground" aria-hidden /> : null}
+          {children}
+          {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-card px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">{count}</span> : null}
+        </Heading>
+        {note ? <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground anywhere">{note}</p> : null}
+      </div>
+      {action ? <div className="min-w-0 max-w-full text-[13px] leading-relaxed text-muted-foreground anywhere">{action}</div> : null}
     </div>
   );
 }

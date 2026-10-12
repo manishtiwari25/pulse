@@ -9,26 +9,31 @@ export function codeDeliveryIncompleteWindow(d: CodeDeliveriesPayload | undefine
   return d.scope.scanned === 0 && d.deliveries.length === 0 && d.scope.has_more && d.scope.next_before !== null;
 }
 
+// The words for one page of results: which merges it covers and how many were checked.
 export function codeDeliveryWindowLabel(d: CodeDeliveriesPayload | undefined, page: number): string {
-  if (!d) return "loading recent landing window";
-  const window = page > 1 ? "older landing window " + page : "recent landing window";
-  const scope = d.scope.project ? " for " + d.scope.project : "";
-  return window + scope + " · scanned " + many(d.scope.scanned, "landing event") + " · limit " + n(d.scope.limit);
+  if (!d) return "Loading the latest merges";
+  const window = page > 1 ? "Older merges, page " + page : "Latest merges";
+  const scope = d.scope.project ? " in " + d.scope.project : "";
+  return window + scope + ": " + many(d.scope.scanned, "merge") + " checked, up to " + n(d.scope.limit) + " at a time";
 }
 
+// The line under the "Code delivered" number on Home and the project page.
 export function codeDeliveryKpiSub(d: CodeDeliveriesPayload | undefined, loading: boolean, error: string): string {
-  if (error && !d) return "unavailable";
-  if (!d) return loading ? "loading recent landings" : "not loaded";
-  if (codeDeliveryIncompleteWindow(d)) return "incomplete search window · older evidence available";
-  const parts = [many(d.summary.code_files, "source-file change"), many(d.scope.scanned, "landing event") + " scanned"];
-  if (d.summary.unknown || d.unavailable.length) parts.push(many(Math.max(d.summary.unknown, d.unavailable.length), "unknown"));
-  return parts.join(" · ");
+  if (error && !d) return "Couldn't load";
+  if (!d) return loading ? "Loading the latest merges" : "Not loaded yet";
+  if (codeDeliveryIncompleteWindow(d)) return "The search stopped early; older merges are left to check";
+  let line = many(d.summary.code_files, "source file") + " changed in " + many(d.scope.scanned, "merge") + " checked";
+  const unknown = Math.max(d.summary.unknown, d.unavailable.length);
+  if (unknown) line += "; " + n(unknown) + " couldn't be checked";
+  return line;
 }
+
+const STALE = "Not refreshed, showing earlier numbers. ";
 
 export function codeDeliveryKpiState(d: CodeDeliveriesPayload | undefined, loading: boolean, error: string): { n: number | string; sub: string; tone: CodeDeliveryKpiTone } {
   if (!d) return { n: error ? "—" : "…", sub: codeDeliveryKpiSub(d, loading, error), tone: error ? "warn" : "neutral" };
-  if (codeDeliveryIncompleteWindow(d)) return { n: "—", sub: (error ? "stale - refresh failed · " : "") + codeDeliveryKpiSub(d, loading, ""), tone: "warn" };
-  const sub = (error ? "stale - refresh failed · " : "") + codeDeliveryKpiSub(d, loading, "");
+  if (codeDeliveryIncompleteWindow(d)) return { n: "—", sub: (error ? STALE : "") + codeDeliveryKpiSub(d, loading, ""), tone: "warn" };
+  const sub = (error ? STALE : "") + codeDeliveryKpiSub(d, loading, "");
   return { n: d.summary.code_deliveries, sub, tone: error ? "warn" : codeDeliveryCoverageTone(d.summary) };
 }
 
@@ -38,19 +43,20 @@ export function codeDeliveryCoverageTone(summary: CodeDeliverySummary): CodeDeli
   return "neutral";
 }
 
+// How sure the count is, as plain sentences: what was checked, what was left
+// out and why, and whether a zero is a real zero.
 export function codeDeliveryCoverageText(d: CodeDeliveriesPayload): string {
-  if (codeDeliveryIncompleteWindow(d)) return "Incomplete search window: no landing events were scanned before the bounded scan stopped, and older evidence is available. This is not a definitive zero.";
+  if (codeDeliveryIncompleteWindow(d)) return "The search stopped before it reached any merges, and there is older history left to check. This is not a real zero.";
   const s = d.summary;
-  const excluded = s.docs_only + s.non_code;
-  const bits = [
-    many(d.scope.scanned, "landing event") + " scanned in this bounded window",
-    many(s.code_files, "source-file change"),
-  ];
-  if (excluded) bits.push(many(s.docs_only, "docs-only landing") + " and " + many(s.non_code, "non-code landing") + " excluded");
-  if (s.duplicates) bits.push(many(s.duplicates, "duplicate") + " deduped");
-  if (s.unknown) bits.push(many(s.unknown, "unknown evidence row") + " not counted as zero");
-  if (!s.code_deliveries && !s.unknown && d.unavailable.length === 0) bits.push("zero is based on complete evidence for this page");
-  return bits.join(" · ");
+  const bits = ["Checked " + many(d.scope.scanned, "recent merge") + "."];
+  if (s.docs_only || s.non_code) {
+    const left = [s.docs_only ? many(s.docs_only, "merge") + " that only changed docs" : "", s.non_code ? many(s.non_code, "merge") + " with no code in it" : ""].filter(Boolean);
+    bits.push("Left out " + left.join(" and ") + ".");
+  }
+  if (s.duplicates) bits.push("Counted " + many(s.duplicates, "repeated merge") + " once.");
+  if (s.unknown) bits.push(many(s.unknown, "merge") + " couldn't be checked, so " + (s.unknown === 1 ? "it isn't" : "they aren't") + " counted, not even as zero.");
+  if (!s.code_deliveries && !s.unknown && d.unavailable.length === 0) bits.push("Every merge here was checked, so zero really means none.");
+  return bits.join(" ");
 }
 
 export function shortCommit(sha: string): string {

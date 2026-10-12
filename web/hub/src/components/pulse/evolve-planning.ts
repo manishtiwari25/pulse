@@ -7,46 +7,49 @@ interface PlanningView {
   next: string;
 }
 
+// What the self-improvement planner is doing, in the owner's words. `label`
+// is the short state, `next` one plain sentence on what happens next; the
+// planner's own reason (technical) is shown as-is under "Show details".
 const STATES = new Map<string, Omit<PlanningView, "reason">>([
   ["gated", {
-    label: "Gated",
+    label: "Waiting on a setup step",
     tone: "warn",
-    next: "Follow the reported gate before starting an experiment.",
+    next: "A setup step comes first. PULSE's planning note says which one.",
   }],
   ["blocked", {
     label: "Blocked",
     tone: "warn",
-    next: "Resolve the planning issue above before another experiment can be queued. Owner-only gates are not changed automatically.",
+    next: "Something blocks the next experiment. PULSE's planning note says what. Steps only you can take are never skipped automatically.",
   }],
   ["waiting", {
-    label: "Waiting for suggestions",
+    label: "Waiting for an agreed suggestion",
     tone: "neutral",
-    next: "An eligible, untried, in-scope suggestion is still needed; see the planning reason above.",
+    next: "Agents need a suggestion the board agreed on, that hasn't been tried yet and that fits what they may change.",
   }],
   ["carding", {
-    label: "Writing an experiment card",
+    label: "Writing up the next experiment",
     tone: "info",
-    next: "The top voted suggestion names no single file and variable; an agent's card job is writing its experiment card as a new suggestion on the thread. The card needs its own votes before the loop runs it.",
+    next: "The top suggestion doesn't name one file and one setting to change, so an agent is writing it up as an experiment card on its thread. The card needs its own votes before it runs.",
   }],
   ["ready", {
-    label: "Ready, not dispatched",
+    label: "Ready to start",
     tone: "info",
-    next: "No additional owner step is listed. The eligible card still needs daemon dispatch.",
+    next: "Nothing more is needed from you. The runner starts the experiment when it has room.",
   }],
   ["queued", {
-    label: "Queued",
+    label: "Waiting to start",
     tone: "info",
-    next: "An experiment is queued. Dispatch still depends on the daemon, STOP and runner caps.",
+    next: "An experiment is waiting to start. It starts once the runner is on, nothing is stopped and a slot is free.",
   }],
   ["leased", {
-    label: "Experiment in flight",
+    label: "Experiment running",
     tone: "info",
-    next: "An experiment is in flight; its final measured result is not available yet.",
+    next: "An experiment is running; its score isn't in yet.",
   }],
   ["finalizing", {
-    label: "Finalizing",
+    label: "Scoring an experiment",
     tone: "info",
-    next: "The controller is finalizing the experiment. A worker reporting done is not proof of a completed cycle.",
+    next: "An experiment finished and is being scored. An agent saying it's done doesn't mean the change was kept.",
   }],
 ]);
 
@@ -55,7 +58,7 @@ export function evolvePlanningView(planning: EvolvePlanning | null | undefined):
   return {
     label: known?.label ?? (planning ? "Unknown planning state" : "Planning unavailable"),
     tone: known?.tone ?? "warn",
-    reason: planning?.reason || "The hub did not report an experiment planning reason.",
-    next: known?.next ?? "Planning details are unavailable. Level D alone does not mean an experiment is running.",
+    reason: planning?.reason || "PULSE did not report why.",
+    next: known?.next ?? "Planning details are unavailable. Being allowed to improve doesn't mean an experiment is running.",
   };
 }

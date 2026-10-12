@@ -2,19 +2,19 @@
 
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BanIcon, BotOffIcon, CheckCircle2Icon, CircleDashedIcon, EyeIcon, LayersIcon, ListChecksIcon, ListTodoIcon, LoaderIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ListTodoIcon, SearchIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "@/components/pulse/data-table";
-import { Count, EmptyState, ErrorNotice, Kpi, KpiGrid, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS, TaskSheet } from "@/components/tasks/task-sheet";
-import { registeredProjects, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
-import { plural } from "@/lib/format";
-import { hrefs } from "@/lib/nav";
+import { registeredProjects, taskProgress, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
+import { andList, plural } from "@/lib/format";
+import { statusWord } from "@/lib/words";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -28,26 +28,46 @@ export default function TasksPage() {
 
 const isActive = (t: Task) => t.status !== "done" && t.status !== "cancelled";
 
-// "active" is the default and means no `status` param, so links from the
-// palette and other pages (hrefs.tasks) keep working unchanged.
-const STATUS_CHIPS: [string, string][] = [["active", "active"], ["all", "all"], ...TASK_STATUSES.map((s): [string, string] => [s, s.replace("_", " ")])];
+// "active" (shown as "Open", the word the summary line and the project
+// Work tab use) is the default and means no `status` param, so links from the
+// palette and other pages (hrefs.tasks) keep working unchanged. What waits
+// for the owner ("review", read "Needs you") comes right after it.
+const STATUS_FILTERS: [string, string][] = [
+  ["active", "Open"],
+  ["review", statusWord("review")],
+  ...TASK_STATUSES.filter((s) => s !== "review").map((s): [string, string] => [s, statusWord(s)]),
+  ["all", "All"],
+];
 
-// The status filter as a row of chips instead of a Select: the whole
-// pipeline and its counts are visible at a glance and one tap switches.
-function StatusChips({ value, count, onChange }: { value: string; count: (s: string) => number; onChange: (s: string) => void }) {
+// The status filter as a segmented control with the count in each trigger.
+// A status with no task in it stays out of the way unless it is the one
+// selected; Open and All are always there.
+function StatusFilter({ value, count, onChange }: { value: string; count: (s: string) => number; onChange: (s: string) => void }) {
   return (
-    <div role="group" aria-label="Status" className="surface-glass inline-flex shrink-0 items-center gap-0.5 rounded-xl border p-0.5">
-      {STATUS_CHIPS.map(([v, label]) => {
-        const on = value === v;
-        return (
-          <Button key={v} size="xs" variant="ghost" aria-pressed={on} onClick={() => onChange(v)} className={cn("h-7 gap-1 rounded-md px-2.5 text-xs font-medium hover:bg-muted", on ? "bg-card text-foreground shadow-card hover:bg-card" : "text-muted-foreground hover:text-foreground")}>
-            {label}
-            <span className={cn("tnum rounded-full bg-muted px-1.5 text-[10.5px] leading-none text-muted-foreground", on && "bg-primary/10 text-primary")}>{count(v)}</span>
-          </Button>
-        );
-      })}
-    </div>
+    <Tabs value={value} onValueChange={onChange} className="min-w-0 max-w-full">
+      <div className="scroll-strip min-w-0 max-w-full">
+        <TabsList aria-label="Status">
+          {STATUS_FILTERS.filter(([v]) => v === "active" || v === "all" || v === value || count(v) > 0).map(([v, label]) => (
+            <TabsTrigger key={v} value={v} className="flex-none px-2.5">
+              {label}
+              <span className={cn("tnum min-w-4 rounded-full px-1.5 text-xs font-normal leading-5", v === "review" && count(v) ? "bg-you-soft text-you-ink" : "bg-background/70 text-muted-foreground")}>{count(v)}</span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </div>
+    </Tabs>
   );
+}
+
+// One sentence on the list in view: how many are open and what needs you.
+function summary(scope: Task[]): string {
+  const active = scope.filter(isActive);
+  if (!scope.length) return "";
+  if (!active.length) return "No open task right now. Everything you gave the agents is done or cancelled.";
+  const review = active.filter((t) => t.status === "review").length;
+  const working = active.filter((t) => taskProgress(t).working.length > 0).length;
+  const bits = [review ? (review === 1 ? "1 needs your answer" : review + " need your answer") : "", working ? (working === 1 ? "agents are working on 1 right now" : "agents are working on " + working + " right now") : ""].filter(Boolean);
+  return plural(active.length, "open task") + (bits.length ? ": " + andList(bits) + "." : ".");
 }
 
 function TasksScreen() {
@@ -75,7 +95,7 @@ function TasksScreen() {
   const org = useApi<Org>("org", { refresh: 60000 });
   const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : Array.from(new Set((q.data?.tasks ?? []).map((t) => t.project)))), [org.data, q.data]);
   const all = useMemo(() => q.data?.tasks ?? [], [q.data]);
-  // Counts in the chips and the strip follow the project filter, so they
+  // Counts in the filter and the summary follow the project filter, so they
   // describe the list the owner is looking at rather than the whole org.
   const scope = useMemo(() => (project ? all.filter((x) => x.project === project) : all), [all, project]);
   const rows = useMemo(() => {
@@ -83,30 +103,33 @@ function TasksScreen() {
     return scope.filter((x) => (status === "all" ? true : status === "active" ? isActive(x) : x.status === status) && (!t || x.title.toLowerCase().includes(t) || x.id.toLowerCase().includes(t) || (x.brief || "").toLowerCase().includes(t)));
   }, [scope, status, text]);
   const by = (s: string) => (s === "all" ? scope.length : s === "active" ? scope.filter(isActive).length : scope.filter((x) => x.status === s).length);
-  const link = (s: string) => hrefs.tasks({ project: project || undefined, status: s });
+  const filtered = !!text.trim() || status !== "active";
   const empty = all.length ? (
-    "Nothing matches these filters."
+    text.trim() ? (
+      <>No task matches &ldquo;{text.trim()}&rdquo;. Try fewer words, or look in All.</>
+    ) : (
+      <>No task here with this filter. Pick another status, or All, to see the rest.</>
+    )
   ) : (
-    <>
-      No task yet. Click <b>New task</b>, pick the project, and tell the agents what you want done.
-    </>
+    <>Nothing yet. Give the agents a task: pick the project and say what you want done. The project&apos;s lead agent splits it into steps and reports back in its chat.</>
   );
-  const emptyTitle = all.length ? "Nothing matches these filters." : "No task yet";
-  const emptyAction = all.length ? undefined : <NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />;
+  const emptyTitle = all.length ? (filtered ? "No task matches" : "No open task") : "No tasks yet";
+  const emptyAction = all.length && filtered ? undefined : <NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />;
+  const line = q.data ? summary(scope) : "";
   return (
     <>
       <PageTitle
         icon={ListTodoIcon}
-        sub="What you asked the agents to do, and how far along it is."
-        actions={<NewTaskButton project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />}
+        sub="The work you gave your agents. Each task's lead agent splits it into steps and reports back in its chat."
+        actions={<NewTaskButton size="default" project={project || undefined} onCreated={(t) => setParams({ task: t.id })} />}
         bar={
-          <div className="flex w-max items-center gap-2 md:w-auto md:flex-wrap">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
-              <SelectTrigger size="sm" aria-label="Project" className="w-40">
+              <SelectTrigger aria-label="Project" className="w-full sm:w-44">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all">all projects</SelectItem>
+                <SelectItem value="__all">All projects</SelectItem>
                 {projects.map((p) => (
                   <SelectItem key={p} value={p}>
                     {p}
@@ -114,34 +137,39 @@ function TasksScreen() {
                 ))}
               </SelectContent>
             </Select>
-            <StatusChips value={status} count={by} onChange={(v) => setParams({ status: v === "active" ? null : v })} />
-            <Input aria-label="Filter tasks" placeholder="Find a task…" value={text} onChange={(e) => setText(e.target.value)} className="h-7 w-32 xl:w-40" />
-            <span className="ml-auto flex shrink-0 items-center gap-2">
-              <Count>{q.data ? plural(rows.length, "task") : ""}</Count>
-              <ViewToggle value={view} onChange={setView} />
+            <StatusFilter value={status} count={by} onChange={(v) => setParams({ status: v === "active" ? null : v })} />
+            <span className="flex min-w-0 flex-1 basis-56 items-center gap-2">
+              <span className="relative min-w-0 flex-1 lg:max-w-64">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                <Input type="search" aria-label="Search tasks" placeholder="Search tasks" value={text} onChange={(e) => setText(e.target.value)} className="pl-8" />
+              </span>
+              {/* How many match, once a search or a status other than Open narrows the list. */}
+              {q.data && filtered ? (
+                <span className="ml-auto flex shrink-0" aria-live="polite">
+                  <Count>{plural(rows.length, "task")}</Count>
+                </span>
+              ) : null}
+              <ViewToggle value={view} onChange={setView} className={cn("shrink-0", !(q.data && filtered) && "ml-auto")} />
             </span>
           </div>
         }
       >
         Tasks
       </PageTitle>
-      <KpiGrid>
-        <Kpi icon={CircleDashedIcon} n={by("open")} label="open" sub="waiting to start" tone={by("open") ? "info" : "neutral"} href={link("open")} />
-        <Kpi icon={ListChecksIcon} n={by("planned")} label="planned" sub="work planned" href={link("planned")} />
-        <Kpi icon={LoaderIcon} n={by("in_progress")} label="in progress" tone={by("in_progress") ? "ok" : "neutral"} sub="agents working" href={link("in_progress")} />
-        <Kpi icon={EyeIcon} n={by("review")} label="review" tone={by("review") ? "warn" : "neutral"} sub="needs your eyes" href={link("review")} />
-        <Kpi icon={CheckCircle2Icon} n={by("done")} label="done" href={link("done")} />
-        <Kpi icon={BanIcon} n={by("cancelled")} label="cancelled" href={link("cancelled")} />
-        <Kpi icon={BotOffIcon} n={scope.filter((x) => !x.lead && isActive(x)).length} label="waiting for an agent" sub="starts soon" />
-        <Kpi icon={LayersIcon} n={scope.length} label="all time" href={link("all")} />
-      </KpiGrid>
+      {line ? (
+        <p className="-mt-1 mb-4 max-w-3xl text-sm leading-relaxed text-muted-foreground" aria-live="polite">
+          {line}
+        </p>
+      ) : null}
       {q.error && !q.data ? (
-        <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
+        <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
+          {"The task list didn't load (" + q.error + "). Check that PULSE is running, then try again."}
+        </ErrorNotice>
       ) : !q.data ? (
         <SkeletonRows n={8} />
       ) : view === "table" ? (
         rows.length ? (
-          <div className="surface-raised overflow-hidden rounded-2xl border">
+          <div className="overflow-hidden rounded-2xl border bg-card">
             <DataTable columns={TASK_COLUMNS(true)} rows={rows} rowKey={(t) => t.id} onRow={(t) => setParams({ task: t.id })} initialSort="updated" caption="Tasks" />
           </div>
         ) : (

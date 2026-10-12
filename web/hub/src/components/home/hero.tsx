@@ -2,21 +2,23 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowUpRightIcon, SparklesIcon } from "lucide-react";
+import { ArrowDownIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Notice } from "@/components/pulse/panel";
+import { PulseLine } from "@/components/shell/pulse-mark";
 import { daemonHeadline, daemonUpdateText, type DaemonUpdate } from "@/components/pulse/daemon-control-state";
 import { cn } from "@/lib/utils";
 import { plural, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 
-const PILL_TONE: Record<Tone, string> = {
-  neutral: "border-border/70 bg-background/55 text-muted-foreground",
-  ok: "border-ok/35 bg-ok/10 text-ok",
-  warn: "border-warn/45 bg-warn/10 text-warn",
-  bad: "border-bad/40 bg-bad/10 text-bad",
-  info: "border-info/40 bg-info/10 text-info",
-  accent: "border-accent-2/40 bg-accent-2/10 text-accent-2",
+const DOT: Record<Tone, string> = {
+  neutral: "bg-muted-foreground/50",
+  ok: "bg-ok",
+  warn: "bg-warn",
+  bad: "bg-bad",
+  info: "bg-info",
+  accent: "bg-accent-2",
+  you: "bg-you",
 };
 
 export interface HomeHeroProps {
@@ -30,72 +32,108 @@ export interface HomeHeroProps {
   activeAgents: number;
   projects: number;
   ownerAway: boolean;
+  // Opens "Details for this machine" and scrolls to the runner controls.
+  onOpenRunner?: () => void;
   actions: React.ReactNode;
 }
 
-export function HomeHero({ inbox, daemon, daemonDown, runnerChecking, inboxChecking, runningJobs, fallbackWorkingAgents, activeAgents, projects, ownerAway, actions }: HomeHeroProps) {
-  const [greeting, setGreeting] = useState("Good day");
+// The page opens like a briefing: a greeting, one sentence that says whether
+// anything needs you, and how the machine is doing, in words.
+export function HomeHero({ inbox, daemon, daemonDown, runnerChecking, inboxChecking, runningJobs, fallbackWorkingAgents, activeAgents, projects, ownerAway, onOpenRunner, actions }: HomeHeroProps) {
+  const [greeting, setGreeting] = useState("Hello");
 
   useEffect(() => {
     const h = new Date().getHours();
-    window.requestAnimationFrame(() => setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"));
+    window.requestAnimationFrame(() => setGreeting(h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"));
   }, []);
 
   const working = runningJobs ?? fallbackWorkingAgents;
-  const sentence = daemon.pause === "on"
-    ? "PULSE is paused on this machine."
+  const paused = daemon.pause === "on";
+  const headline = paused
+    ? "Work is paused on this machine."
     : daemonDown
-      ? "The hub can't reach the daemon."
+      ? "PULSE can't reach its runner right now."
       : inbox > 0
-        ? (inbox === 1 ? "1 thing needs your yes or no." : plural(inbox, "thing") + " need your yes or no.")
+        ? inbox === 1
+          ? "1 thing is waiting for your answer."
+          : plural(inbox, "thing") + " are waiting for your answer."
         : inboxChecking
-          ? "Checking what needs your yes or no…"
-          : "Nothing needs you right now — " + plural(activeAgents, "agent") + " working on " + plural(projects, "project") + ".";
-  const daemonText = daemonHeadline(daemon);
+          ? "Checking what's waiting for you…"
+          : "You're all caught up.";
+  const subline = paused
+    ? "Agents finish what they're doing and start nothing new until you resume."
+    : daemonDown
+      ? "The page will update on its own once the runner answers again."
+      : inbox > 0
+        ? "Each one stays put until you say yes or no. Everything else carries on meanwhile."
+        : inboxChecking
+          ? ""
+          : "Nothing needs your answer. " + (activeAgents ? plural(activeAgents, "agent") + (activeAgents === 1 ? " is" : " are") + " active across " + plural(projects, "project") + "." : "Give a task when you're ready.");
   // A pending self-update is not a stopped daemon: the hero names the run the new build waits for.
-  const updateText = daemon.pause !== "on" && daemon.update ? daemonUpdateText(daemon.update) : "";
-  const agentText = runnerChecking ? "Checking agents…" : plural(working, "agent") + " working";
+  const updateText = !paused && daemon.update ? daemonUpdateText(daemon.update) : "";
+  const agentText = runnerChecking ? "Checking agents…" : working ? plural(working, "agent") + " working" : "No agents working";
 
   return (
-    <section className="mb-8 rounded-3xl surface-hero glossy p-5 shadow-pop ring-soft sm:p-6" aria-label="Home summary">
-      <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <div className="min-w-0">
-          <p className="mb-2 flex items-center gap-2 text-sm font-medium text-brand">
-            <SparklesIcon className="size-4" aria-hidden />
-            {greeting}
-          </p>
-          <h1 className="max-w-4xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">{sentence}</h1>
-          <div className="mt-5 flex min-w-0 flex-wrap gap-2">
-            <StatusPill tone={daemon.tone}>{daemonText}</StatusPill>
-            {updateText ? <StatusPill tone="info">{updateText}</StatusPill> : null}
-            <StatusPill tone={runnerChecking ? "neutral" : working ? "ok" : "neutral"}>{agentText}</StatusPill>
-            <StatusPill tone="neutral">{plural(projects, "project")}</StatusPill>
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
-          {inbox > 0 ? (
-            <Button asChild size="lg" className="glossy rounded-xl shadow-pop">
-              <a href="#for-you">
-                Review <ArrowUpRightIcon />
-              </a>
-            </Button>
-          ) : null}
-          {actions}
-        </div>
+    <section className="pt-8 pb-2 sm:pt-12" aria-label="Summary">
+      <p className="flex items-center gap-3 text-[15px] font-medium text-muted-foreground">
+        <PulseLine className="h-6 w-[110px]" />
+        <span>{greeting}</span>
+      </p>
+      <h1 className="mt-4 max-w-3xl text-[32px] font-semibold leading-[1.12] tracking-[-0.02em] sm:text-[40px]">{headline}</h1>
+      {subline ? <p className="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground sm:text-[17px]">{subline}</p> : null}
+
+      <ul className="mt-5 flex min-w-0 flex-wrap items-center gap-x-6 gap-y-2 text-sm" aria-label="This machine">
+        <li>
+          <a
+            href="#daemon-controls"
+            onClick={(e) => {
+              if (!onOpenRunner) return;
+              e.preventDefault();
+              onOpenRunner();
+            }}
+            className="inline-flex items-center gap-2 rounded-md font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            title="The runner plans work and starts agents on this machine. Open its controls."
+          >
+            <span className={cn("size-2 rounded-full", DOT[daemon.tone])} aria-hidden />
+            {daemonHeadline(daemon)}
+          </a>
+        </li>
+        {updateText ? (
+          <li className="inline-flex items-center gap-2 text-muted-foreground">
+            <span className="size-2 rounded-full bg-info" aria-hidden />
+            {updateText}
+          </li>
+        ) : null}
+        <li className="inline-flex items-center gap-2 text-muted-foreground">
+          <span className={cn("size-2 rounded-full", runnerChecking ? DOT.neutral : working ? "bg-primary" : DOT.neutral)} aria-hidden />
+          {agentText}
+        </li>
+        <li className="inline-flex items-center gap-2 text-muted-foreground">
+          <span className="size-2 rounded-full bg-muted-foreground/50" aria-hidden />
+          {plural(projects, "project")}
+        </li>
+      </ul>
+
+      <div className="mt-6 flex min-w-0 flex-wrap items-center gap-2">
+        {inbox > 0 ? (
+          <Button asChild size="lg">
+            <a href="#for-you">
+              <ArrowDownIcon /> See what&apos;s waiting
+            </a>
+          </Button>
+        ) : null}
+        {actions}
       </div>
+
       {ownerAway ? (
-        <Notice tone="warn" className="mt-5 bg-background/55">
-          You&apos;re marked away. Project leads can handle routine proposals, but hard stops and owner-only choices still wait here.{" "}
+        <Notice tone="warn" className="mt-6 max-w-3xl">
+          You&apos;re marked as away. Each project&apos;s lead agent answers routine proposals for you; hard stops and choices only you can make still wait here.{" "}
           <Link href={hrefs.settings("owner")} className="font-medium underline underline-offset-2">
-            Change this in settings
+            Change this in Settings
           </Link>
           .
         </Notice>
       ) : null}
     </section>
   );
-}
-
-function StatusPill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
-  return <span className={cn("inline-flex min-h-9 items-center rounded-full border px-3 py-1 text-sm font-medium shadow-card", PILL_TONE[tone])}>{children}</span>;
 }

@@ -5,28 +5,36 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { BookOpenIcon, PencilIcon, PlugIcon, PlugZapIcon, PlusIcon, PowerIcon, PowerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { showApiError } from "@/components/pulse/confirm";
-import { DataTable, type Column } from "@/components/pulse/data-table";
-import { EmptyState, ErrorNotice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
-import { Mono, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
+import { Disclosure, EmptyState, ErrorNotice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
+import { Mono, StatusBadge, When } from "@/components/pulse/who";
 import { ConnectDialog, McpServerDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, SkillViewDialog, refreshSkills } from "@/components/connections/skill-dialogs";
 import { query, writes, type McpOptions, type McpServer, type McpServersPayload, type ProjectsPayload, type Skill, type SkillsPayload } from "@/lib/api";
-import { num, truncate } from "@/lib/format";
-import { DEFAULT_OPTIONS, endpoint, lastCheck, scopeLabel, sortScoped, toolNames } from "@/lib/mcp";
+import { num, plural } from "@/lib/format";
+import { DEFAULT_OPTIONS, TRANSPORT_SHORT, authLabel, checkReason, endpoint, lastCheck, scopeLabel, scopeTitle, sortScoped, toolNames } from "@/lib/mcp";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-// Connections: what agents can reach beyond the repository. MCP servers are
-// the bridge to the outside world (issues, feedback, docs, environments);
-// skills are the recipes workers share. Both are scoped to a project or to
-// every project, and both reach agents through their brief.
+// Connections: what agents can reach beyond the repository. A tool
+// connection (an MCP server) is the bridge to another system - issues,
+// feedback, docs, environments; a skill is a reusable set of instructions.
+// Both are scoped to a project or to every project, and both reach agents
+// through their brief.
 
 type Tab = "mcp" | "skills";
+
+// A quiet fold for the terminal side of things.
+function Fold({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <Disclosure summary={summary} contentClassName="grid max-w-3xl gap-2 text-sm leading-relaxed text-muted-foreground anywhere">
+      {children}
+    </Disclosure>
+  );
+}
 
 export function ConnectionsPageClient() {
   const sp = useSearchParams();
@@ -54,128 +62,142 @@ export function ConnectionsPageClient() {
   const skillRows = sortScoped(skills.data?.skills ?? []);
   const enabledServers = serverRows.filter((s) => s.status === "enabled").length;
   const enabledSkills = skillRows.filter((k) => k.status === "enabled").length;
+  const scopeNote = project ? " Showing " + project + "'s own and the ones every project shares." : "";
 
   return (
-    <>
+    <Tabs value={tab} onValueChange={(v) => go({ tab: v as Tab })} className="min-w-0 gap-0">
       <PageTitle
         icon={PlugIcon}
-        sub="What agents can reach beyond the repository: MCP servers they call from their shell, and the skills they share."
+        sub="Tools and skills your agents can use. A tool connection (MCP server) lets agents reach another system; a skill is a reusable set of instructions."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant={tab === "skills" ? "outline" : "default"} onClick={() => setAddMcp(true)}>
-              <PlusIcon /> Add MCP server
+          <>
+            <Button variant={tab === "mcp" ? "default" : "outline"} onClick={() => setAddMcp(true)}>
+              <PlusIcon /> Add a tool
             </Button>
-            <Button size="sm" variant={tab === "skills" ? "default" : "outline"} onClick={() => setAddSkill(true)}>
-              <PlusIcon /> Add skill
+            <Button variant={tab === "skills" ? "default" : "outline"} onClick={() => setAddSkill(true)}>
+              <PlusIcon /> Add a skill
             </Button>
-          </div>
+          </>
         }
         bar={
-          <div className="flex min-w-0 flex-wrap items-end gap-2">
-            <div className="grid gap-1">
-              <Label htmlFor="connections-project">Project</Label>
-              <Select value={project || "all"} onValueChange={(v) => go({ project: v === "all" ? "" : v })}>
-                <SelectTrigger id="connections-project" className="w-48">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All projects</SelectItem>
-                  {(projects.data?.projects ?? []).map((p) => (
-                    <SelectItem key={p.slug} value={p.slug}>
-                      {p.slug}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {project ? <p className="pb-2 text-xs text-muted-foreground">Showing rows for {project} and the ones every project shares.</p> : null}
-          </div>
+          <TabsList variant="line" aria-label="Connections" className="w-full justify-start">
+            <TabsTrigger value="mcp" className="flex-none gap-1.5">
+              Tools <span className="tnum text-muted-foreground">{servers.data ? num(serverRows.length) : ""}</span>
+            </TabsTrigger>
+            <TabsTrigger value="skills" className="flex-none gap-1.5">
+              Skills <span className="tnum text-muted-foreground">{skills.data ? num(skillRows.length) : ""}</span>
+            </TabsTrigger>
+          </TabsList>
         }
       >
         Connections
       </PageTitle>
+      <div className="mb-4 flex min-w-0">
+        <Select value={project || "all"} onValueChange={(v) => go({ project: v === "all" ? "" : v })}>
+          <SelectTrigger id="connections-project" aria-label="Project" className="w-full sm:w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All projects</SelectItem>
+            {(projects.data?.projects ?? []).map((p) => (
+              <SelectItem key={p.slug} value={p.slug}>
+                {p.slug}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
-      <Tabs value={tab} onValueChange={(v) => go({ tab: v as Tab })}>
-        <TabsList>
-          <TabsTrigger value="mcp">
-            MCP servers <span className="tnum text-muted-foreground">{servers.data ? num(serverRows.length) : ""}</span>
-          </TabsTrigger>
-          <TabsTrigger value="skills">
-            Skills <span className="tnum text-muted-foreground">{skills.data ? num(skillRows.length) : ""}</span>
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="mcp" className="mt-3">
-          {servers.error && !servers.data ? <ErrorNotice error={servers.error} onRetry={() => void servers.reload()} /> : null}
-          {!servers.data && !servers.error ? (
-            <SkeletonPage rows={2} />
-          ) : servers.data && serverRows.length === 0 ? (
+      <TabsContent value="mcp" className="grid min-w-0 gap-4">
+        {servers.error && !servers.data ? (
+          <ErrorNotice error={servers.error} onRetry={() => void servers.reload()}>
+            {"The tool connections didn't load (" + servers.error + "). Check that PULSE is running, then try again."}
+          </ErrorNotice>
+        ) : null}
+        {!servers.data && !servers.error ? (
+          <SkeletonRows n={4} />
+        ) : servers.data && serverRows.length === 0 ? (
+          <>
             <EmptyState
-              title="No MCP servers yet"
-              icon={<PlugIcon className="size-4" />}
-              hint="pulse mcp add --name github --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-github --auth env --auth-header GITHUB_PERSONAL_ACCESS_TOKEN --secret op://PULSE/github-mcp/token"
+              title={project ? "No tools for " + project + " yet" : "No tools connected yet"}
+              icon={<PlugIcon className="size-[18px]" />}
               action={
                 <Button size="sm" onClick={() => setAddMcp(true)}>
-                  <PlusIcon /> Add MCP server
+                  <PlusIcon /> Add a tool
                 </Button>
               }
             >
-              Register a server here or from the shell. Once it is enabled and connects, every worker of its project reads what it offers in the brief and calls it with <Mono>pulse mcp call</Mono>.
+              Connect a tool so agents can reach another system, like your issue tracker, user feedback or docs. Once it is on and connects, agents see what it offers in their brief.
             </EmptyState>
-          ) : servers.data ? (
-            <Panel
-              dense
-              title={
-                <span className="flex items-center gap-2">
-                  MCP servers
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {num(enabledServers)} enabled of {num(serverRows.length)}
-                  </span>
-                </span>
-              }
-            >
-              <McpTable rows={serverRows} onConnect={setConnecting} onEdit={setEditMcp} />
-              <p className="px-1 pt-2 text-xs text-muted-foreground">
-                Agents on the local executor list tools with <Mono>pulse mcp tools NAME</Mono> and call one with <Mono>pulse mcp call NAME TOOL --args &apos;{"{...}"}&apos;</Mono>. Remote executors have no store; their workers ask for the data through a FINDING line.
+            <Fold summary="Prefer the terminal?">
+              <p>Add a tool from a shell on this machine, for example GitHub:</p>
+              <Mono className="block w-fit max-w-full">pulse mcp add --name github --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-github --auth env --auth-header GITHUB_PERSONAL_ACCESS_TOKEN --secret op://PULSE/github-mcp/token</Mono>
+            </Fold>
+          </>
+        ) : servers.data ? (
+          <>
+            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+              {enabledServers === serverRows.length ? (serverRows.length === 1 ? "It is on." : "All " + num(serverRows.length) + " are on.") : num(enabledServers) + " of " + num(serverRows.length) + " are on."} Agents see the tools that are on in their brief.{scopeNote}
+            </p>
+            <CardGrid cols={2}>
+              {serverRows.map((s) => (
+                <ServerCard key={s.id} s={s} onConnect={setConnecting} onEdit={setEditMcp} />
+              ))}
+            </CardGrid>
+            <Fold summary="How agents use these">
+              <p>
+                Agents on this machine list what a tool offers with <Mono>pulse mcp tools NAME</Mono> and use it with <Mono>pulse mcp call NAME TOOL --args &apos;{"{...}"}&apos;</Mono>.
               </p>
-            </Panel>
-          ) : null}
-        </TabsContent>
+              <p>Agents on other machines can&apos;t reach these tools directly. When they need something from one, they ask their lead agent for it in a finding.</p>
+            </Fold>
+          </>
+        ) : null}
+      </TabsContent>
 
-        <TabsContent value="skills" className="mt-3">
-          {skills.error && !skills.data ? <ErrorNotice error={skills.error} onRetry={() => void skills.reload()} /> : null}
-          {!skills.data && !skills.error ? (
-            <SkeletonPage rows={2} />
-          ) : skills.data && skillRows.length === 0 ? (
+      <TabsContent value="skills" className="grid min-w-0 gap-4">
+        {skills.error && !skills.data ? (
+          <ErrorNotice error={skills.error} onRetry={() => void skills.reload()}>
+            {"The skills didn't load (" + skills.error + "). Check that PULSE is running, then try again."}
+          </ErrorNotice>
+        ) : null}
+        {!skills.data && !skills.error ? (
+          <SkeletonRows n={3} />
+        ) : skills.data && skillRows.length === 0 ? (
+          <>
             <EmptyState
-              title="No skills yet"
-              icon={<BookOpenIcon className="size-4" />}
-              hint="pulse skill add --name release-check --description 'How to verify a release before tagging' --file docs/release-check.md"
+              title={project ? "No skills for " + project + " yet" : "No skills yet"}
+              icon={<BookOpenIcon className="size-[18px]" />}
               action={
                 <Button size="sm" onClick={() => setAddSkill(true)}>
-                  <PlusIcon /> Add skill
+                  <PlusIcon /> Add a skill
                 </Button>
               }
             >
-              A skill is a markdown recipe workers are told about in their brief and read with <Mono>pulse skill show NAME</Mono>. Agents add their own when they finish something others will repeat.
+              A skill is a set of instructions agents read before work it covers: a setup, a debugging path, a release check. Agents also add their own when they finish something others will repeat.
             </EmptyState>
-          ) : skills.data ? (
-            <Panel
-              dense
-              title={
-                <span className="flex items-center gap-2">
-                  Skills
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {num(enabledSkills)} enabled of {num(skillRows.length)}
-                  </span>
-                </span>
-              }
-            >
-              <SkillTable rows={skillRows} onView={setViewSkill} onEdit={setEditSkill} />
-            </Panel>
-          ) : null}
-        </TabsContent>
-      </Tabs>
+            <Fold summary="Prefer the terminal?">
+              <p>Add a skill from a shell on this machine:</p>
+              <Mono className="block w-fit max-w-full">pulse skill add --name release-check --description &apos;How to verify a release before tagging&apos; --file docs/release-check.md</Mono>
+            </Fold>
+          </>
+        ) : skills.data ? (
+          <>
+            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+              {enabledSkills === skillRows.length ? (skillRows.length === 1 ? "It is on." : "All " + num(skillRows.length) + " are on.") : num(enabledSkills) + " of " + num(skillRows.length) + " are on."} Agents are told about the skills that are on and read one before work it covers.{scopeNote}
+            </p>
+            <CardGrid cols={2}>
+              {skillRows.map((k) => (
+                <SkillCard key={k.id} k={k} onView={setViewSkill} onEdit={setEditSkill} />
+              ))}
+            </CardGrid>
+            <Fold summary="How agents use these">
+              <p>
+                Agents read a skill with <Mono>pulse skill show NAME</Mono>; each read is counted. They add their own with <Mono>pulse skill add</Mono>.
+              </p>
+            </Fold>
+          </>
+        ) : null}
+      </TabsContent>
 
       <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} project={project} />
       <McpServerDialog open={!!editMcp} onOpenChange={(o) => (o ? null : setEditMcp(null))} options={opts} server={editMcp} />
@@ -190,7 +212,7 @@ export function ConnectionsPageClient() {
           setEditSkill(k);
         }}
       />
-    </>
+    </Tabs>
   );
 }
 
@@ -209,169 +231,150 @@ function useApiProjects() {
   return useApi<ProjectsPayload>("projects", { refresh: 60000 });
 }
 
-// ----- tables ----------------------------------------------------------------
+// ----- cards -----------------------------------------------------------------
 
-function McpTable({ rows, onConnect, onEdit }: { rows: McpServer[]; onConnect: (s: McpServer) => void; onEdit: (s: McpServer) => void }) {
-  const [busy, setBusy] = useState("");
-  const toggle = async (s: McpServer) => {
-    const next = s.status === "enabled" ? "disabled" : "enabled";
-    setBusy(s.id);
-    try {
-      await writes.setMcpStatus(s.id, next);
-      toast.success(s.name + " " + next + ".", { description: next === "enabled" ? "Workers see it in their next brief." : "Workers stop seeing it; the row and its secret reference stay." });
-      refreshMcp();
-    } catch (e) {
-      showApiError(e, "The status did not change");
-    } finally {
-      setBusy("");
-    }
-  };
-  const columns: Column<McpServer>[] = [
-    {
-      key: "name",
-      label: "Server",
-      sort: (s) => s.name,
-      render: (s) => (
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Mono>{s.name}</Mono>
-            <span className="text-[11px] text-muted-foreground">{s.id}</span>
-          </div>
-          {s.note ? <p className="mt-0.5 max-w-md truncate text-xs text-muted-foreground">{s.note}</p> : null}
-        </div>
-      ),
-    },
-    { key: "project", label: "Project", hide: "sm", sort: (s) => s.project || "", render: (s) => (s.project ? <Mono>{s.project}</Mono> : <span className="text-muted-foreground">all projects</span>) },
-    {
-      key: "transport",
-      label: "Transport",
-      hide: "md",
-      sort: (s) => s.transport,
-      render: (s) => (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex flex-col items-start gap-0.5">
-              <ToneBadge tone="neutral">{s.transport}</ToneBadge>
-              <span className="max-w-56 truncate font-mono text-[11px] text-muted-foreground">{truncate(endpoint(s), 48)}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-sm font-mono text-xs anywhere">
-            {endpoint(s) || "no endpoint"}
-            {s.auth !== "none" ? " · auth " + s.auth + (s.auth_header ? " (" + s.auth_header + ")" : "") : " · no auth"}
-          </TooltipContent>
-        </Tooltip>
-      ),
-    },
-    { key: "status", label: "Status", sort: (s) => s.status, render: (s) => <StatusBadge status={s.status} /> },
-    {
-      key: "check",
-      label: "Last check",
-      hide: "md",
-      sort: (s) => s.last_check_at || "",
-      render: (s) => <CheckCell server={s} />,
-    },
-    {
-      key: "actions",
-      label: <span className="sr-only">Actions</span>,
-      align: "right",
-      nowrap: true,
-      render: (s) => (
-        <div className="flex items-center justify-end gap-1">
-          <Button size="xs" variant="outline" onClick={() => onConnect(s)} aria-label={"Connect " + s.name}>
-            <PlugZapIcon /> Connect
-          </Button>
-          <Button size="icon-xs" variant="ghost" onClick={() => void toggle(s)} disabled={busy === s.id} aria-label={(s.status === "enabled" ? "Disable " : "Enable ") + s.name} title={s.status === "enabled" ? "Disable" : "Enable"}>
-            {s.status === "enabled" ? <PowerOffIcon /> : <PowerIcon />}
-          </Button>
-          <Button size="icon-xs" variant="ghost" onClick={() => onEdit(s)} aria-label={"Edit " + s.name} title="Edit">
-            <PencilIcon />
-          </Button>
-        </div>
-      ),
-    },
-  ];
-  return <DataTable columns={columns} rows={rows} rowKey={(s) => s.id} dense caption="MCP servers" rowClassName={(s) => (s.status === "disabled" ? "opacity-60" : undefined)} />;
-}
-
-function CheckCell({ server }: { server: McpServer }) {
-  const c = lastCheck(server);
-  const tools = server.last_check_ok ? toolNames(server.last_check_note) : [];
+function CardHead({ icon: Icon, name, id, status, off }: { icon: React.ComponentType<{ className?: string }>; name: React.ReactNode; id: string; status: string; off: boolean }) {
   return (
-    <div className="min-w-0 text-xs">
-      <div className="flex items-center gap-1.5">
-        <span className={cn("size-1.5 shrink-0 rounded-full", c.tone === "ok" ? "bg-ok" : c.tone === "bad" ? "bg-bad" : "bg-muted-foreground/40")} aria-hidden />
-        <span className={cn(c.tone === "bad" && "text-bad")}>{c.label}</span>
-        {server.last_check_at ? (
-          <span className="text-muted-foreground">
-            <When d={server.last_check_at} />
-          </span>
-        ) : null}
+    <div className="flex min-w-0 items-start justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", off ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary")} aria-hidden>
+          <Icon className="size-[18px]" />
+        </span>
+        <div className="min-w-0">
+          <ItemCardTitle className={cn(off && "text-muted-foreground")}>{name}</ItemCardTitle>
+          <p className="text-xs text-muted-foreground" title={"Id " + id}>
+            {id}
+          </p>
+        </div>
       </div>
-      {c.detail ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <p className="mt-0.5 max-w-64 truncate text-muted-foreground">{tools.length ? tools.length + " tool" + (tools.length === 1 ? "" : "s") + ": " + tools.join(", ") : c.detail}</p>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-sm text-xs anywhere">{server.last_check_note}</TooltipContent>
-        </Tooltip>
-      ) : null}
+      <StatusBadge status={status} className="mt-0.5 shrink-0" />
     </div>
   );
 }
 
-function SkillTable({ rows, onView, onEdit }: { rows: Skill[]; onView: (k: Skill) => void; onEdit: (k: Skill) => void }) {
-  const [busy, setBusy] = useState("");
-  const toggle = async (k: Skill) => {
-    const next = k.status === "enabled" ? "disabled" : "enabled";
-    setBusy(k.id);
+function ServerCard({ s, onConnect, onEdit }: { s: McpServer; onConnect: (s: McpServer) => void; onEdit: (s: McpServer) => void }) {
+  const [busy, setBusy] = useState(false);
+  const on = s.status === "enabled";
+  const toggle = async () => {
+    const next = on ? "disabled" : "enabled";
+    setBusy(true);
     try {
-      await writes.setSkillStatus(k.id, next);
-      toast.success(k.name + " " + next + ".", { description: next === "enabled" ? "Workers of " + scopeLabel(k.project) + " see it in their next brief." : "Workers stop hearing about it; the body stays." });
-      refreshSkills();
+      await writes.setMcpStatus(s.id, next);
+      toast.success(s.name + (next === "enabled" ? " is on." : " is off."), { description: next === "enabled" ? "Agents see it from their next job." : "Agents stop seeing it. Its settings and secret reference stay." });
+      refreshMcp();
     } catch (e) {
-      showApiError(e, "The status did not change");
+      showApiError(e, next === "enabled" ? s.name + " wasn't turned on" : s.name + " wasn't turned off");
     } finally {
-      setBusy("");
+      setBusy(false);
     }
   };
-  const columns: Column<Skill>[] = [
-    {
-      key: "name",
-      label: "Skill",
-      sort: (k) => k.name,
-      render: (k) => (
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Mono>{k.name}</Mono>
-            <span className="text-[11px] text-muted-foreground">{k.id}</span>
-          </div>
-          <p className="mt-0.5 max-w-lg truncate text-xs text-muted-foreground">{k.description}</p>
-        </div>
-      ),
-    },
-    { key: "project", label: "Project", hide: "sm", sort: (k) => k.project || "", render: (k) => (k.project ? <Mono>{k.project}</Mono> : <span className="text-muted-foreground">all projects</span>) },
-    { key: "uses", label: "Reads", align: "right", hide: "md", sort: (k) => k.uses, render: (k) => <span className="tnum">{num(k.uses)}</span> },
-    { key: "status", label: "Status", sort: (k) => k.status, render: (k) => <StatusBadge status={k.status} /> },
-    { key: "updated", label: "Updated", hide: "lg", sort: (k) => k.updated_at, render: (k) => <When d={k.updated_at} className="text-xs text-muted-foreground" /> },
-    {
-      key: "actions",
-      label: <span className="sr-only">Actions</span>,
-      align: "right",
-      nowrap: true,
-      render: (k) => (
-        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-          <Button size="xs" variant="outline" onClick={() => onView(k)} aria-label={"Read " + k.name}>
-            <BookOpenIcon /> Read
+  const where = endpoint(s);
+  const auth = s.auth !== "none" ? authLabel(s.auth) + (s.auth_header ? " (" + s.auth_header + ")" : "") : authLabel("none");
+  return (
+    <ItemCard ariaLabel={"Tool " + s.name} className="gap-3">
+      <CardHead icon={PlugIcon} name={s.name} id={s.id} status={s.status} off={!on} />
+      <ItemCardBody clamp={2}>{s.note || "No description yet. Edit it to tell agents what this tool is for and when to use it."}</ItemCardBody>
+      <CheckLine server={s} />
+      <ItemCardMeta>
+        <span>{scopeTitle(s.project)}</span>
+        <span className="flex min-w-0 max-w-full items-center gap-1.5" title={TRANSPORT_SHORT[s.transport] + ": " + (where || "no address") + ". Sign-in: " + auth + (s.secret_ref ? ", secret from " + s.secret_ref : "") + "."}>
+          <span className="shrink-0">{TRANSPORT_SHORT[s.transport]}</span>
+          <span className="min-w-0 truncate font-mono text-xs">{where || "no address"}</span>
+        </span>
+      </ItemCardMeta>
+      <ItemCardActions className="border-t border-border/70 pt-3">
+        <Button size="sm" variant="outline" onClick={() => onConnect(s)} aria-label={"Check the connection to " + s.name}>
+          <PlugZapIcon /> {s.last_check_at ? "Check now" : "Connect now"}
+        </Button>
+        <span className="ml-auto flex flex-wrap gap-1">
+          <Button size="sm" variant="ghost" onClick={() => onEdit(s)} aria-label={"Edit " + s.name}>
+            <PencilIcon /> Edit
           </Button>
-          <Button size="icon-xs" variant="ghost" onClick={() => void toggle(k)} disabled={busy === k.id} aria-label={(k.status === "enabled" ? "Disable " : "Enable ") + k.name} title={k.status === "enabled" ? "Disable" : "Enable"}>
-            {k.status === "enabled" ? <PowerOffIcon /> : <PowerIcon />}
+          <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy} aria-label={(on ? "Turn off " : "Turn on ") + s.name}>
+            {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
           </Button>
-          <Button size="icon-xs" variant="ghost" onClick={() => onEdit(k)} aria-label={"Edit " + k.name} title="Edit">
-            <PencilIcon />
+        </span>
+      </ItemCardActions>
+    </ItemCard>
+  );
+}
+
+// "Connected 1 month ago. 12 tools, including list_issues, get_issue and
+// create_issue." / "Failed 1 month ago: PULSE couldn't read the secret.";
+// the raw note in the tooltip.
+function CheckLine({ server }: { server: McpServer }) {
+  const c = lastCheck(server);
+  const tools = server.last_check_ok ? toolNames(server.last_check_note) : [];
+  const shown = tools.slice(0, 3);
+  const rest = tools.length - shown.length;
+  const reason = c.tone === "bad" ? checkReason(c.detail) : "";
+  return (
+    <p className="flex min-w-0 items-start gap-2 text-sm leading-relaxed" title={server.last_check_note || undefined}>
+      <span className={cn("mt-[7px] size-2 shrink-0 rounded-full", c.tone === "ok" ? "bg-ok" : c.tone === "bad" ? "bg-bad" : "bg-muted-foreground/40")} aria-hidden />
+      <span className="min-w-0 anywhere">
+        {server.last_check_at ? (
+          <>
+            <span className={cn("font-medium", c.tone === "bad" ? "text-bad" : "text-foreground")}>
+              {c.label} <When d={server.last_check_at} />
+              {reason ? ":" : "."}
+            </span>
+            {tools.length ? <span className="text-muted-foreground">{" " + plural(tools.length, "tool") + (rest > 0 ? ", including " : ": ") + andList(shown) + "."}</span> : reason ? <span className="text-muted-foreground">{" " + reason.replace(/[.\s]*$/, ".")}</span> : null}
+          </>
+        ) : (
+          <span className="text-muted-foreground">Not checked yet. Connect it to see what it offers.</span>
+        )}
+      </span>
+    </p>
+  );
+}
+
+const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1]);
+
+function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void; onEdit: (k: Skill) => void }) {
+  const [busy, setBusy] = useState(false);
+  const on = k.status === "enabled";
+  const toggle = async () => {
+    const next = on ? "disabled" : "enabled";
+    setBusy(true);
+    try {
+      await writes.setSkillStatus(k.id, next);
+      toast.success(k.name + (next === "enabled" ? " is on." : " is off."), {
+        description: next === "enabled" ? "Agents of " + scopeLabel(k.project) + " hear about it from their next job." : "Agents stop hearing about it. The instructions stay.",
+      });
+      refreshSkills();
+    } catch (e) {
+      showApiError(e, next === "enabled" ? k.name + " wasn't turned on" : k.name + " wasn't turned off");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const by = k.created_by === "human" || k.created_by === "owner" ? "you" : k.created_by;
+  return (
+    <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className="gap-3">
+      <CardHead icon={BookOpenIcon} name={k.name} id={k.id} status={k.status} off={!on} />
+      <ItemCardBody clamp={2}>{k.description}</ItemCardBody>
+      <ItemCardMeta>
+        <span>{scopeTitle(k.project)}</span>
+        <span>{k.uses ? "Read " + (k.uses === 1 ? "once" : num(k.uses) + " times") : "Not read yet"}</span>
+        {by ? <span>{"Added by " + by}</span> : null}
+        <span>
+          {"Updated "}
+          <When d={k.updated_at} />
+        </span>
+      </ItemCardMeta>
+      <ItemCardActions className="border-t border-border/70 pt-3">
+        <Button size="sm" variant="outline" onClick={() => onView(k)} aria-label={"Read " + k.name}>
+          <BookOpenIcon /> Read
+        </Button>
+        <span className="ml-auto flex flex-wrap gap-1">
+          <Button size="sm" variant="ghost" onClick={() => onEdit(k)} aria-label={"Edit " + k.name}>
+            <PencilIcon /> Edit
           </Button>
-        </div>
-      ),
-    },
-  ];
-  return <DataTable columns={columns} rows={rows} rowKey={(k) => k.id} dense caption="Skills" onRow={onView} rowClassName={(k) => (k.status === "disabled" ? "opacity-60" : undefined)} />;
+          <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy} aria-label={(on ? "Turn off " : "Turn on ") + k.name}>
+            {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
+          </Button>
+        </span>
+      </ItemCardActions>
+    </ItemCard>
+  );
 }

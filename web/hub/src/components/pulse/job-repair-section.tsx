@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRightIcon, WrenchIcon } from "lucide-react";
-import { num } from "@/lib/format";
+import { plural } from "@/lib/format";
 import { failedJobsPath, type FailedJobsPage } from "@/lib/job-repair";
 import { useApi } from "@/lib/use-api";
 import { FailedJobsPanel } from "./job-repair";
+import { Disclosure } from "./panel";
 
+// Failed jobs, folded: one line that says how many and that most need
+// nothing, and the full list (with Retry) once the owner opens it.
 export function FailedJobsSection({ project }: { project?: string }) {
   const [opened, setOpened] = useState(false);
   const summary = useApi<FailedJobsPage>(project === "commons" ? null : failedJobsPath(project, "", 1), { refresh: 30000 });
@@ -15,18 +17,24 @@ export function FailedJobsSection({ project }: { project?: string }) {
   if (summary.data && count === 0) return null;
 
   return (
-    <section id={project ? undefined : "failed-jobs"} aria-label="Jobs that need a hand" className="scroll-mt-32">
-      <details className="group" onToggle={(event) => { if (event.currentTarget.open) setOpened(true); }}>
-        <summary className="surface-glass flex cursor-pointer list-none flex-wrap items-center gap-2 rounded-xl border px-4 py-3 text-sm shadow-card [&::-webkit-details-marker]:hidden">
-          <ChevronRightIcon className="size-4 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
-          <WrenchIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="font-medium">Jobs that need a hand</span>
-          {count !== undefined ? <span className="text-xs text-muted-foreground">{num(count)} past failures</span> : null}
-          {summary.error ? <span className="text-xs text-warn">Count unavailable - expand for details</span> : null}
-          <span className="ml-auto text-xs text-muted-foreground">Review what happened and retry selected work</span>
-        </summary>
-        {opened ? <div className="mt-3"><FailedJobsPanel project={project} /></div> : null}
-      </details>
+    <section id={project ? undefined : "failed-jobs"} aria-label="Jobs that failed" className="scroll-mt-32">
+      <Disclosure
+        variant="row"
+        className="rounded-2xl border bg-card px-2.5 py-1.5 sm:px-3.5"
+        contentClassName="-mx-2.5 -mb-1.5 mt-1.5 px-0 pb-0 sm:-mx-3.5"
+        onToggle={(open) => { if (open) setOpened(true); }}
+        summary={
+          <span className="grid gap-0.5 py-0.5">
+            <span className="text-[15px] font-semibold leading-snug">Jobs that failed</span>
+            <span className="text-sm font-normal leading-relaxed text-muted-foreground">
+              {count !== undefined ? plural(count, "job") + " failed in the past. " : summary.error ? "PULSE couldn't count them right now; open this to see why. " : ""}
+              Most need nothing from you. Look here when a task seems stuck.
+            </span>
+          </span>
+        }
+      >
+        {opened ? <FailedJobsPanel project={project} folded /> : null}
+      </Disclosure>
     </section>
   );
 }

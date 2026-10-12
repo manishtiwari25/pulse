@@ -48,7 +48,7 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
         actions={
           goal ? (
             <>
-              <ToneBadge tone={goal.source === "owner" ? "info" : "neutral"}>{goal.source === "owner" ? "Owner set" : "Project default"}</ToneBadge>
+              <ToneBadge tone="neutral" title={goal.source === "owner" ? "You wrote this goal" : "PULSE wrote this goal from the project; nobody has set one yet"}>{goal.source === "owner" ? "Set by you" : "Written by PULSE"}</ToneBadge>
               {canEdit ? (
                 <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                   <PencilIcon /> Edit goal
@@ -59,8 +59,8 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
         }
         footer={
           <>
-            Every new agent run reads this shared direction. It does not override task scope, approvals, STOP or the project&apos;s{" "}
-            <Link href={hrefs.project(slug, "evolution")} className="font-medium text-foreground underline underline-offset-2">self-improvement gates</Link>.
+            Every agent reads this before it starts work. It never overrides a task&apos;s scope, your approvals, a stop, or the project&apos;s{" "}
+            <Link href={hrefs.project(slug, "evolution")} className="font-medium text-foreground underline underline-offset-2">self-improvement limits</Link>.
           </>
         }
       >
@@ -68,17 +68,16 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
           {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : null}
           {goal ? (
             <>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed anywhere">{goal.text}</p>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <p className="max-w-3xl whitespace-pre-wrap text-[15px] leading-relaxed anywhere">{goal.text}</p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
                 {goal.source === "generated" ? (
-                  <span>Generated from this project when no owner goal is set. Edit it to give the fleet a specific outcome.</span>
+                  <span>PULSE wrote this from the project because you haven&apos;t set a goal. Edit it to point the agents at the outcome you want.</span>
                 ) : (
                   <>
-                    <span>Your goal takes precedence over the generated default.</span>
-                    {goal.updated_at ? <When d={goal.updated_at} /> : null}
+                    {goal.updated_at ? <span>Changed <When d={goal.updated_at} /></span> : <span>Your goal replaces the one PULSE wrote.</span>}
                     {canEdit ? (
                       <Button size="xs" variant="ghost" onClick={() => setResetting(true)}>
-                        <RotateCcwIcon /> Use project default
+                        <RotateCcwIcon /> Go back to the PULSE goal
                       </Button>
                     ) : null}
                   </>
@@ -94,11 +93,12 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
       <ConfirmDialog
         open={resetting}
         onOpenChange={setResetting}
-        title="Use the project default?"
-        description="Replace your current goal with the generated project goal. Existing tasks and self-improvement permissions stay unchanged."
-        action="Use project default"
+        title="Go back to the goal PULSE wrote?"
+        description="Your goal is replaced by the one PULSE writes from the project. Tasks and self-improvement settings stay as they are."
+        action="Use the PULSE goal"
+        dismiss="Keep my goal"
         onConfirm={() => writes.resetProjectGoal(slug)}
-        success="Project default restored. New agent runs will read it."
+        success="Back to the PULSE goal. Agents read it from their next run."
         invalidates={goalViews}
       />
     </section>
@@ -119,15 +119,15 @@ function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; 
       return;
     }
     setBusy(true);
-    const notice = toast.loading("Saving project goal...");
+    const notice = toast.loading("Saving the goal…");
     try {
       await writes.setProjectGoal(slug, trimmed);
       invalidate(goalViews);
-      toast.success("Project goal saved. New agent runs will read it.", { id: notice });
+      toast.success("Goal saved. Agents read it from their next run.", { id: notice });
       onClose();
     } catch (error) {
       toast.dismiss(notice);
-      showApiError(error, "Could not save the project goal");
+      showApiError(error, "The goal wasn't saved");
     } finally {
       setBusy(false);
     }
@@ -138,13 +138,13 @@ function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; 
       <DialogContent className="sm:max-w-xl">
         <form onSubmit={(event) => { event.preventDefault(); if (!busy) void save(); }} className="grid gap-4">
           <DialogHeader>
-            <DialogTitle>Edit project goal</DialogTitle>
+            <DialogTitle>Edit the project goal</DialogTitle>
             <DialogDescription>
-              Give every agent on {slug} one outcome to work toward. Describe what should improve and how progress should be demonstrated. Do not include credentials or private information.
+              One outcome every agent on {slug} works toward. Say what should get better and how you would see the progress. Leave out passwords, keys and private details.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor={id}>Shared goal</Label>
+            <Label htmlFor={id}>Goal</Label>
             <Textarea
               id={id}
               value={text}
@@ -158,7 +158,7 @@ function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; 
               placeholder="Improve the project's most important user outcome, while keeping existing behavior reliable."
             />
             <p id={id + "-count"} className={"text-xs " + (tooLong ? "text-bad" : "text-muted-foreground")}>
-              {num(count)} / {num(MAX_PROJECT_GOAL_CHARS)} characters. Running agents keep their current brief; subsequent runs use this goal.
+              {num(count)} of {num(MAX_PROJECT_GOAL_CHARS)} characters. Agents already at work finish with the old goal; their next run reads this one.
             </p>
           </div>
           <DialogFooter>

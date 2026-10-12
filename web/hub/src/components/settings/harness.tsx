@@ -2,24 +2,30 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { CheckIcon, ClipboardIcon, ExternalLinkIcon, LogOutIcon, RefreshCwIcon, RotateCcwIcon, TerminalIcon } from "lucide-react";
+import { ArrowRightIcon, CheckIcon, ClipboardIcon, ExternalLinkIcon, LogOutIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
+import { Disclosure, ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
+import { SettingKey } from "@/components/settings/setting-row";
 import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
+import { settingHelp, settingLabel } from "@/lib/setting-labels";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-const SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model"];
+// The Harness section of Settings (the runner points people here as
+// "Settings -> Harness"): sign in to the model provider, pick the models,
+// cap one run, and - folded away - the system prompt, the run mode and the
+// transcript sizes. These controls save as soon as they change.
+
+export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model"];
 const SAME_MODEL = "__same__";
 
 function setting(rows: Setting[] | undefined, name: string): Setting | undefined {
@@ -47,7 +53,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
         navigator.clipboard
           .writeText(text)
           .then(() => toast.success("Copied."))
-          .catch(() => toast.error("Could not copy. Select the text and copy it yourself."))
+          .catch(() => toast.error("Couldn't copy. Select the text and copy it yourself."))
       }
     >
       <ClipboardIcon /> {label}
@@ -57,49 +63,100 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
 
 function sourceText(source: string): { label: string; borrowed: boolean } {
   const s = source.trim().toLowerCase();
-  if (s === "device login") return { label: "signed in here", borrowed: false };
-  if (s === "token login") return { label: "pasted token", borrowed: false };
-  if (s === "environment" || s === "editor login") return { label: "borrowed", borrowed: true };
-  return { label: source || "unknown", borrowed: false };
+  if (s === "device login") return { label: "Signed in here", borrowed: false };
+  if (s === "token login") return { label: "With a pasted token", borrowed: false };
+  if (s === "environment") return { label: "Borrowed from this machine's environment", borrowed: true };
+  if (s === "editor login") return { label: "Borrowed from your editor", borrowed: true };
+  return { label: source || "Unknown", borrowed: false };
 }
 
-function LoginHealth({ login, runner }: { login?: HarnessLogin; runner?: Runner }) {
-  const source = sourceText(login?.source || "");
-  if (!login?.logged_in) {
-    return (
-      <div className="grid gap-2">
-        <Notice tone="warn">{login?.detail || "Not signed in."}</Notice>
-        {runner?.hold ? (
-          <Kv rows={[["why workers are held", <Notice key="hold" tone="warn" className="py-2">{runner.hold}</Notice>]]} />
-        ) : null}
-      </div>
-    );
-  }
+// One block of the card: a small heading, a one-line note, then its controls.
+function Block({ title, note, children, right, className }: { title: React.ReactNode; note?: React.ReactNode; children: React.ReactNode; right?: React.ReactNode; className?: string }) {
   return (
-    <div className="grid gap-2">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <ToneBadge tone="ok" dot>
-          Signed in
-        </ToneBadge>
-        <span>
-          Signed in as <b>{login.user}</b>
-        </span>
+    <div className={cn("grid gap-3 border-t px-4 py-4 first:border-t-0 sm:px-5", className)}>
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h3 className="text-[15px] font-semibold leading-snug">{title}</h3>
+          {note ? <p className="mt-0.5 max-w-2xl text-sm leading-relaxed text-muted-foreground anywhere">{note}</p> : null}
+        </div>
+        {right ? <div className="flex flex-wrap items-center gap-2">{right}</div> : null}
       </div>
-      <Kv
-        rows={[
-          ["source", source.label],
-          ...(login.plan ? [["plan", login.plan] as [React.ReactNode, React.ReactNode]] : []),
-          ...(login.expires_at ? [["expiry", rel(login.expires_at) + " (" + fmtDate(login.expires_at) + ")"] as [React.ReactNode, React.ReactNode]] : []),
-          ["why workers are held", runner?.hold ? <Notice tone="warn" className="py-2">{runner.hold}</Notice> : <span className="text-muted-foreground">Workers run on this machine</span>],
-        ]}
-      />
-      {source.borrowed ? <p className="text-xs text-muted-foreground">Borrowed logins are not shared with executors.</p> : null}
-      {login.detail ? <Notice>{login.detail}</Notice> : null}
+      {children}
     </div>
   );
 }
 
-function DeviceLogin({ onDone }: { onDone: () => void }) {
+function KeyName({ name }: { name: string }) {
+  return <SettingKey name={name} />;
+}
+
+// The runner's login sentences name this very section ("Settings -> Harness")
+// and offer a command. Here they read as plain words; the command goes to
+// the "Prefer the terminal?" fold.
+const LOGIN_CLI = /[,;]?\s*or run\s+`?(pulse harness login[^`]*?)`?\s*\.?$/i;
+
+export function loginCommand(text: string): string {
+  return LOGIN_CLI.exec(text.trim())?.[1]?.trim() ?? "";
+}
+
+export function plainLogin(text: string, signedIn: boolean): string {
+  const t = text.trim();
+  if (!t) return "";
+  if (/wait(s|ing)? for .*login/i.test(t)) return signedIn ? "Agents on this machine were waiting for a sign-in. They pick up work again on their next pass." : "Agents on this machine wait until you sign in again.";
+  let say = t
+    .replace(LOGIN_CLI, "")
+    .replace(/\s+in\s+(the console\s+)?\(?Settings\s*->\s*Harness\)?/gi, " below")
+    .replace(/\s*\(?Settings\s*->\s*Harness\)?/gi, "")
+    .trim();
+  say = say.charAt(0).toUpperCase() + say.slice(1);
+  return /[.!?]$/.test(say) ? say : say + ".";
+}
+
+function LoginHealth({ login, runner, expired }: { login?: HarnessLogin; runner?: Runner; expired: boolean }) {
+  const source = sourceText(login?.source || "");
+  const fresh = !!login?.logged_in && !expired;
+  const hold = runner?.hold ? <Notice tone="warn">{plainLogin(runner.hold, fresh)}</Notice> : null;
+  if (!login?.logged_in) {
+    return (
+      <div className="grid gap-2">
+        <Notice tone="warn">{login?.detail ? plainLogin(login.detail, false) : "Not signed in. Agents can't run until you sign in."}</Notice>
+        {hold}
+      </div>
+    );
+  }
+  const rows: [React.ReactNode, React.ReactNode][] = [["How", source.label]];
+  if (login.plan) rows.push(["Plan", login.plan.charAt(0).toUpperCase() + login.plan.slice(1)]);
+  if (login.expires_at && !expired)
+    rows.push([
+      "Expires",
+      <span key="exp" title={fmtDate(login.expires_at)}>
+        {rel(login.expires_at)}
+      </span>,
+    ]);
+  return (
+    <div className="grid gap-3">
+      <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <span className={cn("size-2 shrink-0 rounded-full", expired ? "bg-warn" : "bg-ok")} aria-hidden />
+        {expired ? (
+          <span>
+            Your sign-in as <b className="font-semibold">{login.user}</b> expired{" "}
+            <span title={fmtDate(login.expires_at)}>{rel(login.expires_at)}</span>. Sign in again so agents can run.
+          </span>
+        ) : (
+          <span>
+            Signed in as <b className="font-semibold">{login.user}</b>
+          </span>
+        )}
+      </p>
+      <Kv rows={rows} className="rounded-xl bg-muted/50 px-4 py-3" />
+      {source.borrowed ? <p className="text-[13px] text-muted-foreground">A borrowed sign-in isn&apos;t shared with your other machines.</p> : null}
+      {login.detail ? <Notice>{plainLogin(login.detail, fresh)}</Notice> : null}
+      {hold}
+    </div>
+  );
+}
+
+function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => void; label?: string }) {
   const [flow, setFlow] = useState<HarnessDeviceFlow | null>(null);
   const [status, setStatus] = useState<"idle" | "starting" | "pending" | "expired" | "denied">("idle");
   const [pollDelay, setPollDelay] = useState(5);
@@ -158,34 +215,40 @@ function DeviceLogin({ onDone }: { onDone: () => void }) {
 
   if (!flow) {
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" onClick={start} disabled={status === "starting"}>
-          {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : null} Sign in with GitHub
-        </Button>
-        {error ? <span className="text-xs text-bad">{error}</span> : null}
+      <div className="grid gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" onClick={start} disabled={status === "starting"}>
+            {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : null} {label}
+          </Button>
+          <span className="text-[13px] text-muted-foreground">You&apos;ll get a short code to enter on GitHub.</span>
+        </div>
+        {error ? <p className="text-[13px] text-bad anywhere">{error}</p> : null}
       </div>
     );
   }
 
   return (
-    <div className="grid gap-3 rounded-lg border bg-muted/30 p-3">
+    <div className="grid gap-3 rounded-xl border bg-muted/40 p-4">
+      <ol className="grid gap-1 text-sm text-muted-foreground">
+        <li>1. Open GitHub and enter this code.</li>
+        <li>2. Approve the sign-in. This page notices by itself.</li>
+      </ol>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-xs text-muted-foreground">Enter this code at GitHub:</p>
-          <p className="mt-1 font-mono text-2xl font-semibold tracking-wider">{flow.user_code}</p>
-        </div>
+        <p className="font-mono text-2xl font-semibold tracking-[0.12em] text-foreground" aria-label={"Code " + flow.user_code.split("").join(" ")}>
+          {flow.user_code}
+        </p>
         <div className="flex flex-wrap gap-2">
           <CopyButton text={flow.user_code} label="Copy code" />
-          <Button asChild size="sm" variant="outline">
+          <Button asChild size="sm">
             <a href={flow.verification_uri} target="_blank" rel="noreferrer">
               Open GitHub <ExternalLinkIcon />
             </a>
           </Button>
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {status === "pending" ? "Waiting for GitHub. " : status === "expired" ? "The code expired; try again. " : "The sign-in was denied. "}
-        {remaining > 0 ? num(remaining) + " seconds left." : ""}
+      <p className="text-[13px] text-muted-foreground" aria-live="polite">
+        {status === "pending" ? "Waiting for GitHub. " : status === "expired" ? "The code expired. Try again for a new one. " : "The sign-in was turned down on GitHub. "}
+        {remaining > 0 && status === "pending" ? "The code works for " + num(remaining) + " more seconds." : ""}
       </p>
       {status === "expired" || status === "denied" ? (
         <div className="flex gap-2">
@@ -229,33 +292,34 @@ function TokenLogin({ onDone }: { onDone: () => void }) {
       });
   };
   return (
-    <div className="grid gap-2">
-      <button type="button" className="w-fit text-xs text-muted-foreground underline-offset-4 hover:underline" onClick={() => setOpen((v) => !v)}>
-        Advanced: paste a token
-      </button>
-      {open ? (
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="grid min-w-52 gap-1">
-            <Label htmlFor="harness-token">GitHub token</Label>
-            <Input id="harness-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && token.trim() && submit()} placeholder="gho_…" />
-          </div>
-          <Button type="button" onClick={submit} disabled={!token.trim()}>
-            Sign in
-          </Button>
-          {error ? <p className="basis-full text-xs text-bad">{error}</p> : null}
+    <Disclosure summary="Use a GitHub token instead" open={open} onToggle={setOpen}>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="grid min-w-52 gap-1.5">
+          <Label htmlFor="harness-token">GitHub token</Label>
+          <Input id="harness-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && token.trim() && submit()} placeholder="gho_…" />
         </div>
-      ) : null}
-    </div>
+        <Button type="button" onClick={submit} disabled={!token.trim()}>
+          Sign in
+        </Button>
+        {error ? <p className="basis-full text-[13px] text-bad anywhere">{error}</p> : null}
+      </div>
+    </Disclosure>
   );
 }
 
-function ModelSelect({ name, label, current, models, disabled }: { name: "worker_model" | "light_model"; label: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
+function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
   const [custom, setCustom] = useState(current);
   const ids = new Set(models.map((m) => m.id));
   const selectValue = name === "light_model" && !current ? SAME_MODEL : ids.has(current) ? current : "__custom__";
+  // The closed picker shows the model's name only; ids and badges stay in the list.
+  const known = models.find((m) => m.id === current);
+  const shown = selectValue === SAME_MODEL ? "Same as the main model" : known ? modelLabel(known) : current || "The default model";
+  // Typing an id is the rare path: folded unless the current model isn't in the list, or there is no list.
+  const [typing, setTyping] = useState<boolean | null>(null);
+  const typeOpen = typing ?? ((!!current && !known) || models.length === 0);
   const save = (value: string) => {
     const v = value === SAME_MODEL ? "" : value;
-    const id = toast.loading("Saving " + label.toLowerCase() + "…");
+    const id = toast.loading("Saving the " + label.toLowerCase() + "…");
     saveSetting(name, v)
       .then(() => toast.success(label + " saved.", { id }))
       .catch((e: unknown) => {
@@ -265,31 +329,32 @@ function ModelSelect({ name, label, current, models, disabled }: { name: "worker
       });
   };
   return (
-    <div className="grid gap-1.5">
-      <Label>{label}</Label>
-      <div className="flex flex-wrap items-center gap-2">
-        <Select value={selectValue} onValueChange={save} disabled={disabled}>
-          <SelectTrigger className="w-72 max-w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {name === "light_model" ? <SelectItem value={SAME_MODEL}>Same as implementation</SelectItem> : null}
-            {models.map((m) => (
-              <SelectItem key={m.id} value={m.id}>
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span>{modelLabel(m)}</span>
-                  <span className="text-xs text-muted-foreground">{m.id}</span>
-                  {m.premium > 1 ? <Badge variant="outline">{"×" + m.premium}</Badge> : null}
-                  {m.preview ? <Badge variant="outline">preview</Badge> : null}
-                  {m.default ? <Badge variant="secondary">default</Badge> : null}
-                </span>
-              </SelectItem>
-            ))}
-            {!ids.has(current) && current ? <SelectItem value="__custom__">{current}</SelectItem> : null}
-          </SelectContent>
-        </Select>
+    <div className="grid min-w-0 content-start gap-1.5">
+      <Label id={"model-" + name}>{label}</Label>
+      <p className="text-[13px] leading-snug text-muted-foreground">{note}</p>
+      <Select value={selectValue} onValueChange={save} disabled={disabled}>
+        <SelectTrigger className="w-full" aria-labelledby={"model-" + name}>
+          <SelectValue>{shown}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {name === "light_model" ? <SelectItem value={SAME_MODEL}>Same as the main model</SelectItem> : null}
+          {models.map((m) => (
+            <SelectItem key={m.id} value={m.id}>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span>{modelLabel(m)}</span>
+                <span className="text-xs text-muted-foreground">{m.id}</span>
+                {m.premium > 1 ? <Badge variant="outline" title="Uses more model credits per call">{"×" + m.premium}</Badge> : null}
+                {m.preview ? <Badge variant="outline">Preview</Badge> : null}
+                {m.default ? <Badge variant="secondary">Default</Badge> : null}
+              </span>
+            </SelectItem>
+          ))}
+          {!ids.has(current) && current ? <SelectItem value="__custom__">{current}</SelectItem> : null}
+        </SelectContent>
+      </Select>
+      <Disclosure summary="Type a model id" open={typeOpen} onToggle={setTyping} contentClassName="grid gap-1.5">
         <Input
-          aria-label={label + " custom id"}
+          aria-label={label + ": type a model id"}
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
           onKeyDown={(e) => {
@@ -299,11 +364,12 @@ function ModelSelect({ name, label, current, models, disabled }: { name: "worker
           onBlur={() => {
             if (custom.trim() !== current) save(custom.trim());
           }}
-          placeholder="Other model id…"
-          className="w-56"
+          placeholder="For example claude-sonnet-4.5"
+          className="w-full font-mono text-[13px]"
           disabled={disabled}
         />
-      </div>
+        <KeyName name={name} />
+      </Disclosure>
     </div>
   );
 }
@@ -324,14 +390,16 @@ function LimitInput({ s }: { s: Setting }) {
       return;
     }
     setError("");
-    saveSetting(s.name, draft).catch((e: unknown) => {
-      const t = errorText(e);
-      setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
-    });
+    saveSetting(s.name, draft)
+      .then(() => toast.success(settingLabel(s.name) + " saved."))
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
+      });
   };
   return (
-    <div className="grid gap-1.5">
-      <Label htmlFor={"harness-" + s.name}>{s.name.replace(/^harness\./, "").replace(/_/g, " ")}</Label>
+    <div className="grid min-w-0 content-start gap-1.5">
+      <Label htmlFor={"harness-" + s.name}>{settingLabel(s.name)}</Label>
       <Input
         id={"harness-" + s.name}
         value={draft}
@@ -343,9 +411,13 @@ function LimitInput({ s }: { s: Setting }) {
           if (e.key === "Escape") setDraft(s.value);
         }}
         aria-invalid={!!error}
+        aria-describedby={"harness-" + s.name + "-help"}
         className="w-32 tnum"
       />
-      <p className={cn("max-w-52 text-xs leading-snug", error ? "text-bad" : "text-muted-foreground")}>{error || s.description}</p>
+      <p id={"harness-" + s.name + "-help"} className={cn("text-[13px] leading-snug", error ? "text-bad" : "text-muted-foreground")}>
+        {error || settingHelp(s.name, s.description)}
+      </p>
+      <KeyName name={s.name} />
     </div>
   );
 }
@@ -378,49 +450,65 @@ function PromptEditor() {
       .finally(() => setSaving(false));
   };
   return (
-    <section className="surface-glass grid gap-3 rounded-2xl border p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold">System prompt</h3>
-          <p className="text-xs text-muted-foreground">The harness renders this server-side for each run; leave it empty to use the built-in default.</p>
-        </div>
-        {d ? <ToneBadge tone={d.custom ? "accent" : "neutral"}>{d.custom ? "custom" : "built-in"}</ToneBadge> : null}
-      </div>
-      {prompt.error && !d ? <ErrorNotice error={prompt.error} onRetry={() => void prompt.reload()} /> : null}
-      {d ? (
-        <>
-          <Textarea
-            aria-label="Harness system prompt template"
-            value={draft}
-            onChange={(e) => {
-              setDraftState({ marker, draft: e.target.value });
-              setError("");
-            }}
-            rows={10}
-            spellCheck={false}
-            className={cn("min-h-48 font-mono text-[12.5px] leading-relaxed", !d.custom && !dirty && "bg-muted/40 text-muted-foreground")}
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" onClick={() => save(draft, "Harness prompt saved.")} disabled={saving || !dirty}>
-              {saving ? <RefreshCwIcon className="animate-spin" /> : <CheckIcon />} Save
-            </Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => save("", "Harness prompt reset to built-in.")} disabled={saving || (!d.custom && !dirty)}>
-              <RotateCcwIcon /> Reset to built-in
-            </Button>
-            {dirty ? (
-              <Button type="button" size="sm" variant="ghost" onClick={() => setDraftState({ marker, draft: d.custom ? d.template : d.default })} disabled={saving}>
-                Undo changes
+    <Disclosure
+      variant="row"
+      className="border-t px-3 py-2 sm:px-4"
+      contentClassName="mt-1 grid gap-3 pb-3"
+      summary={<RowSummary title="System prompt" note="The instructions every run starts with. Most people never change them." badge={d ? <ToneBadge tone={d.custom ? "accent" : "neutral"}>{d.custom ? "Your own" : "Built-in"}</ToneBadge> : null} />}
+    >
+      <>
+        {prompt.error && !d ? <ErrorNotice error={prompt.error} onRetry={() => void prompt.reload()} /> : null}
+        {d ? (
+          <>
+            <p className="text-[13px] text-muted-foreground">PULSE fills in the parts in double braces for each run. Leave it as it is to keep the built-in text.</p>
+            <Textarea
+              aria-label="System prompt template"
+              value={draft}
+              onChange={(e) => {
+                setDraftState({ marker, draft: e.target.value });
+                setError("");
+              }}
+              rows={10}
+              spellCheck={false}
+              className={cn("min-h-48 font-mono text-[12.5px] leading-relaxed", !d.custom && !dirty && "bg-muted/40 text-muted-foreground")}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" size="sm" onClick={() => save(draft, "System prompt saved.")} disabled={saving || !dirty}>
+                {saving ? <RefreshCwIcon className="animate-spin" /> : <CheckIcon />} Save
               </Button>
-            ) : null}
-          </div>
-          {d.error || error ? <Notice tone="bad">{error || d.error}</Notice> : null}
-          <details className="surface-glass rounded-xl border px-3 py-2 text-sm">
-            <summary className="cursor-pointer font-medium">Learn more: preview the rendered prompt</summary>
-            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-relaxed">{d.rendered || "(empty)"}</pre>
-          </details>
-        </>
-      ) : null}
-    </section>
+              <Button type="button" size="sm" variant="outline" onClick={() => save("", "System prompt reset to the built-in text.")} disabled={saving || (!d.custom && !dirty)}>
+                <RotateCcwIcon /> Reset to built-in
+              </Button>
+              {dirty ? (
+                <Button type="button" size="sm" variant="ghost" onClick={() => setDraftState({ marker, draft: d.custom ? d.template : d.default })} disabled={saving}>
+                  Undo changes
+                </Button>
+              ) : null}
+              <KeyName name="harness.system_prompt" />
+            </div>
+            {d.error || error ? <Notice tone="bad">{error || d.error}</Notice> : null}
+            <Disclosure summary="Preview the prompt as a run sees it">
+              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 font-mono text-xs leading-relaxed">{d.rendered || "(empty)"}</pre>
+            </Disclosure>
+          </>
+        ) : !prompt.error ? (
+          <p className="text-sm text-muted-foreground">Loading the prompt…</p>
+        ) : null}
+      </>
+    </Disclosure>
+  );
+}
+
+// The title and note of a folded row inside the card, as the summary of a Disclosure.
+function RowSummary({ title, note, badge }: { title: string; note: string; badge?: React.ReactNode }) {
+  return (
+    <span className="block min-w-0">
+      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="text-[15px] font-semibold leading-snug">{title}</span>
+        {badge}
+      </span>
+      <span className="mt-0.5 block text-sm font-normal leading-relaxed text-muted-foreground">{note}</span>
+    </span>
   );
 }
 
@@ -434,14 +522,20 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
-  const signedIn = d?.provider.login?.logged_in === true;
+  const now = useNow();
+  const login = d?.provider.login;
+  const signedIn = login?.logged_in === true;
+  // An expired sign-in is signed in on paper only: offer to sign in again.
+  const expired = signedIn && !!login?.expires_at && new Date(login.expires_at).getTime() < now;
+  const commands = [...new Set([loginCommand(login?.detail || ""), loginCommand(runner.data?.hold || "")].filter(Boolean))];
   const currentModels = models.data?.models ?? [];
   const modelError = models.error && !models.data ? models.error : "";
+  const legacy = d?.harness === "copilot-cli";
 
   const saveChoice = (name: string, value: string) => {
-    const id = toast.loading("Saving " + name + "…");
+    const id = toast.loading("Saving " + settingLabel(name).toLowerCase() + "…");
     saveSetting(name, value)
-      .then(() => toast.success(name + " saved.", { id }))
+      .then(() => toast.success(settingLabel(name) + " saved.", { id }))
       .catch((e: unknown) => {
         toast.dismiss(id);
         const t = errorText(e);
@@ -450,139 +544,149 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   };
 
   return (
-    <Card id="harness" className={cn("surface-raised scroll-mt-32 overflow-hidden rounded-2xl", className)}>
-      <CardHeader className="border-b">
-        <div className="flex items-start gap-3">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary" aria-hidden>
-            <TerminalIcon className="size-4" />
-          </span>
-          <div className="min-w-0">
-            <CardTitle>How agents run</CardTitle>
-            <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">Choose the harness, sign in and set model limits for runs on this machine.</p>
-          </div>
+    <div className={cn("min-w-0 overflow-hidden rounded-2xl border bg-card", className)}>
+      {h.error && !d ? (
+        <div className="p-4 sm:p-5">
+          <ErrorNotice error={h.error} onRetry={() => void h.reload()} />
         </div>
-      </CardHeader>
-      <CardContent className="grid gap-5 py-4">
-        {h.error && !d ? <ErrorNotice error={h.error} onRetry={() => void h.reload()} /> : null}
-        {!d ? <p className="text-sm text-muted-foreground">Loading harness settings…</p> : null}
-        {d ? (
-          <>
-            <section className="grid gap-2">
-              <h3 className="text-sm font-semibold">Run mode</h3>
-              <div className="flex flex-wrap items-center gap-2">
-                <Select value={mode?.value || d.harness} onValueChange={(v) => saveChoice("harness", v)}>
-                  <SelectTrigger className="w-56">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="native">Native</SelectItem>
-                    <SelectItem value="copilot-cli">Copilot CLI (legacy)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <ToneBadge tone={d.harness === "native" ? "ok" : "warn"}>{d.harness === "native" ? "built in" : "legacy"}</ToneBadge>
-              </div>
-              {d.harness === "copilot-cli" ? <Notice tone="warn">The legacy mode needs the copilot npm CLI installed and logged in on each executor. The runner_cmd and max_ai_credits settings apply there.</Notice> : null}
-            </section>
-
-            <section className="grid gap-2">
-              <h3 className="text-sm font-semibold">Model sign-in</h3>
-              <div className="flex flex-wrap items-center gap-2">
-                <span>{d.provider.label}</span>
-                {signedIn ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      writes.harnessLogout().then((r) => {
-                        toast.success(r.login.logged_in ? "Still signed in." : "Signed out.");
-                        invalidate("harness");
-                        invalidate("harness/models");
-                      })
-                    }
-                  >
-                    <LogOutIcon /> Sign out
-                  </Button>
-                ) : null}
-              </div>
-              <LoginHealth login={d.provider.login} runner={runner.data} />
+      ) : null}
+      {!d && !h.error ? <p className="px-4 py-5 text-sm text-muted-foreground sm:px-5">Loading sign-in and models…</p> : null}
+      {d ? (
+        <>
+          <Block
+            title="Sign-in"
+            note="Agents call the model provider with this sign-in. It stays on this machine."
+            right={
+              signedIn ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    writes.harnessLogout().then((r) => {
+                      toast.success(r.login.logged_in ? "Still signed in." : "Signed out.");
+                      invalidate("harness");
+                      invalidate("harness/models");
+                    })
+                  }
+                >
+                  <LogOutIcon /> Sign out
+                </Button>
+              ) : null
+            }
+          >
+            <div className="grid gap-1.5">
+              <Label id="harness-provider-label">Model provider</Label>
               {provider ? (
-                <Select value={provider.value || d.provider.name} onValueChange={(v) => saveChoice("provider", v)}>
-                  <SelectTrigger className="w-56">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {d.providers.map((p) => (
-                      <SelectItem key={p.name} value={p.name}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : null}
-              {!signedIn ? (
-                <>
-                  <DeviceLogin onDone={() => void h.reload()} />
-                  <TokenLogin onDone={() => void h.reload()} />
-                </>
-              ) : null}
-            </section>
-
-            <section className="grid gap-3">
-              <h3 className="text-sm font-semibold">Models</h3>
-              {modelError ? (
-                <Notice tone={modelError.includes("not signed in") ? "warn" : "bad"}>
-                  <span className="grid gap-1">
-                    <span>{modelError}</span>
-                    <span>
-                      Current implementation model: <Mono>{d.models.worker || "(default)"}</Mono>. Current light model: <Mono>{d.models.light || "same as implementation"}</Mono>.
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <Select value={provider.value || d.provider.name} onValueChange={(v) => saveChoice("provider", v)}>
+                    <SelectTrigger className="w-64 max-w-full" aria-labelledby="harness-provider-label">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {d.providers.map((p) => (
+                        <SelectItem key={p.name} value={p.name}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <KeyName name="provider" />
+                </div>
+              ) : (
+                <span className="text-sm">{d.provider.label}</span>
+              )}
+            </div>
+            <LoginHealth login={login} runner={runner.data} expired={expired} />
+            {!signedIn || expired ? (
+              <div className="grid gap-3">
+                <DeviceLogin onDone={() => void h.reload()} label={expired ? "Sign in again" : undefined} />
+                <TokenLogin onDone={() => void h.reload()} />
+              </div>
+            ) : null}
+            {commands.length ? (
+              <Disclosure summary="Prefer the terminal?">
+                <p className="text-[13px] text-muted-foreground anywhere">
+                  Sign in from a terminal on this machine:{" "}
+                  {commands.map((c, i) => (
+                    <span key={c}>
+                      {i ? " or " : null}
+                      <Mono>{c}</Mono>
                     </span>
-                    <span>Sign in with GitHub to load available Copilot models, or enter an exact model id below.</span>
-                  </span>
-                </Notice>
-              ) : null}
-              <div className="grid gap-3 lg:grid-cols-2">
-                <ModelSelect name="worker_model" label="Model for implementation runs" current={d.models.worker} models={currentModels} disabled={false} />
-                <ModelSelect name="light_model" label="Model for light runs" current={d.models.light} models={currentModels} disabled={false} />
-              </div>
-            </section>
-
-            <section className="grid gap-3">
-              <div>
-                <h3 className="text-sm font-semibold">Safety limits</h3>
-                <p className="text-xs text-muted-foreground">Steps cap model/tool turns, minutes cap wall-clock time per job, and cost caps provider units with 0 meaning no cap.</p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">{budgets.map((s) => <LimitInput key={s.name} s={s} />)}</div>
-            </section>
-
-            <section className="grid gap-3">
-              <h3 className="text-sm font-semibold">Transcript size</h3>
-              <div className="grid gap-3 sm:grid-cols-3">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
-            </section>
-
-            <PromptEditor />
-
-            <section className="surface-glass flex flex-wrap items-center justify-between gap-3 rounded-xl border px-3 py-2">
-              <div>
-                <h3 className="text-sm font-semibold">Recent runs</h3>
-                <p className="text-xs text-muted-foreground">
-                  {num(d.sessions.running)} running · {num(d.sessions.today)} today · {num(d.sessions.failed_today)} failed today
-                  {" · "}
-                  {num(d.sessions.submitted_today)} submitted today · {num(d.sessions.cost_today)} provider units
+                  ))}
                 </p>
+              </Disclosure>
+            ) : null}
+          </Block>
+
+          <Block title="Models" note="Which models agents use. A change saves as soon as you pick it.">
+            {modelError ? (
+              <Notice tone={modelError.includes("not signed in") ? "warn" : "bad"}>
+                <span className="grid gap-1">
+                  <span>The model list didn&apos;t load: {modelError}</span>
+                  <span>
+                    Main model now: <Mono>{d.models.worker || "the default"}</Mono>. Light model now: <Mono>{d.models.light || "same as the main model"}</Mono>.
+                  </span>
+                  <span>Sign in with GitHub to see the Copilot models, or type the exact model id under Type a model id.</span>
+                </span>
+              </Notice>
+            ) : null}
+            <div className="grid gap-5 md:grid-cols-2">
+              <ModelSelect name="worker_model" label="Main model" note="For the coding work itself." current={d.models.worker} models={currentModels} disabled={false} />
+              <ModelSelect name="light_model" label="Light model" note="For smaller jobs like planning, answering and voting." current={d.models.light} models={currentModels} disabled={false} />
+            </div>
+          </Block>
+
+          <Block title="Limits per run" note="A run stops when it reaches any of these. Each one saves when you leave the field.">
+            <div className="grid gap-5 sm:grid-cols-3">{budgets.map((s) => <LimitInput key={s.name} s={s} />)}</div>
+          </Block>
+
+          <PromptEditor />
+
+          <Disclosure
+            variant="row"
+            open={legacy || undefined}
+            className="border-t px-3 py-2 sm:px-4"
+            contentClassName="mt-1 grid gap-5 pb-3"
+            summary={<RowSummary title="Run mode and transcript size" note="Which program runs agents, and how much command output a run keeps." badge={<ToneBadge tone={legacy ? "warn" : "neutral"}>{legacy ? "Copilot CLI" : "Built-in"}</ToneBadge>} />}
+          >
+            <>
+              <div className="grid gap-1.5">
+                <Label id="harness-mode-label">Run mode</Label>
+                <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp("harness")}</p>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <Select value={mode?.value || d.harness} onValueChange={(v) => saveChoice("harness", v)}>
+                    <SelectTrigger className="w-64 max-w-full" aria-labelledby="harness-mode-label">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="native">Built-in harness (recommended)</SelectItem>
+                      <SelectItem value="copilot-cli">Copilot CLI (older)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <KeyName name="harness" />
+                </div>
+                {legacy ? <Notice tone="warn">The Copilot CLI mode needs the copilot command installed and signed in on every machine that runs agents. The Agent program and Model credits per run settings under Limits apply to it.</Notice> : null}
               </div>
-              <Button asChild size="sm" variant="outline">
-                <Link href={hrefs.harness()}>
-                  Open harness <CheckIcon />
-                </Link>
-              </Button>
-            </section>
-          </>
-        ) : null}
-      </CardContent>
-    </Card>
+              <div className="grid gap-5 sm:grid-cols-3">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
+            </>
+          </Disclosure>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/40 px-4 py-3 sm:px-5">
+            <p className="min-w-0 text-[13px] leading-relaxed text-muted-foreground">
+              Today: {num(d.sessions.today)} {d.sessions.today === 1 ? "run" : "runs"}, {num(d.sessions.submitted_today)} finished, {num(d.sessions.failed_today)} failed. {num(d.sessions.running)} running now. {num(d.sessions.cost_today)} model credits used.
+            </p>
+            <Button asChild size="sm" variant="outline">
+              <Link href={hrefs.harness()}>
+                Open Runs <ArrowRightIcon />
+              </Link>
+            </Button>
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 
 export function isHarnessSetting(name: string): boolean {
-  return SETTING_KEYS.includes(name);
+  return HARNESS_SETTING_KEYS.includes(name);
 }

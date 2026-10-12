@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
 import { Notice } from "@/components/pulse/panel";
-import { Mono, When } from "@/components/pulse/who";
+import { Mono, ToneBadge, When } from "@/components/pulse/who";
 import { RowHead, SettingRow } from "@/components/settings/setting-row";
 import { ApiError, writes, type CredItem, type CredPayload, type CredProbe, type CredProvider, type CredReport, type CredSetResult, type CredVault, type Setting } from "@/lib/api";
 import { invalidate, useApi } from "@/lib/use-api";
@@ -41,10 +41,10 @@ function describe(reference: string, providers: CredProvider[]): { provider: str
 function copy(text: string, what: string) {
   const done = () => toast.success("Copied the " + what + ".");
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).then(done, () => toast.error("Could not copy - select it and copy it yourself."));
+    navigator.clipboard.writeText(text).then(done, () => toast.error("Couldn't copy. Select it and copy it yourself."));
     return;
   }
-  toast.error("Could not copy - select it and copy it yourself.");
+  toast.error("Couldn't copy. Select it and copy it yourself.");
 }
 
 // ----- the row ---------------------------------------------------------------
@@ -62,31 +62,31 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
   const named = report?.reference && d ? describe(report.reference, d.providers) : null;
   const pushOff = (report?.landing_push ?? "off") === "off";
   return (
-    <div className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+    <div className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
       <RowHead s={s}>
         {!d ? (
           <Skeleton className="h-4 w-64" />
         ) : set && named ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <KeyRoundIcon className="size-3.5 text-ok" aria-hidden />
-            <span className="font-medium">{named.provider}</span>
-            <span className="text-muted-foreground">·</span>
-            <span className="anywhere">{named.item}</span>
-            {report?.fingerprint ? <Mono className="text-[11px] text-muted-foreground">{report.fingerprint}</Mono> : null}
-            {pushOff ? <span className="basis-full text-xs text-muted-foreground">Pushing after a landing is off - the key waits until <b>Push after landing</b> is set to main.</span> : null}
+            <span>
+              <span className="font-medium">{named.item}</span> <span className="text-muted-foreground">in {named.provider}</span>
+            </span>
+            {report?.fingerprint ? <span className="font-mono text-[12px] text-muted-foreground anywhere" title="The key's fingerprint">{report.fingerprint}</span> : null}
+            {pushOff ? <span className="basis-full text-[13px] text-muted-foreground">Push after merging is off, so PULSE doesn&apos;t use this key yet.</span> : null}
           </div>
         ) : (
-          <p className="text-[13px] leading-snug text-muted-foreground anywhere">
-            Not set - PULSE pushes with the git credentials this machine already has{pushOff ? "" : " (and pushes after every landing)"}. Choose a separate key so a push never needs you.
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground anywhere">
+            Not set. PULSE pushes with the git sign-in this machine already has{pushOff ? "" : ", after every merge"}. Choose a separate key so pushing never needs you.
           </p>
         )}
       </RowHead>
       <div className="flex flex-wrap items-center gap-2 md:justify-end">
-        <Button size="sm" variant={set ? "outline" : "default"} disabled={!canEdit || !d} onClick={() => setOpen(true)}>
+        <Button size="sm" className="h-9" variant="outline" disabled={!canEdit || !d} onClick={() => setOpen(true)}>
           <KeyRoundIcon /> {set ? "Change key…" : "Choose a key…"}
         </Button>
         {set && canEdit ? (
-          <Button size="sm" variant="ghost" onClick={() => setRemoving(true)}>
+          <Button size="sm" className="h-9" variant="ghost" onClick={() => setRemoving(true)}>
             <XIcon /> Remove
           </Button>
         ) : null}
@@ -99,7 +99,7 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
           setRemoving(o);
         }}
         title="Remove the push key?"
-        description={<>The daemon goes back to pushing with the git credentials this machine already has. The key itself is not touched - only the reference <Mono>{report?.reference}</Mono> is forgotten.</>}
+        description={<>PULSE goes back to pushing with the git sign-in this machine already has. The key itself isn&apos;t touched: PULSE only forgets where it lives (<Mono>{report?.reference}</Mono>).</>}
         action="Remove"
         destructive
         success="Push key removed."
@@ -109,7 +109,7 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
         {report && report.token !== "none" ? (
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" className="size-4 accent-primary" checked={alsoToken} onChange={(e) => setAlsoToken(e.target.checked)} />
-            Also forget the 1Password service-account token ({report.token})
+            Also forget the 1Password service-account token (kept in {report.token})
           </label>
         ) : null}
       </ConfirmDialog>
@@ -166,7 +166,7 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
       const r = await writes.credSet(ref.trim(), probe);
       setReport(r.report);
       refreshAfterWrite();
-      toast.success("Push key saved" + (r.result.probed ? " - every remote answered." : "."));
+      toast.success("Push key saved" + (r.result.probed ? ". Every remote accepted it." : "."));
       setStep({ kind: "done", result: r.result });
     } catch (e) {
       if (e instanceof ApiError && (e.body.public_key || e.body.probes)) {
@@ -182,7 +182,7 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
     setReference("");
     setStep({ kind: "provider" });
   };
-  const title = step.kind === "done" ? "Push key saved" : step.kind === "provider" ? "Choose the push key" : step.kind === "op" ? "1Password" : step.kind === "manual" ? "A reference by hand" : step.provider.title;
+  const title = step.kind === "done" ? "Push key saved" : step.kind === "provider" ? "Choose the push key" : step.kind === "op" ? "1Password" : step.kind === "manual" ? "Type where the key lives" : step.provider.title;
 
   return (
     <>
@@ -197,8 +197,8 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
         </div>
         <DialogDescription>
           {step.kind === "done"
-            ? "The reference is in the store; the key itself stays where it lives and exists on disk only for the seconds of a push."
-            : "A reference to where the key lives — never the key itself. Before saving, the console checks every project remote."}
+            ? "PULSE saved where the key lives. The key stays there and is on disk only for the few seconds of a push."
+            : "Tell PULSE where the key lives. The key itself is never copied here. Before saving, PULSE checks that every project's remote accepts it."}
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 px-5 py-4">
@@ -219,14 +219,14 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
         <DialogFooter className="sticky bottom-0 flex-col gap-2 border-t bg-background px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <input type="checkbox" className="size-3.5 accent-primary" checked={probe} onChange={(e) => setProbe(e.target.checked)} />
-            Ask every remote first
+            Check every remote first
           </label>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={close}>
               Cancel
             </Button>
             <Button size="sm" disabled={saving || !reference.trim()} onClick={() => void save(reference)}>
-              {saving ? <Loader2Icon className="animate-spin" /> : <ShieldCheckIcon />} {saving ? (probe ? "Asking the remotes…" : "Saving…") : probe ? "Test and save" : "Save"}
+              {saving ? <Loader2Icon className="animate-spin" /> : <ShieldCheckIcon />} {saving ? (probe ? "Checking the remotes…" : "Saving…") : probe ? "Test and save" : "Save"}
             </Button>
           </div>
         </DialogFooter>
@@ -252,7 +252,7 @@ function ProviderStep({ payload, onPick, onManual }: { payload: CredPayload; onP
             disabled={!p.available}
             onClick={() => onPick(p)}
             className={cn(
-              "surface-glass flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors",
+              "flex items-start gap-3 rounded-xl border bg-card px-3.5 py-3 text-left transition-colors",
               p.available ? "hover:border-primary/50 hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" : "opacity-60",
             )}
           >
@@ -262,7 +262,7 @@ function ProviderStep({ payload, onPick, onManual }: { payload: CredPayload; onP
             <span className="min-w-0">
               <span className="flex flex-wrap items-baseline gap-x-2">
                 <span className="text-sm font-semibold">{p.title}</span>
-                {!p.available ? <span className="text-xs text-warn">{p.unavailable || "not available on this machine"}</span> : p.id === "op" && payload.report.token !== "none" ? <span className="text-xs text-ok">connected</span> : null}
+                {!p.available ? <span className="text-xs text-muted-foreground">{p.unavailable || "Not available on this machine"}</span> : p.id === "op" && payload.report.token !== "none" ? <ToneBadge tone="ok">Connected</ToneBadge> : null}
               </span>
               <span className="block text-[13px] leading-snug text-muted-foreground anywhere">{p.blurb}</span>
             </span>
@@ -270,7 +270,7 @@ function ProviderStep({ payload, onPick, onManual }: { payload: CredPayload; onP
         ))}
       </div>
       <button type="button" onClick={onManual} className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:underline">
-        <PenLineIcon className="size-3.5" /> Type a reference by hand
+        <PenLineIcon className="size-3.5" /> Type where the key lives instead
       </button>
     </>
   );
@@ -349,7 +349,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
     return (
       <div className="grid gap-3">
         <Notice tone="info">
-          The daemon reads the key through a <b>service account</b>, so no one has to click in 1Password at push time. Make one in 1Password → Developer → Service Accounts with read access to the vault that holds the key, and paste its token here once; this machine keeps it{report.token !== "none" ? "" : " in its keychain or a 0600 file"} and the console never shows it again.
+          PULSE reads the key through a 1Password <b>service account</b>, so nobody has to approve anything at push time. Create one in 1Password (Developer, then Service Accounts) with read access to the vault that holds the key, and paste its token here once. This machine keeps it{report.token !== "none" ? "" : " in its keychain or a private file"} and the console never shows it again.
         </Notice>
         <div className="grid gap-1.5">
           <Label htmlFor="cred-token">Service-account token</Label>
@@ -373,7 +373,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>
           <CheckIcon className="mr-1 inline size-3.5 text-ok" aria-hidden />
-          Connected - the token is in {report.token}.
+          Connected. The token is kept in {report.token}.
         </span>
         <button type="button" className="font-medium text-primary hover:underline" onClick={() => setRetoken(true)}>
           Use a different token
@@ -415,7 +415,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
             </div>
           ) : items.length === 0 ? (
             <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[13px] text-muted-foreground">
-              No SSH Key item here. In 1Password, add an item of type <b>SSH Key</b> to this vault (generate one or import the daemon&apos;s), then come back.
+              This vault has no SSH key. In 1Password, add an item of type <b>SSH Key</b> to it (create a new one or import one), then come back.
             </p>
           ) : (
             <div role="radiogroup" className="grid gap-1.5">
@@ -437,12 +437,11 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
                       <span className="block text-sm font-medium">{it.title}</span>
                       <span className="block text-xs text-muted-foreground">
                         {it.updated_at ? (
-                          <>
-                            updated <When d={it.updated_at} />
-                            {" · "}
-                          </>
+                          <span className="mr-2">
+                            Updated <When d={it.updated_at} />
+                          </span>
                         ) : null}
-                        <Mono className="text-[11px]">{it.reference}</Mono>
+                        <span className="font-mono text-[12px] anywhere">{it.reference}</span>
                       </span>
                     </span>
                   </button>
@@ -478,7 +477,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
       const r = await writes.credGenerate(replace);
       setGenerated(r.generated);
       update("path", r.generated.path);
-      toast.success(r.generated.existed ? "The daemon already has a key - here it is." : "A new ed25519 key was made for the daemon.");
+      toast.success(r.generated.existed ? "PULSE already has a key. Here it is." : "PULSE made a new key of its own.");
     } catch (e) {
       showApiError(e, "No key was made");
     } finally {
@@ -500,7 +499,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
         </p>
       ) : null}
       {provider.generate ? (
-        <div className="surface-glass grid gap-2 rounded-xl border px-3.5 py-3">
+        <div className="grid gap-2 rounded-xl border bg-muted/40 px-3.5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-sm font-medium">No key yet? Let PULSE make one.</span>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void generate(false)}>
@@ -511,7 +510,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
             <>
               <PublicKey publicKey={generated.public_key} fingerprint={generated.fingerprint} />
               <p className="text-xs text-muted-foreground anywhere">
-                Add this public key to each repository as a <b>deploy key with write access</b> (GitHub: Settings → Deploy keys), then <b>Test and save</b>. Private half: <Mono>{generated.path}</Mono>, mode 0600.
+                Add this public key to each repository as a <b>deploy key with write access</b> (on GitHub: the repository&apos;s Settings, then Deploy keys), then choose <b>Test and save</b>. The private half stays in <Mono>{generated.path}</Mono>, readable only by you.
                 {generated.existed ? (
                   <>
                     {" "}
@@ -534,12 +533,12 @@ function PublicKey({ publicKey, fingerprint }: { publicKey: string; fingerprint?
   return (
     <div className="grid gap-1.5">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Public key{fingerprint ? <> · <Mono className="text-[11px]">{fingerprint}</Mono></> : null}</span>
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs font-medium text-muted-foreground">Public key{fingerprint ? <span className="font-mono font-normal anywhere">{fingerprint}</span> : null}</span>
         <Button size="xs" variant="outline" onClick={() => copy(publicKey, "public key")}>
           <CopyIcon /> Copy
         </Button>
       </div>
-      <pre className="overflow-x-auto rounded-md border bg-background px-3 py-2 font-mono text-[11.5px] leading-snug whitespace-pre-wrap anywhere">{publicKey}</pre>
+      <pre className="overflow-x-auto rounded-md border bg-background px-3 py-2 font-mono text-xs leading-snug whitespace-pre-wrap anywhere">{publicKey}</pre>
     </div>
   );
 }
@@ -557,7 +556,7 @@ function RefusedNotice({ r }: { r: Refused }) {
         {r.public_key ? (
           <>
             <PublicKey publicKey={r.public_key} fingerprint={r.fingerprint} />
-            <span className="text-xs text-muted-foreground">Nothing was saved. Add this public key to every remote that refused (a deploy key with write access), then try again.</span>
+            <span className="text-xs text-muted-foreground">Nothing was saved. Add this public key to every remote that said no (as a deploy key with write access), then try again.</span>
           </>
         ) : null}
       </div>
@@ -573,8 +572,8 @@ function Probes({ probes }: { probes: CredProbe[] }) {
           {p.ok ? <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-ok" aria-hidden /> : p.skipped ? <span className="mt-0.5 size-3.5 shrink-0 text-center text-muted-foreground" aria-hidden>–</span> : <XIcon className="mt-0.5 size-3.5 shrink-0 text-bad" aria-hidden />}
           <span className="min-w-0 anywhere">
             <b>{p.project}</b>
-            {p.remote ? <Mono className="ml-1.5 text-[11px] text-muted-foreground">{p.remote}</Mono> : null}
-            <span className="block text-xs text-muted-foreground">{p.ok ? "answers this key" : p.skipped ? p.skipped + " - not asked" : p.why || "refused"}</span>
+            {p.remote ? <Mono className="ml-1.5 text-xs text-muted-foreground">{p.remote}</Mono> : null}
+            <span className="block text-xs text-muted-foreground">{p.ok ? "Accepts this key" : p.skipped ? "Not asked: " + p.skipped : p.why || "Said no"}</span>
           </span>
         </li>
       ))}
@@ -589,15 +588,15 @@ function DoneStep({ result, report }: { result: CredSetResult; report: CredRepor
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <CheckIcon className="size-4 text-ok" aria-hidden />
         <span>
-          Key read from <b>{result.source}</b>
+          Key found in <b>{result.source}</b>
         </span>
-        <Mono className="text-[11px] text-muted-foreground">{result.fingerprint}</Mono>
+        <Mono className="text-xs text-muted-foreground">{result.fingerprint}</Mono>
       </div>
-      {result.probed ? <Probes probes={result.probes} /> : <p className="text-[13px] text-muted-foreground">Saved without asking the remotes.</p>}
+      {result.probed ? <Probes probes={result.probes} /> : <p className="text-[13px] text-muted-foreground">Saved without checking the remotes.</p>}
       <PublicKey publicKey={result.public_key} fingerprint={result.fingerprint} />
       {pushOff ? (
         <Notice tone="info">
-          Pushing after a landing is <b>off</b>: the daemon lands but does not push. Set <b>Push after landing</b> to <Mono>main</Mono> in the row above this one to use the key.
+          <b>Push after merging</b> is off, so PULSE merges but doesn&apos;t push. Set it to push the main branch (the row above this one) to use the key.
         </Notice>
       ) : null}
     </div>

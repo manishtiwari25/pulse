@@ -40,7 +40,10 @@ export interface DaemonControlSnapshots {
 export interface DaemonControlState {
   label: string;
   tone: Tone;
+  // The technical account (heartbeat states, STOP files, caps) for the
+  // controls' "Technical details"; `sentence` is the same state in plain words.
   description: string;
+  sentence: string;
   // A newer pulse is built and waits for the runs in flight; null otherwise.
   update: DaemonUpdate | null;
   pause: "on" | "off" | "unknown";
@@ -101,33 +104,43 @@ function runAge(w: DaemonUpdateWait, now: number): string {
   if (t === null) return "";
   const min = Math.max(0, Math.round((now - t) / 60000));
   if (min < 1) return "just started";
-  if (min < 60) return min + "m so far";
-  return Math.floor(min / 60) + "h " + (min % 60) + "m so far";
+  if (min < 60) return count(min, "minute") + " so far";
+  const h = Math.floor(min / 60);
+  return count(h, "hour") + (min % 60 ? " " + count(min % 60, "minute") : "") + " so far";
 }
 
+// The job kinds a runner supervises, as the owner reads them; anything else is a run.
+const RUN_WORD: Record<string, string> = { task: "task", improve: "self-improvement run", experiment: "experiment", baseline: "measurement", review: "review", plan: "planning run", repair: "repair" };
+const runWord = (kind: string) => RUN_WORD[kind] ?? "run";
+
 function describeWait(w: DaemonUpdateWait, project: boolean, now: number): string {
-  const who = (w.agent ? w.agent + "'s " : "") + w.kind + (project && w.project ? " on " + w.project : "");
+  const who = (w.agent ? w.agent + "'s " : "") + runWord(w.kind) + (project && w.project ? " on " + w.project : "");
   const age = runAge(w, now);
   return age ? who + " (" + age + ")" : who;
 }
 
 // The short phrase for the home hero pill and the controls' status line:
-// which run the new build waits for and how long it has run. Never a count
-// of minutes left - the console does not know the run's budget.
+// which run the new version waits for and how long it has run. Never a count
+// of minutes left: the console does not know the run's budget.
 export function daemonUpdateText(update: DaemonUpdate | null | undefined, now: number = Date.now()): string {
   if (!update) return "";
   const [first] = update.waits;
-  if (!first) return update.inflight > 0 ? "New build waits for " + count(update.inflight, "run") + " in flight" : "New build swapping in";
-  if (update.waits.length === 1) return "New build waits for " + describeWait(first, false, now);
-  return "New build waits for " + count(update.waits.length, "run") + ", the longest " + describeWait(first, false, now);
+  if (!first) return update.inflight > 0 ? "A new version waits for " + count(update.inflight, "run") + " in progress" : "A new version is swapping in";
+  if (update.waits.length === 1) return "A new version waits for " + describeWait(first, false, now);
+  return "A new version waits for " + count(update.waits.length, "run") + ", the longest " + describeWait(first, false, now);
 }
 
 function updateDescription(update: DaemonUpdate, now: number): string {
   const named = update.waits.slice(0, 3).map((w) => describeWait(w, true, now));
   const more = update.waits.length - named.length;
-  const list = named.length ? named.join(", ") + (more > 0 ? " and " + count(more, "more run") : "") : update.inflight > 0 ? count(update.inflight, "run") + " in flight" : "its last runs";
+  const list = named.length ? named.join(", ") + (more > 0 ? " and " + count(more, "more run") : "") : update.inflight > 0 ? count(update.inflight, "run") + " in progress" : "its last runs";
   const meanwhile = update.dispatching ? " Meanwhile it starts only runs that end before those do." : " It has stopped taking new work.";
   return "The daemon is running and has a newer pulse built. It swaps to the new build once the runs it supervised when that build landed finish: " + list + "." + meanwhile + " Its service brings the new build back within seconds; nothing to start by hand.";
+}
+
+const onSentence = "The runner is on, so agents can pick up work.";
+function updateSentence(update: DaemonUpdate): string {
+  return "The runner is on. A newer version is ready and swaps in once " + (update.waits.length === 1 || update.inflight === 1 ? "the run in progress finishes" : "the runs in progress finish") + "; nothing to do.";
 }
 
 export function daemonControlState({ runner, service, settings }: DaemonControlSnapshots, now: number = Date.now()): DaemonControlState {
@@ -154,54 +167,55 @@ export function daemonControlState({ runner, service, settings }: DaemonControlS
     setup,
     canPreview: !!setup && !!r,
     // Finishing the hub leaves an unchanged loaded daemon alone; only daemon setup needs this guard.
-    setupBlock: startsDaemon && mayBeAlive ? "A daemon may already be running outside the loaded service. Check pulse status and its recorded PID, and stop that foreground daemon yourself before applying service setup. This control will not stop it or start a second copy while its heartbeat still reports running, alive or silent." : startsDaemon && r && !knownStopped ? "The heartbeat state is not recognized. Inspect pulse status and refresh before applying service setup; an unknown state is not proof that no daemon is running." : "",
-  } satisfies Omit<DaemonControlState, "label" | "tone" | "description">;
+    setupBlock: startsDaemon && mayBeAlive ? "A runner may already be running outside the background service, for example in a terminal. Stop that copy yourself first (pulse status shows it), then come back. PULSE won't stop it or start a second copy while it still checks in." : startsDaemon && r && !knownStopped ? "PULSE doesn't recognize the runner's last state, and that is not proof that the runner is off. Check pulse status in a terminal and refresh before setting up the service." : "",
+  } satisfies Omit<DaemonControlState, "label" | "tone" | "description" | "sentence">;
+  const off = "The runner is off, so agents can't start new work.";
 
-  if (pause === "on") return { ...controls, label: "paused", tone: "warn", description: "The owner's pause is on (stop = 1). Resume clears that setting only; it does not start a missing daemon or remove any STOP file." };
-  if (runner.error) return { ...controls, label: "unknown", tone: "warn", description: "Daemon status could not be refreshed. Any heartbeat shown below is the last reported value, not confirmation that it is running now." };
-  if (!runner.data) return { ...controls, label: "checking", tone: "neutral", description: "Checking the daemon's heartbeat and the controls available on this machine." };
-  if (!r) return { ...controls, label: "unavailable", tone: "warn", description: "The runner store is unavailable on this hub. Refresh status before trying to start a daemon." };
-  if (r.runner?.allowed === false) return { ...controls, label: "stopped", tone: "warn", description: "New work is stopped: " + (r.runner.reason || "the runner does not allow work") + ". Service setup does not clear this stop." };
+  if (pause === "on") return { ...controls, label: "paused", tone: "warn", sentence: "You paused the runner, so agents can't start new work.", description: "The owner's pause is on (stop = 1). Resume clears that setting only; it does not start a missing daemon or remove any STOP file." };
+  if (runner.error) return { ...controls, label: "unknown", tone: "warn", sentence: "PULSE can't reach the runner's status right now, so it can't tell whether agents can work.", description: "Daemon status could not be refreshed. Any heartbeat shown below is the last reported value, not confirmation that it is running now." };
+  if (!runner.data) return { ...controls, label: "checking", tone: "neutral", sentence: "Checking the runner on this machine…", description: "Checking the daemon's heartbeat and the controls available on this machine." };
+  if (!r) return { ...controls, label: "unavailable", tone: "warn", sentence: "This console can't see the runner on this machine.", description: "The runner store is unavailable on this hub. Refresh status before trying to start a daemon." };
+  if (r.runner?.allowed === false) return { ...controls, label: "stopped", tone: "warn", sentence: "New work is stopped" + (r.runner.reason ? ": " + r.runner.reason.replace(/\.$/, "") : "") + ". Agents can't start anything new until that's cleared.", description: "New work is stopped: " + (r.runner.reason || "the runner does not allow work") + ". Service setup does not clear this stop." };
   switch (heartbeat) {
     case "running":
-      return { ...controls, label: "running", tone: "ok", description: update ? updateDescription(update, now) : "The daemon reports a recent heartbeat. Work still follows the owner's pause, STOP files, approvals and existing caps." };
+      return { ...controls, label: "running", tone: "ok", sentence: update ? updateSentence(update) : onSentence, description: update ? updateDescription(update, now) : "The daemon reports a recent heartbeat. Work still follows the owner's pause, STOP files, approvals and existing caps." };
     case "alive":
-      return { ...controls, label: "alive", tone: "ok", description: update ? updateDescription(update, now) : "The daemon's loop heartbeat is recent. Work still follows the owner's pause, STOP files, approvals and existing caps; whether a worker can make progress is a separate question." };
+      return { ...controls, label: "alive", tone: "ok", sentence: update ? updateSentence(update) : onSentence, description: update ? updateDescription(update, now) : "The daemon's loop heartbeat is recent. Work still follows the owner's pause, STOP files, approvals and existing caps; whether a worker can make progress is a separate question." };
     case "silent":
-      return { ...controls, label: "silent", tone: "warn", description: "The loop heartbeat is stale, not simply off. The daemon may still be alive or waiting; inspect its status and logs rather than starting another copy or automatically restarting it." };
+      return { ...controls, label: "silent", tone: "warn", sentence: "The runner hasn't checked in for a while. It may be busy or stuck, so check before starting another one.", description: "The loop heartbeat is stale, not simply off. The daemon may still be alive or waiting; inspect its status and logs rather than starting another copy or automatically restarting it." };
     case "exited":
-      return { ...controls, label: "stopped", tone: "warn", description: "The daemon wrote its last heartbeat on exit" + (r.daemon.at ? " at " + r.daemon.at : "") + ". A service-managed daemon is started again within seconds - refresh before doing anything; a foreground daemon needs you to start it." };
+      return { ...controls, label: "stopped", tone: "warn", sentence: "The runner stopped. If it runs as a background service, it starts again within seconds.", description: "The daemon wrote its last heartbeat on exit" + (r.daemon.at ? " at " + r.daemon.at : "") + ". A service-managed daemon is started again within seconds, so refresh before doing anything; a foreground daemon needs you to start it." };
     case "stopped":
     case "off":
-      return { ...controls, label: "stopped", tone: "warn", description: "The daemon is reported stopped. If its service is missing or unloaded, review the service setup below; a loaded service needs inspection, not a duplicate start." };
+      return { ...controls, label: "stopped", tone: "warn", sentence: off, description: "The daemon is reported stopped. If its service is missing or unloaded, review the service setup below; a loaded service needs inspection, not a duplicate start." };
     case "never started":
     case "no heartbeat":
     case "no-heartbeat":
-      return { ...controls, label: "no heartbeat", tone: "warn", description: "No daemon loop heartbeat has been recorded. This is not an owner-disable setting, and a loaded service alone does not confirm that a loop has started." };
+      return { ...controls, label: "no heartbeat", tone: "warn", sentence: off, description: "No daemon loop heartbeat has been recorded. This is not an owner-disable setting, and a loaded service alone does not confirm that a loop has started." };
     default:
-      return { ...controls, label: "unknown", tone: "warn", description: "The daemon heartbeat is unreadable or its state is not recognized. Refresh status or inspect pulse status before trying to start it." };
+      return { ...controls, label: "unknown", tone: "warn", sentence: "PULSE can't read the runner's state, so it can't tell whether agents can work.", description: "The daemon heartbeat is unreadable or its state is not recognized. Refresh status or inspect pulse status before trying to start it." };
   }
 }
 
-// The one short phrase the home hero pill and the controls' status line show
-// for a daemon state. Only a known stop reads "off": a fresh heartbeat is
-// running (with a pending update named in its own pill), and a stale or
-// unreadable one is named rather than called off, so nobody starts a second
-// daemon on a guess.
+// The one short phrase the home hero and the controls' status line show for
+// the daemon - "the runner" to the owner, the word the README uses for it.
+// Only a known stop reads "off": a fresh heartbeat is on (with a pending
+// update named in its own line), and a stale or unreadable one is named
+// rather than called off, so nobody starts a second runner on a guess.
 export function daemonHeadline(state: Pick<DaemonControlState, "label" | "pause">): string {
-  if (state.pause === "on") return "Daemon paused";
+  if (state.pause === "on") return "Runner paused";
   switch (state.label) {
     case "running":
     case "alive":
-      return "Daemon running";
+      return "Runner on";
     case "silent":
-      return "Daemon silent";
+      return "Runner not responding";
     case "checking":
-      return "Checking daemon…";
+      return "Checking the runner…";
     case "unknown":
     case "unavailable":
-      return "Daemon status unknown";
+      return "Runner status unknown";
     default:
-      return "Daemon off";
+      return "Runner off";
   }
 }

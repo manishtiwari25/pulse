@@ -47,15 +47,41 @@ export const DEFAULT_OPTIONS: McpOptions = {
 };
 
 export const TRANSPORT_LABEL: Record<McpTransport, string> = {
-  stdio: "Command (stdio)",
-  http: "HTTP (streamable)",
-  sse: "HTTP + SSE (legacy)",
+  stdio: "Run a program",
+  http: "Web address",
+  sse: "Older web stream",
+};
+
+// The short name a row shows next to its endpoint, with the technical one in brackets.
+export const TRANSPORT_SHORT: Record<McpTransport, string> = {
+  stdio: "Program (stdio)",
+  http: "Web (HTTP)",
+  sse: "Web stream (SSE)",
 };
 
 export const TRANSPORT_BLURB: Record<McpTransport, string> = {
-  stdio: "PULSE starts the command on this machine and talks to it over stdin/stdout.",
-  http: "One URL that answers JSON-RPC over POST, the current MCP transport.",
-  sse: "The older pairing: an event stream for answers and a POST endpoint it announces.",
+  stdio: "PULSE starts a program on this machine and talks to it directly (stdio).",
+  http: "The server answers at one web address. Most hosted servers work this way (HTTP).",
+  sse: "An older style: an event stream plus an address the server announces (SSE).",
+};
+
+// How a server checks who is calling, in words.
+export const AUTH_LABEL: Record<McpAuth, string> = {
+  none: "No sign-in",
+  bearer: "Access token",
+  basic: "User name and password",
+  header: "Secret in a header",
+  query: "Secret in the web address",
+  env: "Secret in an environment variable",
+};
+
+const AUTH_PLAIN: Record<McpAuth, string> = {
+  none: "The server needs no secret: it is open, or trusts this machine.",
+  bearer: "PULSE sends the secret as an access token (Authorization: Bearer).",
+  basic: "PULSE signs in with a user name and password kept together as user:password.",
+  header: "PULSE sends the secret in a header you name, such as X-Api-Key.",
+  query: "PULSE adds the secret to the web address as a parameter you name.",
+  env: "PULSE hands the secret to the program as an environment variable you name.",
 };
 
 // The auths a transport can use, in catalogue order.
@@ -63,9 +89,12 @@ export function authsFor(options: McpOptions | undefined | null, transport: McpT
   return (options ?? DEFAULT_OPTIONS).auths.filter((a) => a.transports.includes(transport));
 }
 
+// The plain explanation for the auths this console knows; the hub's own words for any other.
 export function authExplain(options: McpOptions | undefined | null, auth: McpAuth): string {
-  return (options ?? DEFAULT_OPTIONS).auths.find((a) => a.name === auth)?.explain ?? "";
+  return AUTH_PLAIN[auth] ?? (options ?? DEFAULT_OPTIONS).auths.find((a) => a.name === auth)?.explain ?? "";
 }
+
+export const authLabel = (auth: McpAuth): string => AUTH_LABEL[auth] ?? auth;
 
 export const needsSecret = (auth: McpAuth): boolean => auth !== "none";
 
@@ -100,15 +129,15 @@ export function authFieldPlaceholder(auth: McpAuth): string {
 export function secretHint(auth: McpAuth): string {
   switch (auth) {
     case "bearer":
-      return "The item holds the token itself.";
+      return "The saved item holds the token itself.";
     case "basic":
-      return "The item holds user:password on one line.";
+      return "The saved item holds user:password on one line.";
     case "header":
-      return "The item holds the header's value.";
+      return "The saved item holds the header's value.";
     case "query":
-      return "The item holds the parameter's value.";
+      return "The saved item holds the parameter's value.";
     case "env":
-      return "The item holds the variable's value.";
+      return "The saved item holds the variable's value.";
     default:
       return "";
   }
@@ -147,6 +176,9 @@ export function endpoint(s: Pick<McpServer, "transport" | "command" | "args" | "
 
 export const scopeLabel = (project: string): string => project || "all projects";
 
+// The scope as a label of its own ("All projects", "Only demo-app").
+export const scopeTitle = (project: string): string => (project ? "Only " + project : "All projects");
+
 export type CheckTone = "neutral" | "ok" | "bad";
 
 // The last check, for a row: "Never checked", or what connect recorded.
@@ -156,6 +188,15 @@ export function lastCheck(s: Pick<McpServer, "last_check_at" | "last_check_ok" |
   if (s.last_check_ok === true) return { tone: "ok", label: "Connected", detail };
   if (s.last_check_ok === false) return { tone: "bad", label: "Failed", detail };
   return { tone: "neutral", label: "Checked", detail };
+}
+
+// Why a check failed, in words: a note about the credential means PULSE
+// could not read the secret; anything else is the server's own message.
+export function checkReason(detail: string): string {
+  const d = (detail || "").trim();
+  if (!d) return "";
+  if (/^credential\b/i.test(d)) return "PULSE couldn't read the secret";
+  return d;
 }
 
 // Tool names from a check note of the shape "name version: N tools: a, b".
@@ -174,26 +215,34 @@ export function formFromServer(s: McpServer): McpForm {
 
 // Everything the hub would refuse, said before the request leaves. The
 // hub checks again; this only spares the round trip.
+const NAME_RULE = "Use only lowercase letters, digits and dashes in the name, starting with a letter or digit (like github or release-check).";
+
+// The required fields are filled, so the primary button can be pressed; the
+// finer checks (name shape, URL scheme, secret reference) still run on submit.
+export function mcpFormReady(f: Pick<McpForm, "name" | "transport" | "command" | "url">): boolean {
+  return !!f.name.trim() && !!(f.transport === "stdio" ? f.command.trim() : f.url.trim());
+}
+
 export function validateMcpForm(f: McpForm, options: McpOptions | undefined | null = DEFAULT_OPTIONS): string[] {
   const errors: string[] = [];
   const name = f.name.trim();
-  if (!name) errors.push("Give the server a name.");
-  else if (!SLUG.test(name)) errors.push("The name is a slug: lowercase letters, digits and dashes, starting with a letter or digit.");
-  else if (name.length > MAX_NAME) errors.push("The name is longer than " + MAX_NAME + " characters.");
+  if (!name) errors.push("Give the tool a name.");
+  else if (!SLUG.test(name)) errors.push(NAME_RULE);
+  else if (name.length > MAX_NAME) errors.push("Keep the name to " + MAX_NAME + " characters or fewer.");
   if (f.transport === "stdio") {
-    if (!f.command.trim()) errors.push("A stdio server needs the command to start.");
+    if (!f.command.trim()) errors.push("Say which command starts the program.");
   } else {
     const url = f.url.trim();
-    if (!url) errors.push("An " + f.transport + " server needs its URL.");
-    else if (!/^https?:\/\/\S+$/i.test(url)) errors.push("The URL must start with http:// or https://.");
+    if (!url) errors.push("Give the server's web address (URL).");
+    else if (!/^https?:\/\/\S+$/i.test(url)) errors.push("The web address must start with http:// or https://.");
   }
-  if (!authsFor(options, f.transport).some((a) => a.name === f.auth)) errors.push("Auth " + f.auth + " does not fit the " + f.transport + " transport.");
-  if (needsSecret(f.auth) && !f.secret_ref.trim()) errors.push("Auth " + f.auth + " needs a secret reference (" + (options ?? DEFAULT_OPTIONS).cred_shapes + ").");
-  if (f.secret_ref.trim() && !/^(op|keychain|file):\/\/\S+$/.test(f.secret_ref.trim())) errors.push("The secret reference must be op://, keychain:// or file://, never the secret itself.");
-  if (authFieldLabel(f.auth) && !f.auth_header.trim()) errors.push("Auth " + f.auth + " needs the " + authFieldLabel(f.auth)!.toLowerCase() + ".");
+  if (!authsFor(options, f.transport).some((a) => a.name === f.auth)) errors.push(authLabel(f.auth) + " doesn't work with " + TRANSPORT_LABEL[f.transport].toLowerCase() + ". Pick another sign-in.");
+  if (needsSecret(f.auth) && !f.secret_ref.trim()) errors.push("Say where the secret is kept: a secret reference such as " + (options ?? DEFAULT_OPTIONS).cred_shapes + ".");
+  if (f.secret_ref.trim() && !/^(op|keychain|file):\/\/\S+$/.test(f.secret_ref.trim())) errors.push("Enter a reference that starts with op://, keychain:// or file://, never the secret itself.");
+  if (authFieldLabel(f.auth) && !f.auth_header.trim()) errors.push("Fill in the " + authFieldLabel(f.auth)!.toLowerCase() + " the secret goes in.");
   for (const r of f.env) {
     const key = r.key.trim();
-    if (key && !ENV_KEY.test(key)) errors.push("Environment variable name " + key + " is not valid.");
+    if (key && !ENV_KEY.test(key)) errors.push("The variable name " + key + " is not valid: use letters, digits and underscores, and don't start with a digit.");
   }
   return errors;
 }
@@ -254,16 +303,20 @@ export const EMPTY_SKILL_FORM: SkillForm = { name: "", project: "", description:
 
 export const formFromSkill = (k: Skill): SkillForm => ({ name: k.name, project: k.project, description: k.description, body: k.body });
 
+export function skillFormReady(f: Pick<SkillForm, "name" | "description" | "body">): boolean {
+  return !!f.name.trim() && !!f.description.trim() && !!f.body.trim();
+}
+
 export function validateSkillForm(f: SkillForm): string[] {
   const errors: string[] = [];
   const name = f.name.trim();
   if (!name) errors.push("Give the skill a name.");
-  else if (!SLUG.test(name)) errors.push("The name is a slug: lowercase letters, digits and dashes, starting with a letter or digit.");
-  else if (name.length > MAX_NAME) errors.push("The name is longer than " + MAX_NAME + " characters.");
+  else if (!SLUG.test(name)) errors.push(NAME_RULE);
+  else if (name.length > MAX_NAME) errors.push("Keep the name to " + MAX_NAME + " characters or fewer.");
   const description = f.description.trim();
-  if (!description) errors.push("Say in one line what the skill covers.");
-  else if (/\n/.test(description) || description.length > MAX_DESCRIPTION) errors.push("The description is one line of at most " + MAX_DESCRIPTION + " characters; the body holds the rest.");
-  if (!f.body.trim()) errors.push("The body is what the agent reads; it cannot be empty.");
+  if (!description) errors.push("Say in one line what the skill covers and when to use it.");
+  else if (/\n/.test(description) || description.length > MAX_DESCRIPTION) errors.push("Keep the description to one line of " + MAX_DESCRIPTION + " characters or fewer; the instructions hold the rest.");
+  if (!f.body.trim()) errors.push("Write the instructions: they are what the agent reads.");
   return errors;
 }
 

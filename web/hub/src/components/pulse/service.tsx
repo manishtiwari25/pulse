@@ -1,63 +1,63 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, Loader2Icon, PowerIcon } from "lucide-react";
+import { CheckIcon, CirclePowerIcon, Loader2Icon, PowerIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { showApiError } from "./confirm";
 import { canApplyServiceSetup, daemonServiceState, serviceSetupAction, type ServiceSetupAction, type ServiceSetupPhase } from "./daemon-control-state";
 import { TerminalAlternative } from "./evolve";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardTitle } from "./item-card";
-import { Notice } from "./panel";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardTitle } from "./item-card";
+import { Disclosure, Notice } from "./panel";
 import { waitForServiceHandover } from "./service-handover";
-import { Mono, ToneBadge } from "./who";
+import { Mono } from "./who";
 import { api, writes, type ServiceInstallResult, type ServicePayload } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 
 // Keep PULSE running (ADR-038): the one machine step a shared copy needs.
-// The daemon runs the agents, measures and lands; the console is this page.
-// Until they are user services (launchd, systemd --user) they stop with the
-// terminal that started them. The card asks once, previews what `pulse
-// service install` would write, installs on a second click, and - when this
-// hub is a foreground `pulse hub` on the service's port - waits for the
+// The runner (daemon) runs the agents, measures and merges; the console is
+// this page. Until they are user services (launchd, systemd --user) they stop
+// with the terminal that started them. The card asks once, previews what
+// `pulse service install` would write, installs on a second click, and - when
+// this hub is a foreground `pulse hub` on the service's port - waits for the
 // service's hub to answer on the same address before it reloads.
 
 const refreshAfterInstall = () => invalidate((p) => p === "service" || p === "running" || p === "runner" || p === "settings" || p === "org");
 
+const ACTION_WORD: Record<ServiceSetupAction, string> = { finish: "Finish service setup", start: "Start the runner", install: "Keep PULSE running" };
+
 export function ServiceCard({ payload }: { payload: ServicePayload }) {
   const state = daemonServiceState(payload);
-  const starting = state === "unloaded";
-  const finishing = serviceSetupAction(payload) === "finish";
-  const title = finishing ? "Finish service setup" : starting ? "Start daemon" : "Keep PULSE running";
+  const action = serviceSetupAction(payload);
+  const title = ACTION_WORD[action ?? "install"];
   return (
     <ItemCard highlight ariaLabel={title}>
-      <ItemCardHeader right={<ToneBadge tone="neutral">{payload.service.kind}</ToneBadge>}>
-        <ToneBadge tone="accent">this machine</ToneBadge>
-        <ToneBadge tone={state === "loaded" && !finishing ? "neutral" : "warn"}>{finishing ? "console setup needed" : state === "unloaded" ? "not loaded" : state === "loaded" ? "service loaded" : state === "missing" ? "not installed" : state}</ToneBadge>
+      <ItemCardHeader right={<span title="This machine's service manager">{payload.service.kind}</span>}>
+        <ItemCardKind icon={CirclePowerIcon} tone="you">This machine</ItemCardKind>
       </ItemCardHeader>
       <ItemCardTitle>{title}</ItemCardTitle>
-      <ItemCardBody clamp={5}>
-        {finishing ? "The daemon's service is present and loaded. Preview and apply the existing installer to finish the console's missing, unloaded or unconfirmed service setup." : starting ? "The daemon's service file exists, but it is not loaded. Preview and apply the existing installer to load it again." : "User services keep the daemon and this console available after you close a terminal. They start at login and come back after a rebuild."}
-        {" "}Setup leaves unchanged, loaded units alone. It does not clear the owner pause or any STOP file, and a fresh heartbeat still needs to confirm progress.
+      <ItemCardBody clamp={0}>
+        {action === "finish" ? "The runner already runs in the background, but this console doesn't yet. Finish the setup so it keeps going after you close the terminal too." : state === "unloaded" ? "The runner's background service is installed but not loaded, so agents can't start work. Start it again." : "Set PULSE up as a background service so agents keep working after you close the terminal. It starts again when you log in."}
+        {" "}You&apos;ll see exactly what changes before anything is installed.
       </ItemCardBody>
       <TerminalAlternative command={payload.command} />
       <ItemCardActions>
-        <span className="text-xs text-muted-foreground">writes two small files under your home; nothing needs a password</span>
-        <span className="ml-auto shrink-0">
-          <ServiceControl payload={payload} />
+        <span className="text-[13px] text-muted-foreground">Adds two small files in your home folder. No password needed.</span>
+        <span className="flex w-full justify-start sm:ml-auto sm:w-auto sm:justify-end">
+          <ServiceControl payload={payload} size="default" />
         </span>
       </ItemCardActions>
     </ItemCard>
   );
 }
 
-export function ServiceControl({ payload, disabled = false, blockedReason = "" }: { payload: ServicePayload; disabled?: boolean; blockedReason?: string }) {
+export function ServiceControl({ payload, disabled = false, blockedReason = "", variant = "default", size = "sm" }: { payload: ServicePayload; disabled?: boolean; blockedReason?: string; variant?: "default" | "outline"; size?: "sm" | "default" }) {
   const [intent, setIntent] = useState<ServiceSetupAction | null>(null);
   const action = serviceSetupAction(payload);
   return (
     <>
-      {action ? <Button size="sm" variant="outline" disabled={disabled} onClick={() => setIntent(action)}><PowerIcon /> {action === "finish" ? "Finish service setup" : action === "start" ? "Start" : "Keep running at login"}</Button> : null}
+      {action ? <Button size={size} variant={variant} disabled={disabled} onClick={() => setIntent(action)}><PowerIcon /> {ACTION_WORD[action]}</Button> : null}
       <ServiceDialog open={intent !== null} onOpenChange={(o) => !o && setIntent(null)} payload={payload} action={intent ?? "install"} disabled={disabled} blockedReason={blockedReason} />
     </>
   );
@@ -86,7 +86,7 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
     writes
       .serviceInstall(true)
       .then((r) => {
-        if (!r.dry_run || r.installed) throw new Error("The service API did not return a dry-run preview. Refresh status before trying again.");
+        if (!r.dry_run || r.installed) throw new Error("PULSE didn't return a preview. Refresh the status and try again.");
         if (!cancelled) setPreview(r);
       })
       .catch((e: unknown) => {
@@ -123,15 +123,15 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
   const install = async () => {
     if (applying.current) return;
     if (!canApply) {
-      showApiError(new Error(blockedReason || "A supported service manager, current status and successful preview are required before applying setup."));
+      showApiError(new Error(blockedReason || "PULSE needs a supported service manager, a fresh status and a preview before it can set up the services."));
       return;
     }
     applying.current = true;
     setPhase("installing");
-    const id = toast.loading(finishing ? "Completing service setup..." : starting ? "Loading the services..." : "Installing the services...");
+    const id = toast.loading(finishing ? "Finishing the setup…" : starting ? "Starting the runner…" : "Setting up the background services…");
     try {
       const r = await writes.serviceInstall(false);
-      if (r.dry_run || !r.installed) throw new Error("The service setup was not applied. Refresh status and preview it again.");
+      if (r.dry_run || !r.installed) throw new Error("The setup wasn't applied. Refresh the status and try again.");
       if (!active.current) {
         toast.dismiss(id);
         refreshAfterInstall();
@@ -139,7 +139,7 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
       }
       setResult(r);
       if (r.handover) {
-        toast.success("Service setup applied; waiting for the service's console", { id });
+        toast.success("Set up. Waiting for the background console to answer…", { id });
         setPhase("handover");
         cancelHandover.current = waitForServiceHandover({
           load: (signal) => api<ServicePayload>("service", { signal }),
@@ -154,79 +154,89 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
         });
         return;
       }
-      toast.success("Service setup applied. Close to refresh the daemon's status.", { id });
+      toast.success("Set up. PULSE now runs in the background.", { id });
       setPhase("done");
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "Could not install the services");
+      showApiError(e, "Couldn't set up the services");
       if (active.current) setPhase("preview");
     } finally {
       applying.current = false;
     }
   };
 
+  const url = result?.hub_url ?? payload.hub_url;
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{finishing ? "Finish service setup" : starting ? "Start daemon" : "Keep PULSE running"}</DialogTitle>
+          <DialogTitle>{ACTION_WORD[action]}</DialogTitle>
           <DialogDescription>
-            Two user services under {payload.service.kind}: the daemon and this console. They start at login, restart if they stop, and pick up each rebuild. The same as <Mono>{payload.command}</Mono>.
-            {" "}Unchanged, loaded units are left alone. Setup does not clear the owner pause or any STOP file, and does not prove a fresh daemon heartbeat.
+            {finishing ? "PULSE finishes setting up its two background services, the runner and this console, so both keep going after you close the terminal." : starting ? "PULSE loads its background service for the runner again, so agents can work and it keeps going after you close the terminal." : "PULSE installs two background services: the runner and this console, so they keep going after you close the terminal."}
+            {" "}They start when you log in and restart on their own after an update.
           </DialogDescription>
         </DialogHeader>
 
         {phase === "preview" || phase === "installing" ? (
           <div className="grid gap-3">
             {!payload.service.supported ? (
-              <Notice tone="warn">No supported service manager is available. Run <Mono>pulse daemon</Mono> in a terminal only after confirming no daemon is already running.</Notice>
+              <Notice tone="warn">This machine has no supported background service manager (launchd on macOS, systemd on Linux). Check <Mono>pulse status</Mono> first; only if no runner is running, run <Mono>pulse daemon</Mono> in a terminal and keep it open.</Notice>
             ) : previewError ? (
               <Notice tone="warn">
-                Could not preview: {previewError}
-                <Button size="xs" variant="outline" className="ml-2" onClick={() => { setPreview(null); setPreviewError(""); setPreviewAttempt((n) => n + 1); }}>Retry preview</Button>
+                <span>Couldn&apos;t prepare the preview: {previewError}</span>
+                <Button size="xs" variant="outline" className="ml-2" onClick={() => { setPreview(null); setPreviewError(""); setPreviewAttempt((n) => n + 1); }}>Try again</Button>
               </Notice>
             ) : preview ? (
               <>
-                <p className="text-xs text-muted-foreground">
-                  What it writes - <Mono>{preview.daemon_path}</Mono>
-                  {preview.hub_path ? (
-                    <>
-                      {" and "}
-                      <Mono>{preview.hub_path}</Mono>
-                    </>
-                  ) : null}
-                  , each running a small launcher under your PULSE home:
-                </p>
-                <pre className="max-h-[40vh] overflow-auto rounded-md border bg-muted/40 p-3 text-[11.5px] leading-snug anywhere">{preview.output}</pre>
+                <ul className="grid gap-2 text-sm leading-relaxed">
+                  {["Adds two small service files in your home folder. No password needed.", "Leaves anything that is already set up and running alone.", "Doesn't resume a pause or change any setting."].map((t) => (
+                    <li key={t} className="flex gap-2.5">
+                      <CheckIcon className="mt-1 size-4 shrink-0 text-ok" aria-hidden />
+                      <span>{t}</span>
+                    </li>
+                  ))}
+                </ul>
                 {!payload.hub_is_service && payload.hub_port === 8765 ? (
-                  <Notice tone="info">
-                    This console is a <Mono>pulse hub</Mono> you started by hand on the service&apos;s port. When the install finishes it steps aside, the service&apos;s console takes over at the same address, and this page reconnects to it.
-                  </Notice>
+                  <Notice tone="info">You started this console by hand. When setup finishes, the background console takes over at the same address and this page reconnects to it.</Notice>
                 ) : null}
+                <Disclosure summary="Show the files it writes" contentClassName="grid gap-2">
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      <Mono>{preview.daemon_path}</Mono>
+                      {preview.hub_path ? (
+                        <>
+                          {" and "}
+                          <Mono>{preview.hub_path}</Mono>
+                        </>
+                      ) : null}
+                      , each running a small launcher in your PULSE home:
+                    </p>
+                    <pre className="max-h-[36vh] overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-snug anywhere">{preview.output}</pre>
+                </Disclosure>
+                <TerminalAlternative command={payload.command} />
               </>
             ) : (
               <div className="flex items-center gap-2 text-sm text-muted-foreground" aria-busy="true">
-                <Loader2Icon className="size-4 animate-spin" /> previewing…
+                <Loader2Icon className="size-4 animate-spin" /> Preparing a preview…
               </div>
             )}
-            {blockedReason ? <Notice tone="warn">{blockedReason}</Notice> : disabled ? <Notice tone="warn">Service or runner status changed or is being refreshed. Refresh status before applying setup.</Notice> : null}
+            {blockedReason ? <Notice tone="warn">{blockedReason}</Notice> : disabled ? <Notice tone="warn">The runner&apos;s status changed or is refreshing. Refresh the status, then try again.</Notice> : null}
           </div>
         ) : phase === "handover" ? (
           <div className="flex items-center gap-2 text-sm" aria-busy="true">
-            <Loader2Icon className="size-4 animate-spin" /> Setup applied. Waiting for the service&apos;s console at <Mono>{result?.hub_url ?? payload.hub_url}</Mono>…
+            <Loader2Icon className="size-4 shrink-0 animate-spin" /> <span className="anywhere">Set up. Waiting for the background console at <Mono>{url}</Mono> to answer…</span>
           </div>
         ) : phase === "late" ? (
           <Notice tone="warn">
-            Setup was applied, but the service&apos;s console has not confirmed the handover at <Mono>{result?.hub_url ?? payload.hub_url}</Mono>. {handoverNote} Give it a moment and reload; <Mono>pulse service status</Mono> in a terminal shows both units.
+            Setup is done, but the background console hasn&apos;t answered at <Mono>{url}</Mono> yet. {handoverNote} Give it a moment, then reload. In a terminal, <Mono>pulse service status</Mono> shows both services.
           </Notice>
         ) : (
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-start gap-2.5 text-sm">
             <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-ok/10 text-ok" aria-hidden>
               <CheckIcon className="size-3.5" />
             </span>
-            <span>
-              {result?.handover ? "The service's console answered. Reconnecting to read its current daemon status." : "Service setup applied. Close to refresh the heartbeat and owner pause; neither a saved setting nor service setup proves the daemon is making progress."}
-              {" "}<Mono>{payload.service.logs}</Mono> holds the logs.
+            <span className="grid gap-1">
+              <span>{result?.handover ? "The background console answered. Reconnecting…" : "Done. PULSE now runs in the background. Close this to refresh the runner's status. A fresh check-in confirms it's working."}</span>
+              {payload.service.logs ? <span className="text-xs text-muted-foreground anywhere">Logs: <Mono>{payload.service.logs}</Mono></span> : null}
             </span>
           </div>
         )}
@@ -242,7 +252,7 @@ export function ServiceDialog({ open, onOpenChange, payload, action = "install",
                 Not now
               </Button>
               <Button onClick={() => void install()} disabled={!canApply}>
-                {busy ? <Loader2Icon className="animate-spin" /> : <PowerIcon />} {finishing ? "Apply setup for console" : starting ? "Apply setup and start daemon" : "Install and keep running"}
+                {busy ? <Loader2Icon className="animate-spin" /> : <PowerIcon />} {finishing ? "Finish setup" : starting ? "Start the runner" : "Install the services"}
               </Button>
             </>
           )}
