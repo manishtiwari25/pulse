@@ -259,6 +259,11 @@ pub(crate) fn measure(
             Ok(())
         })?;
         results.sort_by_key(|r| r.index);
+        // A cancelled or timed-out run may stop before any fixture scored; report the
+        // cancellation itself rather than the 0/0 total it would otherwise leave behind.
+        if let Some(ctx_err) = cancel.err() {
+            return Err(ctx_err.into());
+        }
         let mut total = 0.0;
         let mut weights = 0.0;
         for result in results {
@@ -284,6 +289,11 @@ pub(crate) fn measure(
                 weights += result.normalized_weight;
                 scores.fixtures.push(score);
             }
+        }
+        if weights <= 0.0 {
+            return Err(anyhow!(
+                "measurement produced no fixture scores; a measurement never counts as a win without a score"
+            ));
         }
         scores.total = total / weights;
         if !crate::fixtures::score_value(scores.total) {

@@ -449,8 +449,9 @@ pub(crate) fn create_post_conn(
     } else {
         String::new()
     };
-    let pid = if input.post_id.is_empty() {
-        unique_post_id(conn, &(stamp_of(&date) + "-" + &agent_name))?
+    let auto_id_base = stamp_of(&date) + "-" + &agent_name;
+    let mut pid = if input.post_id.is_empty() {
+        unique_post_id(conn, &auto_id_base)?
     } else {
         input.post_id.clone()
     };
@@ -492,9 +493,28 @@ pub(crate) fn create_post_conn(
     let extra_text = pulse_store::py_json(Value::Object(extra))?;
     pulse_store::post_for_owner(&extra_text).map_err(|e| refuse(2, e.to_string()))?;
     let read_line = i64::from(has_read_line(&input.body));
-    conn.execute(&format!("INSERT INTO posts ({POST_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
-        params![pid, input.project, area, thread, input.kind, agent_name, runner, model, session, date, branch, input.expires, input.on, input.vote,
-            text_hash, read_line, input.resolution, summary, input.body, input.links, input.files, name, input.origin_project, extra_text, origin, s.now()])?;
+    // Two writers on separate connections (the daemon posts compute findings from
+    // parallel threads) can both pick the same free auto id between the lookup and
+    // the insert; when that happens, take the next suffix instead of failing the post.
+    let mut attempts = 0;
+    loop {
+        let inserted = conn.execute(&format!("INSERT INTO posts ({POST_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            params![pid, input.project, area, thread, input.kind, agent_name, runner, model, session, date, branch, input.expires, input.on, input.vote,
+                text_hash, read_line, input.resolution, summary, input.body, input.links, input.files, name, input.origin_project, extra_text, origin, s.now()]);
+        match inserted {
+            Ok(_) => break,
+            Err(rusqlite::Error::SqliteFailure(e, Some(msg)))
+                if input.post_id.is_empty()
+                    && attempts < 8
+                    && e.code == rusqlite::ErrorCode::ConstraintViolation
+                    && msg.contains("posts.id") =>
+            {
+                attempts += 1;
+                pid = unique_post_id(conn, &auto_id_base)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
     if s.agent(&arow.name)?.is_some() {
         conn.execute(
             "UPDATE agents SET posts = posts + 1 WHERE name = ?",
