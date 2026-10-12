@@ -1426,7 +1426,12 @@ optionally, `DeviceLogin`, `TokenLogin` and `Logouter`, then registers
 itself with `pulse_provider::register` - the harness, the CLI verbs, the hub routes
 and the console's sign-in card pick it up through the `provider` setting.
 A provider's own settings are named `provider.<name>.*`; `Store::provider_settings()`
-hands all of them to `pulse_provider::open` in one map.
+hands all of them to `pulse_provider::open` in one map. A provider hands the
+harness one assistant message per call: `pulse_provider::merge_choices`
+folds every `choices[i]` of a chat-completion reply into it, so a gateway
+that puts the narration in one choice and the tool call in the next (Copilot
+does) still yields a reply the harness acts on instead of a prose-only turn
+that costs a `format_retry`.
 
 **Any OpenAI-compatible endpoint.** `pulse settings set provider openai`
 switches the harness to the `openai` provider, which speaks the chat
