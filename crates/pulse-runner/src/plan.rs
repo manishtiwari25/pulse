@@ -402,6 +402,54 @@ pub(crate) fn plan_jobs(
     plan_jobs_with_tally(s, slug, now, created_by, None)
 }
 
+/// Post a `dropped` result on a voted card whose precondition the probe found gone or already
+/// met on the checkout, so the card leaves the ballot without a worker and the planner moves on.
+fn drop_card_before_dispatch(
+    s: &pulse_store::Store,
+    slug: &str,
+    now: &str,
+    actor: &str,
+    card: &Row,
+    drop: &crate::precondition::Drop,
+) {
+    let summary = drop.summary();
+    let body = format!(
+        "{summary}\nThe planner probed the card's File:/Variable: precondition on the project checkout before starting a worker (read-only git, no model call) and found it {}; no job was queued.\nre: {}\n",
+        drop.reason(),
+        card.str("id")
+    );
+    let res = crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "result".into(),
+            project: slug.to_string(),
+            area: card.str("area"),
+            thread: card.str("thread"),
+            summary: trunc(&summary, 230),
+            body,
+            resolution: "dropped".into(),
+            on: card.str("id"),
+            agent: crate::board::actor_agent(s, actor.to_string()),
+            date: now.to_string(),
+            ..Default::default()
+        },
+    );
+    let (action, detail) = match res {
+        Ok(_) => (
+            "plan.dropped",
+            json!({"project": slug, "reason": drop.reason(), "summary": summary}),
+        ),
+        Err(e) => (
+            "plan.dropped.error",
+            json!({"project": slug, "error": e.to_string()}),
+        ),
+    };
+    if let Ok(conn) = s.conn() {
+        event_at(&conn, now, actor, action, &card.str("id"), detail);
+    }
+}
+
 pub(crate) fn plan_jobs_with_tally(
     s: &pulse_store::Store,
     slug: String,
@@ -576,6 +624,12 @@ pub(crate) fn plan_jobs_with_tally(
                 continue;
             }
             let p = crate::board::post_row(&conn, sg.id.clone());
+            if let Some(drop) =
+                crate::precondition::probe(&project.str("path"), &sg.summary, &p.str("body"))
+            {
+                drop_card_before_dispatch(s, &slug, &now, &created_by, &p, &drop);
+                continue;
+            }
             let brief = format!(
                 "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nLook at the default branch first: when another landing already moved this variable, say which commit in SUMMARY: and stop - run no checks and post no handoff. Otherwise: one variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
                 sg.score,
@@ -1605,6 +1659,97 @@ mod tests {
             more[0].str("source").contains(&cards[3]),
             "the fourth card takes the freed lane: {}",
             more[0].str("source")
+        );
+    }
+
+    #[test]
+    fn plan_jobs_drops_card_already_satisfied_on_main_without_a_worker() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        std::fs::create_dir_all(std::path::Path::new(&root).join("src")).unwrap();
+        std::fs::write(
+            std::path::Path::new(&root).join("src/login.go"),
+            "func login() { retryAfter(3) }\n",
+        )
+        .unwrap();
+        crate::test_helpers::run(&root, &["git", "add", "-A"]);
+        crate::test_helpers::run(&root, &["git", "commit", "-q", "-m", "seed"]);
+        set_setting(&s, "quorum", "1");
+        set_setting(&s, "evolve.draft_hours", "0");
+        for agent in ["alice", "bob"] {
+            join(&s, agent);
+        }
+        let mut cards = Vec::new();
+        for (file, variable) in [
+            (
+                "login",
+                "call `retryAfter` after a 503 (still absent on main)",
+            ),
+            ("signup", "show the server error"),
+        ] {
+            let card = crate::board::create_post(&s, TEST_NOW.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: format!("card-{file}"), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: format!("{file} page handles the server error"), body: format!("Class: product\nFile: src/{file}.go\nVariable: {variable}\nHypothesis: the user sees the failure message\nSignal: check:product"), ..Default::default() }).expect("card");
+            crate::board::create_post(
+                &s,
+                TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: card.str("thread"),
+                    agent: crate::board::actor_agent(&s, "bob".into()),
+                    session: "v-bob".into(),
+                    on: card.str("id"),
+                    vote: "up".into(),
+                    summary: "yes".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("vote");
+            cards.push(card.str("id"));
+        }
+        let jobs =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan jobs");
+        assert_eq!(jobs.len(), 1, "only the live card gets a worker: {jobs:?}");
+        assert!(
+            jobs[0].str("source").contains(&cards[1]),
+            "signup card planned: {}",
+            jobs[0].str("source")
+        );
+        let conn = s.conn().expect("conn");
+        let dropped = must_rows(
+            &conn,
+            "SELECT summary, resolution FROM posts WHERE kind = 'result' AND on_post = ?",
+            &[&cards[0]],
+        );
+        assert_eq!(
+            dropped.len(),
+            1,
+            "one dropped result on the satisfied card: {dropped:?}"
+        );
+        assert_eq!(dropped[0].str("resolution"), "dropped");
+        assert!(
+            dropped[0]
+                .str("summary")
+                .starts_with("dropped: already satisfied on main at "),
+            "summary names the cause and sha: {}",
+            dropped[0].str("summary")
+        );
+        let again =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan again");
+        assert!(
+            again.is_empty(),
+            "the dropped card is not planned again: {again:?}"
+        );
+        assert_eq!(
+            must_rows(
+                &conn,
+                "SELECT id FROM posts WHERE kind = 'result' AND on_post = ?",
+                &[&cards[0]]
+            )
+            .len(),
+            1,
+            "no second drop post"
         );
     }
 

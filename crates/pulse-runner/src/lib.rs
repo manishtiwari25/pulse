@@ -51,6 +51,7 @@ pub mod onboard;
 pub mod pair;
 pub mod pair_inspect;
 pub mod plan;
+pub(crate) mod precondition;
 pub mod preflight;
 pub mod proc;
 pub mod provider;
