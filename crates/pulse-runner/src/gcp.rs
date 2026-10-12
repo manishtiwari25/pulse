@@ -422,6 +422,7 @@ impl GcpProvider {
             }
             created[0].clone()
         };
+        crate::provider::machine_created(&req, &m);
         let mut ip = inst.public_ip();
         crate::provider::poll_until(ctx, format!("the address of {name}"), || {
             if !ip.is_empty() && inst.status == "RUNNING" {

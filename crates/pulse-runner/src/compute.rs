@@ -10,6 +10,9 @@ use std::time::Duration;
 pub(crate) const COMPUTE_IDLE_MINUTES: i32 = 30;
 pub(crate) const COMPUTE_PROVISION_BUDGET: Duration = Duration::from_secs(45 * 60);
 pub(crate) const COMPUTE_RELEASE_BUDGET: Duration = Duration::from_secs(20 * 60);
+/// How often the worker looks for machines left behind: leftovers whose release failed, and
+/// machines at the provider under a request of this store that is no longer live.
+pub(crate) const COMPUTE_SWEEP_MINUTES: i64 = 30;
 pub(crate) const COMPUTE_AREA: &str = "runner";
 pub(crate) const COMPUTE_THREAD: &str = "compute";
 #[derive(Clone, Default)]
@@ -71,6 +74,15 @@ pub trait Provider: Send + Sync {
     ) -> Result<(bool, Vec<String>)>;
     fn place(&self, m: &Machine) -> String;
     fn start_hint(&self, m: &Machine) -> String;
+    /// Machines at the provider carrying this hub's compute tags, for the sweep; a provider
+    /// without a cheap listing reports none.
+    fn hands_machines(
+        &self,
+        _cancel: &pulse_bus::CancellationToken,
+        _s: &pulse_store::Store,
+    ) -> Result<Vec<Machine>> {
+        Ok(vec![])
+    }
 }
 
 pub(crate) static PROVIDER_SET: LazyLock<RwLock<BTreeMap<String, Arc<dyn Provider>>>> =
@@ -93,6 +105,32 @@ pub fn provider_names() -> Vec<String> {
 }
 pub(crate) fn compute_executor_name(request_id: &str) -> String {
     crate::util::slugify(&format!("hands-{}", request_id.to_lowercase()), 40)
+}
+/// The linux architecture a provider size boots, read from its family name, so the hands binary
+/// is checked before a machine is bought: Azure's `p` sizes (Standard_D2ps_v5, Standard_B2pts_v2),
+/// AWS Graviton (t4g, m7g, c6gn, a1) and GCP t2a/c4a are arm64; multipass runs the hub's own
+/// architecture; everything else is amd64.
+pub(crate) fn hands_arch_for_size(provider: &str, size: &str) -> String {
+    static AZURE_ARM: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^standard_[a-z]+\d+p[a-z]*_v\d+$").unwrap());
+    static AWS_ARM: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^([a-z]+\d+g[a-z]*|a1)\.").unwrap());
+    let size = size.trim().to_ascii_lowercase();
+    let arm = match provider {
+        "azure" => AZURE_ARM.is_match(&size),
+        "aws" => AWS_ARM.is_match(&size),
+        "gcp" => size.starts_with("t2a-") || size.starts_with("c4a-"),
+        "multipass" => std::env::consts::ARCH == "aarch64",
+        _ => false,
+    };
+    if arm { "arm64" } else { "amd64" }.into()
+}
+/// The checkout the daemon builds itself from: the hands binary can be cross-built there.
+pub(crate) fn brain_source_root(s: &pulse_store::Store) -> String {
+    s.conn()
+        .ok()
+        .map(|conn| crate::board::brain_project(&conn).str("path"))
+        .unwrap_or_default()
 }
 pub(crate) fn redact_secrets(text: &str) -> String {
     static WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\S+").unwrap());
@@ -192,6 +230,7 @@ pub(crate) struct ComputeWorker {
     pub(crate) o: ComputeOpts,
     pub(crate) inflight: Arc<Mutex<BTreeMap<String, bool>>>,
     pub(crate) no_source_day: Arc<Mutex<String>>,
+    pub(crate) swept_at: Arc<Mutex<String>>,
     wg: Arc<(Mutex<usize>, Condvar)>,
     wake_tx: crossbeam_channel::Sender<()>,
     wake_rx: crossbeam_channel::Receiver<()>,
@@ -214,6 +253,7 @@ pub(crate) fn new_compute_worker(
         o,
         inflight: Arc::new(Mutex::new(BTreeMap::new())),
         no_source_day: Arc::new(Mutex::new(String::new())),
+        swept_at: Arc::new(Mutex::new(String::new())),
         wg: Arc::new((Mutex::new(0), Condvar::new())),
         wake_tx,
         wake_rx,
@@ -340,30 +380,13 @@ impl ComputeWorker {
         }
         if let Ok(stale) = pulse_tasks::list_compute(&self.s, "", "provisioning") {
             for req in stale {
-                if self.inflight.lock().unwrap().contains_key(&req.id) {
-                    continue;
-                }
-                let mut why =
-                    "the daemon stopped while this machine was being provisioned".to_string();
-                if let (Some(m), _) = load_machine(&self.s, &req.id) {
-                    if let Some(p) = provider_named(&m.provider) {
-                        let rctx = pulse_bus::CancellationToken::new()
-                            .with_timeout(COMPUTE_RELEASE_BUDGET);
-                        if let Err(err) = p.release(&rctx, &m) {
-                            why.push_str("; releasing it failed: ");
-                            why.push_str(&redact_secrets(&crate::run::err_message(&err)));
-                        } else {
-                            why.push_str("; the machine was released");
-                        }
-                    }
-                } else {
-                    why.push_str(&format!(
-                        "; look for a machine tagged pulse-request={} at the provider",
-                        req.id
-                    ));
-                }
-                self.fail(req, &why);
+                let worker = self.clone();
+                let id = req.id.clone();
+                self.start(&id, move || worker.fail_stale(req));
             }
+        }
+        if self.sweep_due(now) {
+            self.sweep(cancel);
         }
         if self.s.setting("compute.auto_approve", "0") == "1"
             && let Ok(pending) = pulse_tasks::list_compute(&self.s, "", "pending")
@@ -487,6 +510,26 @@ impl ComputeWorker {
             );
             return;
         };
+        // The binary the machine would be paired with must exist before anything is bought:
+        // CR-002 paid for a VM that was then failed for want of a linux/amd64 pulse.
+        let size = if req.size.trim().is_empty() {
+            self.s
+                .setting(&pulse_store::compute_size_setting(&p.name()), "")
+        } else {
+            req.size.clone()
+        };
+        let arch = hands_arch_for_size(&p.name(), &size);
+        crate::pair::set_hands_source_root(brain_source_root(&self.s));
+        if let Err(e) = (crate::pair::HANDS_BINARY
+            .read()
+            .expect("hands_binary poisoned"))(&arch)
+        {
+            self.fail(
+                req,
+                &format!("{}; no machine was bought", crate::run::err_message(&e)),
+            );
+            return;
+        }
         if let Err(e) =
             pulse_tasks::set_compute_status(&self.s, &req.id, "provisioning", "", &self.o.actor)
         {
@@ -523,6 +566,7 @@ impl ComputeWorker {
                 if pctx.deadline_exceeded() {
                     why = format!("gave up after {:?}: {why}", COMPUTE_PROVISION_BUDGET);
                 }
+                why.push_str(&self.release_leftover(&req.id).clause());
                 self.fail(req, &why);
                 return;
             }
@@ -605,6 +649,252 @@ impl ComputeWorker {
         release_compute(&self.s, &self.o.actor, req, why, |line| {
             self.say_line(line.to_string())
         });
+    }
+    /// A request still `provisioning` when no worker holds it: the daemon that was buying the
+    /// machine stopped. Whatever it got as far as making is released; a machine it never
+    /// recorded is left to the sweep, which finds it by its pulse-request tag.
+    fn fail_stale(&self, req: pulse_tasks::ComputeRequest) {
+        let mut why = "the daemon stopped while this machine was being provisioned".to_string();
+        match self.release_leftover(&req.id) {
+            Leftover::Nothing => why.push_str(&format!(
+                "; a machine tagged pulse-request={} at the provider is released by the sweep the daemon runs every {} minutes",
+                req.id, COMPUTE_SWEEP_MINUTES
+            )),
+            left => why.push_str(&left.clause()),
+        }
+        self.fail(req, &why);
+    }
+    /// Releases the machine a provisioning left behind: the provider remembers a machine the
+    /// moment it exists (machine_created), so a failure after that point still ends with nothing
+    /// running. The outcome is recorded on the machine row for the sweep to retry.
+    pub(crate) fn release_leftover(&self, request_id: &str) -> Leftover {
+        let (Some(m), row) = load_machine(&self.s, request_id) else {
+            return Leftover::Nothing;
+        };
+        if !row.str("released_at").is_empty() {
+            return Leftover::Released(m);
+        }
+        let Some(p) = provider_named(&m.provider) else {
+            let why = format!("no compute provider {} is built in", m.provider);
+            machine_release_failed(&self.s, request_id, &why);
+            return Leftover::Failed(m, why);
+        };
+        let rctx = pulse_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
+        match p.release(&rctx, &m) {
+            Ok(()) => {
+                machine_released(&self.s, request_id, &self.s.now());
+                Leftover::Released(m)
+            }
+            Err(err) => {
+                let why = redact_secrets(&crate::run::err_message(&err));
+                machine_release_failed(&self.s, request_id, &why);
+                Leftover::Failed(m, why)
+            }
+        }
+    }
+    /// Once per COMPUTE_SWEEP_MINUTES, and only on a hub that has bought a machine at least once.
+    pub(crate) fn sweep_due(&self, now: &str) -> bool {
+        let mut at = self.swept_at.lock().unwrap();
+        if !at.is_empty()
+            && crate::util::must_iso(now) - crate::util::must_iso(&at)
+                < chrono::Duration::minutes(COMPUTE_SWEEP_MINUTES)
+        {
+            return false;
+        }
+        let conn = self.s.conn().unwrap();
+        let tried = crate::util::must_one(
+            &conn,
+            "SELECT COUNT(*) AS n FROM compute_requests WHERE status IN ('provisioning', 'ready', 'failed', 'released')",
+            &[],
+        )
+        .int("n");
+        if tried == 0 {
+            return false;
+        }
+        *at = now.to_string();
+        true
+    }
+    /// What the daemon does for machines nobody is using: a leftover whose release failed is
+    /// released again, and a machine the provider lists under a request of this store that is
+    /// over (the daemon was stopped mid-create, or an older build forgot it) is released once and
+    /// reported. Machines under another store's request, or in the retire list, are left alone.
+    pub(crate) fn sweep(&self, cancel: &pulse_bus::CancellationToken) {
+        let now = self.s.now();
+        let conn = self.s.conn().unwrap();
+        let rows = crate::util::must_rows(
+            &conn,
+            "SELECT request_id FROM compute_machines WHERE released_at = '' ORDER BY request_id",
+            &[],
+        );
+        drop(conn);
+        let mut seen = std::collections::BTreeSet::new();
+        for r in rows {
+            let id = r.str("request_id");
+            let Ok(req) = pulse_tasks::get_compute(&self.s, &id) else {
+                continue;
+            };
+            // ready ones are release_due's, provisioning ones are inflight or stale
+            if req.status != "failed" {
+                continue;
+            }
+            seen.insert(id.clone());
+            let worker = self.clone();
+            self.start(&id, move || worker.release_leftover_again(req));
+        }
+        for p in providers() {
+            let found = match p.hands_machines(cancel, &self.s) {
+                Ok(found) => found,
+                Err(e) => {
+                    self.say_line(format!(
+                        "compute: {} sweep: {}",
+                        p.name(),
+                        redact_secrets(&crate::run::err_message(&e))
+                    ));
+                    continue;
+                }
+            };
+            for m in found {
+                let Some(id) = m
+                    .tags
+                    .get(crate::provider::TAG_REQUEST)
+                    .cloned()
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                if seen.contains(&id) {
+                    continue;
+                }
+                let Ok(req) = pulse_tasks::get_compute(&self.s, &id) else {
+                    continue;
+                };
+                if matches!(req.status.as_str(), "approved" | "provisioning" | "ready")
+                    || self.retired(&m.name)
+                {
+                    continue;
+                }
+                // a provider's list lags behind its delete; one released this sweep interval
+                // is not an orphan yet
+                let released_at = load_machine(&self.s, &id).1.str("released_at");
+                if !released_at.is_empty()
+                    && crate::util::must_iso(&now) - crate::util::must_iso(&released_at)
+                        < chrono::Duration::minutes(COMPUTE_SWEEP_MINUTES)
+                {
+                    continue;
+                }
+                seen.insert(id.clone());
+                let worker = self.clone();
+                let p = p.clone();
+                self.start(&id, move || worker.release_orphan(p, req, m));
+            }
+        }
+    }
+    fn retired(&self, name: &str) -> bool {
+        let conn = self.s.conn().unwrap();
+        crate::util::must_one(
+            &conn,
+            "SELECT COUNT(*) AS n FROM retired_vms WHERE name = ?",
+            &[&name],
+        )
+        .int("n")
+            > 0
+    }
+    fn release_leftover_again(&self, req: pulse_tasks::ComputeRequest) {
+        match self.release_leftover(&req.id) {
+            Leftover::Released(m) => self.leftover_released(req, m, "its request failed"),
+            Leftover::Failed(m, why) => self.say_line(format!(
+                "compute {}: {} still not released: {}",
+                req.id, m.name, why
+            )),
+            Leftover::Nothing => {}
+        }
+    }
+    fn release_orphan(&self, p: Arc<dyn Provider>, req: pulse_tasks::ComputeRequest, m: Machine) {
+        let now = self.s.now();
+        // remembered first, so a failed release is retried as a leftover and counted
+        save_machine(&self.s, &req.id, &m, &now);
+        let rctx = pulse_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
+        match p.release(&rctx, &m) {
+            Ok(()) => {
+                machine_released(&self.s, &req.id, &now);
+                self.leftover_released(
+                    req.clone(),
+                    m,
+                    &format!(
+                        "the provider still listed it while the request was {}",
+                        req.status
+                    ),
+                );
+            }
+            Err(err) => {
+                let why = redact_secrets(&crate::run::err_message(&err));
+                let attempts = machine_release_failed(&self.s, &req.id, &why);
+                self.say_line(format!(
+                    "compute {}: {} found at {} and not released (attempt {}): {}",
+                    req.id, m.name, m.provider, attempts, why
+                ));
+                if attempts == 1 {
+                    self.finding(
+                        req.clone(),
+                        &format!(
+                            "compute {}: {} is still running at {} and could not be released",
+                            req.id, m.name, m.provider
+                        ),
+                        &format!(
+                            "`{}` on {} carries the tag pulse-request={} but the request is {}, so it should not exist; the provider refused to release it: {}\n\nThe daemon tries again every {} minutes; a human may delete it by hand.\n",
+                            m.name, m.provider, req.id, req.status, why, COMPUTE_SWEEP_MINUTES
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    fn leftover_released(&self, req: pulse_tasks::ComputeRequest, m: Machine, because: &str) {
+        let now = self.s.now();
+        let conn = self.s.conn().unwrap();
+        crate::util::event_at(
+            &conn,
+            &now,
+            &self.o.actor,
+            "compute.leftover-released",
+            &req.id,
+            json!({"project": req.project, "provider": m.provider, "name": m.name, "because": because}),
+        );
+        drop(conn);
+        self.finding(
+            req.clone(),
+            &format!(
+                "compute {}: released {} ({}) that was left running; {}",
+                req.id, m.name, m.provider, because
+            ),
+            &format!(
+                "`{}` on {} was still there after request {} ({}) ended: {}. The daemon released it; nothing of it costs money now. A failed provisioning releases what it created at once, and this sweep runs every {} minutes for anything that slipped through.\n",
+                m.name, m.provider, req.id, req.status, because, COMPUTE_SWEEP_MINUTES
+            ),
+        );
+        self.say_line(format!(
+            "compute {}: released {} ({}) left running; {}",
+            req.id, m.name, m.provider, because
+        ));
+    }
+}
+/// What release_leftover found for a request: no machine row, a machine now (or already)
+/// released, or one the provider refused to release with the reason.
+pub(crate) enum Leftover {
+    Nothing,
+    Released(Machine),
+    Failed(Machine, String),
+}
+impl Leftover {
+    /// The clause appended to a failure note.
+    pub(crate) fn clause(&self) -> String {
+        match self {
+            Leftover::Nothing => String::new(),
+            Leftover::Released(_) => "; what was created is released".into(),
+            Leftover::Failed(_, why) => format!(
+                "; releasing what was created failed too: {why}; the daemon tries again every {COMPUTE_SWEEP_MINUTES} minutes"
+            ),
+        }
     }
 }
 pub(crate) fn compute_finding(

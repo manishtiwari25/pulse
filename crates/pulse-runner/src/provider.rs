@@ -228,6 +228,16 @@ pub(crate) fn machine_name(request_id: String) -> String {
     crate::util::slugify(&format!("pulse-{}", request_id.to_lowercase()), 40)
 }
 
+/// Remembers a machine the moment the provider made it, before the address, host key and pairing
+/// steps that can still fail: whatever happens after this, the compute worker finds the row and
+/// releases the machine instead of leaving it running (CR-002 ran for a day because the Rust port
+/// dropped the release the Go daemon did on error).
+pub(crate) fn machine_created(req: &crate::provider::ProvisionRequest, m: &Machine) {
+    if let Some(s) = &req.store {
+        crate::compute::save_machine(s, &req.id, m, &s.now());
+    }
+}
+
 pub(crate) fn write_admin_alias(
     hub_home: String,
     alias: String,
@@ -856,6 +866,298 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             ("ready", "hands-cr-001"),
             "slow provision after once-daemon: {got:?}\n{log}"
         );
+    }
+
+    const AZURE_SETTINGS: &[(&str, &str)] = &[
+        ("compute.provider", "azure"),
+        ("compute.azure.resource_group", "pulse-hands"),
+        ("compute.azure.location", "westeurope"),
+        ("compute.azure.vm_size", "Standard_B2ms"),
+    ];
+
+    fn approved_request(s: &pulse_store::Store) -> pulse_tasks::ComputeRequest {
+        let req =
+            pulse_tasks::request_compute(s, "proj", "aurora", "", 2, "the fixtures take an hour")
+                .unwrap_or_else(|err| panic!("{err}"));
+        pulse_tasks::approve(s, &req.id, "go ahead", crate::util::HUMAN_AGENT)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn once(s: &pulse_store::Store, h: &ComputeHarness) -> String {
+        crate::test_helpers::once_daemon(
+            s,
+            crate::daemon::DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: nothing'".into(),
+                hub_home: h.hub_home.clone(),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn findings_like(s: &pulse_store::Store, pattern: &str) -> Vec<String> {
+        let conn = s.conn().unwrap();
+        crate::util::must_rows(
+            &conn,
+            "SELECT summary FROM posts WHERE kind = 'finding' AND summary LIKE ? ORDER BY id",
+            &[&pattern],
+        )
+        .iter()
+        .map(|r| r.str("summary"))
+        .collect()
+    }
+
+    /// CR-002 on the live hub: the VM was bought, then the request failed for want of a
+    /// linux/amd64 pulse binary. The binary is now checked first, so nothing is bought.
+    #[test]
+    fn compute_buys_nothing_without_a_hands_binary() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let harness_binary = crate::pair::set_hands_binary(Box::new({
+            let asked = asked.clone();
+            move |arch| {
+                asked.lock().unwrap().push(arch.to_string());
+                Err(anyhow::anyhow!(
+                    "no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY"
+                ))
+            }
+        }));
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let _ = crate::pair::set_hands_binary(harness_binary);
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "failed", "request: {got:?}\n{log}");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec!["amd64"],
+            "Standard_B2ms is amd64"
+        );
+        assert!(
+            !az.has("vm create") && !az.has("group create") && az.deleted().is_empty(),
+            "az was asked to make something: {:?}",
+            az.calls()
+        );
+        let found = findings_like(&s, "compute CR-001 failed: no linux/amd64 pulse binary%");
+        assert!(
+            found.len() == 1 && found[0].ends_with("; no machine was bought"),
+            "findings: {found:?}\n{log}"
+        );
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "an executor was registered without a machine"
+        );
+    }
+
+    /// A failure after the machine exists releases it (VM and its siblings) before the request
+    /// is failed, as the Go runner did; the machine row keeps the released time.
+    #[test]
+    fn compute_releases_what_a_failed_provisioning_created() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| {
+                if args.join(" ").starts_with("vm run-command invoke") {
+                    return Ok((1, String::new(), "RunCommand is disabled here".into()));
+                }
+                az.run(ctx, args, timeout)
+            })
+        });
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "failed", "request: {got:?}\n{log}");
+        assert_eq!(az.deleted(), vec!["pulse-cr-001"], "{log}");
+        let tags = az.0.lock().unwrap().tags.get("pulse-cr-001").cloned();
+        assert_eq!(
+            tags.as_ref().and_then(|t| t.get(TAG_REQUEST).cloned()),
+            Some("CR-001".to_string()),
+            "the VM carries its request tag: {tags:?}"
+        );
+        let (m, row) = crate::compute::load_machine(&s, &req.id);
+        assert!(
+            m.is_some_and(|m| m.name == "pulse-cr-001") && !row.str("released_at").is_empty(),
+            "machine row after the failure: {row:?}"
+        );
+        let found = findings_like(&s, "compute CR-001 failed:%");
+        assert!(
+            found.len() == 1
+                && found[0].contains("RunCommand is disabled here")
+                && found[0].ends_with("; what was created is released"),
+            "findings: {found:?}\n{log}"
+        );
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "an executor was registered for a failed machine"
+        );
+    }
+
+    /// Two ways a daemon restart mid-create leaves a request `provisioning`: the machine was
+    /// recorded (released at once) or not yet (the next sweep finds it by its tag).
+    #[test]
+    fn compute_stale_provisioning_is_released_now_or_by_the_sweep() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let recorded = approved_request(&s);
+        let forgotten = approved_request(&s);
+        for r in [&recorded, &forgotten] {
+            pulse_tasks::set_compute_status(&s, &r.id, "provisioning", "", TEST_DAEMON)
+                .unwrap_or_else(|err| panic!("{err}"));
+            az.leak(&format!("pulse-{}", r.id.to_lowercase()), &r.id, "proj");
+        }
+        crate::compute::save_machine(
+            &s,
+            &recorded.id,
+            &Machine {
+                provider: "azure".into(),
+                name: "pulse-cr-001".into(),
+                executor: "hands-cr-001".into(),
+                detail: BTreeMap::from([("resource_group".to_string(), "pulse-hands".to_string())]),
+                ..Default::default()
+            },
+            TEST_NOW,
+        );
+        let log = once(&s, &h);
+        for r in [&recorded, &forgotten] {
+            let got = pulse_tasks::get_compute(&s, &r.id).unwrap_or_default();
+            assert_eq!(got.status, "failed", "{}: {got:?}\n{log}", r.id);
+        }
+        assert_eq!(
+            az.deleted(),
+            vec!["pulse-cr-001"],
+            "first daemon run\n{log}"
+        );
+        let found = findings_like(&s, "compute CR-00_ failed: the daemon stopped%");
+        assert!(
+            found.len() == 2
+                && found.iter().any(|f| f.starts_with("compute CR-001") && f.ends_with("; what was created is released"))
+                && found.iter().any(|f| f.starts_with("compute CR-002") && f.contains("released by the sweep")),
+            "findings: {found:?}\n{log}"
+        );
+        // the sweep of that run saw CR-002 still provisioning; the next one releases it
+        let log = once(&s, &h);
+        assert_eq!(
+            az.deleted(),
+            vec!["pulse-cr-001", "pulse-cr-002"],
+            "second run\n{log}"
+        );
+        let conn = s.conn().unwrap();
+        let swept = crate::util::must_rows(
+            &conn,
+            "SELECT subject, detail FROM events WHERE action = 'compute.leftover-released' ORDER BY seq",
+            &[],
+        );
+        assert!(
+            swept.len() == 1
+                && swept[0].str("subject") == "CR-002"
+                && swept[0]
+                    .str("detail")
+                    .contains("\"name\": \"pulse-cr-002\""),
+            "leftover events: {swept:?}\n{log}"
+        );
+    }
+
+    /// The sweep never calls the provider on a hub that has not bought a machine, releases only
+    /// machines tagged with a request of this store that is over, and leaves the rest alone.
+    #[test]
+    fn compute_sweep_releases_only_what_is_over() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        az.leak("pulse-cr-001", "CR-001", "proj");
+        az.leak("pulse-cr-002", "CR-002", "proj");
+        az.leak("pulse-cr-009", "CR-009", "other-store");
+        let over = pulse_tasks::request_compute(&s, "proj", "aurora", "", 2, "done long ago")
+            .unwrap_or_else(|err| panic!("{err}"));
+        let live = pulse_tasks::request_compute(&s, "proj", "aurora", "", 2, "in use")
+            .unwrap_or_else(|err| panic!("{err}"));
+        let log = once(&s, &h);
+        assert!(
+            !az.has("vm list") && az.deleted().is_empty(),
+            "nothing was ever bought here, yet az was asked: {:?}\n{log}",
+            az.calls()
+        );
+        pulse_tasks::set_compute_status(&s, &over.id, "failed", "", TEST_DAEMON)
+            .unwrap_or_else(|err| panic!("{err}"));
+        pulse_tasks::set_compute_status(&s, &live.id, "ready", "hands-cr-002", TEST_DAEMON)
+            .unwrap_or_else(|err| panic!("{err}"));
+        crate::compute::save_machine(
+            &s,
+            &live.id,
+            &Machine {
+                provider: "azure".into(),
+                name: "pulse-cr-002".into(),
+                executor: "hands-cr-002".into(),
+                ..Default::default()
+            },
+            &s.now(),
+        );
+        let log = once(&s, &h);
+        assert!(
+            az.has("vm list -d --query"),
+            "no sweep: {:?}\n{log}",
+            az.calls()
+        );
+        assert_eq!(az.deleted(), vec!["pulse-cr-001"], "{log}");
+        let found = findings_like(&s, "compute CR-001: released pulse-cr-001 (azure)%");
+        assert_eq!(found.len(), 1, "findings: {found:?}\n{log}");
+        let alive: Vec<String> = az.0.lock().unwrap().created.keys().cloned().collect();
+        assert_eq!(alive, vec!["pulse-cr-002", "pulse-cr-009"], "left alone");
+    }
+
+    #[test]
+    fn hands_arch_follows_the_size_family() {
+        for (provider, size, want) in [
+            ("azure", "Standard_B2ms", "amd64"),
+            ("azure", "Standard_D2s_v5", "amd64"),
+            ("azure", "Standard_D2ps_v5", "arm64"),
+            ("azure", "Standard_B2pts_v2", "arm64"),
+            ("azure", "Standard_E4pds_v5", "arm64"),
+            ("azure", "Standard_NP10s", "amd64"),
+            ("azure", "", "amd64"),
+            ("aws", "t3.medium", "amd64"),
+            ("aws", "t4g.medium", "arm64"),
+            ("aws", "c6gn.large", "arm64"),
+            ("aws", "a1.large", "arm64"),
+            ("aws", "g4dn.xlarge", "amd64"),
+            ("gcp", "e2-medium", "amd64"),
+            ("gcp", "t2a-standard-2", "arm64"),
+            ("gcp", "c4a-standard-4", "arm64"),
+            ("nowhere", "anything", "amd64"),
+        ] {
+            assert_eq!(
+                crate::compute::hands_arch_for_size(provider, size),
+                want,
+                "{provider} {size}"
+            );
+        }
     }
 
     #[test]

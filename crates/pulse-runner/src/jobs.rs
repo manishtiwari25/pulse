@@ -4231,6 +4231,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 })))
             }
         }));
+        let old_hands = crate::pair::set_hands_binary(Box::new(|_| {
+            Ok((b"fake pulse".to_vec(), "fixture".to_string()))
+        }));
 
         let req = pulse_tasks::request_compute(
             &s,
@@ -4420,6 +4423,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         crate::executor::restore_run_ssh(old_ssh);
         let _ = crate::azure::set_run_az(old_az);
         let _ = crate::provider::set_pair_hands(old_pair);
+        let _ = crate::pair::set_hands_binary(old_hands);
     }
 
     #[test]

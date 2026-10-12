@@ -5,7 +5,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
@@ -51,6 +51,18 @@ pub(crate) fn set_hands_binary(f: Box<HandsBinaryFn>) -> Box<HandsBinaryFn> {
         &mut *HANDS_BINARY.write().expect("hands_binary poisoned"),
         f,
     )
+}
+
+/// A checkout to cross-build the hands binary from when neither the working directory nor the
+/// binary's own folder is inside one: the daemon sets it to the brain project's path, the
+/// checkout it builds itself from.
+pub(crate) static HANDS_SOURCE_ROOT: LazyLock<RwLock<String>> =
+    LazyLock::new(|| RwLock::new(String::new()));
+
+pub(crate) fn set_hands_source_root(root: String) {
+    *HANDS_SOURCE_ROOT
+        .write()
+        .expect("hands_source_root poisoned") = root;
 }
 
 pub(crate) fn valid_name(name: String) -> bool {
@@ -833,17 +845,31 @@ pub(crate) fn module_root() -> String {
     {
         starts.push(p.to_path_buf());
     }
+    let hinted = HANDS_SOURCE_ROOT
+        .read()
+        .expect("hands_source_root poisoned")
+        .clone();
+    if !hinted.is_empty() {
+        starts.push(PathBuf::from(hinted));
+    }
+    module_root_from(&starts)
+}
+
+/// The first pulse workspace at or above any of the starts, in order.
+pub(crate) fn module_root_from(starts: &[PathBuf]) -> String {
     for start in starts {
         for dir in start.ancestors() {
-            let manifest = dir.join("Cargo.toml");
-            if std::fs::read_to_string(&manifest).is_ok_and(|d| d.contains("[workspace]"))
-                && dir.join("crates/pulse/Cargo.toml").is_file()
-            {
+            if is_pulse_workspace(dir) {
                 return dir.to_string_lossy().to_string();
             }
         }
     }
     String::new()
+}
+
+fn is_pulse_workspace(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|d| d.contains("[workspace]"))
+        && dir.join("crates/pulse/Cargo.toml").is_file()
 }
 
 pub(crate) fn sha256_bytes(data: Vec<u8>) -> String {
@@ -2404,6 +2430,54 @@ mod tests {
         );
         assert_eq!(pair_applied_events(&s).len(), 2, "pair.applied events");
     }
+
+    #[test]
+    fn module_root_finds_the_hinted_checkout() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().join("brain");
+        std::fs::create_dir_all(root.join("crates/pulse")).expect("crates");
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n").expect("manifest");
+        std::fs::write(root.join("crates/pulse/Cargo.toml"), "[package]\n").expect("pulse");
+        let nowhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&nowhere).expect("elsewhere");
+        assert_eq!(module_root_from(std::slice::from_ref(&nowhere)), "");
+        // the hint is searched upward like the others, so the daemon may be given a sub-folder
+        assert_eq!(
+            module_root_from(&[nowhere, root.join("crates/pulse-runner/src")]),
+            root.to_string_lossy()
+        );
+        // a plain crate is not a checkout the hands binary can be built from
+        std::fs::remove_file(root.join("crates/pulse/Cargo.toml")).expect("rm");
+        assert_eq!(module_root_from(&[root]), "");
+    }
+
+    #[test]
+    fn cross_build_prefers_zigbuild_when_present() {
+        let plain = cross_build_args("x86_64-unknown-linux-musl", "/src/pulse", false);
+        assert_eq!(
+            plain,
+            vec![
+                "build",
+                "--release",
+                "--locked",
+                "--bin",
+                "pulse",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "--target-dir",
+                "/src/pulse/target"
+            ]
+        );
+        let zig = cross_build_args("aarch64-unknown-linux-musl", "/src/pulse", true);
+        assert_eq!(zig[0], "zigbuild");
+        assert_eq!(
+            zig[1..],
+            plain[1..]
+                .iter()
+                .map(|a| a.replace("x86_64", "aarch64"))
+                .collect::<Vec<_>>()[..]
+        );
+    }
 }
 
 fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
@@ -2432,30 +2506,29 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
             }
         }
     }
-    let root = module_root();
-    if root.is_empty() {
-        return Err(crate::util::fail(1, format!("no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY, place pulse-linux-{arch} beside this binary, or run from the pulse source tree")).into());
-    }
     let triple = match arch {
         "amd64" => "x86_64-unknown-linux-musl",
         "arm64" => "aarch64-unknown-linux-musl",
         _ => "",
     };
-    if triple.is_empty() {
-        return Err(crate::util::fail(1, format!("no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY, place pulse-linux-{arch} beside this binary, or run from the pulse source tree")).into());
+    let root = module_root();
+    if root.is_empty() || triple.is_empty() {
+        return Err(crate::util::fail(1, hands_binary_missing(arch, triple)).into());
     }
+    if !rustup_target_installed(triple) {
+        return Err(crate::util::fail(
+            1,
+            format!(
+                "{}; the checkout at {root} cannot cross-build it: the Rust target {triple} is not installed (rustup target add {triple}; linking it from macOS needs cargo-zigbuild and zig)",
+                hands_binary_missing(arch, triple)
+            ),
+        )
+        .into());
+    }
+    let zig = on_path("cargo-zigbuild");
+    let argv = cross_build_args(triple, &root, zig);
     let out = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "--locked",
-            "--bin",
-            "pulse",
-            "--target",
-            triple,
-            "--target-dir",
-            &format!("{root}/target"),
-        ])
+        .args(&argv)
         .current_dir(&root)
         .output()?;
     if !out.status.success() {
@@ -2464,14 +2537,19 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
             String::from_utf8_lossy(&out.stderr),
             String::from_utf8_lossy(&out.stdout)
         );
-        return Err(crate::util::fail(
-            1,
-            format!(
-                "cargo build for linux/{arch} failed: {}",
-                pair_tail(combined)
-            ),
-        )
-        .into());
+        let mut why = format!(
+            "cargo {} for linux/{arch} in {root} failed: {}",
+            argv[0],
+            pair_tail(combined)
+        );
+        if !zig && !cfg!(target_os = "linux") {
+            why.push_str(
+                "; cross-linking from this machine needs cargo-zigbuild (cargo install cargo-zigbuild; brew install zig), or place pulse-linux-",
+            );
+            why.push_str(arch);
+            why.push_str(" beside this binary / set PULSE_HANDS_BINARY");
+        }
+        return Err(crate::util::fail(1, why).into());
     }
     let artifact = Path::new(&root)
         .join("target")
@@ -2479,7 +2557,55 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
         .join("release")
         .join("pulse");
     let data = std::fs::read(&artifact)?;
-    Ok((data, format!("cargo build --target {triple} --bin pulse")))
+    Ok((
+        data,
+        format!("cargo {} --target {triple} --bin pulse", argv[0]),
+    ))
+}
+
+fn hands_binary_missing(arch: &str, triple: &str) -> String {
+    let mut s = format!(
+        "no linux/{arch} pulse binary to ship: set PULSE_HANDS_BINARY, place pulse-linux-{arch} beside this binary, or run from the pulse source tree"
+    );
+    if !triple.is_empty() {
+        s.push_str(&format!(
+            " with the {triple} target installed (the daemon builds from the brain project's checkout)"
+        ));
+    }
+    s
+}
+
+/// `cargo zigbuild` links a musl target from any host; plain `cargo build` needs a linker for it.
+pub(crate) fn cross_build_args(triple: &str, root: &str, zigbuild: bool) -> Vec<String> {
+    vec![
+        if zigbuild { "zigbuild" } else { "build" }.into(),
+        "--release".into(),
+        "--locked".into(),
+        "--bin".into(),
+        "pulse".into(),
+        "--target".into(),
+        triple.into(),
+        "--target-dir".into(),
+        format!("{root}/target"),
+    ]
+}
+
+fn rustup_target_installed(triple: &str) -> bool {
+    match Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.trim() == triple),
+        // without rustup (a distro toolchain) cargo itself says whether the target is there
+        _ => true,
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 fn parse_pair_ssh_address(text: &str) -> anyhow::Result<(String, String, i32)> {

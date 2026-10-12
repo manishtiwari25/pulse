@@ -590,6 +590,7 @@ impl AwsProvider {
         if let Some(g) = inst.security_groups.first() {
             m.detail.insert("security_group".into(), g.group_id.clone());
         }
+        crate::provider::machine_created(&req, &m);
         let mut ip = inst.public_ip.clone();
         crate::provider::poll_until(ctx, format!("the address of {name}"), || {
             if !ip.is_empty() && inst.state.name == "running" {

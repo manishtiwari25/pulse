@@ -240,6 +240,7 @@ pub(crate) struct FakeAz(pub Arc<Mutex<FakeAzState>>);
 pub(crate) struct FakeAzState {
     pub calls: Vec<Vec<String>>,
     pub created: BTreeMap<String, bool>,
+    pub tags: BTreeMap<String, BTreeMap<String, String>>,
     pub deleted: Vec<String>,
 }
 
@@ -248,6 +249,20 @@ pub(crate) fn new_fake_az() -> FakeAz {
 }
 
 impl FakeAz {
+    /// A VM that exists at the provider as if made by an earlier daemon, with the compute tags.
+    pub(crate) fn leak(&self, name: &str, request: &str, project: &str) {
+        let mut f = self.0.lock().expect("fake az");
+        f.created.insert(name.to_string(), true);
+        f.tags.insert(
+            name.to_string(),
+            BTreeMap::from([
+                ("pulse".to_string(), "hands".to_string()),
+                ("pulse-request".to_string(), request.to_string()),
+                ("pulse-project".to_string(), project.to_string()),
+            ]),
+        );
+    }
+
     pub(crate) fn run(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -269,6 +284,25 @@ impl FakeAz {
                 (3, String::new(), "ResourceGroupNotFound".into())
             }
             _ if cmd.starts_with("group create") => (0, String::new(), String::new()),
+            _ if cmd.starts_with("vm list") => {
+                let rg = arg_after(&args, "--resource-group");
+                let rows = f
+                    .created
+                    .iter()
+                    .filter(|(_, alive)| **alive)
+                    .filter_map(|(name, _)| {
+                        let tags = f.tags.get(name)?;
+                        Some(serde_json::json!({
+                            "name": name,
+                            "rg": rg,
+                            "ip": "203.0.113.5",
+                            "request": tags.get("pulse-request"),
+                            "project": tags.get("pulse-project"),
+                        }))
+                    })
+                    .collect::<Vec<_>>();
+                (0, serde_json::Value::Array(rows).to_string(), String::new())
+            }
             _ if cmd.starts_with("vm show") => {
                 let name = arg_after(&args, "--name");
                 if !f.created.get(&name).copied().unwrap_or(false) {
@@ -284,6 +318,15 @@ impl FakeAz {
             }
             _ if cmd.starts_with("vm create") => {
                 let name = arg_after(&args, "--name");
+                let mut tags = BTreeMap::new();
+                if let Some(i) = args.iter().position(|a| a == "--tags") {
+                    for kv in args[i + 1..].iter().take_while(|a| !a.starts_with('-')) {
+                        if let Some((k, v)) = kv.split_once('=') {
+                            tags.insert(k.to_string(), v.to_string());
+                        }
+                    }
+                }
+                f.tags.insert(name.clone(), tags);
                 f.created.insert(name, true);
                 (
                     0,
@@ -846,6 +889,7 @@ pub(crate) struct ComputeHarness {
     old_wait: Duration,
     old_ssh: crate::executor::SshRunner,
     old_pair: Option<Box<crate::provider::PairHandsFn>>,
+    old_hands: Option<Box<crate::pair::HandsBinaryFn>>,
     old_place: crate::executor::PlaceLoginFn,
 }
 
@@ -855,6 +899,9 @@ impl Drop for ComputeHarness {
         crate::executor::restore_run_ssh(self.old_ssh.clone());
         if let Some(old) = self.old_pair.take() {
             let _ = crate::provider::set_pair_hands(old);
+        }
+        if let Some(old) = self.old_hands.take() {
+            let _ = crate::pair::set_hands_binary(old);
         }
         *crate::executor::PLACE_LOGIN.write().expect("place login") = self.old_place;
         SSH_CALLS.lock().unwrap().clear();
@@ -959,6 +1006,9 @@ pub(crate) fn new_compute_harness(
             ..Default::default()
         })))
     }));
+    let old_hands = crate::pair::set_hands_binary(Box::new(|_| {
+        Ok((b"fake pulse".to_vec(), "fixture".to_string()))
+    }));
     ComputeHarness {
         hub_home: hub_home.display().to_string(),
         _hub_home_dir: hub_home_dir,
@@ -966,6 +1016,7 @@ pub(crate) fn new_compute_harness(
         old_wait,
         old_ssh,
         old_pair: Some(old_pair),
+        old_hands: Some(old_hands),
         old_place,
     }
 }

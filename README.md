@@ -223,8 +223,16 @@ activity fold under **Details for this machine**.
   `multipassd`) - PULSE stores no cloud credential - boots Ubuntu 24.04 with
   the same cloud-init, learns the machine's ssh host key over a channel the
   provider vouches for before the first connection, and tags what it makes
-  `pulse=hands`. Each executor row offers the same preview-then-remove as
-  `pulse remove executor`.
+  `pulse=hands` with the request id. Nothing is bought before the daemon has
+  a linux `pulse` binary for the size's architecture to pair the machine
+  with (`PULSE_HANDS_BINARY`, a `pulse-linux-amd64`/`-arm64` beside the hub's
+  binary, or a cross-build from the brain project's checkout - `rustup target
+  add x86_64-unknown-linux-musl`, plus `cargo-zigbuild` and `zig` on macOS);
+  a request that fails later releases what it created first (on Azure the VM
+  and its public IP, VNet and NSG), and a sweep every 30 minutes releases any
+  machine still running under a request that is over - a daemon restarted
+  mid-create cannot leave one billing. Each executor row offers the same
+  preview-then-remove as `pulse remove executor`.
 - **Settings** - runner caps, board rules, amendment quorum, the two models
   the runs get (`worker_model` for the work that changes code - task, improve
   and experiment jobs; `light_model` for the rest - the lead, answers,
@@ -2017,7 +2025,10 @@ the machine and prints the apply, undo and commit scripts and the local
 changes without applying any of it. For installed hands it loads or builds
 the Linux template locally (`PULSE_HANDS_BINARY`, a `pulse-linux-ARCH` beside
 the binary, or `cargo build --release --target ARCH-unknown-linux-musl` from
-the checkout), then reports mismatches as `hands=differs (installed VERSION
+the checkout - the working directory, the binary's own, or the brain
+project's path the daemon builds itself from; `cargo zigbuild` when
+`cargo-zigbuild` is installed, which is what links a musl target from macOS),
+then reports mismatches as `hands=differs (installed VERSION
 SHA7, template VERSION SHA7)`. Versions come from the build metadata embedded
 in the binary or a script's `# pulse-hands VERSION` header; `SHA7` is the
 first seven hex digits of its SHA-256. Metadata is read, never executed.

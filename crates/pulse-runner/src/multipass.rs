@@ -266,6 +266,7 @@ impl MultipassProvider {
                 .map(|_| m);
             }
         }
+        crate::provider::machine_created(&req, &m);
         let mut ip = String::new();
         crate::provider::poll_until(ctx, format!("the address of {name}"), || {
             let got = multipass_describe(ctx, name.clone())?;

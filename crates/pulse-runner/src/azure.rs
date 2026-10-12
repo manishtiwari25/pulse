@@ -272,6 +272,7 @@ impl AzureProvider {
         } else {
             log("vm %s exists; not recreated", &[json!(vm)]);
         }
+        crate::provider::machine_created(&req, &m);
         let mut ip = m
             .address
             .trim_start_matches(&format!("{AZURE_ADMIN_USER}@"))
@@ -412,7 +413,123 @@ impl AzureProvider {
                 );
             }
         }
+        // The public IP, VNet and NSG `az vm create` made beside the VM (named after it) go too,
+        // best effort, as the Go daemon did: a Standard public IP is billed while it exists.
+        for (kind, suffix) in [("public-ip", "PublicIP"), ("vnet", "VNET"), ("nsg", "NSG")] {
+            let name = format!("{}{}", m.name, suffix);
+            let shown = (RUN_AZ.read().unwrap())(
+                ctx,
+                cfg.args(&[
+                    "network".into(),
+                    kind.into(),
+                    "show".into(),
+                    "--resource-group".into(),
+                    cfg.resource_group.clone(),
+                    "--name".into(),
+                    name.clone(),
+                    "-o".into(),
+                    "none".into(),
+                ]),
+                AZ_SHORT,
+            );
+            if matches!(shown, Ok((0, _, _))) {
+                let _ = (RUN_AZ.read().unwrap())(
+                    ctx,
+                    cfg.args(&[
+                        "network".into(),
+                        kind.into(),
+                        "delete".into(),
+                        "--resource-group".into(),
+                        cfg.resource_group.clone(),
+                        "--name".into(),
+                        name,
+                        "-o".into(),
+                        "none".into(),
+                    ]),
+                    Duration::from_secs(5 * 60),
+                );
+            }
+        }
         Ok(())
+    }
+    /// Every VM in the configured resource group tagged by this hub's compute path, with the
+    /// request it was made for; nothing when Azure is not configured here.
+    pub(crate) fn hands_machines(
+        &self,
+        ctx: &pulse_bus::CancellationToken,
+        s: &pulse_store::Store,
+    ) -> anyhow::Result<Vec<crate::provider::Machine>> {
+        let Ok(cfg) = azure_settings(s, String::new()) else {
+            return Ok(vec![]);
+        };
+        let query = format!(
+            "[?tags.{}=='hands' && tags.\"{}\"].{{name:name,rg:resourceGroup,ip:publicIps,request:tags.\"{}\",project:tags.\"{}\"}}",
+            crate::provider::TAG_HANDS,
+            crate::provider::TAG_REQUEST,
+            crate::provider::TAG_REQUEST,
+            crate::provider::TAG_PROJECT
+        );
+        let (rc, out, err_text) = (RUN_AZ.read().unwrap())(
+            ctx,
+            cfg.args(&[
+                "vm".into(),
+                "list".into(),
+                "-d".into(),
+                "--query".into(),
+                query,
+                "--resource-group".into(),
+                cfg.resource_group.clone(),
+                "-o".into(),
+                "json".into(),
+            ]),
+            AZ_SHORT,
+        )?;
+        if rc != 0 {
+            return az_err("az vm list".into(), rc, out, err_text, anyhow!("")).map(|_| vec![]);
+        }
+        #[derive(Deserialize, Default)]
+        struct Found {
+            name: Option<String>,
+            rg: Option<String>,
+            ip: Option<String>,
+            request: Option<String>,
+            project: Option<String>,
+        }
+        let found: Vec<Found> = serde_json::from_str(out.trim()).unwrap_or_default();
+        Ok(found
+            .into_iter()
+            .filter_map(|f| {
+                let name = f.name.unwrap_or_default();
+                let request = f.request.unwrap_or_default();
+                if name.is_empty() || request.is_empty() {
+                    return None;
+                }
+                Some(crate::provider::Machine {
+                    provider: "azure".into(),
+                    name,
+                    executor: crate::compute::compute_executor_name(&request),
+                    tags: BTreeMap::from([
+                        (crate::provider::TAG_HANDS.into(), "hands".into()),
+                        (crate::provider::TAG_REQUEST.into(), request),
+                        (
+                            crate::provider::TAG_PROJECT.into(),
+                            f.project.unwrap_or_default(),
+                        ),
+                    ]),
+                    detail: BTreeMap::from([
+                        (
+                            "resource_group".into(),
+                            f.rg.filter(|rg| !rg.is_empty())
+                                .unwrap_or_else(|| cfg.resource_group.clone()),
+                        ),
+                        ("subscription".into(), cfg.subscription.clone()),
+                        ("location".into(), cfg.location.clone()),
+                        ("public_ip".into(), f.ip.unwrap_or_default()),
+                    ]),
+                    ..Default::default()
+                })
+            })
+            .collect())
     }
     pub(crate) fn probe(
         &self,
@@ -674,5 +791,12 @@ impl crate::provider::Provider for AzureProvider {
     }
     fn start_hint(&self, m: &crate::provider::Machine) -> String {
         self.start_hint(m)
+    }
+    fn hands_machines(
+        &self,
+        cancel: &pulse_bus::CancellationToken,
+        s: &pulse_store::Store,
+    ) -> anyhow::Result<Vec<crate::provider::Machine>> {
+        self.hands_machines(cancel, s)
     }
 }
