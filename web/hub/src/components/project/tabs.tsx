@@ -1020,4 +1020,3 @@ function EnvBody({ id, slug }: { id: string; slug: string }) {
   const q = useApi<{ body: string }>("records/" + encodeURIComponent(id) + "?project=" + encodeURIComponent(slug), { refresh: 60000 });
   return <Wait q={q}>{(d) => <Markdown source={d.body} className="max-h-[60vh] overflow-y-auto" />}</Wait>;
 }
-
