@@ -2058,6 +2058,112 @@ fn fixture_statuses() {
 }
 
 #[test]
+fn proposal_status_follows_the_result_on_the_proposal() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    // The live shape: finding -> question -> agreed answer; the human's
+    // decision lands on the answer, then a code result lands on the finding.
+    let finding = f.post(test_fixture::FPost::new(
+        "finding",
+        "runner",
+        "compute",
+        "runner-a/model-a",
+        "2026-09-08T08:00:00Z",
+        "compute never worked",
+        "s-a",
+    ));
+    let question = f.post(test_fixture::FPost::new(
+        "question",
+        "runner",
+        "compute",
+        "runner-a/model-a",
+        "2026-09-08T08:10:00Z",
+        "where does the binary come from?",
+        "s-a",
+    ));
+    let mut p = test_fixture::FPost::new(
+        "answer",
+        "runner",
+        "compute",
+        "runner-a/model-a",
+        "2026-09-08T08:20:00Z",
+        "Proposal for the human: auto_approve 0",
+        "s-a",
+    );
+    p.on = question;
+    p.resolution = "agreed".into();
+    let proposal = f.post(p);
+    let mut p = test_fixture::FPost::new(
+        "result",
+        "runner",
+        "compute",
+        "lead",
+        "2026-09-08T08:30:00Z",
+        "declined: money decision",
+        "s-lead",
+    );
+    p.on = proposal.clone();
+    p.resolution = "declined".into();
+    let declined = f.post(p);
+    let mut p = test_fixture::FPost::new(
+        "result",
+        "runner",
+        "compute",
+        "runner-a/model-a",
+        "2026-09-08T08:40:00Z",
+        "landed the fix",
+        "s-a",
+    );
+    p.on = finding;
+    p.resolution = "proceeded".into();
+    f.post(p);
+    // Fallback: a bare thread result (no on_post) still decides a proposal
+    // nothing targets directly.
+    let mut p = test_fixture::FPost::new(
+        "answer",
+        "runner",
+        "fallback",
+        "runner-f/model-f",
+        "2026-09-08T09:00:00Z",
+        "Proposal for the human: keep it",
+        "s-f",
+    );
+    p.resolution = "agreed".into();
+    f.post(p);
+    let mut p = test_fixture::FPost::new(
+        "result",
+        "runner",
+        "fallback",
+        "runner-g/model-g",
+        "2026-09-08T09:10:00Z",
+        "accepted in the hub",
+        "s-g",
+    );
+    p.resolution = "accepted".into();
+    let accepted = f.post(p);
+
+    let th = Thresholds {
+        now: FIXTURE_NOW.into(),
+        ..Default::default()
+    };
+    let res = compute(&f.st, "fixture", "", th).unwrap();
+    let by_key: BTreeMap<_, _> = res
+        .proposals
+        .iter()
+        .map(|p| (p.key.as_str(), p.clone()))
+        .collect();
+    let compute_pr = &by_key["runner/compute"];
+    assert_eq!(compute_pr.id, proposal);
+    assert_eq!(compute_pr.status, "declined", "proposal: {compute_pr:?}");
+    assert_eq!(compute_pr.result_id, declined);
+    assert_eq!(compute_pr.result_date, "2026-09-08T08:30:00Z");
+    let fallback = &by_key["runner/fallback"];
+    assert_eq!(fallback.status, "accepted", "proposal: {fallback:?}");
+    assert_eq!(fallback.result_id, accepted);
+    assert_eq!(by_key["governance/rename"].status, "awaiting");
+}
+
+#[test]
 fn apply_amendment() {
     let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(true);

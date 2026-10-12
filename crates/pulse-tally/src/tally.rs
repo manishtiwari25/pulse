@@ -346,6 +346,13 @@ struct PropInfo {
     date: String,
     summary: String,
 }
+/// The latest result posted on the proposal itself (`on_post` = its id).
+#[derive(Clone, Default)]
+struct PropResult {
+    resolution: String,
+    id: String,
+    date: String,
+}
 
 pub(crate) fn same_session(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && a == b
@@ -375,6 +382,7 @@ struct Tally {
     res_id: BTreeMap<String, String>,
     res_date: BTreeMap<String, String>,
     prop: OMap<String, PropInfo>,
+    prop_res: BTreeMap<String, PropResult>,
     claims: OMap<String, ClaimInfo>,
     suggs: OMap<String, SuggInfo>,
     votes: OMap<VoteKey, SVoteInfo>,
@@ -419,6 +427,7 @@ fn new_tally(
         res_id: BTreeMap::new(),
         res_date: BTreeMap::new(),
         prop: OMap::default(),
+        prop_res: BTreeMap::new(),
         claims: OMap::default(),
         suggs: OMap::default(),
         votes: OMap::default(),
@@ -451,6 +460,20 @@ fn new_tally(
                     agent: r.agent.clone(),
                     date: r.date.clone(),
                     summary: r.summary.clone(),
+                },
+            );
+            // A re-raised proposal starts undecided.
+            t.prop_res.remove(&key);
+        } else if !r.resolution.is_empty()
+            && !r.on_post.is_empty()
+            && t.prop.get(&key).is_some_and(|p| p.id == r.on_post)
+        {
+            t.prop_res.insert(
+                key.clone(),
+                PropResult {
+                    resolution: r.resolution.clone(),
+                    id: r.id.clone(),
+                    date: r.date.clone(),
                 },
             );
         }
@@ -568,11 +591,26 @@ impl Tally {
             "open".into()
         }
     }
+    /// The result that decides a proposal: the latest one posted on the
+    /// proposal itself; the thread's latest resolution stands in only when
+    /// nothing targets the proposal, so a code `result` on a sibling post
+    /// cannot rewrite a human's answer.
+    fn proposal_result(&self, key: &str) -> Option<(&str, &str, &str)> {
+        if let Some(r) = self.prop_res.get(key) {
+            return Some((&r.resolution, &r.id, &r.date));
+        }
+        let res = self.resol.get(key)?;
+        Some((
+            res,
+            self.res_id.get(key).map_or("", String::as_str),
+            self.res_date.get(key).map_or("", String::as_str),
+        ))
+    }
     fn proposal_status(&self, key: &str) -> String {
-        if self.resol.get(key).is_some_and(|s| s == "agreed") {
-            "awaiting".into()
-        } else {
-            self.resol.get(key).cloned().unwrap_or_default()
+        match self.proposal_result(key) {
+            Some(("agreed", _, _)) => "awaiting".into(),
+            Some((res, _, _)) => res.into(),
+            None => String::new(),
         }
     }
     fn suggestion_records(&self) -> Vec<Suggestion> {
@@ -984,9 +1022,11 @@ fn compute_light_uncached(
             summary: pr.summary.clone(),
             ..Proposal::default()
         };
-        if st != "awaiting" {
-            p.result_id = t.res_id.get(key).cloned().unwrap_or_default();
-            p.result_date = t.res_date.get(key).cloned().unwrap_or_default();
+        if st != "awaiting"
+            && let Some((_, id, date)) = t.proposal_result(key)
+        {
+            p.result_id = id.into();
+            p.result_date = date.into();
         }
         res.proposals.push(p);
     }
