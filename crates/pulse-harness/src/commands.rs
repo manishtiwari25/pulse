@@ -1649,6 +1649,7 @@ pub fn exit_code_for(status: &str) -> i32 {
         EXIT_PROVIDER_ERROR => 3,
         EXIT_NOT_LOGGED_IN => 4,
         EXIT_CANCELLED => 5,
+        EXIT_SANDBOX_LOST => 6,
         EXIT_STEP_LIMIT | EXIT_TIME_LIMIT | EXIT_COST_LIMIT | EXIT_FORMAT_ERROR => 1,
         _ => 1,
     }
@@ -2191,6 +2192,7 @@ mod tests {
         assert_eq!(exit_code_for(EXIT_PROVIDER_ERROR), 3);
         assert_eq!(exit_code_for(EXIT_NOT_LOGGED_IN), 4);
         assert_eq!(exit_code_for(EXIT_CANCELLED), 5);
+        assert_eq!(exit_code_for(EXIT_SANDBOX_LOST), 6);
         assert_eq!(exit_code_for(EXIT_STEP_LIMIT), 1);
     }
 

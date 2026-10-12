@@ -178,12 +178,17 @@ pub const EXIT_FORMAT_ERROR: &str = "format_error";
 pub const EXIT_PROVIDER_ERROR: &str = "provider_error";
 pub const EXIT_NOT_LOGGED_IN: &str = "not_logged_in";
 pub const EXIT_CANCELLED: &str = "cancelled";
+/// The run's working directory disappeared under it (a swept clone, a
+/// removed worktree): every further command would fail the same way, so the
+/// run ends at once instead of spending its budget on `os error 2`.
+pub const EXIT_SANDBOX_LOST: &str = "sandbox_lost";
 
 pub use EXIT_CANCELLED as ExitCancelled;
 pub use EXIT_COST_LIMIT as ExitCostLimit;
 pub use EXIT_FORMAT_ERROR as ExitFormatError;
 pub use EXIT_NOT_LOGGED_IN as ExitNotLoggedIn;
 pub use EXIT_PROVIDER_ERROR as ExitProviderError;
+pub use EXIT_SANDBOX_LOST as ExitSandboxLost;
 pub use EXIT_STEP_LIMIT as ExitStepLimit;
 pub use EXIT_SUBMITTED as ExitSubmitted;
 pub use EXIT_TIME_LIMIT as ExitTimeLimit;
@@ -235,6 +240,10 @@ pub struct Agent {
     result: ResultSummary,
     started: Instant,
     cancel_reason: String,
+    /// Set by a command step when the run cannot go on (the working
+    /// directory is gone); the loop ends the run with it before the next
+    /// model call.
+    fatal: Option<(&'static str, String)>,
 }
 
 pub const ERR_OWNER_CANCELLED: &str = "cancelled by the owner";
@@ -266,6 +275,7 @@ pub fn new(
         result: ResultSummary::default(),
         started: Instant::now(),
         cancel_reason: String::new(),
+        fatal: None,
     }
 }
 
@@ -435,6 +445,9 @@ impl Agent {
             let free_format_retry = used_format_retries < self.cfg.format_retries.max(0);
             let (clean, submitted, submission, prose_only) =
                 self.handle_assistant(cancel, msg, free_format_retry);
+            if let Some((status, msg)) = self.fatal.take() {
+                return Ok(self.finish(status, "", &msg));
+            }
             if submitted {
                 return Ok(self.finish(EXIT_SUBMITTED, &submission, ""));
             }
@@ -712,6 +725,20 @@ impl Agent {
         }
         let obs = self.env.execute(cancel, command, self.cfg.step_timeout);
         self.emit_observation(command, &obs);
+        if obs.exit_code == 127 && self.sandbox_lost() {
+            let msg = format!(
+                "the run's working directory {} no longer exists; every command would fail the same way (`{}`), so the run ends here instead of spending its budget on it",
+                self.cfg.cwd,
+                one_line(&obs.output, 120)
+            );
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: msg.clone(),
+                command: command.to_string(),
+                ..Step::default()
+            });
+            self.fatal = Some((EXIT_SANDBOX_LOST, msg));
+        }
         let formatted = format_observation(&obs, self.cfg.output_limit);
         if obs.exit_code == 0
             && !obs.timed_out
@@ -724,6 +751,12 @@ impl Agent {
 
     fn denied(&self, command: &str) -> Option<&DenyRule> {
         self.deny.iter().find(|r| r.re.is_match(command))
+    }
+
+    /// True when the configured working directory existed at start and is
+    /// gone now. Exit 127 alone is not enough: `command not found` uses it too.
+    fn sandbox_lost(&self) -> bool {
+        !self.cfg.cwd.is_empty() && !Path::new(&self.cfg.cwd).is_dir()
     }
 
     fn run_native_action(&mut self, action: NativeAction, spec: &str) -> (String, bool, String) {
@@ -2222,6 +2255,81 @@ mod tests {
                 .any(|s| matches!(s.kind, StepKind::FormatRetry | StepKind::Error))
         );
         assert!(h.messages().iter().any(|m| m.role == Role::Tool));
+    }
+
+    #[test]
+    fn lost_working_directory_ends_the_run_at_once() {
+        // The clone was swept under the run: /bin/sh cannot even start in
+        // it. Nineteen sessions in a month kept asking the model for the
+        // next command and got `os error 2` back every time.
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().display().to_string();
+        drop(dir);
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("pwd")),
+            resp(tool("ls")),
+            resp(msg("SUMMARY: gave up")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![Observation {
+                output: "No such file or directory (os error 2)".into(),
+                exit_code: 127,
+                ..Observation::default()
+            }],
+            ..FakeEnv::default()
+        }));
+        let cfg = Config {
+            cwd: cwd.clone(),
+            ..base_config()
+        };
+        let (h, got) = run_agent(p, env.clone(), cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SANDBOX_LOST, "{got:?}");
+        assert_eq!(got.calls, 1, "no second model call once the clone is gone");
+        assert_eq!(env.lock().unwrap().commands, vec!["pwd".to_string()]);
+        assert!(
+            got.error.contains(&cwd) && got.error.contains("no longer exists"),
+            "{}",
+            got.error
+        );
+        let steps = h.trajectory().steps;
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.kind == StepKind::Error && s.content.contains("no longer exists")),
+            "{steps:?}"
+        );
+        assert_eq!(
+            steps.last().map(|s| s.content.as_str()),
+            Some(EXIT_SANDBOX_LOST)
+        );
+    }
+
+    #[test]
+    fn command_not_found_in_a_live_working_directory_is_not_a_lost_sandbox() {
+        // Exit 127 is also what the shell returns for an unknown command;
+        // only a missing directory ends the run.
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("nope")),
+            resp(msg("SUMMARY: no such tool here")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![Observation {
+                output: "sh: nope: command not found".into(),
+                exit_code: 127,
+                ..Observation::default()
+            }],
+            ..FakeEnv::default()
+        }));
+        let cfg = Config {
+            cwd: dir.path().display().to_string(),
+            ..base_config()
+        };
+        let (_, got) = run_agent(p, env.clone(), cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.calls, 2);
     }
 
     #[test]

@@ -61,6 +61,55 @@ fn cancel_child(parent: &pulse_bus::CancellationToken) -> pulse_bus::Cancellatio
     parent.child()
 }
 
+static GIT_COMMIT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    // `git commit`, also behind global options with or without a value
+    // (`git -C dir commit`, `git -c x=y commit`, `git --no-pager commit`).
+    regex::Regex::new(r"\bgit\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*commit\b").unwrap()
+});
+static COMMIT_MESSAGE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?s)(?:^|\s)(?:-[a-zA-Z]*m|--message)[\s=]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s;&|]+))"#,
+    )
+    .unwrap()
+});
+
+/// The worker's `git commit` that the harness killed at the step deadline,
+/// when this run had one: the observation step with exit -1 (timed out)
+/// whose command ran `git commit`. The pre-commit hook runs the project's
+/// whole verification behind a shared lock, so the deadline lands on the
+/// commit, not on the change. Sessions are matched by this run's id, or by
+/// the job when they started during this run (a custom worker command may
+/// not pass `PULSE_SESSION` on).
+pub(crate) fn killed_commit_command(
+    q: &(impl crate::util::Querier + ?Sized),
+    run_id: &str,
+    job_id: &str,
+    run_started: &str,
+) -> Option<String> {
+    crate::util::must_rows(
+        q,
+        "SELECT st.command AS command FROM harness_steps st JOIN harness_sessions h ON h.id = st.session_id WHERE (h.run_id = ? OR (h.job_id = ? AND h.job_id != '' AND h.started_at >= ?)) AND st.kind = 'observation' AND st.exit_code = -1 ORDER BY h.started_at DESC, st.n DESC",
+        &[&run_id, &job_id, &run_started],
+    )
+    .into_iter()
+    .map(|r| r.str("command"))
+    .find(|cmd| GIT_COMMIT_RE.is_match(cmd))
+}
+
+/// The message the worker gave its killed `git commit` (`-m`, `-qm`,
+/// `--message=`), so the rescued commit keeps the worker's words; none when
+/// it used an editor or `-F`.
+pub(crate) fn commit_message_from_command(command: &str) -> Option<String> {
+    let caps = COMMIT_MESSAGE_RE.captures(command)?;
+    let text = caps
+        .get(1)
+        .map(|m| m.as_str().replace("\\\"", "\""))
+        .or_else(|| caps.get(2).map(|m| m.as_str().to_string()))
+        .or_else(|| caps.get(3).map(|m| m.as_str().to_string()))?;
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 pub(crate) fn runner_stopped(s: &pulse_store::Store) -> String {
     if s.setting("stop", "0") == "1" {
         return "the runner is stopped in the store (pulse start to resume)".to_string();
@@ -1014,7 +1063,54 @@ pub(crate) fn run_job(
         if status != "timeout" || rescued {
             commits = ex.commit_count(&base);
             let dirty = ex.dirty();
-            if !dirty.is_empty() {
+            // The worker finished its change and ran `git commit`, and the
+            // harness killed the commit at the step deadline while the
+            // pre-commit verification ran: the change is still in the tree.
+            // The runner commits it and lets the run's own verification
+            // judge it, instead of discarding finished work.
+            let mut rescued_commit = false;
+            // A worker that gave up for another reason keeps its own verdict;
+            // one that reported the failed commit is the case this is for.
+            let worker_gave_up_on_commit =
+                !parsed.incomplete() || parsed.summary.to_lowercase().contains("commit");
+            if commits == 0
+                && !dirty.is_empty()
+                && exit_code == Some(0)
+                && !owner_cancelled.load(Ordering::SeqCst)
+                && (worker_reported.is_empty() || worker_reported == "done")
+                && worker_gave_up_on_commit
+                && let Some(killed) = killed_commit_command(&c, &run_id, &job.str("id"), now)
+            {
+                let title = commit_message_from_command(&killed)
+                    .unwrap_or_else(|| job.str("title").trim().to_string());
+                let message = format!(
+                    "{title}\n\nThe worker's `git commit` was killed at the harness step deadline while the pre-commit verification ran; the runner committed the work it left in the tree so the run's own verification could judge it instead of discarding it (run {run_id}).",
+                );
+                match ex.commit_left_work(&message) {
+                    Ok(()) => {
+                        commits = ex.commit_count(&base);
+                        rescued_commit = commits > 0;
+                    }
+                    Err(e) => log.add(format!(
+                        "the worker's `git commit` was killed at the step deadline and the runner could not commit its work either: {e}"
+                    )),
+                }
+            }
+            if rescued_commit {
+                log.add(format!(
+                    "the worker's `git commit` was killed at the step deadline; the runner committed its work for verification:\n{dirty}"
+                ));
+                let worker_said = parsed.summary.trim().to_string();
+                parsed.found = true;
+                parsed.summary = format!(
+                    "the worker's `git commit` was killed at the step deadline; the runner committed its work for verification{}",
+                    if worker_said.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; worker report: {worker_said}")
+                    }
+                );
+            } else if !dirty.is_empty() {
                 log.add(format!(
                     "uncommitted changes left in the clone were discarded:\n{dirty}"
                 ));
@@ -2577,6 +2673,233 @@ mod tests {
             log.contains(&format!("red base: fix job {} planned", fix.str("id"))),
             "{log}"
         );
+    }
+
+    /// Seeds the harness evidence the rescue looks for: a session of this
+    /// job, started during the run, whose `git commit` step timed out.
+    fn seed_killed_commit(s: &pulse_store::Store, job_id: &str, command: &str) {
+        s.begin_harness_session(pulse_store::HarnessSession {
+            id: format!("hs-{job_id}"),
+            job_id: job_id.to_string(),
+            agent: "aurora".into(),
+            started_at: TEST_NOW.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.append_harness_step(pulse_store::HarnessStep {
+            session_id: format!("hs-{job_id}"),
+            n: 7,
+            kind: "observation".into(),
+            content: "The command timed out after 900s and was killed.".into(),
+            command: command.into(),
+            exit_code: Some(-1),
+            duration_ms: 900_000,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    fn staged_work_job(s: &pulse_store::Store) -> Row {
+        join(s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            "note the rescue".into(),
+            "add a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        crate::jobs::lease_job(
+            s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    // The worker changes a tracked file, stages a new one, and reports
+    // that its commit was killed, without committing.
+    const STAGED_WORK_WORKER: &str = "printf 'rescued\\n' >> README.md && echo note > NOTE.md && git add NOTE.md && echo 'SUMMARY: failed: the change is complete but git commit was killed at the step deadline, so nothing could be committed'";
+
+    #[test]
+    fn run_job_commits_the_work_a_killed_git_commit_left_in_the_tree() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        // The check only passes on the rescued tree: both files must be in it.
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                ["grep -q rescued README.md && test -f NOTE.md"],
+            )
+            .unwrap();
+        // Verification must run here whatever this machine's disk looks like.
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let job = staged_work_job(&s);
+        seed_killed_commit(
+            &s,
+            &job.str("id"),
+            "git add -A && git commit -q -m \"docs: note the rescue path\"",
+        );
+        let r = run_job(
+            &s,
+            job.clone(),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(STAGED_WORK_WORKER)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("commits"), 1, "run: {r:?}");
+        let branch = r.str("branch");
+        assert!(!branch.is_empty(), "run: {r:?}");
+        let message = run(
+            &root,
+            &[
+                "git",
+                "log",
+                "-1",
+                "--format=%B",
+                &format!("refs/heads/{branch}"),
+            ],
+        );
+        assert!(
+            message.starts_with("docs: note the rescue path\n"),
+            "the rescued commit keeps the worker's message: {message}"
+        );
+        assert!(
+            message.contains("killed at the harness step deadline"),
+            "the rescued commit says why the runner made it: {message}"
+        );
+        assert!(
+            message.contains("Pulse-Job:"),
+            "the clone's hooks still add the provenance trailers: {message}"
+        );
+        let readme = run(
+            &root,
+            &["git", "show", &format!("refs/heads/{branch}:README.md")],
+        );
+        assert!(readme.ends_with("rescued\n"), "landed README: {readme}");
+        let note = run(
+            &root,
+            &["git", "show", &format!("refs/heads/{branch}:NOTE.md")],
+        );
+        assert_eq!(note, "note\n", "the staged new file lands too");
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log.contains("the runner committed its work for verification"),
+            "{log}"
+        );
+        assert!(!log.contains("were discarded"), "{log}");
+        let stored = crate::jobs::job_row(&conn(&s), job.str("id"));
+        assert_eq!(stored.str("status"), "done", "job: {stored:?}");
+        assert!(
+            stored
+                .str("result")
+                .contains("worker report: failed: the change is complete"),
+            "the worker's own words stay in the result: {stored:?}"
+        );
+    }
+
+    #[test]
+    fn run_job_discards_uncommitted_work_without_a_killed_commit() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        let job = staged_work_job(&s);
+        // The same worker, but the step that timed out was not a commit.
+        seed_killed_commit(&s, &job.str("id"), "cargo test --workspace");
+        let r = run_job(
+            &s,
+            job.clone(),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(STAGED_WORK_WORKER)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}");
+        assert_eq!(r.int("commits"), 0, "run: {r:?}");
+        assert!(
+            r.str("summary")
+                .starts_with("failed: the change is complete"),
+            "the worker's verdict stands: {r:?}"
+        );
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log.contains("uncommitted changes left in the clone were discarded"),
+            "{log}"
+        );
+        let refs = run(
+            &root,
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/pulse/",
+            ],
+        );
+        assert_eq!(refs.trim(), "", "nothing lands without a commit");
+    }
+
+    #[test]
+    fn killed_commit_command_matches_git_commit_only() {
+        for (cmd, hit) in [
+            ("git add -A && git commit -qm x", true),
+            ("git -C /tmp/x commit --amend", true),
+            ("cd crates && git commit -q -m 'two words'", true),
+            ("git add -A && git status", false),
+            ("cargo test --workspace", false),
+            ("echo 'git commit' > notes.txt", true),
+        ] {
+            assert_eq!(GIT_COMMIT_RE.is_match(cmd), hit, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn commit_message_from_command_reads_the_workers_message() {
+        assert_eq!(
+            commit_message_from_command("git add -A && git commit -q -m \"docs: note\" && echo ok"),
+            Some("docs: note".into())
+        );
+        assert_eq!(
+            commit_message_from_command("git commit -qm 'fix: two words'"),
+            Some("fix: two words".into())
+        );
+        assert_eq!(
+            commit_message_from_command("git commit --message=\"with \\\"quotes\\\"\""),
+            Some("with \"quotes\"".into())
+        );
+        assert_eq!(
+            commit_message_from_command("git commit -am wip"),
+            Some("wip".into())
+        );
+        assert_eq!(commit_message_from_command("git commit -F msg.txt"), None);
+        assert_eq!(commit_message_from_command("git commit -a"), None);
     }
 
     #[test]

@@ -45,6 +45,7 @@ static TRANSIENT_MARKS: &[&str] = &[
     "unreachable",
     "worker rejected at launch",
     "timed out",
+    "sandbox_lost",
     "could not land the branch",
     "conflicts with",
     "the checkout changed",
@@ -424,6 +425,14 @@ mod tests {
             (
                 "context canceled",
                 "worker exited 5: harness stopped: cancelled after 2 model calls and 0 commands; error: interrupted: context canceled",
+                "failed",
+                "",
+                false,
+                FAILURE_TRANSIENT,
+            ),
+            (
+                "clone swept under the run",
+                "worker exited 6: harness stopped: sandbox_lost after 9 model calls and 8 commands; error: the run's working directory /tmp/work/job-1 no longer exists",
                 "failed",
                 "",
                 false,

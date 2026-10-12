@@ -27,6 +27,18 @@ pub(crate) trait Executor {
     fn result_text(&self) -> Option<String>;
     fn commit_count(&self, base: &str) -> i32;
     fn dirty(&self) -> String;
+    /// Commits what the worker left staged or modified (tracked files only,
+    /// like `git commit -a`) with the clone's own identity and hooks minus
+    /// the pre-commit check, which is what killed the worker's commit. The
+    /// run's verification judges the commit afterwards. Executors that
+    /// cannot do this return an error and the work is discarded as before.
+    fn commit_left_work(&self, message: &str) -> Result<()> {
+        let _ = message;
+        Err(anyhow!(
+            "executor {} cannot commit on the worker's behalf",
+            self.name()
+        ))
+    }
     fn owner_paths_touched(&self, base: &str) -> Vec<String>;
     fn verify(
         &self,
@@ -301,6 +313,23 @@ impl Executor for LocalExec {
         .stdout
         .trim()
         .to_string()
+    }
+    fn commit_left_work(&self, message: &str) -> Result<()> {
+        // A commit killed mid-hook can leave the index lock behind; the
+        // worker's processes are gone by now, so the lock guards nothing.
+        let lock = Path::new(&self.clone_dir).join(".git").join("index.lock");
+        if lock.exists() {
+            let _ = std::fs::remove_file(&lock);
+        }
+        crate::util::git_check(&self.clone_dir, &["add", "-u"])?;
+        // `--no-verify` skips pre-commit and commit-msg; the clone's
+        // prepare-commit-msg hook still adds the provenance trailers and
+        // the included identity still signs with the run key (ADR-022).
+        crate::util::git_check(
+            &self.clone_dir,
+            &["commit", "-q", "--no-verify", "-m", message],
+        )?;
+        Ok(())
     }
     fn owner_paths_touched(&self, base: &str) -> Vec<String> {
         crate::brief::owner_paths_touched(self.clone_dir.clone(), base.to_string())

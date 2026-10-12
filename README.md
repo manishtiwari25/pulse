@@ -1322,7 +1322,13 @@ login the daemon starts no worker here at all: the `capacity` line of `pulse
 status` and the console's **The machine** panel say why (`workers held: …`
 with a **Sign in** link to Settings → Harness), one daily finding lands on
 the brain's board, and remote hands keep working. `5` means the owner
-cancelled the run (`cancelled`, below).
+cancelled the run (`cancelled`, below). `6` means the run's working
+directory vanished under it (`sandbox_lost`: a sweep or a cleanup removed
+the clone while the model was still working) - the harness notices at the
+first command that cannot start, says so in one error step, and ends the
+run instead of spending its remaining budget on commands that all fail the
+same way; the runner counts it as transient, so the job runs again in a
+fresh clone.
 
 **Stopping a run.** The **Cancel run** button on a session (a click, then a
 confirm - it posts `POST /api/v1/harness/sessions/ID/cancel`) or `pulse
@@ -1780,7 +1786,16 @@ jobs for the project only up to the lanes that fit the cap
 ballots and answers keep the plain limit. The project's idle line says so:
 `2 of 4 work lanes open: the check takes ~8 min and 2 in a row fit the 15 min
 step cap (harness.step_timeout)`. A quicker check, a longer step cap, or
-`verify.lock off` opens the lanes again.
+`verify.lock off` opens the lanes again. When the deadline still lands on a
+worker's `git commit` - the change finished, the pre-commit check did not -
+the runner does not discard the tree: if the worker exited normally, left
+no commit, and the run's transcript shows a `git commit` step that timed
+out, the runner commits what the worker left (tracked changes and whatever
+it had staged, under the worker's own `-m` message when it gave one, signed
+with the run key and carrying the provenance trailers; only the pre-commit
+check is skipped) and the run's own verification judges it like any other
+commit. The run log says `the runner committed its work for verification`;
+a worker that stopped for a reason of its own keeps its verdict.
 Landing moves your local default branch; whether it goes further is your
 standing instruction, `landing.push` (ADR-037). `off`, the default: you review
 and push. `pulse settings landing.push main`: after each landing the daemon
