@@ -1010,7 +1010,7 @@ impl Agent {
     fn emit_observation(&mut self, command: &str, obs: &Observation) {
         self.emit(Step {
             kind: StepKind::Observation,
-            content: obs.output.clone(),
+            content: stored_observation(&obs.output, self.cfg.output_limit),
             command: command.to_string(),
             exit_code: Some(obs.exit_code),
             duration_ms: obs.duration.as_millis() as i64,
@@ -1561,6 +1561,21 @@ pub fn format_observation(obs: &Observation, limit: usize) -> String {
     )
 }
 
+/// The observation text kept in the step store: capped at the same
+/// `output_limit` the model saw, with a one-line marker naming what was
+/// dropped. One stray `grep -rn` used to leave a 24 MB row nobody read.
+pub fn stored_observation(output: &str, limit: usize) -> String {
+    if limit == 0 || output.len() <= limit {
+        return output.to_string();
+    }
+    let kept = truncate(output, limit);
+    format!(
+        "[stored: {} bytes, kept first/last {} bytes]\n{kept}",
+        output.len(),
+        limit / 2
+    )
+}
+
 pub fn truncate(s: &str, limit: usize) -> String {
     if limit == 0 || s.len() <= limit {
         return s.to_string();
@@ -1773,6 +1788,20 @@ mod tests {
     use pulse_provider::{Login, Model};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Condvar, Mutex};
+
+    #[test]
+    fn stored_observation_is_capped_at_output_limit() {
+        // Under the limit the row holds the raw output, unmarked.
+        assert_eq!(stored_observation("abcdef", 0), "abcdef");
+        assert_eq!(stored_observation("abcdef", 6), "abcdef");
+        // Over it the row keeps what the model saw plus a one-line marker,
+        // never the full text (a 24 MB grep used to land in one row).
+        let big = "x".repeat(100_000);
+        let stored = stored_observation(&big, 1000);
+        assert!(stored.starts_with("[stored: 100000 bytes, kept first/last 500 bytes]\n"));
+        assert!(stored.contains("[... 99000 characters omitted ...]"));
+        assert!(stored.len() < 1000 + 200, "len {}", stored.len());
+    }
 
     #[test]
     fn truncate_cuts_on_char_boundaries() {
