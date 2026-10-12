@@ -289,10 +289,8 @@ impl RemoteStepsMirror {
         if !self.begun || self.finished {
             return;
         }
-        let mut exit_status = "provider_error";
-        if out.timeout {
-            exit_status = "time_limit";
-        } else if run_err
+        let mut exit_status = exit_status_for(out.timeout, Some(out.exit_code));
+        if run_err
             .as_ref()
             .is_some_and(|e| e.to_string().contains("cancel") || e.to_string().contains("deadline"))
         {
@@ -326,6 +324,68 @@ impl RemoteStepsMirror {
         self.stopped = true;
         let _ = err;
     }
+}
+
+/// Session exit status for a worker that ended without writing its own
+/// finish line: the run clock ran out -> `time_limit`, SIGTERM/SIGKILL
+/// (exit 143/137) -> `killed`, anything else -> `provider_error`.
+pub(crate) fn exit_status_for(timeout: bool, exit_code: Option<i32>) -> &'static str {
+    if timeout {
+        "time_limit"
+    } else if matches!(exit_code, Some(137) | Some(143)) {
+        "killed"
+    } else {
+        "provider_error"
+    }
+}
+
+/// Close every session still `running` for `run_id` once the worker process
+/// has exited. The error names the run status, exit code and the last step
+/// so a lost session says why it ended instead of waiting hours for the
+/// sweep to mark it `lost` with an empty error. Returns the closed ids.
+pub(crate) fn close_running_sessions(
+    s: &pulse_store::Store,
+    run_id: &str,
+    run_status: &str,
+    exit_code: Option<i32>,
+    timeout: bool,
+) -> Vec<String> {
+    let ids = match s.running_harness_sessions_for_run(run_id) {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("harness sessions for {run_id}: {e}");
+            return Vec::new();
+        }
+    };
+    let exit_status = exit_status_for(timeout, exit_code);
+    let now = s.now();
+    let mut closed = Vec::new();
+    for id in ids {
+        let mut error = format!(
+            "worker ended: run {run_status}, exit {}",
+            exit_code.map_or_else(|| "none".to_string(), |c| c.to_string())
+        );
+        if let Ok(Some(step)) = s.last_harness_step(&id) {
+            error.push_str(&format!("; last step {} {}", step.n, step.kind));
+            if !step.command.trim().is_empty() {
+                let cmd: String = step.command.trim().chars().take(120).collect();
+                error.push_str(&format!(" `{}`", cmd.replace('\n', " ")));
+            }
+            if let (Ok(a), Ok(b)) = (
+                chrono::DateTime::parse_from_rfc3339(&step.at),
+                chrono::DateTime::parse_from_rfc3339(&now),
+            ) {
+                error.push_str(&format!(" {} min ago", (b - a).num_minutes().max(0)));
+            }
+        }
+        if let Err(e) = s.finish_harness_session(&id, exit_status, exit_status, "", &error, 0.0, "")
+        {
+            eprintln!("close harness session {id}: {e}");
+            continue;
+        }
+        closed.push(id);
+    }
+    closed
 }
 
 #[cfg(test)]
@@ -420,6 +480,75 @@ mod tests {
         assert_eq!(steps[0].kind, "assistant");
         assert_eq!(steps[0].prompt_tokens, 3);
         assert_eq!(steps[0].completion_tokens, 5);
+    }
+
+    #[test]
+    fn exit_status_maps_timeout_and_signals() {
+        assert_eq!(exit_status_for(true, Some(1)), "time_limit");
+        assert_eq!(exit_status_for(false, Some(143)), "killed");
+        assert_eq!(exit_status_for(false, Some(137)), "killed");
+        assert_eq!(exit_status_for(false, Some(1)), "provider_error");
+        assert_eq!(exit_status_for(false, None), "provider_error");
+    }
+
+    #[test]
+    fn close_running_sessions_names_the_reason() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        for (id, run) in [
+            ("sess-a", "run-x"),
+            ("sess-b", "run-x"),
+            ("sess-c", "run-y"),
+        ] {
+            s.begin_harness_session(pulse_store::HarnessSession {
+                id: id.into(),
+                run_id: run.into(),
+                job_id: "job-x".into(),
+                agent: "agent-one".into(),
+                project: "proj".into(),
+                started_at: "2026-09-06T09:00:00Z".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        s.finish_harness_session("sess-b", "submitted", "0", "SUMMARY: ok", "", 0.0, "")
+            .unwrap();
+        s.append_harness_step(pulse_store::HarnessStep {
+            session_id: "sess-a".into(),
+            n: 3,
+            at: "2026-09-06T09:53:30Z".into(),
+            kind: "action".into(),
+            command: format!("cargo test {}", "x".repeat(200)),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let closed = close_running_sessions(&s, "run-x", "failed", Some(143), false);
+        assert_eq!(closed, vec!["sess-a"]);
+        let (a, _) = s.harness_session("sess-a").unwrap();
+        let a = a.unwrap();
+        assert_eq!(a.status, "killed");
+        assert_eq!(a.exit_status, "killed");
+        assert_eq!(a.ended_at, "2026-09-06T10:00:00Z");
+        let want = format!(
+            "worker ended: run failed, exit 143; last step 3 action `cargo test {}` 6 min ago",
+            "x".repeat(120 - "cargo test ".len())
+        );
+        assert_eq!(a.error, want);
+        // The finished session and the other run's session are untouched.
+        let (b, _) = s.harness_session("sess-b").unwrap();
+        assert_eq!(b.unwrap().status, "submitted");
+        let (c, _) = s.harness_session("sess-c").unwrap();
+        assert_eq!(c.unwrap().status, "running");
+
+        let closed = close_running_sessions(&s, "run-y", "timeout", None, true);
+        assert_eq!(closed, vec!["sess-c"]);
+        let (c, _) = s.harness_session("sess-c").unwrap();
+        let c = c.unwrap();
+        assert_eq!(c.status, "time_limit");
+        assert_eq!(c.error, "worker ended: run timeout, exit none");
+        assert!(close_running_sessions(&s, "run-y", "timeout", None, true).is_empty());
     }
 
     #[test]
