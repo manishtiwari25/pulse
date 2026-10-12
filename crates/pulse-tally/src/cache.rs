@@ -32,7 +32,40 @@ struct CacheKey {
 struct CacheValue {
     result: Arc<TallyResult>,
     version: String,
+    /// The clock bucket the key was hashed with ("" when the clock did not
+    /// parse): a later bucket of the same project supersedes this entry.
+    now_bucket: String,
     at: Instant,
+}
+
+impl LruCache {
+    /// Drops every entry no lookup can hit again, before `key` is inserted
+    /// with `version` and `now_bucket`: entries past the TTL, and entries of
+    /// the same store, project and area whose store version is not the
+    /// current one or whose clock bucket is older than the one being
+    /// inserted. Without this a busy project leaves one dead tally per
+    /// five-minute bucket and per changed watermark in the cache (a few
+    /// megabytes each - thousands of thread, vote and suggestion rows) until
+    /// the entry cap pushes it out, and the daemon idles with a hundred
+    /// megabytes of tallies nobody will read.
+    fn drop_superseded(&mut self, key: &CacheKey, version: &str, now_bucket: &str, ttl: Duration) {
+        let LruCache { entries, order } = self;
+        entries.retain(|k, v| {
+            if v.at.elapsed() >= ttl {
+                return false;
+            }
+            let same_project =
+                k.store_path == key.store_path && k.project == key.project && k.area == key.area;
+            if !same_project {
+                return true;
+            }
+            let older_clock = !v.now_bucket.is_empty()
+                && !now_bucket.is_empty()
+                && v.now_bucket.as_str() < now_bucket;
+            v.version == version && !older_clock
+        });
+        order.retain(|k| entries.contains_key(k));
+    }
 }
 
 #[derive(Default)]
@@ -95,24 +128,29 @@ fn stable_hash<T: Serialize>(value: &T) -> String {
     h[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The cache key for a tally and the clock bucket it was hashed with ("" when
+/// the clock did not parse).
 fn cache_key_for(
     s: &pulse_store::Store,
     project: &str,
     area: &str,
     mut th: Thresholds,
-) -> CacheKey {
+) -> (CacheKey, String) {
+    let mut now_bucket = String::new();
     if th.now.len() >= 16
         && let Ok(minute) = th.now[14..16].parse::<u32>()
     {
         let bucket = minute - minute % CACHE_NOW_BUCKET_MINUTES;
         th.now = format!("{}{bucket:02}:00Z", &th.now[..14]);
+        now_bucket = th.now.clone();
     }
-    CacheKey {
+    let key = CacheKey {
         store_path: s.path.clone(),
         project: project.into(),
         area: area.into(),
         th_hash: stable_hash(&th),
-    }
+    };
+    (key, now_bucket)
 }
 
 pub fn project_watermark(s: &pulse_store::Store, project: &str, area: &str) -> Result<String> {
@@ -274,7 +312,7 @@ pub(crate) fn cached_compute<F>(
 where
     F: FnOnce() -> Result<TallyResult>,
 {
-    let key = cache_key_for(s, project, area, th);
+    let (key, now_bucket) = cache_key_for(s, project, area, th);
     let version = project_watermark(s, project, area)?;
     let ttl = cache_ttl(s);
     let hit = {
@@ -297,11 +335,13 @@ where
     let res = Arc::new(compute()?);
     {
         let mut c = TALLY_CACHE.lock().expect("tally cache poisoned");
+        c.drop_superseded(&key, &version, &now_bucket, ttl);
         c.entries.insert(
             key.clone(),
             CacheValue {
                 result: Arc::clone(&res),
                 version,
+                now_bucket,
                 at: Instant::now(),
             },
         );

@@ -1709,6 +1709,53 @@ fn compute_cache_buckets_the_clock_by_five_minutes() {
 }
 
 #[test]
+fn compute_cache_drops_tallies_a_project_has_superseded() {
+    let _serial = crate::test_helpers::serial();
+    let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::cache::clear_cache_for_test();
+    let mut f = test_fixture::new_fixture(true);
+    let g = test_fixture::new_fixture(true);
+    let at = |now: &str| Thresholds {
+        now: now.into(),
+        ..Default::default()
+    };
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:00:07Z")).unwrap();
+    compute_light(&g.st, "fixture", "", at("2026-09-10T12:00:07Z")).unwrap();
+    assert_eq!(crate::cache::cache_len_for_test(), 2);
+    // The next clock bucket replaces the project's older bucket; the other
+    // store's tally is untouched.
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:05:00Z")).unwrap();
+    assert_eq!(crate::cache::cache_len_for_test(), 2);
+    // Two threshold variants of one bucket and one store version both live.
+    let quorum = Thresholds {
+        now: "2026-09-10T12:05:00Z".into(),
+        quorum: 9,
+        ..Default::default()
+    };
+    compute_light(&f.st, "fixture", "", quorum.clone()).unwrap();
+    assert_eq!(crate::cache::cache_len_for_test(), 3);
+    // A post changes the store version: the tally computed after it drops
+    // every variant computed before it.
+    let mut p = test_fixture::FPost::new(
+        "claim",
+        "governance",
+        "new",
+        "r/c",
+        FIXTURE_NOW,
+        "new claim",
+        "s",
+    );
+    p.expires = "2026-12-31T00:00:00Z".into();
+    f.post(p);
+    compute_light(&f.st, "fixture", "", at("2026-09-10T12:05:00Z")).unwrap();
+    assert_eq!(crate::cache::cache_len_for_test(), 2);
+    // An expired entry goes on the next insert, whatever its project.
+    crate::cache::expire_cache_for_test();
+    compute_light(&f.st, "fixture", "", quorum).unwrap();
+    assert_eq!(crate::cache::cache_len_for_test(), 1);
+}
+
+#[test]
 fn compute_invalidates_cache_when_post_added() {
     let _serial = crate::test_helpers::serial();
     let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

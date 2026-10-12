@@ -738,7 +738,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   the project's board/job/event/settings watermark is unchanged (default
   safety TTL: `daemon.planner_cache_ttl_seconds=600`; the clock enters the
   tally in five-minute steps, so a claim's expiry is seen within five
-  minutes rather than costing a fresh tally every minute). It fills every free
+  minutes rather than costing a fresh tally every minute; a tally the project
+  has superseded - older watermark, older clock step, or past the TTL -
+  leaves the cache the moment a newer one is stored, so a busy board does not
+  park thirty-two dead tallies in the daemon's memory). It fills every free
   lane: as many new jobs per tick as `parallel_per_project` leaves beside the
   project's queued and leased ordinary jobs (experiments aside), so a project
   with three lanes and five voted cards works three at once instead of one
