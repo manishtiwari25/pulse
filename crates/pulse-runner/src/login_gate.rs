@@ -347,6 +347,12 @@ mod tests {
     fn daemon_idles_behind_login_gate_and_posts_once() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
+        // The disk floor reads this machine's real free space and would idle the
+        // daemon with "disk under floor" before it ever reaches the login gate
+        // (seen once in a full-suite run on a nearly full host); this test is
+        // about the gate, so turn the floor off.
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
         crate::test_helpers::new_bare_repo(&s);
         crate::test_helpers::join(&s, "aurora");
         crate::util::exec1(
