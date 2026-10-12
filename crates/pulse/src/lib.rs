@@ -186,6 +186,7 @@ pub fn run_streaming(
     }
     let mut g = Globals::default();
     g.apply(&gfs);
+    let project_given = gfs.is_set("project");
     let color = color_enabled(out_is_tty, g.no_color);
     let rest = gfs.args();
     if rest.is_empty() {
@@ -214,7 +215,7 @@ pub fn run_streaming(
         quiet: g.quiet,
         color,
         agent: g.agent,
-        project: g.project,
+        project: g.project.clone(),
         session: g.session,
         now: g.now,
         args: Vec::new(),
@@ -243,6 +244,12 @@ pub fn run_streaming(
                 return 2;
             }
         };
+        // a --project written before the command word reaches the command as
+        // a set flag too, so a command that tells an explicit project apart
+        // from the ambient one ($PULSE_PROJECT) sees both spellings alike
+        if project_given && !fs.is_set("project") {
+            let _ = fs.set("project", &g.project);
+        }
         apply_late(&fs, &mut ctx);
         args
     };
@@ -727,6 +734,68 @@ mod tests {
             if home.exists() {
                 panic!("{}: help touched the store home", args.join(" "));
             }
+        }
+    }
+
+    #[test]
+    fn project_flag_reaches_the_command_but_the_ambient_project_does_not() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let _agent = setenv("PULSE_AGENT", "");
+        let _ambient = setenv("PULSE_PROJECT", "demo");
+        let dir = tempdir().unwrap();
+        let home = dir.path().to_str().unwrap();
+        pulse_store::create(Path::new(home).join(pulse_store::STORE_NAME)).unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.to_string(),
+            skip_records: true,
+            ..pulse_store::Options::default()
+        })
+        .unwrap();
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                &format!(
+                    "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', '{}', '2026-09-06T00:00:00Z')",
+                    dir.path().join("demo").display()
+                ),
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let add = |extra_before: &[&str], name: &str, extra_after: &[&str]| -> String {
+            let mut args = vec!["--home", home, "--json"];
+            args.extend_from_slice(extra_before);
+            args.extend_from_slice(&[
+                "skill",
+                "add",
+                "--name",
+                name,
+                "--description",
+                "d",
+                "--body",
+                "the body",
+            ]);
+            args.extend_from_slice(extra_after);
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(&args, &mut out, &mut errb);
+            if code != 0 {
+                panic!("{args:?}: code {code} stderr {:?}", s(&errb));
+            }
+            let v: serde_json::Value = serde_json::from_str(&s(&out)).unwrap();
+            v["skill"]["project"].as_str().unwrap().to_string()
+        };
+        // PULSE_PROJECT alone - a worker's shell - never narrows what is added
+        if !add(&[], "ambient", &[]).is_empty() {
+            panic!("the ambient project scoped the skill");
+        }
+        // --project before or after the command word does, the same way
+        if add(&["--project", "demo"], "before", &[]) != "demo" {
+            panic!("--project before the command word was not seen");
+        }
+        if add(&[], "after", &["--project", "demo"]) != "demo" {
+            panic!("--project after the command word was not seen");
         }
     }
 

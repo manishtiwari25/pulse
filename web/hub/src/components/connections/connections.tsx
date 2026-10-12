@@ -22,8 +22,9 @@ import { cn } from "@/lib/utils";
 // Connections: what agents can reach beyond the repository. A tool
 // connection (an MCP server) is the bridge to another system - issues,
 // feedback, docs, environments; a skill is a reusable set of instructions.
-// Both are scoped to a project or to every project, and both reach agents
-// through their brief.
+// Both are for every project unless one project is named - the Add dialogs
+// start at "All projects" whatever the page filter says - and both reach
+// agents through their brief.
 
 type Tab = "mcp" | "skills";
 
@@ -199,10 +200,10 @@ export function ConnectionsPageClient() {
         ) : null}
       </TabsContent>
 
-      <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} project={project} />
+      <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} />
       <McpServerDialog open={!!editMcp} onOpenChange={(o) => (o ? null : setEditMcp(null))} options={opts} server={editMcp} />
       <ConnectDialog server={connecting} onOpenChange={(o) => (o ? null : setConnecting(null))} />
-      <SkillDialog open={addSkill} onOpenChange={setAddSkill} project={project} />
+      <SkillDialog open={addSkill} onOpenChange={setAddSkill} />
       <SkillDialog open={!!editSkill} onOpenChange={(o) => (o ? null : setEditSkill(null))} skill={editSkill} />
       <SkillViewDialog
         skill={viewSkill}

@@ -80,13 +80,14 @@ struct SkillsOut<'a> {
 
 pub fn register() {
     REGISTER.call_once(|| {
-        pulse_cli::register(Command { name:"mcp".into(), group:"agents".into(), summary:"MCP servers agents can call: add, list, show, update, enable, disable, connect, tools, call, resources, read".into(), usage:"pulse mcp add --name N --transport stdio|http|sse (--command CMD [--arg A]... | --url U) [--auth none|bearer|basic|header|query|env] [--auth-header NAME] [--secret REF] [--env K=V]... [--project P] [--note TEXT]\npulse mcp list [--project P] [--json]\npulse mcp show N|MCP-NNN [--json]\npulse mcp update N|MCP-NNN [--name N] [--transport T] [--command CMD] [--arg A]... [--url U] [--auth A] [--auth-header NAME] [--secret REF] [--env K=V]... [--note TEXT]\npulse mcp enable|disable N|MCP-NNN\npulse mcp connect N [--json]              (initialize + tools/list; records the check)\npulse mcp tools N [--json]\npulse mcp call N TOOL [--args JSON | stdin] [--json]   (exit 1 when the tool reports an error)\npulse mcp resources N [--json]\npulse mcp read N URI [--json]\n\nThe secret is a pulse_cred reference, never the value: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. For basic auth it resolves to user:password. Env values may be references too.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_mcp, flags:Some(mcp_flags) });
-        pulse_cli::register(Command { name:"skill".into(), group:"agents".into(), summary:"skills shared between agents - a setup, a debugging recipe, a check: add, list, show, update, enable, disable".into(), usage:"pulse skill add --name N --description D (--file F | --body TEXT | stdin) [--project P]\npulse skill list [--project P] [--json]\npulse skill show N|SKILL-NNN [--json]      (prints the body)\npulse skill update N|SKILL-NNN [--name N] [--description D] [--file F | --body TEXT | stdin] [--project P]\npulse skill enable|disable N|SKILL-NNN".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_skill, flags:Some(skill_flags) });
+        pulse_cli::register(Command { name:"mcp".into(), group:"agents".into(), summary:"MCP servers agents can call: add, list, show, update, enable, disable, connect, tools, call, resources, read".into(), usage:"pulse mcp add --name N --transport stdio|http|sse (--command CMD [--arg A]... | --url U) [--auth none|bearer|basic|header|query|env] [--auth-header NAME] [--secret REF] [--env K=V]... [--project P] [--note TEXT]\npulse mcp list [--project P] [--json]\npulse mcp show N|MCP-NNN [--json]\npulse mcp update N|MCP-NNN [--name N] [--transport T] [--command CMD] [--arg A]... [--url U] [--auth A] [--auth-header NAME] [--secret REF] [--env K=V]... [--note TEXT] [--project P]\npulse mcp enable|disable N|MCP-NNN\npulse mcp connect N [--json]              (initialize + tools/list; records the check)\npulse mcp tools N [--json]\npulse mcp call N TOOL [--args JSON | stdin] [--json]   (exit 1 when the tool reports an error)\npulse mcp resources N [--json]\npulse mcp read N URI [--json]\n\nThe secret is a pulse_cred reference, never the value: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. For basic auth it resolves to user:password. Env values may be references too.\n\nA server is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it. A project's own server replaces a shared one with the same name.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_mcp, flags:Some(mcp_flags) });
+        pulse_cli::register(Command { name:"skill".into(), group:"agents".into(), summary:"skills shared between agents - a setup, a debugging recipe, a check: add, list, show, update, enable, disable".into(), usage:"pulse skill add --name N --description D (--file F | --body TEXT | stdin) [--project P]\npulse skill list [--project P] [--json]\npulse skill show N|SKILL-NNN [--json]      (prints the body)\npulse skill update N|SKILL-NNN [--name N] [--description D] [--file F | --body TEXT | stdin] [--project P]\npulse skill enable|disable N|SKILL-NNN\n\nA skill is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_skill, flags:Some(skill_flags) });
     });
 }
 
 fn mcp_flags(fs: &mut FlagSet) {
     fs.string_var("name", "", "the server's name, a slug (add, update)");
+    scope_flag(fs, "server");
     fs.string_var("transport", "", "stdio, http or sse (add, update)");
     fs.string_var("command", "", "stdio: the program to run (add, update)");
     fs.strings_var(
@@ -127,6 +128,7 @@ fn mcp_flags(fs: &mut FlagSet) {
 
 fn skill_flags(fs: &mut FlagSet) {
     fs.string_var("name", "", "the skill's name, a slug (add, update)");
+    scope_flag(fs, "skill");
     fs.string_var(
         "description",
         "",
@@ -138,6 +140,32 @@ fn skill_flags(fs: &mut FlagSet) {
         "the skill text, markdown (add, update); or --file, or stdin",
     );
     fs.string_var("file", "", "file holding the body; - for stdin");
+}
+
+/// `--project` is a global flag, but here it also chooses the scope of what
+/// is added: given, the one project that may use the thing; absent, every
+/// project. Binding it here keeps that reading and its help text with the
+/// command.
+fn scope_flag(fs: &mut FlagSet, what: &str) {
+    fs.string_var(
+        "project",
+        "",
+        &format!(
+            "the one project that may use the {what} (add, update; default: every project, whatever PULSE_PROJECT says)"
+        ),
+    );
+}
+
+/// The scope of a new skill or server: the project `--project` names, else
+/// every project. The ambient project (`PULSE_PROJECT`, set in every
+/// worker's shell) never narrows it - what one project's worker adds is
+/// meant for the fleet unless it says otherwise.
+fn scope(fs: &FlagSet) -> String {
+    if fs.is_set("project") {
+        fs.get_string("project")
+    } else {
+        String::new()
+    }
 }
 
 fn store(c: &Context) -> Result<&Store> {
@@ -420,7 +448,7 @@ pub fn run_mcp(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 &actor(c),
                 McpServerInput {
                     name: fs.get_string("name"),
-                    project: c.project.clone(),
+                    project: scope(fs),
                     transport: fs.get_string("transport"),
                     command: fs.get_string("command"),
                     args: clean_args(fs.get_strings("arg")),
@@ -518,7 +546,7 @@ pub fn run_mcp(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             let set = |name: &str| fs.is_set(name).then(|| fs.get_string(name));
             let patch = McpServerPatch {
                 name: set("name"),
-                project: None,
+                project: set("project"),
                 transport: set("transport"),
                 command: set("command"),
                 args: fs.is_set("arg").then(|| clean_args(fs.get_strings("arg"))),
@@ -743,7 +771,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 &actor(c),
                 SkillInput {
                     name: fs.get_string("name"),
-                    project: c.project.clone(),
+                    project: scope(fs),
                     description: fs.get_string("description"),
                     body,
                 },
@@ -826,7 +854,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             let body = read_body(&fs.get_string("body"), &fs.get_string("file"))?;
             let patch = SkillPatch {
                 name: fs.is_set("name").then(|| fs.get_string("name")),
-                project: (!c.project.is_empty()).then(|| c.project.clone()),
+                project: fs.is_set("project").then(|| fs.get_string("project")),
                 description: fs
                     .is_set("description")
                     .then(|| fs.get_string("description")),
@@ -1068,6 +1096,8 @@ mod tests {
         assert!(text.contains("MCP-001 added: github (stdio npx -y @modelcontextprotocol/server-github) for every project"), "{text}");
         out.clear();
 
+        // the shell's project (PULSE_PROJECT in a worker's shell) does not
+        // narrow a new server; only an explicit --project does
         c.project = "demo".into();
         run_cmd(
             &mut c,
@@ -1089,10 +1119,50 @@ mod tests {
         .unwrap();
         assert!(
             out.string()
-                .contains("MCP-002 added: docs (http https://docs.example/mcp) in demo"),
+                .contains("MCP-002 added: docs (http https://docs.example/mcp) for every project"),
             "{}",
             out.string()
         );
+        out.clear();
+        run_cmd(
+            &mut c,
+            "mcp",
+            &[
+                "add",
+                "--name",
+                "docs",
+                "--project",
+                "demo",
+                "--transport",
+                "http",
+                "--url",
+                "https://docs.demo.example/mcp",
+                "--auth",
+                "bearer",
+                "--secret",
+                "keychain://pulse/docs-demo",
+            ],
+        )
+        .unwrap();
+        assert!(
+            out.string()
+                .contains("MCP-003 added: docs (http https://docs.demo.example/mcp) in demo"),
+            "{}",
+            out.string()
+        );
+        out.clear();
+        // --project on update re-scopes; nothing else does
+        run_cmd(&mut c, "mcp", &["update", "github", "--project", "demo"]).unwrap();
+        assert_eq!(s.store.mcp_server_by_id("MCP-001").unwrap().project, "demo");
+        run_cmd(
+            &mut c,
+            "mcp",
+            &["update", "github", "--note", "Issues and PRs"],
+        )
+        .unwrap();
+        assert_eq!(s.store.mcp_server_by_id("MCP-001").unwrap().project, "demo");
+        run_cmd(&mut c, "mcp", &["update", "github", "--project", ""]).unwrap();
+        assert_eq!(s.store.mcp_server_by_id("MCP-001").unwrap().project, "");
         out.clear();
         c.project.clear();
 
@@ -1207,9 +1277,12 @@ mod tests {
         let (mut j, jout) = ctx_for(&s, true);
         run_cmd(&mut j, "mcp", &["list"]).unwrap();
         let v: Value = serde_json::from_str(&jout.string()).unwrap();
-        assert_eq!(v["servers"].as_array().unwrap().len(), 2);
-        assert_eq!(v["servers"][0]["name"], "github");
-        assert_eq!(v["servers"][1]["secret_ref"], "keychain://pulse/docs");
+        assert_eq!(v["servers"].as_array().unwrap().len(), 3);
+        assert_eq!(v["servers"][0]["name"], "docs");
+        assert_eq!(v["servers"][0]["project"], "");
+        assert_eq!(v["servers"][1]["name"], "github");
+        assert_eq!(v["servers"][2]["project"], "demo");
+        assert_eq!(v["servers"][2]["secret_ref"], "keychain://pulse/docs-demo");
 
         let err = run_cmd(&mut c, "mcp", &["show", "nothing"]).unwrap_err();
         assert!(
@@ -1805,8 +1878,33 @@ mod tests {
             out.string()
         );
         out.clear();
+        // the shell's project (PULSE_PROJECT in a worker's shell) does not
+        // narrow a new skill; only an explicit --project does
         c.project = "demo".into();
         c.agent = "cinder".into();
+        set_stdin_for_tests(Some(b"Shared by every project.\n".to_vec()));
+        run_cmd(
+            &mut c,
+            "skill",
+            &[
+                "add",
+                "--name",
+                "shared-by-default",
+                "--description",
+                "Added from demo's shell, for everyone",
+            ],
+        )
+        .unwrap();
+        set_stdin_for_tests(None);
+        assert!(
+            out.string().contains(
+                "SKILL-002 added: shared-by-default - Added from demo's shell, for everyone"
+            ),
+            "{}",
+            out.string()
+        );
+        assert_eq!(s.skill("shared-by-default").unwrap().project, "");
+        out.clear();
         set_stdin_for_tests(Some(
             b"Run `cargo test -- --nocapture` and look for the flake.\n".to_vec(),
         ));
@@ -1817,6 +1915,8 @@ mod tests {
                 "add",
                 "--name",
                 "flaky-tests",
+                "--project",
+                "demo",
                 "--description",
                 "Finding a flaky test",
             ],
@@ -1824,10 +1924,33 @@ mod tests {
         .unwrap();
         set_stdin_for_tests(None);
         assert!(
-            out.string().contains("SKILL-002 added: flaky-tests (demo)"),
+            out.string().contains("SKILL-003 added: flaky-tests (demo)"),
             "{}",
             out.string()
         );
+        out.clear();
+        // an update from demo's shell leaves a shared skill shared
+        run_cmd(
+            &mut c,
+            "skill",
+            &[
+                "update",
+                "shared-by-default",
+                "--description",
+                "Still for everyone",
+            ],
+        )
+        .unwrap();
+        assert_eq!(s.skill("shared-by-default").unwrap().project, "");
+        run_cmd(&mut c, "skill", &["update", "flaky-tests", "--project", ""]).unwrap();
+        assert_eq!(s.skill("flaky-tests").unwrap().project, "");
+        run_cmd(
+            &mut c,
+            "skill",
+            &["update", "flaky-tests", "--project", "demo"],
+        )
+        .unwrap();
+        assert_eq!(s.skill("flaky-tests").unwrap().project, "demo");
         out.clear();
         c.project.clear();
         c.agent.clear();
@@ -1889,10 +2012,10 @@ mod tests {
             "{}",
             out.string()
         );
-        assert_eq!(s.skills_for("demo").unwrap().len(), 1);
+        assert_eq!(s.skills_for("demo").unwrap().len(), 2);
         out.clear();
         run_cmd(&mut c, "skill", &["enable", "SKILL-001"]).unwrap();
-        assert_eq!(s.skills_for("demo").unwrap().len(), 2);
+        assert_eq!(s.skills_for("demo").unwrap().len(), 3);
         out.clear();
 
         let (mut j, jout) = ctx_for(&s, true);
@@ -1903,7 +2026,7 @@ mod tests {
         jout.clear();
         run_cmd(&mut j, "skill", &["list"]).unwrap();
         let v: Value = serde_json::from_str(&jout.string()).unwrap();
-        assert_eq!(v["skills"].as_array().unwrap().len(), 2);
+        assert_eq!(v["skills"].as_array().unwrap().len(), 3);
 
         let err = run_cmd(&mut c, "skill", &["show", "nothing"]).unwrap_err();
         assert!(

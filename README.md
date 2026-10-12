@@ -649,9 +649,13 @@ pulse skill update release-check --description "..." --file docs/release-check.m
 pulse skill disable release-check     # workers stop hearing about it; the body stays
 ```
 
-Inside a job `PULSE_PROJECT` is set, so a worker's `pulse skill add` scopes
-the skill to its project; `--project ''` shares it with every project. A
-remote worker has no store, so its brief carries the skill bodies themselves
+A skill is for every project unless `--project P` names the one project that
+may use it: inside a job `PULSE_PROJECT` is set, but a worker's `pulse skill
+add` still shares what it learnt with the whole fleet, which is where a recipe
+found in one project earns its keep. The same holds for `pulse mcp add` and
+for the console's *Add* dialogs, whose "Who can use it" starts at *All
+projects*; `pulse skill update NAME --project P` (or `--project ''`) moves one
+later. A remote worker has no store, so its brief carries the skill bodies themselves
 (long ones cut at a fixed length) and asks it to put a new recipe in a
 `FINDING:` line for its lead. Bodies are refused when they carry something
 shaped like a secret - skills are shared with every agent. The hub's
