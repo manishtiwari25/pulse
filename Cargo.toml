@@ -86,7 +86,12 @@ futures = "0.3"
 # `webpki-roots` / `rustls-native-certs` optional deps are not referenced by any
 # code path any more, so they are not enabled.
 reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "charset", "http2", "stream", "gzip"] }
-rust-embed = "8.12"
+# `debug-embed` bakes `web/hub/out` into the binary in debug builds too.
+# Without it, debug builds read the console bundle from the source tree at
+# run time via the absolute path captured at compile time: a test binary
+# reused from a shared CARGO_TARGET_DIR then points at another (removed)
+# worker clone and `server::tests::embedded_export` fails spuriously.
+rust-embed = { version = "8.12", features = ["debug-embed"] }
 mime_guess = "2.0"
 # test
 tempfile = "3.27"
