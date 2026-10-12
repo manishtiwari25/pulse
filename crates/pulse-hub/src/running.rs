@@ -453,7 +453,7 @@ mod tests {
                     json!("2026-09-06T11:00:00Z"),
                 )]),
                 posts: vec![
-                    crate::board::object(
+                    crate::board::PostRow::from_map(&crate::board::object(
                         "id agent kind date",
                         vec![
                             json!("old-post"),
@@ -461,8 +461,8 @@ mod tests {
                             json!("finding"),
                             json!("2026-09-01T00:00:00Z"),
                         ],
-                    ),
-                    crate::board::object(
+                    )),
+                    crate::board::PostRow::from_map(&crate::board::object(
                         "id agent kind date",
                         vec![
                             json!("imported-post"),
@@ -470,7 +470,7 @@ mod tests {
                             json!("finding"),
                             json!("2026-08-01T00:00:00Z"),
                         ],
-                    ),
+                    )),
                 ],
                 claims: vec![
                     crate::board::object(

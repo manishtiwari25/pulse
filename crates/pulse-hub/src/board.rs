@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use regex::Regex;
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -8,15 +9,132 @@ use std::sync::LazyLock;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 
-/// The row a lookup falls back to when a post id is unknown: every key is absent.
-static EMPTY_ROW: JsonMap = JsonMap::new();
+/// The row a lookup falls back to when a post id is unknown: every key is null.
+static EMPTY_ROW: PostRow = PostRow([const { Value::Null }; POST_ROW_LEN]);
 
 fn post_at<'a>(
     by_id: &BTreeMap<String, usize>,
-    posts: &'a [JsonMap],
+    posts: &'a [PostRow],
     id: &str,
-) -> Option<&'a JsonMap> {
+) -> Option<&'a PostRow> {
     by_id.get(id).map(|&i| &posts[i])
+}
+
+/// A row read by key: a `JsonMap`, a `PostRow`, or a reference to either.
+pub(crate) trait Fields {
+    fn field(&self, key: &str) -> Option<&Value>;
+}
+
+impl Fields for JsonMap {
+    fn field(&self, key: &str) -> Option<&Value> {
+        self.get(key)
+    }
+}
+
+impl Fields for PostRow {
+    fn field(&self, key: &str) -> Option<&Value> {
+        self.get(key)
+    }
+}
+
+impl<T: Fields + ?Sized> Fields for &T {
+    fn field(&self, key: &str) -> Option<&Value> {
+        (**self).field(key)
+    }
+}
+
+/// `POST_ROW_FIELDS` in bytewise order - the order a `BTreeMap` row
+/// serialized its keys in, so a row's JSON is unchanged.
+const POST_ROW_KEYS: [&str; 26] = [
+    "agent",
+    "area",
+    "branch",
+    "date",
+    "expires",
+    "files",
+    "has_read_line",
+    "id",
+    "in_area",
+    "kind",
+    "links",
+    "model",
+    "name",
+    "on_post",
+    "project",
+    "provenance_missing",
+    "provenance_ok",
+    "rel_path",
+    "resolution",
+    "runner",
+    "session",
+    "summary",
+    "text_hash",
+    "thread",
+    "thread_key",
+    "vote",
+];
+const POST_ROW_LEN: usize = POST_ROW_KEYS.len();
+
+/// One cached post: its `POST_ROW_FIELDS` values in `POST_ROW_KEYS` order,
+/// in one array rather than a map. A `JsonMap` row cost four tree nodes and
+/// 26 owned key strings on top of the values - some 3 KB per post - and a
+/// hub serving a 60k-post board held almost 200 MB of that overhead alone.
+#[derive(Debug, Clone)]
+pub(crate) struct PostRow([Value; POST_ROW_LEN]);
+
+impl PostRow {
+    /// A row from values in `POST_ROW_FIELDS` order.
+    fn new(values: Vec<Value>) -> PostRow {
+        let mut slots = [const { Value::Null }; POST_ROW_LEN];
+        for (key, value) in POST_ROW_FIELDS.split_whitespace().zip(values) {
+            if let Ok(i) = POST_ROW_KEYS.binary_search(&key) {
+                slots[i] = value;
+            }
+        }
+        PostRow(slots)
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<&Value> {
+        POST_ROW_KEYS.binary_search(&key).ok().map(|i| &self.0[i])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &'static str> {
+        POST_ROW_KEYS.into_iter()
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, &Value)> {
+        POST_ROW_KEYS.into_iter().zip(self.0.iter())
+    }
+
+    /// The row as a map, for a response that adds keys to it.
+    pub(crate) fn to_map(&self) -> JsonMap {
+        self.iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect()
+    }
+
+    /// A row from a map: the `POST_ROW_FIELDS` it carries, null for the rest.
+    #[cfg(test)]
+    pub(crate) fn from_map(map: &JsonMap) -> PostRow {
+        let mut slots = [const { Value::Null }; POST_ROW_LEN];
+        for (i, key) in POST_ROW_KEYS.iter().enumerate() {
+            if let Some(value) = map.get(*key) {
+                slots[i] = value.clone();
+            }
+        }
+        PostRow(slots)
+    }
+}
+
+impl Serialize for PostRow {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(POST_ROW_LEN))?;
+        for (key, value) in self.iter() {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }
 
 pub trait TallySource: Send + Sync {
@@ -68,7 +186,7 @@ pub(crate) struct BoardData {
     /// frontmatter. Everything the board derives from a post's body
     /// (proposal text, read lines, owner questions) is computed while the
     /// snapshot is built, from the store rows the tally was computed from.
-    pub(crate) posts: Vec<JsonMap>,
+    pub(crate) posts: Vec<PostRow>,
     /// Index of each post id into `posts`.
     pub(crate) by_id: BTreeMap<String, usize>,
     pub(crate) claims: Vec<JsonMap>,
@@ -151,7 +269,9 @@ impl crate::server::Handler {
         let mut d = BoardData {
             params: JsonMap::new(),
             by_id: BTreeMap::new(),
-            posts: Vec::new(),
+            // One row per store post: sized once so the vector never holds
+            // the slack of a doubling.
+            posts: Vec::with_capacity(db_posts.len()),
             claims: Vec::new(),
             threads: Vec::new(),
             proposals: Vec::new(),
@@ -199,8 +319,7 @@ impl crate::server::Handler {
                             missing.push(key.to_string());
                         }
                     }
-                    let row = object(
-                        POST_ROW_FIELDS,
+                    let row = PostRow::new(
                         vec![
                             json!(f[3]), json!(f[0]), json!(f[1]), json!(f[2]), json!(format!("{}/{}", f[1], f[2])),
                             json!(f[4]), json!(f[5]), json!(post.runner), json!(post.model), json!(f[12]),
@@ -516,7 +635,7 @@ impl BoardData {
         let mut posts = self.posts.iter().collect::<Vec<_>>();
         order(&mut posts, &["date", "id"]);
         let mut seen = BTreeMap::<String, BTreeSet<String>>::new();
-        let mut by_thread = BTreeMap::<String, Vec<&JsonMap>>::new();
+        let mut by_thread = BTreeMap::<String, Vec<&PostRow>>::new();
         for &post in &posts {
             let key = str_key(post, "thread_key");
             let Some(&idx) = threads.get(&key) else {
@@ -617,7 +736,7 @@ impl BoardData {
             .filter(|p| str_key(p, "kind") == "answer" && !str_key(p, "on_post").is_empty())
             .map(|p| str_key(p, "on_post"))
             .collect::<BTreeSet<_>>();
-        let mut by_thread = BTreeMap::<String, Vec<&JsonMap>>::new();
+        let mut by_thread = BTreeMap::<String, Vec<&PostRow>>::new();
         for &post in &posts {
             by_thread
                 .entry(str_key(post, "thread_key"))
@@ -687,7 +806,7 @@ impl BoardData {
         self.questions = rows;
     }
 
-    pub(crate) fn post_by_id(&self, id: &str) -> Option<&JsonMap> {
+    pub(crate) fn post_by_id(&self, id: &str) -> Option<&PostRow> {
         post_at(&self.by_id, &self.posts, id)
     }
 
@@ -698,7 +817,7 @@ impl BoardData {
         let Some(p) = self.post_by_id(id) else {
             return JsonMap::new();
         };
-        let mut result = p.clone();
+        let mut result = p.to_map();
         let mut responses = self
             .posts
             .iter()
@@ -916,28 +1035,27 @@ pub(crate) fn object(keys: &str, values: Vec<Value>) -> JsonMap {
     result
 }
 
-pub(crate) fn pick(row: &JsonMap, keys: &str) -> JsonMap {
+pub(crate) fn pick<R: Fields + ?Sized>(row: &R, keys: &str) -> JsonMap {
     let mut out = JsonMap::new();
     for key in keys.split_whitespace() {
         out.insert(
             key.to_string(),
-            row.get(key).cloned().unwrap_or(Value::Null),
+            row.field(key).cloned().unwrap_or(Value::Null),
         );
     }
     out
 }
 
-pub(crate) fn order<R: std::borrow::Borrow<JsonMap>>(rows: &mut [R], fields: &[&str]) {
+pub(crate) fn order<R: Fields>(rows: &mut [R], fields: &[&str]) {
     // str() of a field without allocating when it already is a string.
-    fn key<'a>(row: &'a JsonMap, field: &str) -> std::borrow::Cow<'a, str> {
-        match row.get(field) {
+    fn key<'a, R: Fields>(row: &'a R, field: &str) -> std::borrow::Cow<'a, str> {
+        match row.field(field) {
             Some(Value::String(s)) => std::borrow::Cow::Borrowed(s.as_str()),
             Some(v) => std::borrow::Cow::Owned(str_value(v)),
             None => std::borrow::Cow::Borrowed(""),
         }
     }
     rows.sort_by(|a, b| {
-        let (a, b) = (a.borrow(), b.borrow());
         for field in fields {
             let desc = field.starts_with('-');
             let field = field.trim_start_matches('-');
@@ -1106,14 +1224,14 @@ fn line_trim(s: &str) -> &str {
     s.trim()
 }
 
-pub(crate) fn later_hub_kind(posts: &[&JsonMap], index: usize, kinds: &[&str]) -> bool {
+pub(crate) fn later_hub_kind(posts: &[&PostRow], index: usize, kinds: &[&str]) -> bool {
     let want = kinds.iter().copied().collect::<BTreeSet<_>>();
     posts[index + 1..]
         .iter()
         .any(|post| want.contains(str_key(post, "kind").as_str()))
 }
 
-pub(crate) fn later_hub_answer_date(posts: &[&JsonMap], index: usize) -> bool {
+pub(crate) fn later_hub_answer_date(posts: &[&PostRow], index: usize) -> bool {
     let date = str_key(posts[index], "date");
     posts[index + 1..]
         .iter()
@@ -1212,8 +1330,8 @@ fn num_str(s: &str) -> i64 {
     s.parse().unwrap_or(0)
 }
 
-fn str_key(row: &JsonMap, key: &str) -> String {
-    row.get(key).map(str_value).unwrap_or_default()
+fn str_key<R: Fields + ?Sized>(row: &R, key: &str) -> String {
+    row.field(key).map(str_value).unwrap_or_default()
 }
 
 fn inc(row: &mut JsonMap, key: &str) {
@@ -1299,6 +1417,90 @@ mod tests {
         )
         .unwrap()
         .0
+    }
+
+    /// A realistic row's values, in `POST_ROW_FIELDS` order.
+    fn sample_row_values() -> Vec<Value> {
+        vec![
+            json!("20261012T092211Z-copilot-fable-1012-hub"),
+            json!("docs/board/runner/disk-floor/20261012T092211Z-copilot-fable-1012-hub.md"),
+            json!("runner"),
+            json!("disk-floor"),
+            json!("runner/disk-floor"),
+            json!("finding"),
+            json!("copilot-fable-1012-hub"),
+            json!("copilot"),
+            json!("claude-fable-5.1"),
+            json!("95b0148f-1d3e-4993-8e59-e81b902cbfe2"),
+            json!("2026-10-12T09:22:11Z"),
+            json!("main"),
+            json!(""),
+            json!(""),
+            json!(""),
+            json!(""),
+            json!(0),
+            json!(""),
+            json!("Disk floor: the runner refused new work under 10 GB free; 17.7 GB reclaimed."),
+            json!(""),
+            json!(""),
+            json!(1),
+            json!(Vec::<String>::new()),
+            json!(1),
+            json!("copilot-fable-1012-hub"),
+            json!("amistio-template"),
+        ]
+    }
+
+    // The hub keeps one row per post of every project in memory; the map a
+    // row used to be cost four tree nodes and 26 owned keys per post over
+    // the values themselves (a 60k-post board held nearly 200 MB of that).
+    #[test]
+    fn post_row_costs_no_heap_beyond_its_values() {
+        let values = sample_row_values();
+        // Other tests allocate on their own threads: the smallest of many
+        // short windows is this thread's own cost.
+        let measure = |build: &dyn Fn(Vec<Value>) -> usize| {
+            (0..64)
+                .map(|_| {
+                    let values = values.clone();
+                    let before = crate::allocated_bytes();
+                    let keep = build(values);
+                    let after = crate::allocated_bytes();
+                    std::hint::black_box(keep);
+                    after - before
+                })
+                .min()
+                .unwrap()
+        };
+        let row_bytes = measure(&|values| PostRow::new(values).0.len());
+        let map_bytes = measure(&|values| object(POST_ROW_FIELDS, values).len());
+        assert_eq!(row_bytes, 0, "a row allocates nothing beyond its values");
+        assert!(
+            map_bytes > 2048,
+            "the map it replaces allocated {map_bytes} bytes"
+        );
+        // The same keys, the same values, the same JSON.
+        let row = PostRow::new(values.clone());
+        let map = object(POST_ROW_FIELDS, values);
+        assert_eq!(row.to_map(), map);
+        assert_eq!(
+            pulse_store::gojson::to_vec(&row).unwrap(),
+            pulse_store::gojson::to_vec(&map).unwrap()
+        );
+        assert_eq!(row.get("kind"), Some(&json!("finding")));
+        assert_eq!(row.get("body"), None);
+        assert_eq!(str_key(&row, "thread_key"), "runner/disk-floor");
+        assert_eq!(str_key(&EMPTY_ROW, "thread_key"), "");
+        let mut rows = vec![&row, &EMPTY_ROW];
+        order(&mut rows, &["date"]);
+        assert!(std::ptr::eq(rows[0], &EMPTY_ROW));
+    }
+
+    #[test]
+    fn post_row_keys_are_the_fields_in_map_order() {
+        let mut fields = POST_ROW_FIELDS.split_whitespace().collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(POST_ROW_KEYS.to_vec(), fields);
     }
 
     #[test]
@@ -1504,11 +1706,7 @@ mod tests {
         let fields = POST_ROW_FIELDS.split_whitespace().collect::<BTreeSet<_>>();
         assert_eq!(data.posts.len(), 3);
         for row in &data.posts {
-            assert_eq!(
-                row.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-                fields,
-                "{row:#?}"
-            );
+            assert_eq!(row.keys().collect::<BTreeSet<_>>(), fields, "{row:#?}");
         }
         assert_eq!(data.proposals.len(), 1);
         assert_eq!(

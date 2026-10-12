@@ -1,3 +1,4 @@
+use crate::board::PostRow;
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::{Handler, UiFs};
 use anyhow::{Result, anyhow};
@@ -504,7 +505,7 @@ impl Handler {
         let reference = crate::read::parse_dt(&now).unwrap_or_else(go_zero_time);
         for view in views {
             let Some(d) = &view.data else { continue };
-            let mut by_agent = BTreeMap::<String, Vec<&JsonMap>>::new();
+            let mut by_agent = BTreeMap::<String, Vec<&PostRow>>::new();
             for post in &d.posts {
                 by_agent
                     .entry(str_field(post, "agent"))
@@ -771,8 +772,8 @@ fn go_value<T: serde::Serialize>(v: &T) -> Value {
     serde_json::from_str(&text).expect("reparse hub payload")
 }
 
-fn str_field(row: &JsonMap, key: &str) -> String {
-    row.get(key)
+fn str_field<R: crate::board::Fields + ?Sized>(row: &R, key: &str) -> String {
+    row.field(key)
         .map(crate::board::str_value)
         .unwrap_or_default()
 }

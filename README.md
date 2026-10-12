@@ -2526,6 +2526,10 @@ store rows it reads change or a minute passes; at most three builds run at once.
 A snapshot past that minute cannot be served again, so a timer drops it: the
 hub holds the boards the console asked for in the last minute or two, not
 every project and area ever opened, and an idle hub's heap empties on its own.
+A row is one fixed array of its 26 values rather than a map - a map of
+owned keys cost about 3 KB per post over the values, close to 200 MB for a
+60k-post organization whose every board the console keeps warm - and it
+serializes to the same JSON.
 
 ```text
 crates/pulse/                  the binary (registers every command crate)

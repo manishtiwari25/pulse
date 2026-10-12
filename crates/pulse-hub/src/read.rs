@@ -1,4 +1,4 @@
-use crate::board::{BoardData, object, order, pick, str_value};
+use crate::board::{BoardData, Fields, PostRow, object, order, pick, str_value};
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::Handler;
 use crate::view_cache::org_mark;
@@ -566,7 +566,7 @@ impl Handler {
             .filter_map(|v| v.as_object().cloned())
             .map(|m| {
                 pick(
-                    &m.into_iter().collect(),
+                    &m.into_iter().collect::<JsonMap>(),
                     "id thread_key agent expires summary name session",
                 )
             })
@@ -994,14 +994,14 @@ pub(crate) fn org_activity(views: &[ProjectView], limit: usize) -> Vec<JsonMap> 
 
 /// Posts whose `provenance_ok` is not 1, matching `posts_without_provenance`
 /// in the overview stats so the KPI tile can link to the same set.
-pub(crate) fn provenance_missing_posts(posts: &[JsonMap]) -> Vec<&JsonMap> {
+pub(crate) fn provenance_missing_posts(posts: &[PostRow]) -> Vec<&PostRow> {
     posts
         .iter()
         .filter(|p| crate::board::num_value(p.get("provenance_ok").unwrap_or(&Value::Null)) != 1)
         .collect()
 }
 
-pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String) -> JsonMap {
+pub(crate) fn timeline<R: Fields>(posts: &[R], now: String) -> JsonMap {
     let end = parse_dt(&now).unwrap_or_else(chrono::Utc::now);
     let mut hours = Vec::new();
     let mut days = Vec::new();
@@ -1030,7 +1030,6 @@ pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String
     let mut before = 0;
     let mut unparsed = 0;
     for p in posts {
-        let p = p.borrow();
         let Some(mut dt) = parse_dt(&str_map(p, "date")) else {
             unparsed += 1;
             continue;
@@ -1068,7 +1067,7 @@ pub(crate) fn timeline<R: std::borrow::Borrow<JsonMap>>(posts: &[R], now: String
 
 pub(crate) fn org_timeline(views: &[ProjectView], mut now: String) -> JsonMap {
     // Every project's posts, borrowed rather than cloned.
-    let mut posts = Vec::<&JsonMap>::new();
+    let mut posts = Vec::<&PostRow>::new();
     for view in views {
         if let Some(d) = &view.data {
             posts.extend(d.posts.iter());
@@ -1141,8 +1140,8 @@ fn bump(row: &mut JsonMap, kind: &str) {
     row.insert("kinds".into(), json!(kinds));
 }
 
-fn str_map(row: &JsonMap, key: &str) -> String {
-    row.get(key).map(str_value).unwrap_or_default()
+fn str_map<R: Fields + ?Sized>(row: &R, key: &str) -> String {
+    row.field(key).map(str_value).unwrap_or_default()
 }
 
 fn num(row: &JsonMap, key: &str) -> i64 {
@@ -1196,13 +1195,13 @@ mod tests {
 
     #[test]
     fn timeline_provenance_missing_filter_matches_overview_count() {
-        let posts: Vec<JsonMap> = [
+        let posts: Vec<PostRow> = [
             json!({"id": "a", "date": "2026-01-01T00:00:00Z", "kind": "finding", "provenance_ok": 1}),
             json!({"id": "b", "date": "2026-01-01T01:00:00Z", "kind": "finding", "provenance_ok": 0}),
             json!({"id": "c", "date": "2026-01-01T02:00:00Z", "kind": "finding"}),
         ]
         .into_iter()
-        .map(|v| v.as_object().unwrap().clone().into_iter().collect())
+        .map(|v| PostRow::from_map(&v.as_object().unwrap().clone().into_iter().collect()))
         .collect();
         let missing = provenance_missing_posts(&posts);
         let ids: Vec<String> = missing.iter().map(|p| str_map(p, "id")).collect();
