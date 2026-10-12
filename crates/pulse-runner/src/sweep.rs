@@ -18,8 +18,10 @@ pub(crate) static SWEEP_JOB_ENTRY_RE: LazyLock<regex::Regex> = LazyLock::new(|| 
     regex::Regex::new(r"^(job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6})(\.[A-Za-z0-9_.-]+)?$")
         .expect("sweep job regex")
 });
+/// The worktree a landing ran in and, with the `.tmp` suffix, the `TMPDIR`
+/// its setup and verify commands were given (land.rs).
 pub(crate) static SWEEP_LAND_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^land-(.+)-([0-9]+)$").expect("sweep land regex"));
+    LazyLock::new(|| regex::Regex::new(r"^land-(.+)-([0-9]+)(\.tmp)?$").expect("sweep land regex"));
 /// The worktree a check or watch script ran in (`schedule_script`), named
 /// after the schedule and the daemon's pid.
 pub(crate) static SWEEP_SCHED_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -56,7 +58,19 @@ pub(crate) struct SweepOpts {
     pub dry_run: bool,
     pub actor: String,
     pub inflight: BTreeMap<String, bool>,
+    /// The disk is under `daemon.min_free_mb` (reclaim.rs): the windows that
+    /// only keep disposable things around for convenience shrink - a finished
+    /// job's clone goes at once, a work entry of a job this store never heard
+    /// of after the grace, run logs and transcripts over a day old, build
+    /// caches idle an hour. What the owner may still want (patches, briefs,
+    /// branches) keeps its usual window.
+    pub pressure: bool,
 }
+
+/// The keep windows the pressure mode shortens to.
+pub(crate) const PRESSURE_KEEP: Duration = Duration::from_secs(24 * 3600);
+pub(crate) const PRESSURE_CACHE_KEEP: Duration = Duration::from_secs(3600);
+pub(crate) const PRESSURE_VACUUM_FREE: i64 = 64 << 20;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Swept {
@@ -150,92 +164,140 @@ pub(crate) fn sweep(
     now: String,
     o: SweepOpts,
 ) -> Option<SweepReport> {
-    let checkouts = s
-        .conn()
-        .map(|conn| {
-            crate::util::must_rows(&conn, "SELECT path FROM projects", &[])
-                .into_iter()
-                .map(|r| r.str("path"))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut w = Sweeper {
-        s: s.clone(),
-        now: now.clone(),
-        clock: chrono::DateTime::<chrono::Utc>::from(crate::run::wall_clock()),
-        home: s.home.clone(),
-        grace: Duration::from_secs((s.setting_int("daemon.sweep_grace_minutes") as u64) * 60),
-        branches: Duration::from_secs(
-            (s.setting_int("daemon.sweep_branch_days") as u64) * 24 * 3600,
-        ),
-        keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
-        transcripts: Duration::from_secs(
-            (s.setting_int("daemon.transcript_keep_days").max(0) as u64) * 24 * 3600,
-        ),
-        logs_keep: Duration::from_secs(
-            (s.setting_int("daemon.log_keep_days").max(1) as u64) * 24 * 3600,
-        ),
-        log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
-        vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
-        cache_keep: Duration::from_secs(
-            (s.setting_int("daemon.build_cache_keep_days").max(1) as u64) * 24 * 3600,
-        ),
-        o,
-        projects,
-        checkouts,
-        prune: BTreeMap::new(),
-        running: BTreeMap::new(),
-        rep: SweepReport {
-            at: now,
-            dry_run: false,
-            removed: Vec::new(),
-            held: Vec::new(),
-            errors: Vec::new(),
-            cargo_target: Vec::new(),
-        },
-    };
-    w.rep.dry_run = w.o.dry_run;
-    if w.o.actor.is_empty() {
-        w.o.actor = "daemon".into();
-    }
-    w.sweep_orphan_jobs();
-    w.sweep_work();
-    w.sweep_push_keys();
-    w.sweep_cargo_targets();
-    w.sweep_measure_roots();
-    w.sweep_stray_worktrees();
-    for proj in w.projects.clone() {
-        w.sweep_checkout(proj);
-    }
-    w.sweep_harness_steps();
-    w.sweep_trajectories();
-    w.sweep_briefs();
-    w.sweep_files(
-        Path::new(&w.home).join("logs").display().to_string(),
-        "log".into(),
-        serde_json::Value::Null,
-    );
-    w.cap_logs();
-    if let Ok(folders) = std::fs::read_dir(Path::new(&w.home).join("patches")) {
-        for f in folders.flatten() {
-            if f.file_type().is_ok_and(|t| t.is_dir()) {
-                w.sweep_files(
-                    f.path().display().to_string(),
-                    "patch".into(),
-                    serde_json::Value::Null,
-                );
+    let mut w = Sweeper::new(s, now, o, projects);
+    w.sweep_all();
+    Some(w.rep)
+}
+
+impl Sweeper {
+    /// A sweeper over `s` with the windows the settings name, shortened when
+    /// `o.pressure` is set; `projects` are the active projects whose
+    /// checkouts, branches and Cargo targets the sweep may visit.
+    pub(crate) fn new(
+        s: &pulse_store::Store,
+        now: String,
+        mut o: SweepOpts,
+        projects: Vec<Row>,
+    ) -> Sweeper {
+        let checkouts = s
+            .conn()
+            .map(|conn| {
+                crate::util::must_rows(&conn, "SELECT path FROM projects", &[])
+                    .into_iter()
+                    .map(|r| r.str("path"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if o.actor.is_empty() {
+            o.actor = "daemon".into();
+        }
+        let days = |name: &str, floor: i64| {
+            Duration::from_secs((s.setting_int(name).max(floor) as u64) * 24 * 3600)
+        };
+        let mut w = Sweeper {
+            s: s.clone(),
+            now: now.clone(),
+            clock: chrono::DateTime::<chrono::Utc>::from(crate::run::wall_clock()),
+            home: s.home.clone(),
+            grace: Duration::from_secs((s.setting_int("daemon.sweep_grace_minutes") as u64) * 60),
+            branches: days("daemon.sweep_branch_days", 0),
+            keep: days("daemon.sweep_keep_days", 0),
+            transcripts: days("daemon.transcript_keep_days", 0),
+            logs_keep: days("daemon.log_keep_days", 1),
+            log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
+            vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
+            cache_keep: days("daemon.build_cache_keep_days", 1),
+            rep: SweepReport {
+                at: now,
+                dry_run: o.dry_run,
+                ..Default::default()
+            },
+            o,
+            projects,
+            checkouts,
+            prune: BTreeMap::new(),
+            running: BTreeMap::new(),
+        };
+        if w.o.pressure {
+            // Zero transcript days is the owner saying "keep every
+            // transcript"; pressure shortens windows, it does not open one.
+            if !w.transcripts.is_zero() {
+                w.transcripts = w.transcripts.min(PRESSURE_KEEP);
+            }
+            w.logs_keep = w.logs_keep.min(PRESSURE_KEEP);
+            w.cache_keep = w.cache_keep.min(PRESSURE_CACHE_KEEP);
+            if w.vacuum_free > 0 {
+                w.vacuum_free = w.vacuum_free.min(PRESSURE_VACUUM_FREE);
             }
         }
+        w
     }
-    w.sweep_binaries();
-    w.sweep_build_cache();
-    w.sweep_store_space();
-    if !w.o.dry_run {
-        crate::retention::empty_trash_later(Path::new(&w.home));
+
+    /// How long a work entry of a job this store does not know stays.
+    fn unknown_work_keep(&self) -> Duration {
+        if self.o.pressure {
+            self.keep.min(self.grace)
+        } else {
+            self.keep
+        }
     }
-    w.rep.removed.sort_by_key(|x| kind_rank_value(&x.kind));
-    w.rep.held.sort_by_key(|x| kind_rank_value(&x.kind));
-    Some(w.rep)
+
+    /// How old a dead Cargo unit or stale incremental dir must be to go.
+    fn cargo_min_age(&self) -> Duration {
+        let hours = Duration::from_secs(
+            self.s
+                .setting("hygiene.cargo_target_hours", "24")
+                .parse::<u64>()
+                .unwrap_or(24)
+                * 3600,
+        );
+        if self.o.pressure {
+            hours.min(PRESSURE_CACHE_KEEP)
+        } else {
+            hours
+        }
+    }
+
+    /// Every stage of the periodic sweep, in the order `pulse sweep` lists.
+    pub(crate) fn sweep_all(&mut self) {
+        self.sweep_orphan_jobs();
+        self.sweep_work();
+        self.sweep_push_keys();
+        self.sweep_cargo_targets();
+        self.sweep_measure_roots();
+        self.sweep_stray_worktrees();
+        for proj in self.projects.clone() {
+            self.sweep_checkout(proj);
+        }
+        self.sweep_harness_steps();
+        self.sweep_trajectories();
+        self.sweep_briefs();
+        self.sweep_files(
+            Path::new(&self.home).join("logs").display().to_string(),
+            "log".into(),
+            serde_json::Value::Null,
+        );
+        self.cap_logs();
+        if let Ok(folders) = std::fs::read_dir(Path::new(&self.home).join("patches")) {
+            for f in folders.flatten() {
+                if f.file_type().is_ok_and(|t| t.is_dir()) {
+                    self.sweep_files(
+                        f.path().display().to_string(),
+                        "patch".into(),
+                        serde_json::Value::Null,
+                    );
+                }
+            }
+        }
+        self.sweep_binaries();
+        self.sweep_build_cache();
+        self.sweep_store_space();
+        if !self.o.dry_run {
+            crate::retention::empty_trash_later(Path::new(&self.home));
+        }
+        self.rep.removed.sort_by_key(|x| kind_rank_value(&x.kind));
+        self.rep.held.sort_by_key(|x| kind_rank_value(&x.kind));
+    }
 }
 
 /// Sweeps only the runner's own leftover clones and scratch files under
@@ -250,15 +312,6 @@ pub(crate) fn sweep_stale_clones(
     current_job: &str,
     now: String,
 ) -> (i64, Vec<String>) {
-    let checkouts = s
-        .conn()
-        .map(|conn| {
-            crate::util::must_rows(&conn, "SELECT path FROM projects", &[])
-                .into_iter()
-                .map(|r| r.str("path"))
-                .collect()
-        })
-        .unwrap_or_default();
     let mut o = SweepOpts {
         actor: "runner".into(),
         ..SweepOpts::default()
@@ -266,41 +319,7 @@ pub(crate) fn sweep_stale_clones(
     if !current_job.is_empty() {
         o.inflight.insert(current_job.to_string(), true);
     }
-    let mut w = Sweeper {
-        s: s.clone(),
-        now: now.clone(),
-        clock: chrono::DateTime::<chrono::Utc>::from(crate::run::wall_clock()),
-        home: s.home.clone(),
-        grace: Duration::from_secs((s.setting_int("daemon.sweep_grace_minutes") as u64) * 60),
-        branches: Duration::from_secs(
-            (s.setting_int("daemon.sweep_branch_days") as u64) * 24 * 3600,
-        ),
-        keep: Duration::from_secs((s.setting_int("daemon.sweep_keep_days") as u64) * 24 * 3600),
-        transcripts: Duration::from_secs(
-            (s.setting_int("daemon.transcript_keep_days").max(0) as u64) * 24 * 3600,
-        ),
-        logs_keep: Duration::from_secs(
-            (s.setting_int("daemon.log_keep_days").max(1) as u64) * 24 * 3600,
-        ),
-        log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
-        vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
-        cache_keep: Duration::from_secs(
-            (s.setting_int("daemon.build_cache_keep_days").max(1) as u64) * 24 * 3600,
-        ),
-        o,
-        projects: Vec::new(),
-        checkouts,
-        prune: BTreeMap::new(),
-        running: BTreeMap::new(),
-        rep: SweepReport {
-            at: now,
-            dry_run: false,
-            removed: Vec::new(),
-            held: Vec::new(),
-            errors: Vec::new(),
-            cargo_target: Vec::new(),
-        },
-    };
+    let mut w = Sweeper::new(s, now, o, Vec::new());
     w.sweep_work();
     // The shared CARGO_TARGET_DIR (several GB on a Rust project) is as often
     // the reason the host is under min_free_mb as a leftover clone, so prune
@@ -830,6 +849,11 @@ impl Sweeper {
         if finished.is_empty() {
             return false;
         }
+        // Under disk pressure a finished job's clone is disposable at once:
+        // its branch is pushed, its run row written, nothing reads the tree.
+        if self.o.pressure {
+            return true;
+        }
         chrono::NaiveDateTime::parse_from_str(&finished, crate::util::ISO_LAYOUT)
             .map(|finished| {
                 crate::util::must_iso(&self.now).signed_duration_since(finished.and_utc())
@@ -865,13 +889,7 @@ impl Sweeper {
         if self.s.setting("hygiene.cargo_target", "on") == "off" {
             return;
         }
-        let min_age = Duration::from_secs(
-            self.s
-                .setting("hygiene.cargo_target_hours", "24")
-                .parse::<u64>()
-                .unwrap_or(24)
-                * 3600,
-        );
+        let min_age = self.cargo_min_age();
         for proj in self.projects.clone() {
             let slug = proj.str("slug");
             let verify = proj.str("verify_cmd");
@@ -973,16 +991,21 @@ impl Sweeper {
                 );
             } else if known {
                 let job = self.job_row(&job_id);
-                if self.finished_work_due(&job) && age >= self.grace {
+                let due = self.finished_work_due(&job);
+                if due && (self.o.pressure || age >= self.grace) {
                     self.remove(
                         kind.into(),
                         path,
                         String::new(),
-                        format!(
-                            "{job_id} finished over {}, untouched for {}",
-                            round_duration(FINISHED_WORK_GRACE),
-                            round_duration(age)
-                        ),
+                        if self.o.pressure {
+                            format!("{job_id} finished; disk under daemon.min_free_mb")
+                        } else {
+                            format!(
+                                "{job_id} finished over {}, untouched for {}",
+                                round_duration(FINISHED_WORK_GRACE),
+                                round_duration(age)
+                            )
+                        },
                     );
                 } else {
                     let status = job.str("status");
@@ -1000,7 +1023,7 @@ impl Sweeper {
                         },
                     );
                 }
-            } else if age >= self.keep {
+            } else if age >= self.unknown_work_keep() {
                 self.remove(
                     kind.into(),
                     path,
@@ -1011,13 +1034,14 @@ impl Sweeper {
                     ),
                 );
             } else {
+                let keep = self.unknown_work_keep();
                 self.held(
                     kind.into(),
                     path,
                     String::new(),
                     format!(
                         "no job {job_id} in this store; removed after {} untouched",
-                        round_duration(self.keep)
+                        round_duration(keep)
                     ),
                 );
             }
@@ -1075,6 +1099,8 @@ impl Sweeper {
     /// A worktree under `work/` that a process of this machine made for
     /// itself - a landing, a check or watch script run - named with its pid:
     /// kept while the pid lives, removed once it is gone and the grace is up.
+    /// The `.tmp` sibling a landing gave its commands as `TMPDIR` follows the
+    /// same rule as plain scratch (no worktree to unregister).
     pub(crate) fn sweep_pid_worktree(
         &mut self,
         path: String,
@@ -1082,10 +1108,12 @@ impl Sweeper {
         pid_text: String,
         what: &str,
     ) {
+        let scratch = path.ends_with(".tmp");
+        let kind = if scratch { "scratch" } else { "worktree" };
         let pid = pid_text.parse::<i32>().unwrap_or(0);
         if pid > 0 && process_alive(pid) {
             self.held(
-                "worktree".into(),
+                kind.into(),
                 path,
                 slug,
                 format!("{what} by pid {pid} still running"),
@@ -1096,9 +1124,9 @@ impl Sweeper {
         if !ok {
             return;
         }
-        if age < self.grace {
+        if age < self.grace && !self.o.pressure {
             self.held(
-                "worktree".into(),
+                kind.into(),
                 path,
                 slug,
                 format!(
@@ -1117,7 +1145,7 @@ impl Sweeper {
         let why = format!("{what} by pid {pid} is gone");
         if self.o.dry_run {
             self.rep.removed.push(Swept {
-                kind: "worktree".into(),
+                kind: kind.into(),
                 path,
                 project: slug,
                 why,
@@ -1126,7 +1154,7 @@ impl Sweeper {
             });
             return;
         }
-        if !root.is_empty() {
+        if !root.is_empty() && !scratch {
             let _ = crate::util::git_timeout(
                 &root,
                 Duration::from_secs(60),
@@ -1134,7 +1162,7 @@ impl Sweeper {
             );
             self.prune.insert(root, true);
         }
-        self.remove("worktree".into(), path, slug, why);
+        self.remove(kind.into(), path, slug, why);
     }
     /// Open jobs of a project that was removed: `pulse project remove` cancels the queued
     /// ones and lets leased ones finish, but a leased job whose run is lost comes back as
@@ -1351,13 +1379,7 @@ impl Sweeper {
             .iter()
             .map(|p| crate::buildcache::lane_slug(&p.str("slug")))
             .collect();
-        let min_age = Duration::from_secs(
-            self.s
-                .setting("hygiene.cargo_target_hours", "24")
-                .parse::<u64>()
-                .unwrap_or(24)
-                * 3600,
-        );
+        let min_age = self.cargo_min_age();
         let now: std::time::SystemTime = self.clock.into();
         for (slug, lane) in crate::buildcache::lanes(&home) {
             let path = lane.display().to_string();
@@ -2625,15 +2647,14 @@ struct DeadCargoUnit {
 /// A unit is dead when its dep-info points into a clone that is gone, or
 /// when it belongs to a workspace crate and nothing has written to it for
 /// `idle`. The second rule is what catches a job's build: Cargo names a
-/// workspace crate's sources relative to the workspace root, so a unit a
-/// job compiled in its clone looks exactly like one the developer compiled
-/// in the checkout, and the only thing that tells them apart is that the
-/// job's units stop changing once the job ends. Each job clones to a new
-/// path, which gives every workspace crate a new metadata hash, so without
-/// this rule a shared target gains a full set of workspace units per job
-/// and never loses one. Registry and git dependencies are never touched by
-/// the idle rule: their sources are absolute and their units are the part
-/// of the cache worth keeping.
+/// workspace crate's sources relative to the workspace root and hashes its
+/// metadata from that relative path too, so a unit a job compiled in its
+/// clone has the same name as one the developer compiled in the checkout
+/// and looks exactly like it; the only thing that tells a job's units apart
+/// is that they stop changing once the job ends, and without this rule a
+/// shared target would keep every workspace unit for good. Registry and
+/// git dependencies are never touched by the idle rule: their sources are
+/// absolute and their units are the part of the cache worth keeping.
 fn dead_cargo_units(
     profile: &Path,
     now: std::time::SystemTime,

@@ -27,6 +27,10 @@ pub(crate) fn landing_stop(
     String::new()
 }
 
+/// Runs `cmd` in the landing worktree `dir` with `TMPDIR` set to the
+/// worktree's `.tmp` sibling (`work/land-<slug>-<pid>.tmp`, made on
+/// demand), so what the check leaves behind goes with the worktree
+/// (`LandingCleanup`) instead of piling up under the machine's temp dir.
 pub(crate) fn sh_with_context(
     ctx: &pulse_bus::CancellationToken,
     dir: String,
@@ -34,11 +38,22 @@ pub(crate) fn sh_with_context(
     budget: std::time::Duration,
 ) -> (Option<Box<i32>>, String, String) {
     let argv = vec!["/bin/sh".to_string(), "-c".to_string(), cmd];
-    match crate::proc::run_group(ctx, &argv, &dir, &crate::proc::environ(), &[], budget) {
+    let tmp = landing_tmp_dir(&dir);
+    let _ = std::fs::create_dir_all(&tmp);
+    let env = crate::proc::env_with(
+        &crate::proc::environ(),
+        &std::collections::BTreeMap::from([("TMPDIR".to_string(), tmp)]),
+    );
+    match crate::proc::run_group(ctx, &argv, &dir, &env, &[], budget) {
         Err(e) => (Some(Box::new(127)), String::new(), e.to_string()),
         Ok(out) if out.timeout => (None, out.stdout, out.stderr),
         Ok(out) => (Some(Box::new(out.exit_code)), out.stdout, out.stderr),
     }
+}
+
+/// The `TMPDIR` of the commands a landing runs in `worktree`.
+pub(crate) fn landing_tmp_dir(worktree: &str) -> String {
+    format!("{worktree}.tmp")
 }
 
 #[cfg(test)]
@@ -47,6 +62,24 @@ mod tests {
     use crate::test_helpers_daemon::{exec1, job_row, ref_of, set_setting};
     use std::path::Path;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn sh_with_context_gives_the_command_a_tmpdir_beside_the_worktree() {
+        let home = tempfile::tempdir().unwrap();
+        let worktree = home.path().join("work").join("land-proj-42");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let dir = worktree.display().to_string();
+        let (rc, out, err) = super::sh_with_context(
+            &pulse_bus::CancellationToken::new(),
+            dir.clone(),
+            "printf %s \"$TMPDIR\" && : > \"$TMPDIR/left\"".into(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(rc.as_deref(), Some(&0), "{err}");
+        assert_eq!(out, super::landing_tmp_dir(&dir));
+        assert_eq!(out, format!("{dir}.tmp"));
+        assert!(Path::new(&out).join("left").exists());
+    }
 
     #[test]
     fn landing_cancellation_keeps_unverified_branch() {

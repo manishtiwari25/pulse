@@ -40,6 +40,16 @@ pub(crate) trait Executor {
         ))
     }
     fn owner_paths_touched(&self, base: &str) -> Vec<String>;
+    /// The run's own `TMPDIR` when the executor gives it one: a sibling of
+    /// the clone (`work/<job>.tmp`) that the worker, the pre-commit check
+    /// and the run's verification write their temporary files to, and that
+    /// goes with the clone at cleanup. What a killed check leaves behind
+    /// (a `cargo test` stopped at the step deadline never runs its
+    /// `tempfile` destructors) then costs the clone's sweep, not the
+    /// machine's temp dir. Empty: the worker inherits the machine's.
+    fn run_tmp_dir(&self) -> String {
+        String::new()
+    }
     fn verify(
         &self,
         cancel: &pulse_bus::CancellationToken,
@@ -252,10 +262,16 @@ impl Executor for LocalExec {
     ) -> Result<Outcome> {
         preflight_run_key(&self.key)?;
         let worker_env = worker_env_with_cli_path(&crate::proc::environ(), env);
-        crate::tmpspace::preflight_tmp_space(
-            &crate::tmpspace::worker_tmp_dir(&worker_env),
-            crate::tmpspace::MIN_TMP_SPACE,
-        )?;
+        let tmp = crate::tmpspace::worker_tmp_dir(&worker_env);
+        std::fs::create_dir_all(&tmp).map_err(|e| {
+            crate::util::fail(
+                1,
+                format!(
+                    "setup-error: worker TMPDIR {tmp} cannot be made ({e}); the worker was not started so no work is lost"
+                ),
+            )
+        })?;
+        crate::tmpspace::preflight_tmp_space(&tmp, crate::tmpspace::MIN_TMP_SPACE)?;
         self.begun = true;
         let budget = if minutes <= 0 {
             Duration::from_secs(1)
@@ -334,6 +350,9 @@ impl Executor for LocalExec {
     fn owner_paths_touched(&self, base: &str) -> Vec<String> {
         crate::brief::owner_paths_touched(self.clone_dir.clone(), base.to_string())
     }
+    fn run_tmp_dir(&self) -> String {
+        format!("{}.tmp", self.clone_dir)
+    }
     fn verify(
         &self,
         cancel: &pulse_bus::CancellationToken,
@@ -341,12 +360,20 @@ impl Executor for LocalExec {
         minutes: i32,
     ) -> (Option<i32>, String) {
         let secs = (minutes.max(1) as u64 * 60).max(60);
+        // The check writes its temporary files beside the clone, like the
+        // worker did; a recipe that exports TMPDIR itself still wins.
+        let tmp = self.run_tmp_dir();
+        let _ = std::fs::create_dir_all(&tmp);
+        let env = crate::proc::env_with(
+            &crate::proc::environ(),
+            &BTreeMap::from([("TMPDIR".to_string(), tmp)]),
+        );
         let run = self.beat_during("verify", || {
             crate::proc::run_group(
                 cancel,
                 &["/bin/sh".into(), "-c".into(), cmd.into()],
                 &self.clone_dir,
-                &crate::proc::environ(),
+                &env,
                 &[],
                 Duration::from_secs(secs),
             )
@@ -403,6 +430,7 @@ impl Executor for LocalExec {
         let left = crate::tidy::clear_leftovers(&self.clone_dir);
         let home = Path::new(&self.home);
         let _ = crate::retention::discard_dir(home, Path::new(&self.clone_dir));
+        let _ = crate::retention::discard_dir(home, Path::new(&self.run_tmp_dir()));
         crate::retention::empty_trash_later(home);
         crate::keys::remove_run_key(&self.key);
         left

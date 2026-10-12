@@ -1630,7 +1630,34 @@ turns the check off. The daemon checks
 the same floor before it leases new work or starts an experiment measurement,
 so a full work filesystem pauses dispatch with `disk under floor: <free> MB
 free on <path> (daemon.min_free_mb <floor>)`; after fifteen minutes it writes
-one runner finding that says to free space or adjust the floor. The floor alone
+one runner finding that says to free space or adjust the floor. It does not
+only wait for you: while the disk stays under the floor, each maintenance pass
+(at most every thirty minutes) climbs a reclaim ladder
+(`crates/pulse-runner/src/reclaim.rs`) and stops at the first rung that puts
+the free space back over the floor. Rung one removes what the runner's own
+tools left in the OS temp directory (`TMPDIR`, and `/tmp` when that is a
+different place): Rust `tempfile` directories (`.tmpXXXXXX`) and
+`pulse-*`/`check-site-*`/`distill-ui-*` folders that nothing has written to
+for two hours and no live process has its working directory or executable
+under - on 2026-10-12 one laptop carried 105,774 of them, 19.7 GB, the test
+homes of `cargo test` runs the step deadline had killed before their
+destructors ran. Rung two runs the sweep in pressure mode: finished job work
+goes at once instead of after its hour of grace, work the store does not
+know and run logs after a day instead of the configured keep, build-cache
+lanes idle for an hour instead of `daemon.build_cache_keep_days`, and the
+store gives its free pages back past 64 MB instead of `daemon.vacuum_free_mb`;
+the things the sweep never touches stay untouched under pressure too. A floor
+still not clear after both rungs is reported with the five largest entries
+under the temp roots and `~/.pulse`, so the owner knows what to look at. Each
+pass that removed or listed something writes one `daemon.reclaim` event, and
+the disk-floor finding carries the last pass: what it freed, over which
+rungs, and what is left. `pulse sweep --reclaim [--dry-run]` climbs every
+rung by hand, floor or not. The leak itself is closed at the source: a local
+run's worker, its pre-commit hook and its run-end check get `TMPDIR` set to
+`<clone>.tmp` beside the clone (a recipe that sets `TMPDIR` wins), and a
+landing's commands get `<worktree>.tmp`, so what a killed test leaves behind
+goes with the clone or the worktree instead of piling up in the system temp
+directory. The floor alone
 cannot see that the ten setups one tick is about to start each need a gigabyte
 (on 2026-10-02 a restart with a ten-job backlog did exactly that on 1.1 GB of
 headroom: every clone and `npm install` ended in ENOSPC, the failures counted as
@@ -2184,8 +2211,10 @@ clone …`, `swept worktree …`, `swept 12 run logs (3.1 MB)`, and a finished-w
 bytes freed when job work was removed), writes one `daemon.sweep` event when
 something went or failed, and a `hygiene` line in `pulse status` says when the
 last pass ran, what it removed and freed, and what it held. `pulse sweep
-[--dry-run] [--held] [--json]` is the same pass by hand - `--dry-run` lists
-what would go and removes nothing, `--held` also says what stays and why;
+[--dry-run] [--held] [--json] [--reclaim]` is the same pass by hand - `--dry-run` lists
+what would go and removes nothing, `--held` also says what stays and why,
+`--reclaim` climbs the disk-floor reclaim ladder (temp leftovers, then the
+sweep in pressure mode) whether or not the disk is under the floor;
 `daemon.sweep off` leaves it to you.
 
 What the machine keeps is bounded, not just tidied (`crates/pulse-runner/src/retention.rs`,
@@ -2254,11 +2283,17 @@ incremental caches like any shared Cargo target (`hygiene.cargo_target`).
 A dead unit is one whose dep-info points into a clone that is gone, or a
 workspace crate's unit that nothing has written to for
 `hygiene.cargo_target_hours` (default 24): Cargo names a workspace crate's
-sources relative to the workspace root, so a unit a job compiled in its
-clone is indistinguishable from one compiled in the checkout, and each job's
-clone path gives every workspace crate a fresh metadata hash, so a shared
-target would otherwise gain a full set of workspace units per job and never
-lose one. Registry and git dependencies, the part of the cache worth
+sources relative to the workspace root and hashes its metadata from that
+relative path too, so a unit a job compiled in its clone carries the same
+name as one compiled in the checkout (`pulse_runner-23770153dffad746` in
+both, measured on 2026-10-12) and is indistinguishable from it; a shared
+target would otherwise keep every workspace unit for good. The same fact
+is why two trees must never build into one target at once: the later
+`cargo` sees the other tree's artifact as its own and, when that one is
+newer than its sources, serves it as fresh - a check that passes or fails
+on another clone's code. The lanes exist for that; a recipe that sets
+`CARGO_TARGET_DIR` to one shared path gives it up.
+Registry and git dependencies, the part of the cache worth
 keeping, are never pruned for idleness; a developer who has not built for a
 day pays one rebuild of the workspace crates, not of the dependencies.
 The same pass drops the per-codegen-unit debug objects rustc leaves in

@@ -176,7 +176,7 @@ pub fn empty_trash(home: &Path) -> TrashReport {
     report
 }
 
-fn remove_at_low_priority(path: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_at_low_priority(path: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() {
         return std::fs::remove_file(path);

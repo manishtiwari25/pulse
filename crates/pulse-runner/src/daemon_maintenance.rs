@@ -57,6 +57,9 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) held: BTreeMap<String, String>,
     pub(crate) landings: crate::landing_workers::LandingWorkers,
     pub(crate) last_sweep: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
+    /// When the reclaim ladder (reclaim.rs) last ran; `None` while the disk
+    /// is above the floor so the next crossing is answered at once.
+    pub(crate) last_reclaim: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
     pub(crate) pending: BTreeMap<String, bool>,
     /// The experiment lane: one measurement at a time, cancelled through
     /// `lane_ctx` without touching the plain landings.
@@ -262,6 +265,7 @@ impl DaemonMaintenance {
         let s = s.clone();
         let held = self.held.clone();
         let last_sweep = self.last_sweep.clone();
+        let last_reclaim = self.last_reclaim.clone();
         std::thread::Builder::new()
             .name("landing-maintenance".into())
             .spawn(move || {
@@ -288,9 +292,24 @@ impl DaemonMaintenance {
                             projects.clone(),
                             s.now(),
                             actor.clone(),
-                            inflight,
+                            inflight.clone(),
                             &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
                         ));
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            // Under daemon.min_free_mb the sweep's windows
+                            // are too patient; the ladder shortens them and
+                            // clears the temp dirs, then stops once the
+                            // floor is clear.
+                            set_stage(Some(&stage), "reclaim");
+                            lines.extend(crate::reclaim::tend_reclaim(
+                                &s,
+                                projects.clone(),
+                                s.now(),
+                                actor.clone(),
+                                inflight,
+                                &mut last_reclaim.lock().unwrap_or_else(|e| e.into_inner()),
+                            ));
+                        }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "board hygiene");
                             lines.extend(crate::hygiene::tend_board_hygiene(

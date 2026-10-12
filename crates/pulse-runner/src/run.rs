@@ -914,6 +914,12 @@ pub(crate) fn run_job(
                     env.insert(k.clone(), v.clone());
                 }
             }
+            // The run's own TMPDIR beside the clone (work/<job>.tmp); a
+            // recipe that sets one itself wins, like CARGO_TARGET_DIR.
+            let run_tmp = ex.run_tmp_dir();
+            if !run_tmp.is_empty() {
+                env.entry("TMPDIR".into()).or_insert(run_tmp);
+            }
             if !o.dry_run {
                 let (prepared, lane) = crate::buildcache::prepare(
                     s.setting("daemon.build_cache", "on") != "off",
@@ -2458,6 +2464,90 @@ mod tests {
         assert_eq!(cli_on_path("", exe), "/opt/pulse/bin");
         let got = cli_on_path("/usr/bin:/bin", exe);
         assert_eq!(got, "/opt/pulse/bin:/usr/bin:/bin");
+    }
+
+    #[test]
+    fn run_job_gives_the_worker_and_the_check_a_tmpdir_beside_the_clone_and_removes_it() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, _) = new_repo(&s);
+        join(&s, "aurora");
+        let seen_path = std::path::Path::new(&s.home).join("tmpdirs");
+        let seen = crate::util::shell_quote(&seen_path.display().to_string());
+        // The worker and the check each record their TMPDIR and leave a
+        // file in it, as a killed `cargo test` leaves its tempdirs.
+        let record = format!("printf '%s\\n' \"$TMPDIR\" >> {seen} && : > \"$TMPDIR/left-behind\"");
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &conn,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&record, &proj.str("slug")],
+        );
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "tmpdir".into(),
+            "leave a temp file".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let worker = format!(
+            "{record} && printf 'x\\n' > x.txt && git add x.txt && git commit -q -m x && echo 'SUMMARY: left a temp file'"
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
+        let want = std::path::Path::new(&s.home)
+            .join("work")
+            .join(format!("{job_id}.tmp"))
+            .display()
+            .to_string();
+        let seen = std::fs::read_to_string(&seen_path).unwrap();
+        // Worker, pre-commit check, run-end check: every one beside the clone.
+        let lines = seen.lines().collect::<Vec<_>>();
+        assert!(lines.len() >= 2, "{seen:?}");
+        assert!(lines.iter().all(|l| *l == want), "{seen:?} != {want}");
+        crate::retention::empty_trash(std::path::Path::new(&s.home));
+        assert!(
+            !std::path::Path::new(&want).exists(),
+            "the run's TMPDIR goes with the clone"
+        );
+        assert!(
+            !std::path::Path::new(&s.home)
+                .join("work")
+                .join(&job_id)
+                .exists()
+        );
     }
 
     #[test]

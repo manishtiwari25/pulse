@@ -42,7 +42,7 @@ pub fn register() {
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
         cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
-        cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes)".into(), usage:"pulse sweep [--dry-run] [--held] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
+        cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"service".into(), group:"runner".into(), summary:"install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)".into(), usage:"pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_service, flags:Some(service_flags) });
         cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
         cli_register(Command { name:"env".into(), group:"runner".into(), summary:"the environment recipe per project (a CTX-environment record): show, set, import, check".into(), usage:"pulse env show|set|import|check [--project SLUG] [--executor NAME] [--file F] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_env, flags:Some(env_flags) });
@@ -100,6 +100,11 @@ fn sweep_flags(fs: &mut FlagSet) {
         "list what would go and what is held; remove nothing",
     );
     fs.bool_var("held", false, "also list what the sweep keeps and why");
+    fs.bool_var(
+        "reclaim",
+        false,
+        "climb the disk reclaim ladder now, floor or not: stale temp dirs of ours, then the sweep with its windows shortened; names the largest entries left",
+    );
 }
 
 fn service_flags(fs: &mut FlagSet) {
@@ -510,7 +515,7 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
     if !args.is_empty() {
         return Err(crate::util::fail(
             2,
-            "pulse sweep takes no arguments (pulse sweep [--dry-run] [--held] [--json])",
+            "pulse sweep takes no arguments (pulse sweep [--dry-run] [--held] [--json] [--reclaim])",
         )
         .into());
     }
@@ -520,6 +525,9 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
         crate::board::project_rows(&s.conn()?, false),
         crate::checkout::CHECKOUT_PROBE_TIMEOUT,
     );
+    if bool_flag(fs, "reclaim") {
+        return cmd_sweep_reclaim(c, &s, projects, held, now, dry_run);
+    }
     let mut rep = crate::sweep::sweep(
         &s,
         projects,
@@ -574,6 +582,73 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
             ),
             &rep.errors[0],
             "fix the cause above and run pulse sweep again; the daemon tries again every ten minutes",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// `pulse sweep --reclaim`: the ladder the daemon climbs under
+/// `daemon.min_free_mb`, run by hand with every rung, floor or not.
+fn cmd_sweep_reclaim(
+    c: &mut Context,
+    s: &pulse_store::Store,
+    projects: Vec<crate::util::Row>,
+    unreadable: BTreeMap<String, String>,
+    now: String,
+    dry_run: bool,
+) -> Result<()> {
+    let out = crate::reclaim::reclaim(
+        s,
+        projects,
+        now,
+        actor_of(c),
+        BTreeMap::new(),
+        dry_run,
+        true,
+    );
+    if !dry_run {
+        crate::reclaim::record_reclaim(s, &out, &actor_of(c));
+    }
+    if c.json {
+        pulse_cli::write_json(
+            &mut c.out,
+            &json!({
+                "at": out.at, "dry_run": out.dry_run, "rungs": out.rungs,
+                "bytes": out.freed, "cleared": out.cleared, "free_mb": out.free_mb,
+                "floor_mb": out.floor_mb, "largest": out.largest, "errors": out.errors,
+                "unreadable": unreadable,
+            }),
+        )?;
+        return Ok(());
+    }
+    for (slug, why) in unreadable {
+        c.printf(format_args!("skipped {slug}: {why}\n"))?;
+    }
+    for l in &out.lines {
+        c.printf(format_args!("{l}\n"))?;
+    }
+    let verb = if dry_run { "would free" } else { "freed" };
+    c.printf(format_args!(
+        "{verb} {} over {} rung(s); {} MB free{}\n",
+        crate::sweep::size_text(out.freed as i64),
+        out.rungs.len(),
+        out.free_mb,
+        if out.floor_mb > 0 {
+            format!(" (daemon.min_free_mb {})", out.floor_mb)
+        } else {
+            String::new()
+        }
+    ))?;
+    if !out.errors.is_empty() {
+        return Err(pulse_cli::errorf(
+            1,
+            &format!(
+                "{} could not be reclaimed",
+                crate::util::plural(out.errors.len() as i32, "item")
+            ),
+            &out.errors[0],
+            "fix the cause above and run pulse sweep --reclaim again; under the floor the daemon climbs the ladder every thirty minutes",
         )
         .into());
     }

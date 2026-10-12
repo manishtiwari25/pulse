@@ -2213,6 +2213,7 @@ impl Drop for LandingCleanup {
             &["worktree", "remove", "--force", &self.worktree],
         );
         crate::util::git_timeout(&self.root, Duration::from_secs(30), &["worktree", "prune"]);
+        let _ = std::fs::remove_dir_all(crate::landing_context::landing_tmp_dir(&self.worktree));
         let _ = std::fs::remove_file(&self.lock);
     }
 }
@@ -2227,6 +2228,29 @@ mod tests {
         bare_ref, exec1, job_row, must_rows, push_branch, push_fixture, ref_of, set_setting,
     };
     use crate::{commands, test_helpers};
+
+    #[test]
+    fn landing_cleanup_removes_the_worktrees_tmpdir() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["git", "init", "-q"]);
+        let worktree = home.path().join("work").join("land-proj-7");
+        let tmp = std::path::PathBuf::from(crate::landing_context::landing_tmp_dir(
+            &worktree.display().to_string(),
+        ));
+        std::fs::create_dir_all(tmp.join(".tmpAb12Cd")).unwrap();
+        std::fs::write(tmp.join(".tmpAb12Cd").join("blob"), b"x").unwrap();
+        let lock = home.path().join("pulse-land.lock");
+        std::fs::write(&lock, b"").unwrap();
+        drop(super::LandingCleanup {
+            root: root.display().to_string(),
+            worktree: worktree.display().to_string(),
+            lock: lock.display().to_string(),
+        });
+        assert!(!tmp.exists(), "the landing's TMPDIR goes with the worktree");
+        assert!(!lock.exists());
+    }
 
     #[test]
     fn result_post_failure_warning_names_landing_and_cause() {

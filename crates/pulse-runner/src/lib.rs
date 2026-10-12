@@ -55,6 +55,7 @@ pub mod preflight;
 pub mod proc;
 pub mod provider;
 pub mod recipe;
+pub mod reclaim;
 pub mod recover;
 pub mod recovery_api;
 pub mod redbase;
