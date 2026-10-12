@@ -64,7 +64,7 @@ part of this file that explains them.
 
 | Group | Commands | Where in this README |
 | --- | --- | --- |
-| Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `task`, `thread`, `vote`, `watch` | [The agents' path](#the-agents-path) |
+| Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `mcp`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `skill`, `task`, `thread`, `vote`, `watch` | [The agents' path](#the-agents-path) |
 | Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](#records-in-sqlite) |
 | Human - the maintainer's calls | `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop` | [The owner's path](#the-owners-path) |
 | Runner | `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `service`, `sweep`, `work` | [The runner](#the-runner) |
