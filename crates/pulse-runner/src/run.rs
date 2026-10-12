@@ -1464,6 +1464,22 @@ pub(crate) fn run_job(
         }
     }
     stop_watch();
+    // The worker is gone: close any session it left `running` with a reason,
+    // instead of waiting hours for the sweep to mark it `lost` with no error.
+    let closed = crate::steps_mirror::close_running_sessions(
+        s,
+        &run_id,
+        &status,
+        exit_code,
+        status == "timeout",
+    );
+    if !closed.is_empty() {
+        log.add(format!(
+            "closed {} harness session(s) left running by the worker: {}",
+            closed.len(),
+            closed.join(", ")
+        ));
+    }
     if status != "done" {
         branch.clear();
     }

@@ -409,7 +409,40 @@ impl Store {
             return Err(input_err("olderThan cannot be empty"));
         }
         let conn = self.conn()?;
-        Ok(conn.execute("UPDATE harness_sessions SET status = 'lost', updated_at = ?, ended_at = ? WHERE status = 'running' AND updated_at < ?",params![self.now(),self.now(),older_than])? as i64)
+        Ok(conn.execute("UPDATE harness_sessions SET status = 'lost', error = CASE WHEN error = '' THEN 'no heartbeat since ' || updated_at ELSE error END, updated_at = ?, ended_at = ? WHERE status = 'running' AND updated_at < ?",params![self.now(),self.now(),older_than])? as i64)
+    }
+
+    /// Last recorded step of a session, if any.
+    pub fn last_harness_step(&self, session_id: &str) -> Result<Option<HarnessStep>> {
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT {STEP_COLS} FROM harness_steps WHERE session_id = ? ORDER BY n DESC LIMIT 1"
+                ),
+                params![session_id],
+                scan_step,
+            )
+            .optional()?)
+    }
+
+    /// Ids of sessions still `running` for `run_id`; the runner closes these
+    /// with a reason when the worker process ends instead of leaving them for
+    /// the sweep to mark `lost` hours later.
+    pub fn running_harness_sessions_for_run(&self, run_id: &str) -> Result<Vec<String>> {
+        if run_id.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM harness_sessions WHERE run_id = ? AND status = 'running' ORDER BY started_at",
+        )?;
+        let rows = stmt.query_map(params![run_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 }
 
@@ -918,6 +951,47 @@ mod go_harness_tests {
         let lost = s.harness_session("old-running").unwrap().0.unwrap();
         assert_eq!(lost.status, "lost");
         assert_eq!(lost.ended_at, "2026-09-11T05:00:00Z");
+        assert_eq!(lost.error, "no heartbeat since 2026-09-10T23:10:00Z");
+    }
+
+    #[test]
+    fn running_sessions_for_run_and_last_step() {
+        let _serial = crate::test_helpers::serial();
+        let s = store("2026-09-11T05:00:00Z");
+        for (id, run) in [("a", "run-1"), ("b", "run-1"), ("c", "run-2")] {
+            s.begin_harness_session(HarnessSession {
+                id: id.into(),
+                run_id: run.into(),
+                job_id: "job".into(),
+                agent: "agent-a".into(),
+                project: "proj".into(),
+                ..HarnessSession::default()
+            })
+            .unwrap();
+        }
+        s.finish_harness_session("b", "submitted", "0", "", "", 0.0, "")
+            .unwrap();
+        assert_eq!(
+            s.running_harness_sessions_for_run("run-1").unwrap(),
+            vec!["a"]
+        );
+        assert!(s.running_harness_sessions_for_run("").unwrap().is_empty());
+        assert!(s.last_harness_step("a").unwrap().is_none());
+        for (n, kind) in [(1, "model"), (2, "action")] {
+            s.append_harness_step(HarnessStep {
+                session_id: "a".into(),
+                n,
+                kind: kind.into(),
+                command: format!("cmd {n}"),
+                ..HarnessStep::default()
+            })
+            .unwrap();
+        }
+        let last = s.last_harness_step("a").unwrap().unwrap();
+        assert_eq!(
+            (last.n, last.kind.as_str(), last.command.as_str()),
+            (2, "action", "cmd 2")
+        );
     }
 
     #[test]
