@@ -101,6 +101,11 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     fs.int_var("max-steps", 0, "maximum model calls");
     fs.float64_var("max-cost", 0.0, "maximum provider-reported cost");
     fs.int_var("step-timeout", 0, "per-command timeout in seconds");
+    fs.int_var(
+        "commit-timeout",
+        0,
+        "timeout in seconds for a git commit that runs the pre-commit verify gate",
+    );
     fs.int_var("output-limit", 0, "characters of command output kept");
     fs.int_var(
         "keep-observations",
@@ -242,6 +247,13 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         "harness.step_timeout",
         DEFAULT_STEP_TIMEOUT.as_secs() as i32,
     );
+    let commit_timeout = setting_int_or(
+        &fs,
+        "commit-timeout",
+        st.as_ref(),
+        "harness.commit_timeout",
+        DEFAULT_COMMIT_TIMEOUT.as_secs() as i32,
+    );
     let output_limit = setting_int_or(
         &fs,
         "output-limit",
@@ -330,6 +342,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         cancel_reason: ERR_OWNER_CANCELLED.into(),
         max_steps,
         step_timeout: Duration::from_secs(step_timeout as u64),
+        commit_timeout: Duration::from_secs(commit_timeout as u64),
         max_cost,
         output_limit: output_limit as usize,
         keep_observations: keep_observations as usize,

@@ -1180,6 +1180,7 @@ record, read with `pulse record show WF-evolve`.
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
+| `harness.commit_timeout` | `1500` seconds | Wall-clock cap on a `git commit`/`merge`/`rebase`/`cherry-pick`/`am` whose pre-commit hook is the runner's verify gate; never below `harness.step_timeout`, capped by the run's remaining minutes. A step that still times out tells the model the verify gate was running (and how long it waited for the verify lock) instead of the generic retry hint. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
@@ -1854,7 +1855,8 @@ touch the workspace sources before building; the dependency cache stays).
 Taking turns also sets how many work jobs a project can usefully run at once:
 with `parallel_per_project` 4 and a check that takes eight minutes, a clone's
 commit may wait for three other checks before its own and the harness kills
-the command at `harness.step_timeout` (5 min by default) - the run retries,
+the command at `harness.commit_timeout` (25 min by default; plain commands
+stop at `harness.step_timeout`) - the run retries,
 and the lanes burn their budget waiting on each other. So the daemon measures
 the check's own run time at every landing (`verify_seconds` on the
 `land.landed` event, the lock's wait excluded) and leases `improve` and `task`

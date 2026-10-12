@@ -13,6 +13,7 @@ pub const BASELINE_CACHE_SETTINGS: &[&str] = &[
     "runner_cmd",
     "harness.max_steps",
     "harness.step_timeout",
+    "harness.commit_timeout",
     "harness.output_limit",
     "harness.max_cost",
     "harness.keep_observations",

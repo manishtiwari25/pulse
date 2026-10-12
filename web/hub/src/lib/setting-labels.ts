@@ -129,6 +129,7 @@ const LABELS: Record<string, string> = {
   "harness.keep_observations": "Recent command results kept in full",
   "harness.system_prompt": "System prompt",
   "harness.step_timeout": "Time limit per command (seconds)",
+  "harness.commit_timeout": "Time limit per verified git commit (seconds)",
   "harness.output_limit": "Output kept per command (characters)",
 };
 
@@ -211,6 +212,8 @@ const HELP: Record<string, string> = {
   "harness.keep_observations": "How many recent command results stay in full in the prompt. Older ones are summarised.",
   "harness.system_prompt": "The instructions every run starts with.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
+  "harness.commit_timeout":
+    "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",
   "harness.output_limit": "How much of one command's output the model sees.",
 };
 
