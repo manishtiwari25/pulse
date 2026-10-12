@@ -47,7 +47,7 @@ pub fn resolve_agent(
         let conn = s.conn()?;
         let legacy: Option<String> = conn
             .query_row(
-                "SELECT name FROM agents WHERE legacy_id = ? ORDER BY last_active_at DESC LIMIT 1",
+                "SELECT name FROM agents WHERE legacy_id = ? AND status != 'pruned' ORDER BY last_active_at DESC LIMIT 1",
                 [&ident],
                 |r| r.get(0),
             )
@@ -532,6 +532,19 @@ mod tests {
             )
             .is_err()
         );
+        // A pruned row is the only carrier of a legacy runner/model id: the
+        // lookup must not dead-end on it (the hint says "join with a new name",
+        // which the user cannot follow through the same --agent flag).
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE agents SET legacy_id = 'copilot/m', last_active_at = '2099-01-01T00:00:00Z' WHERE name = 'alice'",
+                [],
+            )
+            .unwrap();
+        assert!(resolve_agent(&s, "copilot/m", false).unwrap().is_none());
+        let err = resolve_agent(&s, "copilot/m", true).unwrap_err();
+        assert!(err.to_string().contains("No agent named"), "{err}");
         s.conn()
             .unwrap()
             .execute(

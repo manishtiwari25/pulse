@@ -130,7 +130,7 @@ fn resolve_agent(c: &pulse_cli::Context) -> Result<String> {
     if row.is_none()
         && ident.contains('/')
         && let Ok(name) = s.conn()?.query_row(
-            "SELECT name FROM agents WHERE legacy_id = ? ORDER BY last_active_at DESC LIMIT 1",
+            "SELECT name FROM agents WHERE legacy_id = ? AND status != 'pruned' ORDER BY last_active_at DESC LIMIT 1",
             [ident],
             |r| r.get::<_, String>(0),
         )
