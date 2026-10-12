@@ -5569,6 +5569,15 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 "Edit docs/evolution/evaluators.md",
             );
         }
+        fn setup_spend(s: &pulse_store::Store, _p: crate::util::Row) {
+            agreed_proposal_with(
+                s,
+                "proj",
+                "compute",
+                "Proposal for the human: pulse settings set compute.auto_approve 0",
+                "until one request works end to end",
+            );
+        }
         let tests = [
             Case {
                 name: "away awaiting",
@@ -5604,6 +5613,12 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 name: "owner-only path stays the owner's",
                 away: true,
                 setup: Some(setup_owner_only),
+                want: 1,
+            },
+            Case {
+                name: "spend setting stays the owner's",
+                away: true,
+                setup: Some(setup_spend),
                 want: 1,
             },
         ];

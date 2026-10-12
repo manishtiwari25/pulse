@@ -1858,7 +1858,7 @@ pub(crate) fn post_result_answer(
         ));
     }
     if !crate::plan::answerable(q.clone(), job.str("created_by"))
-        || !pulse_board::tier2_proposal(&q.str("summary"), &q.str("body")).is_empty()
+        || !pulse_board::owner_only_proposal(&q.str("summary"), &q.str("body")).is_empty()
         || crate::evolve_plan::hard_stop_text(format!("{}\n{}", q.str("summary"), q.str("body")))
     {
         return Err(cli_err(2, format!("question {} requires the owner", id)));
@@ -2042,11 +2042,11 @@ pub(crate) fn apply_result_decisions(
             ));
             continue;
         }
-        let tier = pulse_board::tier2_proposal(&post.str("summary"), &post.str("body"));
-        if !tier.is_empty() {
+        let why = pulse_board::owner_only_proposal(&post.str("summary"), &post.str("body"));
+        if !why.is_empty() {
             log.add(format!(
-                "decision skipped: {} {}: Tier 2 waits for the owner",
-                d.post_id, tier
+                "decision skipped: {} {}: it waits for the owner",
+                d.post_id, why
             ));
             continue;
         }

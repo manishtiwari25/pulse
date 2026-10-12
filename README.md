@@ -2523,7 +2523,11 @@ constitution's protected sections, `docs/evolution/evaluators.md` and
 markers, ADR-021), and the kill switch. A proposal whose headline names an
 ADR or whose text points at one of those owner-only paths is never put to the
 lead - the daemon skips it, `pulse decide` refuses the lead's yes *and* no on
-it, and the card waits on the Proposals page for you. Only you can flip the
+it, and the card waits on the Proposals page for you. The same holds for a
+proposal that names a spend setting (`compute.auto_approve`,
+`compute.budget_credits`, `compute.max_vms`, `compute.max_hours_per_day`):
+changing the pre-authorization is money, so the lead's answer is refused and
+the card keeps waiting for you. Only you can flip the
 setting: an agent's `pulse settings set owner.presence away` is refused, and
 an `away` written by anything but a human (the CLI without `PULSE_AGENT`, or
 the console) is treated as `present`. `pulse settings set owner.presence

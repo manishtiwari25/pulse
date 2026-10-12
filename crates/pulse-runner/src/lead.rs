@@ -585,7 +585,7 @@ pub(crate) fn awaiting_lead_proposals(
             body: row.get(4)?,
         };
         if LEAD_HUMAN_ONLY_MARKER_RE.is_match(&p.body)
-            || !pulse_board::tier2_proposal(&p.summary, &p.body).is_empty()
+            || !pulse_board::owner_only_proposal(&p.summary, &p.body).is_empty()
         {
             continue;
         }
@@ -671,7 +671,7 @@ pub(crate) fn lead_peer_mentions(
         if !crate::plan::answerable(r, actor.clone())
             || crate::evolve_plan::hard_stop_text(format!("{}\n{}", p.summary, p.body))
             || OWNER_BLOCKED_RE.is_match(&format!("{}\n{}", p.summary, p.body))
-            || !pulse_board::tier2_proposal(&p.summary, &p.body).is_empty()
+            || !pulse_board::owner_only_proposal(&p.summary, &p.body).is_empty()
         {
             continue;
         }

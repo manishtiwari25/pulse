@@ -606,6 +606,35 @@ pub fn tier2_proposal(summary: &str, body: &str) -> String {
     }
     String::new()
 }
+
+/// The settings that pre-authorize compute spend (README, "What still waits
+/// for you"): a proposal that names one is money, like a compute request.
+pub const SPEND_SETTINGS: [&str; 4] = [
+    "compute.auto_approve",
+    "compute.budget_credits",
+    "compute.max_vms",
+    "compute.max_hours_per_day",
+];
+
+/// Why a proposal is the owner's alone even while away: a Tier 2 decision
+/// (`tier2_proposal`) or a change to a spend setting. Empty when a lead may
+/// decide it.
+pub fn owner_only_proposal(summary: &str, body: &str) -> String {
+    let what = tier2_proposal(summary, body);
+    if !what.is_empty() {
+        return what;
+    }
+    spend_proposal(summary, body)
+}
+
+pub fn spend_proposal(summary: &str, body: &str) -> String {
+    let text = format!("{summary}\n{body}");
+    SPEND_SETTINGS
+        .iter()
+        .find(|k| text.contains(*k))
+        .map(|k| format!("changes {k}"))
+        .unwrap_or_default()
+}
 pub fn decide(
     s: &pulse_store::Store,
     post_id: &str,
@@ -861,6 +890,13 @@ fn decision_decider(
         return Err(refuse(
             2,
             format!("a proposal that {what} is a Tier 2 decision: it waits for the owner"),
+        ));
+    }
+    let spend = spend_proposal(&target.summary, &target.body);
+    if !spend.is_empty() {
+        return Err(refuse(
+            2,
+            format!("a proposal that {spend} pre-authorizes spend: it waits for the owner"),
         ));
     }
     Ok(lead.expect("lead checked"))
@@ -2151,6 +2187,40 @@ mod tests {
         assert_eq!(
             err_what(decide(&s, &adr.id, "no", "not now", &lead)),
             "a proposal that names ADR-023 is a Tier 2 decision: it waits for the owner"
+        );
+        // The live shape of 2026-10-12: the lead's `no` on a proposal to turn
+        // off compute.auto_approve was recorded and locked the card.
+        let spend = crate::posts::create_post(
+            &s,
+            crate::posts::PostInput {
+                kind: "answer".into(),
+                project: p.slug.clone(),
+                area: "runner".into(),
+                thread: "compute".into(),
+                summary: "Proposal for the human: pulse settings set compute.auto_approve 0".into(),
+                body: "until one request works end to end".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:32:30Z".into(),
+                resolution: "agreed".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            err_what(decide(&s, &spend.id, "no", "money", &lead)),
+            "a proposal that changes compute.auto_approve pre-authorizes spend: it waits for the owner"
+        );
+        assert_eq!(
+            owner_only_proposal(&spend.summary, &spend.body),
+            "changes compute.auto_approve"
+        );
+        assert_eq!(
+            owner_only_proposal("Raise the cap", "compute.max_vms 3"),
+            "changes compute.max_vms"
+        );
+        assert_eq!(
+            owner_only_proposal("Pick an image", "compute.azure.image jammy"),
+            ""
         );
         let paths = crate::posts::create_post(
             &s,
