@@ -61,6 +61,10 @@ pub(crate) struct RemoteStepsStep {
     pub usage: pulse_provider::Usage,
     #[serde(rename = "model", default)]
     pub model: String,
+    #[serde(rename = "finish_reason", default)]
+    pub finish_reason: Option<String>,
+    #[serde(rename = "choices", default)]
+    pub choices: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -255,6 +259,8 @@ impl RemoteStepsMirror {
                         prompt_tokens: ev.usage.prompt_tokens as i64,
                         completion_tokens: ev.usage.completion_tokens as i64,
                         model: ev.model,
+                        finish_reason: ev.finish_reason,
+                        choices: ev.choices,
                     })?;
                 }
                 "finish" => {

@@ -43,6 +43,10 @@ pub struct HarnessStep {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<i64>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct HarnessSessionFilter {
@@ -100,7 +104,7 @@ pub struct HarnessCounts {
     pub cost_today: f64,
 }
 const SESSION_COLS: &str = "id, run_id, job_id, agent, project, executor, provider, model, cwd, status, exit_status, submission, error, steps, calls, prompt_tokens, completion_tokens, cost, started_at, updated_at, ended_at, trajectory, cancel_requested_at";
-const STEP_COLS: &str = "session_id, n, at, kind, content, command, exit_code, duration_ms, prompt_tokens, completion_tokens, model";
+const STEP_COLS: &str = "session_id, n, at, kind, content, command, exit_code, duration_ms, prompt_tokens, completion_tokens, model, finish_reason, choices";
 fn scan_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessSession> {
     Ok(HarnessSession {
         id: r.get(0)?,
@@ -141,6 +145,8 @@ fn scan_step(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessStep> {
         prompt_tokens: r.get(8)?,
         completion_tokens: r.get(9)?,
         model: r.get(10)?,
+        finish_reason: r.get(11)?,
+        choices: r.get(12)?,
     })
 }
 #[derive(Debug, thiserror::Error)]
@@ -175,7 +181,7 @@ impl Store {
             step.at = self.now();
         }
         let tx = self.begin()?;
-        tx.execute(&format!("INSERT OR REPLACE INTO harness_steps ({STEP_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),params![step.session_id,step.n,step.at,step.kind,step.content,step.command,step.exit_code,step.duration_ms,step.prompt_tokens,step.completion_tokens,step.model])?;
+        tx.execute(&format!("INSERT OR REPLACE INTO harness_steps ({STEP_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),params![step.session_id,step.n,step.at,step.kind,step.content,step.command,step.exit_code,step.duration_ms,step.prompt_tokens,step.completion_tokens,step.model,step.finish_reason,step.choices])?;
         let n=tx.execute("UPDATE harness_sessions SET updated_at = ?, steps = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind IN ('command', 'read', 'grep', 'edit')), calls = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'assistant'), prompt_tokens = (SELECT COALESCE(SUM(prompt_tokens), 0) FROM harness_steps WHERE session_id = ?), completion_tokens = (SELECT COALESCE(SUM(completion_tokens), 0) FROM harness_steps WHERE session_id = ?) WHERE id = ?",params![self.now(),step.session_id,step.session_id,step.session_id,step.session_id,step.session_id])?;
         if n == 0 {
             return Err(input_err(format!(

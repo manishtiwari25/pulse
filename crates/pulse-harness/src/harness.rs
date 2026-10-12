@@ -136,6 +136,14 @@ pub struct Step {
     pub usage: Usage,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// Provider finish reason of an assistant step (`stop`, `tool_calls`,
+    /// `length`, ...); None on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    /// Number of choices the provider returned for an assistant step; None
+    /// on other kinds or when the provider did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<i64>,
 }
 
 impl Default for Step {
@@ -150,6 +158,8 @@ impl Default for Step {
             duration_ms: 0,
             usage: Usage::default(),
             model: String::new(),
+            finish_reason: None,
+            choices: None,
         }
     }
 }
@@ -440,6 +450,8 @@ impl Agent {
                 content: msg.content.clone(),
                 usage: resp.usage,
                 model,
+                finish_reason: Some(resp.finish_reason),
+                choices: (resp.choices > 0).then_some(i64::from(resp.choices)),
                 ..Step::default()
             });
             let free_format_retry = used_format_retries < self.cfg.format_retries.max(0);
@@ -2120,6 +2132,73 @@ mod tests {
         );
         let got = h.run()?;
         Ok((h, got))
+    }
+
+    #[test]
+    fn assistant_step_records_finish_reason_and_choices() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![pulse_provider::Response {
+            message: Some(msg("SUMMARY: done")),
+            finish_reason: "stop".into(),
+            choices: 2,
+            ..pulse_provider::Response::default()
+        }]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let seen: Arc<Mutex<Vec<Step>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_steps = seen.clone();
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env),
+            base_config(),
+            vec![Box::new(SinkFunc(move |s: Step| {
+                sink_steps.lock().unwrap().push(s)
+            }))],
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let steps = seen.lock().unwrap();
+        let assistant: Vec<&Step> = steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Assistant)
+            .collect();
+        assert_eq!(assistant.len(), 1);
+        assert_eq!(assistant[0].finish_reason.as_deref(), Some("stop"));
+        assert_eq!(assistant[0].choices, Some(2));
+        // Non-assistant steps carry neither field.
+        assert!(
+            steps
+                .iter()
+                .filter(|s| s.kind != StepKind::Assistant)
+                .all(|s| s.finish_reason.is_none() && s.choices.is_none())
+        );
+        // Store rows round-trip both columns.
+        pulse_testutil::neutralize_runner_environment();
+        let tmp = tempfile::tempdir().unwrap();
+        let st = pulse_store::Store::open(pulse_store::Options {
+            home: tmp.path().display().to_string(),
+            create: true,
+            now: "2026-10-12T00:00:00Z".into(),
+            ..pulse_store::Options::default()
+        })
+        .unwrap();
+        st.begin_harness_session(pulse_store::HarnessSession {
+            id: "hs-1".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        st.append_harness_step(pulse_store::HarnessStep {
+            session_id: "hs-1".into(),
+            n: 1,
+            at: "2026-10-12T00:00:00Z".into(),
+            kind: "assistant".into(),
+            finish_reason: Some("length".into()),
+            choices: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+        let rows = st.harness_steps("hs-1", 0).unwrap();
+        assert_eq!(rows[0].finish_reason.as_deref(), Some("length"));
+        assert_eq!(rows[0].choices, Some(1));
     }
 
     #[test]

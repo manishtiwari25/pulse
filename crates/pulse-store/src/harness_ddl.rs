@@ -38,6 +38,8 @@ pub const HARNESS_DDL: &[&str] = &[
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   model TEXT NOT NULL DEFAULT '',
+  finish_reason TEXT,
+  choices INTEGER,
   PRIMARY KEY (session_id, n)
 )"####,
 ];
@@ -52,5 +54,15 @@ pub const HARNESS_COLUMNS: &[Column] = &[
         table: r####"harness_sessions"####,
         name: r####"cancel_requested_at"####,
         ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"harness_steps"####,
+        name: r####"finish_reason"####,
+        ddl: r####"TEXT"####,
+    },
+    Column {
+        table: r####"harness_steps"####,
+        name: r####"choices"####,
+        ddl: r####"INTEGER"####,
     },
 ];
