@@ -267,12 +267,21 @@ pub struct Response {
     pub message: Option<Message>,
     #[serde(rename = "FinishReason")]
     pub finish_reason: String,
+    /// How many choices the provider returned for this turn; 0 when the
+    /// provider did not say. More than one means the gateway split the
+    /// turn and [`merge_choices`] joined it.
+    #[serde(rename = "Choices", default, skip_serializing_if = "is_zero_u32")]
+    pub choices: u32,
     #[serde(rename = "Usage")]
     pub usage: Usage,
     #[serde(rename = "Model")]
     pub model: String,
     #[serde(rename = "RequestID")]
     pub request_id: String,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// Model is one entry of a vendor's model list.
@@ -1081,13 +1090,14 @@ mod tests {
         let response = Response {
             message: Some(Message::new(Role::Assistant)),
             finish_reason: "stop".to_string(),
+            choices: 1,
             usage,
             model: "gpt".to_string(),
             request_id: "req-1".to_string(),
         };
         assert_eq!(
             serde_json::to_value(&response).unwrap(),
-            json!({"Message":{"role":"assistant"},"FinishReason":"stop","Usage":{"prompt_tokens":4,"completion_tokens":6,"cost":1.75},"Model":"gpt","RequestID":"req-1"})
+            json!({"Message":{"role":"assistant"},"FinishReason":"stop","Choices":1,"Usage":{"prompt_tokens":4,"completion_tokens":6,"cost":1.75},"Model":"gpt","RequestID":"req-1"})
         );
     }
 

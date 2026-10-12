@@ -1300,6 +1300,8 @@ impl Sink for StoreSink {
             prompt_tokens: step.usage.prompt_tokens as i64,
             completion_tokens: step.usage.completion_tokens as i64,
             model: step.model.clone(),
+            finish_reason: step.finish_reason.clone(),
+            choices: step.choices,
         }) {
             self.warn(&e);
             return;

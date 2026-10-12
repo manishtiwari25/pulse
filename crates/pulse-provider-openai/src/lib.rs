@@ -720,7 +720,7 @@ impl ChatResponse {
     fn provider_response(&self) -> Response {
         // Harmless for endpoints that answer with one choice; protects
         // against proxies that split text and tool calls across choices.
-        let choices = self
+        let choices: Vec<pulse_provider::Choice> = self
             .choices
             .iter()
             .map(|c| {
@@ -743,10 +743,12 @@ impl ChatResponse {
                 }
             })
             .collect();
+        let n_choices = choices.len() as u32;
         let (msg, finish) = pulse_provider::merge_choices(choices);
         Response {
             message: Some(msg),
             finish_reason: finish,
+            choices: n_choices,
             usage: Usage {
                 prompt_tokens: self.usage.prompt_tokens,
                 completion_tokens: self.usage.completion_tokens,

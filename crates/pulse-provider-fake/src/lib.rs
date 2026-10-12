@@ -173,6 +173,7 @@ impl Provider for FakeProvider {
         Ok(Response {
             message: Some(msg),
             finish_reason: finish,
+            choices: 1,
             usage,
             model,
             request_id: String::new(),
