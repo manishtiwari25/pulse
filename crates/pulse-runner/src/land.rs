@@ -1106,13 +1106,19 @@ pub(crate) fn land_branch(
             if !ok {
                 let patch =
                     save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
+                let failures = verify_failures(&tail_text);
+                let failure_note = if failures.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (failed: {})", failures.join(", "))
+                };
                 if !job.0.is_empty() {
                     requeue_job(
                         s,
                         now.clone(),
                         job.clone(),
                         actor.clone(),
-                        format!("{verify_note} on the merged {def}: {branch}"),
+                        format!("{verify_note} on the merged {def}: {branch}{failure_note}"),
                         patch.clone(),
                     );
                 }
@@ -1128,7 +1134,7 @@ pub(crate) fn land_branch(
                         &actor,
                         "land.failed-verify",
                         &branch,
-                        serde_json::json!({"project": slug, "patch": patch, "note": verify_note, "tail": crate::executor::tail(&tail_text, 1500)}),
+                        serde_json::json!({"project": slug, "patch": patch, "note": verify_note, "failures": failures, "tail": crate::executor::tail(&tail_text, 1500)}),
                     );
                 }
                 let what = if job.0.is_empty() {
@@ -1907,6 +1913,68 @@ pub(crate) fn verify_hint(tail: &str) -> String {
     crate::util::trunc(pick, 160)
 }
 
+static VERIFY_FAILURE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"^(?:test \S.* \.\.\. FAILED$|error(?:\[E\d+\])?: |FAILED |FAIL |✗ |× |Error: |\S.*:\d+:\d+: [A-Z]+\d{2,4} |\d+:\d+\s+error\s)",
+    )
+    .unwrap()
+});
+
+/// Caps the number of failure names kept from a verify tail.
+const VERIFY_FAILURES_CAP: usize = 20;
+
+/// The lines of a verify output that name what broke, so a failed-verify event and the
+/// retry brief say which test, lint rule or compile error failed instead of only the output's
+/// last 1,500 characters (cargo prints the `failures:` list well before its final summary).
+/// Picks cargo's `failures:` block entries, `test ... FAILED`, `error[E...]`/`error:` lines
+/// and the usual pytest/vitest/eslint/ruff failure lines, deduplicated and capped at
+/// [`VERIFY_FAILURES_CAP`].
+pub(crate) fn verify_failures(tail: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_failures_block = false;
+    for raw in tail.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if trimmed == "failures:" {
+            // cargo prints two `failures:` headers: the first opens per-test output
+            // (`---- name stdout ----`), the second the bare list of names.
+            in_failures_block = true;
+            continue;
+        }
+        let mut pick: Option<String> = None;
+        if in_failures_block {
+            if trimmed.is_empty() {
+                continue;
+            }
+            if line.starts_with("    ") && !trimmed.contains(' ') {
+                pick = Some(trimmed.to_string());
+            } else if !trimmed.starts_with("----") {
+                in_failures_block = false;
+            }
+        }
+        if pick.is_none() && trimmed.starts_with("---- ") && trimmed.ends_with(" ----") {
+            let name = trimmed
+                .trim_start_matches("---- ")
+                .trim_end_matches(" ----")
+                .trim_end_matches(" stdout")
+                .trim_end_matches(" stderr");
+            if !name.is_empty() {
+                pick = Some(name.to_string());
+            }
+        }
+        if pick.is_none() && VERIFY_FAILURE_RE.is_match(trimmed) {
+            pick = Some(crate::util::trunc(trimmed, 200));
+        }
+        if let Some(p) = pick.filter(|p| !out.contains(p)) {
+            out.push(p);
+            if out.len() >= VERIFY_FAILURES_CAP {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// The note and retry time recorded for a project whose default branch failed its own verify
 /// command, when that time has not passed yet.
 pub(crate) fn landing_retry_hold(s: &pulse_store::Store, slug: &str, now: &str) -> Option<String> {
@@ -2220,6 +2288,34 @@ impl Drop for LandingCleanup {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verify_failures_names_cargo_tests_lints_and_pytest_lines() {
+        let cargo = "running 3 tests\ntest a::ok ... ok\ntest land::tests::requeue_keeps_patch ... FAILED\n\nfailures:\n\n---- land::tests::requeue_keeps_patch stdout ----\nassertion failed\n\nfailures:\n    land::tests::requeue_keeps_patch\n    brief::tests::other\n\ntest result: FAILED. 1 passed; 2 failed\nerror: test failed, to rerun pass `-p pulse-runner --lib`\n";
+        let got = super::verify_failures(cargo);
+        assert_eq!(
+            got,
+            vec![
+                "test land::tests::requeue_keeps_patch ... FAILED".to_string(),
+                "land::tests::requeue_keeps_patch".to_string(),
+                "brief::tests::other".to_string(),
+                "error: test failed, to rerun pass `-p pulse-runner --lib`".to_string(),
+            ]
+        );
+        let clippy = "warning: x\nerror[E0308]: mismatched types\n --> src/a.rs:1:1\nerror: could not compile `x`\n";
+        let got = super::verify_failures(clippy);
+        assert_eq!(got[0], "error[E0308]: mismatched types");
+        let misc = "FAILED tests/test_a.py::test_b - AssertionError\nsrc/a.py:3:1: E501 line too long\n  12:4  error  'x' is defined but never used  no-unused-vars\nall good\n";
+        let got = super::verify_failures(misc);
+        assert_eq!(got.len(), 3);
+        assert!(got[1].starts_with("src/a.py:3:1: E501"));
+        assert!(super::verify_failures("ok\nall passed\n").is_empty());
+        let many: String = (0..40).map(|i| format!("test t{i} ... FAILED\n")).collect();
+        assert_eq!(
+            super::verify_failures(&many).len(),
+            super::VERIFY_FAILURES_CAP
+        );
+    }
+
     use crate::test_helpers::*;
     use crate::test_helpers_completion::{
         completion_worker_command, new_completion_job, run_completion,
