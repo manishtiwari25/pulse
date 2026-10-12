@@ -2199,6 +2199,32 @@ mod tests {
     }
 
     #[test]
+    fn narration_with_tool_call_runs_the_command_without_a_format_retry() {
+        // The providers merge a reply that Copilot split into a text choice
+        // and a tool-call choice; the harness must act on the call and not
+        // treat the narration as a prose-only turn.
+        let _serial = crate::test_helpers::serial();
+        let mut both = tool("cargo test");
+        both.content = "Lint passes. Running tests.".into();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(both),
+            resp(msg("SUMMARY: tests pass")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let (h, got) = run_agent(p, env.clone(), base_config()).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.format_errors, 0);
+        assert_eq!(env.lock().unwrap().commands, vec!["cargo test".to_string()]);
+        assert!(
+            !h.trajectory()
+                .steps
+                .iter()
+                .any(|s| matches!(s.kind, StepKind::FormatRetry | StepKind::Error))
+        );
+        assert!(h.messages().iter().any(|m| m.role == Role::Tool));
+    }
+
+    #[test]
     fn text_mode_path_and_two_block_format_error() {
         let _serial = crate::test_helpers::serial();
         let p = Arc::new(FakeProvider::new(vec![

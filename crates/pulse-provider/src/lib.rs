@@ -164,6 +164,54 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// Choice is one `choices[i]` of a chat-completion reply, lifted into the shared shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Choice {
+    pub finish_reason: String,
+    pub message: Message,
+}
+
+/// Merges every choice of a chat-completion reply into one assistant message.
+///
+/// Some gateways split one model turn across choices: the narration
+/// ("Lint passes. Running tests.") in one, the tool call in the next. Reading
+/// only `choices[0]` then drops the tool call and the harness has to ask the
+/// model to repeat itself. Text is joined in order with a newline, tool calls
+/// are appended in order (a repeated id is kept once), the role and the
+/// message-level ids come from the first choice that sets them, and the
+/// finish reason is `tool_calls` when any choice says so, else the first
+/// non-empty one. No choices gives an empty assistant message.
+pub fn merge_choices(choices: Vec<Choice>) -> (Message, String) {
+    let mut msg = Message::new(Role::Assistant);
+    let mut finish = String::new();
+    let mut texts: Vec<String> = Vec::new();
+    for (i, c) in choices.into_iter().enumerate() {
+        if i == 0 {
+            msg.role = c.message.role;
+        }
+        if msg.tool_call_id.is_empty() {
+            msg.tool_call_id = c.message.tool_call_id;
+        }
+        if msg.name.is_empty() {
+            msg.name = c.message.name;
+        }
+        if c.finish_reason == "tool_calls" || finish.is_empty() {
+            finish = c.finish_reason;
+        }
+        if !c.message.content.is_empty() {
+            texts.push(c.message.content);
+        }
+        for tc in c.message.tool_calls {
+            if !tc.id.is_empty() && msg.tool_calls.iter().any(|seen| seen.id == tc.id) {
+                continue;
+            }
+            msg.tool_calls.push(tc);
+        }
+    }
+    msg.content = texts.join("\n");
+    (msg, finish)
+}
+
 /// Tool is one tool the harness offers the model; parameters is a JSON schema object.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tool {
@@ -802,6 +850,92 @@ mod tests {
         assert_eq!(squeeze("ab’cdefgh", 8), "ab’...");
         assert_eq!(squeeze("—abc", 2), "");
         assert_eq!(squeeze("—abc", 3), "—");
+    }
+
+    fn call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            arguments: json!({"command": command}).to_string(),
+        }
+    }
+
+    fn choice(finish: &str, content: &str, calls: Vec<ToolCall>) -> Choice {
+        Choice {
+            finish_reason: finish.to_string(),
+            message: Message {
+                content: content.to_string(),
+                tool_calls: calls,
+                ..Message::new(Role::Assistant)
+            },
+        }
+    }
+
+    #[test]
+    fn merge_choices_keeps_a_single_choice_as_is() {
+        let (msg, finish) = merge_choices(vec![choice("stop", "done", Vec::new())]);
+        assert_eq!(finish, "stop");
+        assert_eq!(msg.content, "done");
+        assert!(msg.tool_calls.is_empty());
+
+        let (msg, finish) = merge_choices(Vec::new());
+        assert_eq!(finish, "");
+        assert_eq!(msg, Message::new(Role::Assistant));
+    }
+
+    #[test]
+    fn merge_choices_joins_split_text_and_tool_call_in_either_order() {
+        // A gateway that puts the narration in one choice and the tool call
+        // in the next must still yield one message the harness can act on.
+        let text_first = vec![
+            choice("stop", "Lint passes. Running tests.", Vec::new()),
+            choice("tool_calls", "", vec![call("c1", "cargo test")]),
+        ];
+        let (msg, finish) = merge_choices(text_first);
+        assert_eq!(finish, "tool_calls");
+        assert_eq!(msg.content, "Lint passes. Running tests.");
+        assert_eq!(msg.tool_calls, vec![call("c1", "cargo test")]);
+
+        let call_first = vec![
+            choice("tool_calls", "", vec![call("c1", "cargo test")]),
+            choice("stop", "Lint passes. Running tests.", Vec::new()),
+        ];
+        let (msg, finish) = merge_choices(call_first);
+        assert_eq!(finish, "tool_calls");
+        assert_eq!(msg.content, "Lint passes. Running tests.");
+        assert_eq!(msg.tool_calls, vec![call("c1", "cargo test")]);
+    }
+
+    #[test]
+    fn merge_choices_orders_text_and_calls_and_drops_repeated_ids() {
+        let (msg, finish) = merge_choices(vec![
+            choice("", "first", vec![call("a", "ls")]),
+            choice("length", "second", vec![call("a", "ls"), call("b", "pwd")]),
+            choice("", "", vec![call("", "git status"), call("", "git diff")]),
+        ]);
+        assert_eq!(finish, "length");
+        assert_eq!(msg.content, "first\nsecond");
+        assert_eq!(
+            msg.tool_calls,
+            vec![
+                call("a", "ls"),
+                call("b", "pwd"),
+                call("", "git status"),
+                call("", "git diff"),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_choices_takes_role_and_ids_from_the_first_choice_that_sets_them() {
+        let mut second = choice("stop", "", Vec::new());
+        second.message.role = Role::User;
+        second.message.name = "named".to_string();
+        second.message.tool_call_id = "t1".to_string();
+        let (msg, _) = merge_choices(vec![choice("", "hi", Vec::new()), second]);
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.name, "named");
+        assert_eq!(msg.tool_call_id, "t1");
     }
 
     struct TestProvider;

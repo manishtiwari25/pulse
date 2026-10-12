@@ -718,24 +718,32 @@ struct ChatUsage {
 
 impl ChatResponse {
     fn provider_response(&self) -> Response {
-        let mut msg = Message::new(Role::Assistant);
-        let mut finish = String::new();
-        if let Some(c) = self.choices.first() {
-            finish = c.finish_reason.clone();
-            msg.role = c.message.role.clone().unwrap_or(Role::Assistant);
-            if let Some(Value::String(s)) = &c.message.content {
-                msg.content = s.clone();
-            }
-            msg.tool_call_id = c.message.tool_call_id.clone();
-            msg.name = c.message.name.clone();
-            for tc in &c.message.tool_calls {
-                msg.tool_calls.push(ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.function.name.clone(),
-                    arguments: tc.function.arguments.clone(),
-                });
-            }
-        }
+        // Harmless for endpoints that answer with one choice; protects
+        // against proxies that split text and tool calls across choices.
+        let choices = self
+            .choices
+            .iter()
+            .map(|c| {
+                let mut msg = Message::new(c.message.role.clone().unwrap_or(Role::Assistant));
+                if let Some(Value::String(s)) = &c.message.content {
+                    msg.content = s.clone();
+                }
+                msg.tool_call_id = c.message.tool_call_id.clone();
+                msg.name = c.message.name.clone();
+                for tc in &c.message.tool_calls {
+                    msg.tool_calls.push(ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                    });
+                }
+                pulse_provider::Choice {
+                    finish_reason: c.finish_reason.clone(),
+                    message: msg,
+                }
+            })
+            .collect();
+        let (msg, finish) = pulse_provider::merge_choices(choices);
         Response {
             message: Some(msg),
             finish_reason: finish,
@@ -1412,6 +1420,30 @@ mod tests {
             parse_error_body(br#"{"type":"t","error":"m"}"#),
             ("t".to_string(), "m".to_string())
         );
+    }
+
+    #[test]
+    fn split_choices_merge_into_one_message() {
+        // A proxy that answers with the narration in choices[0] and the tool
+        // call in choices[1] must not lose the call.
+        let out: ChatResponse = serde_json::from_value(json!({
+            "id": "req-split",
+            "model": "gpt-4o-mini",
+            "choices": [
+                {"finish_reason": "stop", "message": {"role": "assistant", "content": "Lint passes. Running tests."}},
+                {"finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+                    "tool_calls": [{"id": "call-9", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"cargo test\"}"}}]}}
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        }))
+        .unwrap();
+        let resp = out.provider_response();
+        assert_eq!(resp.finish_reason, "tool_calls");
+        let msg = resp.message.unwrap();
+        assert_eq!(msg.content, "Lint passes. Running tests.");
+        assert_eq!(msg.tool_calls.len(), 1);
+        assert_eq!(msg.tool_calls[0].id, "call-9");
+        assert_eq!(msg.tool_calls[0].name, "bash");
     }
 
     #[test]

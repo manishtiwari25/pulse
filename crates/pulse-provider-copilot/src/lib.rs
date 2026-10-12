@@ -1253,24 +1253,32 @@ struct ChatUsage {
 
 impl ChatResponse {
     fn provider_response(self) -> Response {
-        let mut msg = Message::new(Role::Assistant);
-        let mut finish = String::new();
-        if let Some(c) = self.choices.into_iter().next() {
-            finish = c.finish_reason;
-            msg.role = c.message.role;
-            if let Some(Value::String(s)) = c.message.content {
-                msg.content = s;
-            }
-            msg.tool_call_id = c.message.tool_call_id;
-            msg.name = c.message.name;
-            for tc in c.message.tool_calls {
-                msg.tool_calls.push(pulse_provider::ToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments: tc.function.arguments,
-                });
-            }
-        }
+        // Copilot can spread one turn over several choices (text in one, the
+        // tool call in another); merge them so neither half is lost.
+        let choices = self
+            .choices
+            .into_iter()
+            .map(|c| {
+                let mut msg = Message::new(c.message.role);
+                if let Some(Value::String(s)) = c.message.content {
+                    msg.content = s;
+                }
+                msg.tool_call_id = c.message.tool_call_id;
+                msg.name = c.message.name;
+                for tc in c.message.tool_calls {
+                    msg.tool_calls.push(pulse_provider::ToolCall {
+                        id: tc.id,
+                        name: tc.function.name,
+                        arguments: tc.function.arguments,
+                    });
+                }
+                pulse_provider::Choice {
+                    finish_reason: c.finish_reason,
+                    message: msg,
+                }
+            })
+            .collect();
+        let (msg, finish) = pulse_provider::merge_choices(choices);
         Response {
             message: Some(msg),
             finish_reason: finish,
@@ -2579,6 +2587,38 @@ mod tests {
             "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4}
         })
+    }
+
+    #[test]
+    fn split_choices_merge_into_one_message() {
+        // Copilot can answer with the narration in one choice and the tool
+        // call in another; both halves must reach the harness, whatever the
+        // order.
+        let text = json!({"finish_reason": "stop", "message": {"role": "assistant", "content": "Lint passes. Running tests."}});
+        let call = json!({"finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "call-9", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"cargo test\"}"}}]}});
+        for choices in [vec![text.clone(), call.clone()], vec![call, text]] {
+            let out: ChatResponse = serde_json::from_value(json!({
+                "id": "req-split",
+                "model": "claude-sonnet-5",
+                "choices": choices,
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7}
+            }))
+            .unwrap();
+            let resp = out.provider_response();
+            assert_eq!(resp.finish_reason, "tool_calls");
+            assert_eq!(resp.request_id, "req-split");
+            let msg = resp.message.unwrap();
+            assert_eq!(msg.content, "Lint passes. Running tests.");
+            assert_eq!(
+                msg.tool_calls,
+                vec![ToolCall {
+                    id: "call-9".to_string(),
+                    name: "bash".to_string(),
+                    arguments: "{\"command\":\"cargo test\"}".to_string(),
+                }]
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
