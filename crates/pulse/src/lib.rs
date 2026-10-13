@@ -102,6 +102,8 @@ pub fn register_all() {
         pulse_mcp::register();
         pulse_provider_copilot::register();
         pulse_provider_openai::register();
+        pulse_provider_anthropic::register();
+        pulse_provider_gemini::register();
         pulse_records::register();
         pulse_runner::register();
         pulse_tally::register();
@@ -507,6 +509,30 @@ mod tests {
             || !s(&errb).contains("did you mean:")
         {
             panic!("code {code} stderr {:?}", s(&errb));
+        }
+    }
+
+    // The `provider` setting offers exactly the providers the binary
+    // registers, each with a console label, and every API-key provider
+    // owns the endpoint setting its description promises.
+    #[test]
+    fn registered_providers_match_the_provider_setting_choices() {
+        let _serial = crate::test_helpers::serial();
+        register_all();
+        let mut choices = pulse_store::HARNESS_RULES["provider"].choices.clone();
+        choices.sort();
+        assert_eq!(pulse_provider::names(), choices);
+        assert!(choices.len() >= 17, "{choices:?}");
+        for name in &choices {
+            assert!(
+                !pulse_provider::label_of(name).is_empty(),
+                "{name} has no label"
+            );
+            assert_eq!(
+                pulse_store::HARNESS_RULES.contains_key(&format!("provider.{name}.base_url")),
+                name != "copilot",
+                "{name} endpoint setting"
+            );
         }
     }
 

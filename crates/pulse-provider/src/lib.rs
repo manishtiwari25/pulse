@@ -1,5 +1,9 @@
 //! PULSE: the model-provider contract and registry.
 
+pub mod apikey;
+pub mod device;
+pub mod http;
+
 use anyhow::{Result, anyhow};
 use chrono::DateTime;
 use rand::RngExt;
@@ -408,9 +412,11 @@ pub fn err_not_logged_in() -> NotLoggedInError {
     NotLoggedInError
 }
 
-/// Reports whether an anyhow error chain contains [`NotLoggedInError`].
+/// Reports whether an anyhow error chain contains [`NotLoggedInError`],
+/// as the error itself, a cause, or the context wrapped around one.
 pub fn is_not_logged_in(err: &anyhow::Error) -> bool {
-    err.chain().any(|e| e.is::<NotLoggedInError>())
+    err.downcast_ref::<NotLoggedInError>().is_some()
+        || err.chain().any(|e| e.is::<NotLoggedInError>())
 }
 
 /// A vendor failure, already redacted.
@@ -467,7 +473,10 @@ impl ProviderError {
 
 /// Returns the first [`ProviderError`] in an anyhow error chain.
 pub fn provider_error(err: &anyhow::Error) -> Option<&ProviderError> {
-    err.chain().find_map(|e| e.downcast_ref::<ProviderError>())
+    // `anyhow::Error::downcast_ref` also sees a context added with
+    // `.context(ProviderError)`, which `chain()` shows only as its text.
+    err.downcast_ref::<ProviderError>()
+        .or_else(|| err.chain().find_map(|e| e.downcast_ref::<ProviderError>()))
 }
 
 /// Reports whether an anyhow error chain contains a retryable [`ProviderError`].
@@ -1185,6 +1194,23 @@ mod tests {
 
         let login_err: anyhow::Error = NotLoggedInError.into();
         assert!(is_not_logged_in(&login_err));
+        assert!(provider_error(&login_err).is_none());
+
+        // A sign-in that lapsed for a vendor's reason carries both: the
+        // typed "not logged in" the harness holds the run on, and the
+        // vendor error as context, whichever way round they are stacked.
+        let expired = anyhow::Error::from(NotLoggedInError).context(err.clone());
+        assert!(is_not_logged_in(&expired));
+        assert_eq!(provider_error(&expired), Some(&err));
+        let expired = anyhow!(err.clone()).context(NotLoggedInError);
+        assert!(is_not_logged_in(&expired));
+        assert_eq!(provider_error(&expired), Some(&err));
+        // Plain text context around either still finds them.
+        let wrapped = anyhow!(err.clone()).context("while listing models");
+        assert_eq!(provider_error(&wrapped), Some(&err));
+        assert!(!is_not_logged_in(&wrapped));
+        let wrapped = anyhow::Error::from(NotLoggedInError).context("while listing models");
+        assert!(is_not_logged_in(&wrapped));
     }
 
     #[test]

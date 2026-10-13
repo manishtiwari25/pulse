@@ -40,7 +40,7 @@ interface Group {
 
 // The sections, in the order the owner needs them: the brake, you, the
 // harness, then the caps (Limits), machines, self-improvement, this machine
-// and the advanced provider address. Keys the store knows that no section
+// and the advanced provider addresses. Keys the store knows that no section
 // claims fall into "Other", so a new cap the runner learns never disappears
 // from the owner's view. Anchors (#stop #owner #harness #runner #compute
 // #evolve #daemon #provider #other) are linked from other pages.
@@ -114,8 +114,26 @@ const GROUPS: Group[] = [
   {
     id: "provider",
     title: "Model provider",
-    note: "Advanced. Where model calls go when you use an OpenAI-compatible provider. The API key stays on this machine.",
-    keys: ["provider.openai.base_url"],
+    note: "Advanced. Where model calls go for each API-key provider: OpenAI and the other OpenAI-compatible vendors, Anthropic Claude, Google Gemini, and local servers such as Ollama, plus the Microsoft tenant Azure OpenAI signs in to. Only the chosen provider's rows are used. API keys and sign-ins stay on this machine.",
+    keys: [
+      "provider.openai.base_url",
+      "provider.anthropic.base_url",
+      "provider.gemini.base_url",
+      "provider.azure-openai.base_url",
+      "provider.azure-openai.tenant",
+      "provider.openrouter.base_url",
+      "provider.groq.base_url",
+      "provider.mistral.base_url",
+      "provider.deepseek.base_url",
+      "provider.xai.base_url",
+      "provider.together.base_url",
+      "provider.fireworks.base_url",
+      "provider.cerebras.base_url",
+      "provider.github-models.base_url",
+      "provider.ollama.base_url",
+      "provider.lmstudio.base_url",
+      "provider.vllm.base_url",
+    ],
     match: (n) => n.startsWith("provider."),
   },
 ];
@@ -137,7 +155,7 @@ const ICON: Record<string, Icon> = Object.fromEntries(NAV.map((n) => [n.id, n.ic
 
 // What the Harness section answers to in the search box besides its own
 // settings (matched like every other row): the card's headings and words.
-const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github copilot token openai model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview";
+const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github microsoft entra tenant device code copilot token api key openai anthropic claude gemini google azure openrouter groq mistral deepseek xai grok together fireworks cerebras ollama lmstudio vllm model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview context window 1m million tokens";
 
 // Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/pulse-store).
 // These rows are not inserted at Create, so when the hub omits one the

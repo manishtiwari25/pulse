@@ -20,6 +20,42 @@
       "label": "GitHub Copilot",
       "device_login": true,
       "token_login": true
+    },
+    {
+      "name": "openai",
+      "label": "OpenAI-compatible",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "anthropic",
+      "label": "Anthropic Claude",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "gemini",
+      "label": "Google Gemini",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "azure-openai",
+      "label": "Azure OpenAI",
+      "device_login": true,
+      "token_login": true
+    },
+    {
+      "name": "github-models",
+      "label": "GitHub Models",
+      "device_login": true,
+      "token_login": true
+    },
+    {
+      "name": "ollama",
+      "label": "Ollama (local)",
+      "device_login": false,
+      "token_login": true
     }
   ],
   "models": {
@@ -126,6 +162,13 @@
       "updated_at": "2026-09-11T07:00:00Z",
       "updated_by": "owner",
       "secret": false
+    },
+    {
+      "name": "harness.context_window",
+      "value": "0",
+      "kind": "count",
+      "choices": null,
+      "description": "tokens of context the native harness assumes the model takes: past 80% of it older observations collapse harder; 0 reads the window from the provider's model list (1M for the Claude and Gemini models that take it, Copilot's per-model limit), and a model that lists none keeps context discipline at its first level"
     },
     {
       "name": "harness.system_prompt",

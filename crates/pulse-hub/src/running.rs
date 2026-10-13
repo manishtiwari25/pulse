@@ -704,7 +704,7 @@ mod tests {
             }
         };
         let label_re =
-            regex::Regex::new(r#"(?m)^\s*"?([a-z_][a-z0-9_.]*)"?:\s*"[^"]+",?$"#).unwrap();
+            regex::Regex::new(r#"(?m)^\s*"?([a-z_][a-z0-9_.-]*)"?:\s*"[^"]+",?$"#).unwrap();
         let labels = label_re
             .captures_iter(&src)
             .map(|m| m[1].to_string())

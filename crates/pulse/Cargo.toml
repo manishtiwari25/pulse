@@ -29,6 +29,8 @@ pulse-inspect.workspace = true
 pulse-mcp.workspace = true
 pulse-provider-copilot.workspace = true
 pulse-provider-openai.workspace = true
+pulse-provider-anthropic.workspace = true
+pulse-provider-gemini.workspace = true
 pulse-records.workspace = true
 pulse-runner.workspace = true
 pulse-tally.workspace = true
@@ -38,5 +40,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+pulse-provider.workspace = true
 pulse-testutil.workspace = true
 serde.workspace = true

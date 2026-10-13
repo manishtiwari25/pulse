@@ -22,6 +22,8 @@ pulse-testutil = { path = "crates/pulse-testutil" }
 pulse-provider-copilot = { path = "crates/pulse-provider-copilot" }
 pulse-provider-fake = { path = "crates/pulse-provider-fake" }
 pulse-provider-openai = { path = "crates/pulse-provider-openai" }
+pulse-provider-anthropic = { path = "crates/pulse-provider-anthropic" }
+pulse-provider-gemini = { path = "crates/pulse-provider-gemini" }
 pulse-records = { path = "crates/pulse-records" }
 pulse-goals = { path = "crates/pulse-goals" }
 pulse-cred-setup = { path = "crates/pulse-cred-setup" }

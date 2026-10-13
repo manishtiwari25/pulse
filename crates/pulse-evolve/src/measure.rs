@@ -1074,6 +1074,18 @@ rm -f "$running/$(basename "$PWD")"
         }
         assert!(native.contains(&"--quiet".to_string()));
         assert!(!native.contains(&"--allow-all-tools".to_string()));
+        assert!(!native.contains(&"--context-window".to_string()));
+        s.set_setting("human", "harness.context_window", "1000000")
+            .unwrap();
+        let native = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert!(
+            native
+                .windows(2)
+                .any(|w| w == ["--context-window", "1000000"]),
+            "{native:?}"
+        );
+        s.set_setting("human", "harness.context_window", "0")
+            .unwrap();
 
         // A custom command is the measurement harness as written, whatever `harness` says.
         s.set_setting("human", "runner_cmd", "'/tmp/my harness' --flag")

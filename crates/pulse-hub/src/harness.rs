@@ -854,47 +854,68 @@ impl Handler {
         let Some(store) = self.store.as_deref() else {
             return Vec::new();
         };
-        [
-            "harness",
-            "provider",
-            "provider.openai.base_url",
-            "harness.max_steps",
-            "minutes_per_job",
-            "harness.max_cost",
-            "harness.keep_observations",
-            "harness.system_prompt",
-            "harness.step_timeout",
-            "harness.commit_timeout",
-            "harness.output_limit",
-            "worker_model",
-            "light_model",
-            "ask.model",
-        ]
-        .into_iter()
-        .map(|name| {
-            let rule = pulse_store::SETTING_RULES
-                .get(name)
-                .or_else(|| pulse_store::MODEL_RULES.get(name))
-                .or_else(|| pulse_store::HARNESS_RULES.get(name))
-                .cloned()
-                .unwrap_or_default();
-            let mut row = JsonMap::new();
-            row.insert("name".into(), Value::String(name.to_string()));
-            row.insert("value".into(), Value::String(store.setting(name, "")));
-            row.insert("kind".into(), Value::String(rule.kind));
-            // `choices` is null for a rule without choices, never [].
-            row.insert(
-                "choices".into(),
-                if rule.choices.is_empty() {
-                    Value::Null
-                } else {
-                    go_value(&rule.choices)
-                },
-            );
-            row.insert("description".into(), Value::String(rule.description));
-            row
-        })
-        .collect()
+        // The endpoint setting of every provider choice that has one, in
+        // catalogue order, so the payload follows the registry as it grows.
+        let endpoints: Vec<String> = pulse_store::HARNESS_RULES
+            .get("provider")
+            .map(|rule| {
+                rule.choices
+                    .iter()
+                    .map(|name| format!("provider.{name}.base_url"))
+                    .filter(|key| pulse_store::HARNESS_RULES.contains_key(key))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut names = vec!["harness".to_string(), "provider".to_string()];
+        names.extend(endpoints);
+        names.extend(
+            [
+                // The tenant of the azure-openai Microsoft sign-in sits by
+                // the endpoints so the console shows it with that provider.
+                "provider.azure-openai.tenant",
+                "harness.max_steps",
+                "minutes_per_job",
+                "harness.max_cost",
+                "harness.keep_observations",
+                "harness.context_window",
+                "harness.system_prompt",
+                "harness.step_timeout",
+                "harness.commit_timeout",
+                "harness.output_limit",
+                "worker_model",
+                "light_model",
+                "ask.model",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        names
+            .iter()
+            .map(|name| {
+                let name = name.as_str();
+                let rule = pulse_store::SETTING_RULES
+                    .get(name)
+                    .or_else(|| pulse_store::MODEL_RULES.get(name))
+                    .or_else(|| pulse_store::HARNESS_RULES.get(name))
+                    .cloned()
+                    .unwrap_or_default();
+                let mut row = JsonMap::new();
+                row.insert("name".into(), Value::String(name.to_string()));
+                row.insert("value".into(), Value::String(store.setting(name, "")));
+                row.insert("kind".into(), Value::String(rule.kind));
+                // `choices` is null for a rule without choices, never [].
+                row.insert(
+                    "choices".into(),
+                    if rule.choices.is_empty() {
+                        Value::Null
+                    } else {
+                        go_value(&rule.choices)
+                    },
+                );
+                row.insert("description".into(), Value::String(rule.description));
+                row
+            })
+            .collect()
     }
 
     pub(crate) fn harness_job_title(
@@ -1265,6 +1286,59 @@ mod tests {
                 "{name} missing from /harness settings: {settings:?}"
             );
         }
+        // Every provider choice's endpoint rides along, in catalogue order
+        // right after the provider row, so a console can show the one
+        // that matches the chosen provider.
+        let names: Vec<&str> = settings
+            .iter()
+            .map(|r| r["name"].as_str().unwrap_or_default())
+            .collect();
+        let provider_at = names.iter().position(|n| *n == "provider").unwrap();
+        let endpoints: Vec<String> = pulse_store::HARNESS_RULES["provider"]
+            .choices
+            .iter()
+            .filter(|name| *name != "copilot")
+            .map(|name| format!("provider.{name}.base_url"))
+            .collect();
+        assert!(endpoints.len() >= 16, "{endpoints:?}");
+        assert_eq!(
+            names[provider_at + 1..provider_at + 1 + endpoints.len()],
+            endpoints[..]
+        );
+        let azure = settings
+            .iter()
+            .find(|r| r["name"] == "provider.azure-openai.base_url")
+            .unwrap();
+        assert_eq!(azure["value"], "");
+        assert_eq!(azure["kind"], "text");
+        assert!(azure["choices"].is_null());
+        assert_eq!(
+            names[provider_at + 1 + endpoints.len()],
+            "provider.azure-openai.tenant"
+        );
+        let tenant = settings
+            .iter()
+            .find(|r| r["name"] == "provider.azure-openai.tenant")
+            .unwrap();
+        assert_eq!(tenant["value"], "organizations");
+        assert_eq!(tenant["kind"], "text");
+        let window = settings
+            .iter()
+            .find(|r| r["name"] == "harness.context_window")
+            .unwrap();
+        assert_eq!(window["value"], "0");
+        assert_eq!(window["kind"], "count");
+        assert!(
+            window["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("model list")
+        );
+        let ollama = settings
+            .iter()
+            .find(|r| r["name"] == "provider.ollama.base_url")
+            .unwrap();
+        assert_eq!(ollama["value"], "http://127.0.0.1:11434/v1");
         let (status, result, raw) = crate::test_helpers_http::request(
             crate::test_helpers_http::handler(&s),
             "GET",
@@ -1286,6 +1360,8 @@ mod tests {
     fn harness_provider_summaries_include_open_ai_token_login() {
         let _serial = crate::test_helpers::serial();
         pulse_provider_openai::register();
+        pulse_provider_anthropic::register();
+        pulse_provider_gemini::register();
         let s = harness_store();
         let providers = crate::test_helpers_http::handler(&s).harness_provider_summaries();
         let row = providers
@@ -1295,6 +1371,28 @@ mod tests {
         assert_eq!(row["label"], "OpenAI-compatible");
         assert_eq!(row["device_login"], false);
         assert_eq!(row["token_login"], true);
+        // The two vendors with a device code offer both ways in; the
+        // console reads these flags to show the matching sign-in button.
+        for (name, label) in [
+            ("github-models", "GitHub Models"),
+            ("azure-openai", "Azure OpenAI"),
+        ] {
+            let row = providers
+                .iter()
+                .find(|row| row["name"] == name)
+                .unwrap_or_else(|| panic!("{name} provider missing"));
+            assert_eq!(row["label"], label);
+            assert_eq!(row["device_login"], true, "{name}");
+            assert_eq!(row["token_login"], true, "{name}");
+        }
+        for name in ["anthropic", "gemini", "ollama"] {
+            let row = providers
+                .iter()
+                .find(|row| row["name"] == name)
+                .unwrap_or_else(|| panic!("{name} provider missing"));
+            assert_eq!(row["device_login"], false, "{name}");
+            assert_eq!(row["token_login"], true, "{name}");
+        }
     }
 
     #[test]

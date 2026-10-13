@@ -159,6 +159,10 @@ pub(crate) fn measurement_argv(
                 argv.extend([flag.to_string(), value.trim().to_string()]);
             }
         }
+        let context_window = s.setting_int("harness.context_window");
+        if context_window > 0 {
+            argv.extend(["--context-window".to_string(), context_window.to_string()]);
+        }
         let minutes = s.setting_int("minutes_per_job");
         if minutes > 1 {
             argv.extend(["--minutes".to_string(), (minutes - 1).to_string()]);

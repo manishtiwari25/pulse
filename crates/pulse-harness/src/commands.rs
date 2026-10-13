@@ -112,6 +112,11 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         0,
         "observations kept verbatim in context",
     );
+    fs.int_var(
+        "context-window",
+        0,
+        "tokens of context the model takes; 0 reads the model list",
+    );
     fs.int_var("minutes", 0, "wall-clock cap in minutes");
     fs.string_var("session", "", "harness session id");
     fs.string_var("trajectory", "", "trajectory path, or none");
@@ -284,7 +289,18 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             )
         })?;
     }
-    let context_window = model_context_window(&CancelToken::new(), p.as_ref(), &model_name);
+    // The flag, then the setting, override the window the model list
+    // reports; both are off at zero.
+    let context_window = match setting_int_or(
+        &fs,
+        "context-window",
+        st.as_ref(),
+        "harness.context_window",
+        0,
+    ) {
+        n if n > 0 => n,
+        _ => model_context_window(&CancelToken::new(), p.as_ref(), &model_name),
+    };
     let mut trajectory = fs.get_string("trajectory");
     let trajectory_path = if trajectory == "none" {
         String::new()
@@ -512,7 +528,7 @@ fn harness_login(c: &mut Context, args: &[String]) -> Result<()> {
                 2,
                 "pulse harness login: empty token",
                 "",
-                "pipe a GitHub token to pulse harness login --with-token",
+                "pipe the provider's API key or token to pulse harness login --with-token",
             )
             .into());
         }
@@ -2044,8 +2060,44 @@ mod tests {
             "PULSE_HARNESS_PROMPT_FILE",
             "PULSE_HARNESS_STEPS",
             "PULSE_HARNESS_FAKE",
+            // Every provider key and endpoint variable the registry's
+            // providers borrow, so a developer's shell never leaks in.
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_ENDPOINT",
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_BASE_URL",
+            "GROQ_API_KEY",
+            "GROQ_BASE_URL",
+            "MISTRAL_API_KEY",
+            "MISTRAL_BASE_URL",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_BASE_URL",
+            "XAI_API_KEY",
+            "XAI_BASE_URL",
+            "TOGETHER_API_KEY",
+            "TOGETHER_BASE_URL",
+            "FIREWORKS_API_KEY",
+            "FIREWORKS_BASE_URL",
+            "CEREBRAS_API_KEY",
+            "CEREBRAS_BASE_URL",
+            "GITHUB_MODELS_TOKEN",
+            "GITHUB_MODELS_BASE_URL",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "OLLAMA_API_KEY",
+            "OLLAMA_HOST",
+            "OLLAMA_BASE_URL",
+            "LMSTUDIO_API_KEY",
+            "LMSTUDIO_BASE_URL",
+            "VLLM_API_KEY",
+            "VLLM_BASE_URL",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_BASE_URL",
         ];
         let guards = vars.iter().map(|v| pulse_testutil::unsetenv(v)).collect();
         (guard, guards)
@@ -2321,6 +2373,8 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let (_env, _guards) = command_env();
         pulse_provider_openai::register();
+        pulse_provider_anthropic::register();
+        pulse_provider_gemini::register();
         let s = harness_command_store();
         const TOKEN: &str = "sk-cli-smoke-abcdefghijklmnop";
         let paths = Arc::new(Mutex::new(Vec::new()));

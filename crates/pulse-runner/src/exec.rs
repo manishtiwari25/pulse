@@ -1012,6 +1012,14 @@ pub(crate) fn worker_command(
             "--keep-observations".into(),
             s.setting("harness.keep_observations", ""),
         ];
+        // The override travels only when set, so a remote hand without
+        // the store still honours it and the default argv stays short.
+        if crate::util::setting_int(s, "harness.context_window") > 0 {
+            cmd.extend([
+                "--context-window".into(),
+                crate::util::setting_int(s, "harness.context_window").to_string(),
+            ]);
+        }
         if crate::util::setting_int(s, "minutes_per_job") > 1 {
             cmd.extend([
                 "--minutes".into(),
@@ -1716,6 +1724,15 @@ mod tests {
                 && cmd[1] == "harness"
                 && cmd[2] == "run"
         );
+        assert!(!cmd.contains(&"--context-window".to_string()));
+        // A context window override rides along once set.
+        set_setting(&s, "harness.context_window", "1000000");
+        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", &[], true);
+        assert!(
+            cmd.windows(2).any(|w| w == ["--context-window", "1000000"]),
+            "{cmd:?}"
+        );
+        set_setting(&s, "harness.context_window", "0");
         set_setting(&s, "harness", "copilot-cli");
         let (cmd, custom) = worker_command(
             &s,

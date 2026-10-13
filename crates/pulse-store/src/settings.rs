@@ -77,14 +77,37 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
         "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model"),
     }
 });
-pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"harness"=>"native","provider"=>"copilot","provider.openai.base_url"=>"https://api.openai.com/v1","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1",},
-);
+pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
+    map! {
+    "harness"=>"native","provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0",
+    // One endpoint per API-key provider (the registry name is the middle
+    // segment); azure-openai has no default because the resource is the owner's.
+    "provider.openai.base_url"=>"https://api.openai.com/v1","provider.anthropic.base_url"=>"https://api.anthropic.com","provider.gemini.base_url"=>"https://generativelanguage.googleapis.com","provider.azure-openai.base_url"=>"","provider.openrouter.base_url"=>"https://openrouter.ai/api/v1","provider.groq.base_url"=>"https://api.groq.com/openai/v1","provider.mistral.base_url"=>"https://api.mistral.ai/v1","provider.deepseek.base_url"=>"https://api.deepseek.com/v1","provider.xai.base_url"=>"https://api.x.ai/v1","provider.together.base_url"=>"https://api.together.xyz/v1","provider.fireworks.base_url"=>"https://api.fireworks.ai/inference/v1","provider.cerebras.base_url"=>"https://api.cerebras.ai/v1","provider.github-models.base_url"=>"https://models.github.ai/inference","provider.ollama.base_url"=>"http://127.0.0.1:11434/v1","provider.lmstudio.base_url"=>"http://127.0.0.1:1234/v1","provider.vllm.base_url"=>"http://127.0.0.1:8000/v1",
+    // The Entra tenant the azure-openai device login signs in to.
+    "provider.azure-openai.tenant"=>"organizations",
+    }
+});
 pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "harness"=>("choice",None,["native","copilot-cli"],None,"native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"),
-        "provider"=>("choice",None,["copilot","openai"],None,"the model provider of the native harness; copilot signs in with GitHub; openai takes an API key and a base URL; the login lives on this machine, never in the store"),
-        "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI, Azure OpenAI, Ollama (http://127.0.0.1:11434/v1), LM Studio, OpenRouter"),
+        "provider"=>("choice",None,["copilot","openai","anthropic","gemini","azure-openai","openrouter","groq","mistral","deepseek","xai","together","fireworks","cerebras","github-models","ollama","lmstudio","vllm"],None,"the model provider of the native harness; copilot and github-models sign in with GitHub and azure-openai with Microsoft (a device code: pulse harness login --provider <name> or the console's Harness card); every provider but copilot also takes an API key - pasted in the Harness card or read by pulse harness login --provider <name> --with-token - or borrows it from the environment; ollama, lmstudio and vllm need none; the login lives on this machine, never in the store"),
+        "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI itself or any server that speaks its chat completions API; OPENAI_BASE_URL in the environment stands in while this keeps its default; the other vendors have their own provider.<name>.base_url"),
+        "provider.anthropic.base_url"=>("text",None,[],None,"the Anthropic Messages API endpoint the anthropic provider calls; ANTHROPIC_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.gemini.base_url"=>("text",None,[],None,"the Google Gemini generateContent endpoint the gemini provider calls; GEMINI_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.azure-openai.base_url"=>("text",None,[],None,"the Azure OpenAI resource the azure-openai provider calls, as https://<resource>.openai.azure.com/openai/v1 (a bare resource root gets /openai/v1 added; a key goes in the api-key header, a Microsoft sign-in as a bearer token); AZURE_OPENAI_ENDPOINT in the environment stands in while this is empty; there is no default - the resource is yours"),
+        "provider.azure-openai.tenant"=>("text",None,[],None,"the Microsoft Entra tenant the azure-openai provider's Microsoft sign-in (device code) uses: organizations for any work or school account, common, consumers, or a tenant id or domain; AZURE_OPENAI_TENANT_ID or AZURE_TENANT_ID in the environment stands in while this keeps its default; the account needs the Cognitive Services OpenAI User role on the resource"),
+        "provider.openrouter.base_url"=>("text",None,[],None,"the OpenRouter endpoint the openrouter provider calls; OPENROUTER_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.groq.base_url"=>("text",None,[],None,"the Groq OpenAI-compatible endpoint the groq provider calls; GROQ_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.mistral.base_url"=>("text",None,[],None,"the Mistral endpoint the mistral provider calls; MISTRAL_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.deepseek.base_url"=>("text",None,[],None,"the DeepSeek endpoint the deepseek provider calls; DEEPSEEK_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.xai.base_url"=>("text",None,[],None,"the xAI Grok endpoint the xai provider calls; XAI_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.together.base_url"=>("text",None,[],None,"the Together AI endpoint the together provider calls; TOGETHER_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.fireworks.base_url"=>("text",None,[],None,"the Fireworks AI inference endpoint the fireworks provider calls; FIREWORKS_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.cerebras.base_url"=>("text",None,[],None,"the Cerebras endpoint the cerebras provider calls; CEREBRAS_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.github-models.base_url"=>("text",None,[],None,"the GitHub Models inference endpoint the github-models provider calls with a GitHub personal access token that has the models:read scope (GITHUB_MODELS_TOKEN, GH_TOKEN or GITHUB_TOKEN when none is pasted); GITHUB_MODELS_BASE_URL in the environment stands in while this keeps its default"),
+        "provider.ollama.base_url"=>("text",None,[],None,"the local Ollama server the ollama provider calls, at its OpenAI-compatible /v1; OLLAMA_HOST or OLLAMA_BASE_URL in the environment stands in while this keeps its default; no key needed"),
+        "provider.lmstudio.base_url"=>("text",None,[],None,"the local LM Studio server the lmstudio provider calls; LMSTUDIO_BASE_URL in the environment stands in while this keeps its default; no key needed"),
+        "provider.vllm.base_url"=>("text",None,[],None,"the local vLLM server the vllm provider calls; VLLM_BASE_URL in the environment stands in while this keeps its default; no key needed"),
         "provider.retry_after_cap_s"=>("count",Some(0),[],None,"maximum seconds a provider Retry-After or rate-limit reset header may hold one retry before jitter; the backoff still floors the wait"),
         "provider.max_body_mb"=>("count",Some(1),[],None,"maximum MiB read from a successful provider response body before the call fails as non-retryable"),
         "harness.max_steps"=>("count",Some(1),[],None,"model calls one native-harness run may make before it stops"),
@@ -95,6 +118,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "harness.commit_timeout"=>("count",Some(60),[],None,"seconds a git commit, merge, rebase, cherry-pick or am that runs the clone's pre-commit verify gate may take before it is killed; never below harness.step_timeout and capped by the run's remaining minutes"),
         "harness.output_limit"=>("count",Some(1000),[],None,"characters of one command's output kept for the model; longer output is cut in the middle"),
         "harness.format_retries"=>("count",Some(0),[],None,"prose-only native-harness replies corrected without consuming harness.max_steps before later format errors count normally"),
+        "harness.context_window"=>("count",Some(0),[],None,"tokens of context the native harness assumes the model takes: past 80% of it older observations collapse harder; 0 reads the window from the provider's model list (1M for the Claude and Gemini models that take it, Copilot's per-model limit), and a model that lists none keeps context discipline at its first level"),
     }
 });
 pub const COMPUTE_PROVIDERS: &[&str] = &["azure", "aws", "gcp", "multipass"];

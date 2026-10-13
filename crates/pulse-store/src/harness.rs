@@ -733,10 +733,95 @@ mod go_harness_tests {
                 .to_string()
                 .contains("harness takes one of native, copilot-cli")
         );
-        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.format_retries, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.max_body_mb, provider.openai.base_url, provider.retry_after_cap_s"));
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.context_window, harness.format_retries, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
         assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
         assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
-        assert_eq!(HARNESS_RULES["provider"].choices, vec!["copilot", "openai"]);
+        assert_eq!(
+            validate_setting("provider", "Azure-OpenAI").unwrap(),
+            "azure-openai"
+        );
+        assert_eq!(validate_setting("provider", "gemini").unwrap(), "gemini");
+        assert!(
+            validate_setting("provider", "claude")
+                .unwrap_err()
+                .to_string()
+                .contains("provider takes one of copilot, openai, anthropic, gemini, azure-openai")
+        );
+        assert_eq!(
+            HARNESS_RULES["provider"].choices,
+            vec![
+                "copilot",
+                "openai",
+                "anthropic",
+                "gemini",
+                "azure-openai",
+                "openrouter",
+                "groq",
+                "mistral",
+                "deepseek",
+                "xai",
+                "together",
+                "fireworks",
+                "cerebras",
+                "github-models",
+                "ollama",
+                "lmstudio",
+                "vllm"
+            ]
+        );
+        // Every provider choice but copilot (device login) owns an endpoint
+        // setting with a rule and a human description.
+        for name in &HARNESS_RULES["provider"].choices {
+            if name == "copilot" {
+                continue;
+            }
+            let key = format!("provider.{name}.base_url");
+            assert!(HARNESS_SETTINGS.contains_key(&key), "{key} default missing");
+            let rule = HARNESS_RULES
+                .get(&key)
+                .unwrap_or_else(|| panic!("{key} rule missing"));
+            assert_eq!(rule.kind, "text", "{key}");
+            assert!(!rule.description.is_empty(), "{key}");
+            assert_eq!(s.provider_settings()[&key], HARNESS_SETTINGS[&key], "{key}");
+        }
+        assert_eq!(s.setting("provider.azure-openai.base_url", ""), "");
+        // The tenant of the Microsoft sign-in rides along with the endpoints.
+        assert_eq!(
+            s.setting("provider.azure-openai.tenant", ""),
+            "organizations"
+        );
+        assert_eq!(
+            s.provider_settings()["provider.azure-openai.tenant"],
+            "organizations"
+        );
+        assert!(
+            HARNESS_RULES["provider.azure-openai.tenant"]
+                .description
+                .contains("AZURE_OPENAI_TENANT_ID")
+        );
+        assert!(HARNESS_RULES["provider"].description.contains("Microsoft"));
+        assert_eq!(
+            s.setting("provider.anthropic.base_url", ""),
+            "https://api.anthropic.com"
+        );
+        assert_eq!(
+            s.setting("provider.gemini.base_url", ""),
+            "https://generativelanguage.googleapis.com"
+        );
+        assert_eq!(
+            s.setting("provider.ollama.base_url", ""),
+            "http://127.0.0.1:11434/v1"
+        );
+        s.set_setting(
+            "human",
+            "provider.azure-openai.base_url",
+            "https://acme.openai.azure.com/openai/v1",
+        )
+        .unwrap();
+        assert_eq!(
+            s.provider_settings()["provider.azure-openai.base_url"],
+            "https://acme.openai.azure.com/openai/v1"
+        );
         assert_eq!(
             s.setting("provider.openai.base_url", ""),
             "https://api.openai.com/v1"
@@ -754,6 +839,18 @@ mod go_harness_tests {
         assert_eq!(
             s.provider_settings()["provider.openai.base_url"],
             "http://127.0.0.1:11434/v1"
+        );
+        // The context window override is off (0) until set; 1M is a count.
+        assert_eq!(s.setting("harness.context_window", ""), "0");
+        assert_eq!(s.setting_int("harness.context_window"), 0);
+        s.set_setting("human", "harness.context_window", "1000000")
+            .unwrap();
+        assert_eq!(s.setting_int("harness.context_window"), 1_000_000);
+        assert!(
+            s.set_setting("human", "harness.context_window", "-1")
+                .unwrap_err()
+                .to_string()
+                .contains("harness.context_window must be at least")
         );
         for (name, bad, good) in [
             ("harness.max_steps", "0", "1"),
@@ -808,6 +905,7 @@ mod go_harness_tests {
             vec![
                 "harness",
                 "harness.commit_timeout",
+                "harness.context_window",
                 "harness.format_retries",
                 "harness.keep_observations",
                 "harness.max_cost",
@@ -816,9 +914,25 @@ mod go_harness_tests {
                 "harness.step_timeout",
                 "harness.system_prompt",
                 "provider",
+                "provider.anthropic.base_url",
+                "provider.azure-openai.base_url",
+                "provider.azure-openai.tenant",
+                "provider.cerebras.base_url",
+                "provider.deepseek.base_url",
+                "provider.fireworks.base_url",
+                "provider.gemini.base_url",
+                "provider.github-models.base_url",
+                "provider.groq.base_url",
+                "provider.lmstudio.base_url",
                 "provider.max_body_mb",
+                "provider.mistral.base_url",
+                "provider.ollama.base_url",
                 "provider.openai.base_url",
-                "provider.retry_after_cap_s"
+                "provider.openrouter.base_url",
+                "provider.retry_after_cap_s",
+                "provider.together.base_url",
+                "provider.vllm.base_url",
+                "provider.xai.base_url"
             ]
         );
     }

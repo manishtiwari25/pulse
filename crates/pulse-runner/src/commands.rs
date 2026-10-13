@@ -25,6 +25,8 @@ pub fn register() {
         pulse_hooks::register();
         pulse_provider_copilot::register();
         pulse_provider_openai::register();
+        pulse_provider_anthropic::register();
+        pulse_provider_gemini::register();
         crate::compute::init();
         crate::aws::init();
         crate::azure::init();

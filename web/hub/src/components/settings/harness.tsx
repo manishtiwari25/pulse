@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Disclosure, ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { SettingKey } from "@/components/settings/setting-row";
-import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
+import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { settingHelp, settingLabel } from "@/lib/setting-labels";
@@ -25,8 +25,36 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the run mode and the
 // transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.system_prompt", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
+
+// How the chosen provider signs in: who stands behind its device code
+// (GitHub for Copilot and GitHub Models, Microsoft for Azure OpenAI) and
+// what its pasted secret is called. The hub says which flows a provider
+// offers; this only picks the words.
+interface SignInWords {
+  idp: string;
+  tokenLabel: string;
+  tokenSummary: string;
+  placeholder: string;
+  modelsHint: string;
+}
+
+export function signInWords(p: HarnessProviderInfo | undefined): SignInWords {
+  const name = p?.name ?? "copilot";
+  const github = name === "copilot" || name === "github-models";
+  const idp = github ? "GitHub" : name === "azure-openai" ? "Microsoft" : p?.label || "the provider";
+  const tokenLabel = github ? "GitHub token" : "API key";
+  const placeholder = name === "copilot" ? "gho_…" : name === "github-models" ? "github_pat_…" : name === "azure-openai" ? "key or bearer token" : "sk-…";
+  const device = p ? p.device_login : true;
+  return {
+    idp,
+    tokenLabel,
+    tokenSummary: github ? "Use a GitHub token instead" : "Use an API key instead",
+    placeholder,
+    modelsHint: device ? "Sign in with " + idp : "Paste " + (github ? "a GitHub token" : "an API key"),
+  };
+}
 
 function setting(rows: Setting[] | undefined, name: string): Setting | undefined {
   return rows?.find((s) => s.name === name);
@@ -156,7 +184,8 @@ function LoginHealth({ login, runner, expired }: { login?: HarnessLogin; runner?
   );
 }
 
-function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => void; label?: string }) {
+function DeviceLogin({ onDone, idp, label }: { onDone: () => void; idp: string; label?: string }) {
+  const button = label || "Sign in with " + idp;
   const [flow, setFlow] = useState<HarnessDeviceFlow | null>(null);
   const [status, setStatus] = useState<"idle" | "starting" | "pending" | "expired" | "denied">("idle");
   const [pollDelay, setPollDelay] = useState(5);
@@ -218,9 +247,9 @@ function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => 
       <div className="grid gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" onClick={start} disabled={status === "starting"}>
-            {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : null} {label}
+            {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : null} {button}
           </Button>
-          <span className="text-[13px] text-muted-foreground">You&apos;ll get a short code to enter on GitHub.</span>
+          <span className="text-[13px] text-muted-foreground">You&apos;ll get a short code to enter on {idp}.</span>
         </div>
         {error ? <p className="text-[13px] text-bad anywhere">{error}</p> : null}
       </div>
@@ -230,7 +259,7 @@ function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => 
   return (
     <div className="grid gap-3 rounded-xl border bg-muted/40 p-4">
       <ol className="grid gap-1 text-sm text-muted-foreground">
-        <li>1. Open GitHub and enter this code.</li>
+        <li>1. Open {idp} and enter this code.</li>
         <li>2. Approve the sign-in. This page notices by itself.</li>
       </ol>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -241,13 +270,13 @@ function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => 
           <CopyButton text={flow.user_code} label="Copy code" />
           <Button asChild size="sm">
             <a href={flow.verification_uri} target="_blank" rel="noreferrer">
-              Open GitHub <ExternalLinkIcon />
+              Open {idp} <ExternalLinkIcon />
             </a>
           </Button>
         </div>
       </div>
       <p className="text-[13px] text-muted-foreground" aria-live="polite">
-        {status === "pending" ? "Waiting for GitHub. " : status === "expired" ? "The code expired. Try again for a new one. " : "The sign-in was turned down on GitHub. "}
+        {status === "pending" ? "Waiting for " + idp + ". " : status === "expired" ? "The code expired. Try again for a new one. " : "The sign-in was turned down on " + idp + ". "}
         {remaining > 0 && status === "pending" ? "The code works for " + num(remaining) + " more seconds." : ""}
       </p>
       {status === "expired" || status === "denied" ? (
@@ -268,7 +297,7 @@ function DeviceLogin({ onDone, label = "Sign in with GitHub" }: { onDone: () => 
   );
 }
 
-function TokenLogin({ onDone }: { onDone: () => void }) {
+function TokenLogin({ onDone, words, only }: { onDone: () => void; words: SignInWords; only: boolean }) {
   const [open, setOpen] = useState(false);
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
@@ -291,18 +320,31 @@ function TokenLogin({ onDone }: { onDone: () => void }) {
         setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
       });
   };
-  return (
-    <Disclosure summary="Use a GitHub token instead" open={open} onToggle={setOpen}>
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="grid min-w-52 gap-1.5">
-          <Label htmlFor="harness-token">GitHub token</Label>
-          <Input id="harness-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && token.trim() && submit()} placeholder="gho_…" />
-        </div>
-        <Button type="button" onClick={submit} disabled={!token.trim()}>
-          Sign in
-        </Button>
-        {error ? <p className="basis-full text-[13px] text-bad anywhere">{error}</p> : null}
+  const form = (
+    <div className="flex flex-wrap items-end gap-2">
+      <div className="grid min-w-52 gap-1.5">
+        <Label htmlFor="harness-token">{words.tokenLabel}</Label>
+        <Input id="harness-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && token.trim() && submit()} placeholder={words.placeholder} />
       </div>
+      <Button type="button" onClick={submit} disabled={!token.trim()}>
+        Sign in
+      </Button>
+      {error ? <p className="basis-full text-[13px] text-bad anywhere">{error}</p> : null}
+    </div>
+  );
+  // A provider without a device code signs in with its key alone, so the
+  // form stands open instead of folding behind "instead".
+  if (only) {
+    return (
+      <div className="grid gap-2">
+        <p className="text-[13px] text-muted-foreground">Paste the {words.tokenLabel === "API key" ? "API key" : "token"} from your {words.idp} account. It stays on this machine.</p>
+        {form}
+      </div>
+    );
+  }
+  return (
+    <Disclosure summary={words.tokenSummary} open={open} onToggle={setOpen}>
+      {form}
     </Disclosure>
   );
 }
@@ -523,7 +565,8 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const mode = setting(rows, "harness");
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
-  const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const words = signInWords(d?.provider);
   const now = useNow();
   const login = d?.provider.login;
   const signedIn = login?.logged_in === true;
@@ -601,8 +644,8 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
             <LoginHealth login={login} runner={runner.data} expired={expired} />
             {!signedIn || expired ? (
               <div className="grid gap-3">
-                <DeviceLogin onDone={() => void h.reload()} label={expired ? "Sign in again" : undefined} />
-                <TokenLogin onDone={() => void h.reload()} />
+                {d.provider.device_login ? <DeviceLogin onDone={() => void h.reload()} idp={words.idp} label={expired ? "Sign in again" : undefined} /> : null}
+                {d.provider.token_login ? <TokenLogin onDone={() => void h.reload()} words={words} only={!d.provider.device_login} /> : null}
               </div>
             ) : null}
             {commands.length ? (
@@ -628,7 +671,9 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                   <span>
                     Main model now: <Mono>{d.models.worker || "the default"}</Mono>. Light model now: <Mono>{d.models.light || "same as the main model"}</Mono>.
                   </span>
-                  <span>Sign in with GitHub to see the Copilot models, or type the exact model id under Type a model id.</span>
+                  <span>
+                    {words.modelsHint} to see the {d.provider.label} models, or type the exact model id under Type a model id.
+                  </span>
                 </span>
               </Notice>
             ) : null}
@@ -670,7 +715,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                 </div>
                 {legacy ? <Notice tone="warn">The Copilot CLI mode needs the copilot command installed and signed in on every machine that runs agents. The Agent program and Model credits per run settings under Limits apply to it.</Notice> : null}
               </div>
-              <div className="grid gap-5 sm:grid-cols-3">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </>
           </Disclosure>
 

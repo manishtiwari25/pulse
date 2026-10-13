@@ -76,7 +76,9 @@ part of this file that explains them.
 Requires a Rust toolchain (stable, 1.95+; [rustup](https://rustup.rs)). No Go,
 Node, Python, or Bash tooling is needed to build or run: the console's static
 export is committed under `web/hub/out/` and embedded in the binary, and the agent harness that runs every job is built in - PULSE
-talks to the model provider (GitHub Copilot first) itself, so there is no
+talks to the model provider itself (GitHub Copilot by default; OpenAI,
+Anthropic Claude, Google Gemini, a dozen OpenAI-compatible vendors and local
+servers by API key), so there is no
 `copilot` CLI, no Node runtime and no other agent tool to install or keep
 logged in.
 
@@ -1197,7 +1199,9 @@ record, read with `pulse record show WF-evolve`.
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
 | `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
 | `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
-| `provider` | `copilot` | The model provider the built-in harness talks to. GitHub Copilot is the first; more register under `crates/pulse-provider-<name>`. |
+| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
+| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
@@ -1205,6 +1209,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.commit_timeout` | `1500` seconds | Wall-clock cap on a `git commit`/`merge`/`rebase`/`cherry-pick`/`am` whose pre-commit hook is the runner's verify gate; never below `harness.step_timeout`, capped by the run's remaining minutes. A step that still times out tells the model the verify gate was running (and how long it waited for the verify lock) instead of the generic retry hint. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
+| `harness.context_window` | `0` tokens (= the model list) | The context window the harness assumes for context discipline (collapsing harder past 80% of it); `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none keeps the first level. `pulse harness run --context-window N` overrides it for one run. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
@@ -1310,7 +1315,14 @@ outputs verbatim; older ones collapse to their first and last lines around a mar
 (`[1840 characters elided - rerun the command to see them]`) - the model is
 told this in its prompt and simply reruns a command when it needs the full
 output again. Past 80% of the model's context window the collapsed outputs
-become one-liners and the kept count halves. Each collapse leaves a `note`
+become one-liners and the kept count halves. The window is the one the
+provider lists for the model - Copilot's per-model limit, Anthropic's
+`max_input_tokens` (a million for Claude Sonnet 4.6+, Opus 4.6+, Haiku 5.5,
+Fable and Mythos; 200k for the older models), Gemini's `inputTokenLimit`
+(a million) - and `harness.context_window` (Settings → Harness **Run mode
+and transcript size**, or `--context-window` on `pulse harness run`)
+overrides it when the list says nothing or less than the deployment really
+takes, `0` meaning "whatever the model lists". Each collapse leaves a `note`
 step in the transcript (`collapsed 4 older observations …`) so the console
 shows what the model no longer sees; notes never count as calls or commands,
 and nothing is ever summarised by a model.
@@ -1460,10 +1472,10 @@ task carry `harness_session`, so a task links straight to the run that
 worked it.
 
 ```bash
-pulse harness login                     # device flow: open the URL, type the code; --with-token reads a token on stdin; --provider openai for an API key
+pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one
@@ -1504,6 +1516,17 @@ that implements `pulse_provider::Provider` (`chat`, `models`, `status`) and,
 optionally, `DeviceLogin`, `TokenLogin` and `Logouter`, then registers
 itself with `pulse_provider::register` - the harness, the CLI verbs, the hub routes
 and the console's sign-in card pick it up through the `provider` setting.
+A vendor that speaks the OpenAI chat completions API is not a crate but one
+`Vendor` entry in `pulse-provider-openai` (name, label, default endpoint, the
+key and base-URL environment variables, whether a key is optional, how the
+key travels, and which device login it offers, if any), which the crate's
+single `register()` turns into a provider; a native API (Anthropic, Gemini)
+gets its own crate. The shared pieces - the pasted-key file, the environment
+fallback, the status card wording, logout - live in `pulse_provider::apikey`,
+and the RFC 8628 device code flow (begin, poll, refresh, the JWT helpers) in
+`pulse_provider::device`, so every key-based vendor behaves the same way and
+a vendor with a device login stores it in the same file with its refresh
+token and expiry.
 A provider's own settings are named `provider.<name>.*`; `Store::provider_settings()`
 hands all of them to `pulse_provider::open` in one map. A provider hands the
 harness one assistant message per call: `pulse_provider::merge_choices`
@@ -1512,19 +1535,80 @@ that puts the narration in one choice and the tool call in the next (Copilot
 does) still yields a reply the harness acts on instead of a prose-only turn
 that costs a `format_retry`.
 
-**Any OpenAI-compatible endpoint.** `pulse settings set provider openai`
-switches the harness to the `openai` provider, which speaks the chat
-completions API with the same one bash tool: OpenAI itself, Azure OpenAI,
-OpenRouter, or a local Ollama / LM Studio (`pulse settings set
-provider.openai.base_url http://127.0.0.1:11434/v1`). Sign in with an API key
-- `pulse harness login --provider openai --with-token` reads it on stdin, or
-the console's Harness card - stored in
-`~/.pulse/private/providers/openai.json` (0600); `OPENAI_API_KEY` and
-`OPENAI_BASE_URL` in the environment work for one-off runs. `pulse harness
-models --provider openai` lists what the endpoint serves. These endpoints
-report no cost, so `harness.max_cost` does not apply to them - the step and
-time budgets do - and most report no context window, so context discipline
-stays at its first level (collapsed, never one-liners).
+**Other providers.** Every provider but Copilot takes an API key:
+`pulse settings set provider <name>`, then paste the key in the console's
+Harness card or run `pulse harness login --provider <name> --with-token`
+(reads stdin) - it lands in `~/.pulse/private/providers/<name>.json` (0600,
+never echoed; `pulse harness logout --provider <name>` removes it). Without
+the file the provider borrows the key from its environment variable, so
+`OPENAI_API_KEY` and the like work for one-off runs. Each provider calls the
+endpoint in `provider.<name>.base_url` (Settings → **Model provider**); while
+that keeps its default, its `*_BASE_URL` variable stands in when set. `pulse
+harness models --provider <name>` lists what the endpoint serves. None of
+them reports a cost, so `harness.max_cost` does not apply to them - the step
+and time budgets do.
+
+Two of them also sign in with a device code, the way Copilot does, so no key
+has to be minted or pasted: the Harness card shows *Sign in with GitHub* for
+`github-models` (GitHub's device flow with the GitHub CLI's OAuth app; the
+login is checked against the Models catalog and stored like a pasted token)
+and *Sign in with Microsoft* for `azure-openai` (the Microsoft Entra device
+code flow with the Azure CLI's public client in the tenant
+`provider.azure-openai.tenant`, default `organizations`; the account needs
+the *Cognitive Services OpenAI User* role on the resource). `pulse harness
+login --provider github-models|azure-openai` is the same flow in a terminal.
+A Microsoft sign-in stores its refresh token with the access token and
+renews itself about five minutes before expiry, so workers never see an
+expired bearer; a refresh that fails flips the card to "sign in again" and
+the run stops with `not_logged_in`. A pasted token shaped like a JWT (for
+instance `az account get-access-token --resource
+https://cognitiveservices.azure.com --query accessToken -o tsv`) goes out as
+a bearer token too, a plain key in the `api-key` header. Only providers whose
+terms allow a third-party device login get one: Anthropic's and OpenAI's
+consumer OAuth, Google's and OpenRouter's browser-callback flows are
+deliberately not wired up, so those stay on API keys.
+
+The OpenAI-compatible vendors all speak the chat completions API with the
+same one bash tool and all live in `pulse-provider-openai`: `openai`
+(`OPENAI_API_KEY`, `OPENAI_BASE_URL`, default `https://api.openai.com/v1`),
+`azure-openai` (`AZURE_OPENAI_API_KEY` or *Sign in with Microsoft*,
+`AZURE_OPENAI_ENDPOINT`; no default - set `provider.azure-openai.base_url` to
+`https://<resource>.openai.azure.com/openai/v1`, a bare resource root gets
+`/openai/v1` added; a key travels in the `api-key` header, a sign-in as a
+bearer token; `AZURE_OPENAI_TENANT_ID`, `AZURE_OPENAI_CLIENT_ID`,
+`AZURE_OPENAI_AUTHORITY` and `AZURE_OPENAI_SCOPE` reshape the sign-in for a
+sovereign cloud or your own app registration),
+`openrouter` (`OPENROUTER_API_KEY`), `groq` (`GROQ_API_KEY`), `mistral`
+(`MISTRAL_API_KEY`), `deepseek` (`DEEPSEEK_API_KEY`), `xai` (`XAI_API_KEY`),
+`together` (`TOGETHER_API_KEY`), `fireworks` (`FIREWORKS_API_KEY`),
+`cerebras` (`CEREBRAS_API_KEY`), `github-models` (*Sign in with GitHub*, or
+a GitHub personal access token with the `models:read` scope:
+`GITHUB_MODELS_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`;
+`https://models.github.ai/inference`), and the local servers
+`ollama` (`http://127.0.0.1:11434/v1`; `OLLAMA_HOST` or `OLLAMA_BASE_URL`),
+`lmstudio` (`http://127.0.0.1:1234/v1`) and `vllm` (`http://127.0.0.1:8000/v1`),
+which need no key - their status card says `no key needed` - though one in
+`OLLAMA_API_KEY`, `LMSTUDIO_API_KEY` or `VLLM_API_KEY` is sent when present.
+Every other base-URL variable is `<VENDOR>_BASE_URL` (`GROQ_BASE_URL`,
+`MISTRAL_BASE_URL`, …). Most of these endpoints report no context window, so
+with them context discipline stays at its first level (collapsed, never
+one-liners).
+
+`anthropic` (Anthropic Claude; `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
+default `https://api.anthropic.com`; crate `pulse-provider-anthropic`) speaks
+the native Messages API: the bash tool goes out as `tool_use` and its output
+comes back as `tool_result`, and `max_tokens` defaults to 8192. `gemini`
+(Google Gemini; `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `GEMINI_BASE_URL`,
+default `https://generativelanguage.googleapis.com`; crate
+`pulse-provider-gemini`) speaks the native `generateContent` API with
+`functionCall` / `functionResponse`, and sanitizes the tool schemas to the
+OpenAPI subset Gemini accepts. Both report their models' context windows
+from the model list - Anthropic's `max_input_tokens` and `max_tokens` (a
+million tokens for Claude Sonnet 4.6 and later, Opus 4.6 and later, Haiku
+5.5, Fable and Mythos; 200k for the older models; retired models are left
+out), Gemini's `inputTokenLimit` (a million) - so context discipline
+tightens past 80% of it exactly as it does with Copilot, and
+`harness.context_window` overrides the figure when a proxy lists none.
 
 ## The runner
 
@@ -2624,7 +2708,7 @@ crates/pulse-bus               in-process event bus, redaction, tail/bridge for 
 crates/pulse-hooks             store hooks (scripts, webhooks) and harness hooks (copilot, claude)
 crates/pulse-gitenv            git environment scrubbing for child git commands
 crates/pulse-provider          the model-provider contract (chat, models, status, device/token login) and its registry
-crates/pulse-provider-copilot  GitHub Copilot; pulse-provider-openai any OpenAI-compatible endpoint; pulse-provider-fake the scripted test provider
+crates/pulse-provider-copilot  GitHub Copilot (device login); pulse-provider-openai every OpenAI-compatible vendor as one Vendor entry each: OpenAI, Azure OpenAI (key or Microsoft device login), OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models (token or GitHub device login), Ollama, LM Studio, vLLM; pulse-provider-anthropic Anthropic Claude (Messages API); pulse-provider-gemini Google Gemini (generateContent); pulse-provider-fake the scripted test provider
 crates/pulse-harness           the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
 crates/pulse-runner            daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
 crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage

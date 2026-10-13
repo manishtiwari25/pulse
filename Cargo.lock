@@ -1141,7 +1141,10 @@ dependencies = [
  "pulse-hub",
  "pulse-inspect",
  "pulse-mcp",
+ "pulse-provider",
+ "pulse-provider-anthropic",
  "pulse-provider-copilot",
+ "pulse-provider-gemini",
  "pulse-provider-openai",
  "pulse-records",
  "pulse-runner",
@@ -1370,7 +1373,9 @@ dependencies = [
  "pulse-cli",
  "pulse-gitenv",
  "pulse-provider",
+ "pulse-provider-anthropic",
  "pulse-provider-fake",
+ "pulse-provider-gemini",
  "pulse-provider-openai",
  "pulse-store",
  "pulse-testutil",
@@ -1433,6 +1438,8 @@ dependencies = [
  "pulse-inspect",
  "pulse-mcp",
  "pulse-provider",
+ "pulse-provider-anthropic",
+ "pulse-provider-gemini",
  "pulse-provider-openai",
  "pulse-records",
  "pulse-runner",
@@ -1501,6 +1508,7 @@ name = "pulse-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
  "pulse-store",
  "pulse-testutil",
@@ -1511,6 +1519,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
+name = "pulse-provider-anthropic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pulse-provider",
+ "pulse-testutil",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "url",
 ]
 
@@ -1546,11 +1568,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulse-provider-gemini"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pulse-provider",
+ "pulse-testutil",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "pulse-provider-openai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
+ "base64 0.23.1",
  "pulse-provider",
  "pulse-store",
  "pulse-testutil",
@@ -1603,7 +1639,9 @@ dependencies = [
  "pulse-goals",
  "pulse-hooks",
  "pulse-provider",
+ "pulse-provider-anthropic",
  "pulse-provider-copilot",
+ "pulse-provider-gemini",
  "pulse-provider-openai",
  "pulse-records",
  "pulse-store",

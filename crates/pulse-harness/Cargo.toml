@@ -30,3 +30,5 @@ rusqlite.workspace = true
 tempfile.workspace = true
 pulse-testutil.workspace = true
 pulse-provider-openai.workspace = true
+pulse-provider-anthropic.workspace = true
+pulse-provider-gemini.workspace = true
