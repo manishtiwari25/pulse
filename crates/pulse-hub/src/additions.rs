@@ -58,6 +58,7 @@ impl Handler {
             "heldout" => self.addition_heldout(w, r, parts),
             "cred" => self.addition_cred(w, r, parts),
             "harness" => self.addition_harness(w, r, parts),
+            "ask" => self.addition_ask(w, r, parts),
             "hygiene" => self.addition_hygiene(w, r, parts),
             "mcp" => self.addition_mcp(w, r, parts),
             "skills" => self.addition_skills(w, r, parts),

@@ -1,0 +1,8 @@
+{
+  "model": "gpt-4.1",
+  "ask_model": "",
+  "light_model": "gpt-4.1",
+  "logged_in": true,
+  "max_question": 2000,
+  "provider": { "name": "copilot", "label": "GitHub Copilot" }
+}

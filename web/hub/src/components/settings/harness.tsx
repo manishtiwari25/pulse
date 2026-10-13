@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the run mode and the
 // transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model"];
+export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.system_prompt", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 function setting(rows: Setting[] | undefined, name: string): Setting | undefined {
@@ -307,13 +307,15 @@ function TokenLogin({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
+function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model" | "ask.model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
   const [custom, setCustom] = useState(current);
   const ids = new Set(models.map((m) => m.id));
-  const selectValue = name === "light_model" && !current ? SAME_MODEL : ids.has(current) ? current : "__custom__";
+  // The light and Ask models fall back to the one above them when empty.
+  const sameAs = name === "light_model" ? "Same as the main model" : name === "ask.model" ? "Same as the light model" : null;
+  const selectValue = sameAs && !current ? SAME_MODEL : ids.has(current) ? current : "__custom__";
   // The closed picker shows the model's name only; ids and badges stay in the list.
   const known = models.find((m) => m.id === current);
-  const shown = selectValue === SAME_MODEL ? "Same as the main model" : known ? modelLabel(known) : current || "The default model";
+  const shown = selectValue === SAME_MODEL && sameAs ? sameAs : known ? modelLabel(known) : current || "The default model";
   // Typing an id is the rare path: folded unless the current model isn't in the list, or there is no list.
   const [typing, setTyping] = useState<boolean | null>(null);
   const typeOpen = typing ?? ((!!current && !known) || models.length === 0);
@@ -337,7 +339,7 @@ function ModelSelect({ name, label, note, current, models, disabled }: { name: "
           <SelectValue>{shown}</SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {name === "light_model" ? <SelectItem value={SAME_MODEL}>Same as the main model</SelectItem> : null}
+          {sameAs ? <SelectItem value={SAME_MODEL}>{sameAs}</SelectItem> : null}
           {models.map((m) => (
             <SelectItem key={m.id} value={m.id}>
               <span className="flex min-w-0 items-center gap-1.5">
@@ -630,9 +632,10 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                 </span>
               </Notice>
             ) : null}
-            <div className="grid gap-5 md:grid-cols-2">
+            <div className="grid gap-5 md:grid-cols-3">
               <ModelSelect name="worker_model" label="Main model" note="For the coding work itself." current={d.models.worker} models={currentModels} disabled={false} />
               <ModelSelect name="light_model" label="Light model" note="For smaller jobs like planning, answering and voting." current={d.models.light} models={currentModels} disabled={false} />
+              <ModelSelect name="ask.model" label="Ask model" note="For your questions in Ask; a fast model keeps answers quick." current={d.models.ask ?? ""} models={currentModels} disabled={false} />
             </div>
           </Block>
 

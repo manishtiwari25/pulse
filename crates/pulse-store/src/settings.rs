@@ -70,10 +70,11 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
 
 pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"];
 pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> =
-    LazyLock::new(|| map! {"light_model"=>"",});
+    LazyLock::new(|| map! {"light_model"=>"","ask.model"=>"",});
 pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
+        "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model"),
     }
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
@@ -1167,11 +1168,19 @@ mod go_settings_tests {
         }
         s.set_setting("human", "light_model", "").unwrap();
         assert_eq!(s.run_model("lead"), "claude-fable-5.1");
-        assert_eq!(extra_setting_names()[0], "light_model");
+        assert_eq!(&extra_setting_names()[..2], ["ask.model", "light_model"]);
         assert!(
             MODEL_RULES["light_model"]
                 .description
                 .contains("worker_model")
+        );
+        assert!(MODEL_RULES["ask.model"].description.contains("light_model"));
+        s.set_setting("human", "ask.model", " gpt-5-mini ").unwrap();
+        assert_eq!(s.setting("ask.model", ""), "gpt-5-mini");
+        assert_eq!(
+            s.run_model("lead"),
+            "claude-fable-5.1",
+            "ask.model touches no run kind"
         );
         assert!(
             SETTING_RULES["worker_model"]

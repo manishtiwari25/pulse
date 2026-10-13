@@ -18,6 +18,7 @@ pulse-cred.workspace = true
 pulse-cred-setup.workspace = true
 pulse-evolve.workspace = true
 pulse-gitenv.workspace = true
+pulse-ask.workspace = true
 pulse-goals.workspace = true
 pulse-harness.workspace = true
 pulse-inspect.workspace = true

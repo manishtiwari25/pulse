@@ -265,6 +265,28 @@ activity fold under **Details for this machine**.
   project's **History → Timeline**; the project's **Board** tab lists every
   thread with its status, participants, last activity and the questions and
   claims still open.
+- **Ask** (⌘J / Ctrl-J, the **Ask** button under Search, or type a question
+  into ⌘K) - a quick answer in your own words about a project, or all of
+  them: *what waits for me?*, *what is blocked, and on whom?*, *what changed
+  today?*. The panel opens on the project of the page you are on and
+  switches with a picker. Each answer is a few sentences that name what it is
+  based on - the posts, records, tasks, jobs and runs it drew on, listed under
+  **Based on** with links - and a follow-up keeps the thread; the
+  conversation lives in this browser tab only and clears when the tab closes.
+  Asking changes nothing: the store gets one `ask` event (question length,
+  model, how long it took - never the words). The answer comes from the
+  model `ask.model` names, or the light model, or the main model when both
+  are empty; **Settings → Harness → Models** has the picker (a fast model
+  keeps answers under a few seconds), and `pulse settings set ask.model
+  claude-haiku-5.5` is the terminal way. With no model signed in, or when
+  the model is too slow or fails, the panel says so and shows the matching
+  facts instead - the same lines the model would have read - so the box
+  always answers. `pulse ask "what is blocked?" --project my-app` is the same
+  from a terminal (`--all` for every project, `--no-model` for the facts
+  alone, `--json` for the answer with its sources), and `POST /api/v1/ask`
+  with `{"project": "my-app", "question": "..."}` serves other tools;
+  `GET /api/v1/ask` tells which model would answer and whether the provider is
+  signed in.
 
 The console binds to `127.0.0.1` only. Nothing in it is a wrapper around an
 agent command; it calls the same store helpers the CLI uses.

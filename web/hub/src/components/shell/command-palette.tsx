@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { ArrowDownIcon, ArrowUpIcon, BookOpenIcon, BotIcon, CornerDownLeftIcon, FolderIcon, HistoryIcon, HomeIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, PlugIcon, ScrollTextIcon, SearchIcon, ServerIcon, SettingsIcon, SparklesIcon, VoteIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowDownIcon, ArrowUpIcon, BookOpenIcon, BotIcon, BotMessageSquareIcon, CornerDownLeftIcon, FolderIcon, HistoryIcon, HomeIcon, InboxIcon, ListTodoIcon, MessagesSquareIcon, PlugIcon, ScrollTextIcon, SearchIcon, ServerIcon, SettingsIcon, SparklesIcon, VoteIcon } from "lucide-react";
+import { openAsk } from "@/components/ask/ask-panel";
 import { Button } from "@/components/ui/button";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
 import { hrefs, PROJECT_TABS, type ProjectCanonicalTab } from "@/lib/nav";
@@ -78,6 +79,13 @@ export function CommandPaletteHost() {
   const open = usePaletteOpen();
   const setOpen = useCallback((o: boolean) => setPaletteOpen(o), []);
   const router = useRouter();
+  // What is typed, so "Ask" can take the words as the question; forgotten on close.
+  const [query, setQuery] = useState("");
+  const [wasOpenFor, setWasOpenFor] = useState(open);
+  if (open !== wasOpenFor) {
+    setWasOpenFor(open);
+    if (!open) setQuery("");
+  }
   const { data: org, error: orgError, loading: orgLoading } = useApi<Org>("org", { refresh: 60000 });
   const { data: records, error: recordsError, loading: recordsLoading } = useApi<RecordsPayload>(open ? "records" : null, { refresh: false });
   const { data: tasks, error: tasksError, loading: tasksLoading } = useApi<TasksPayload>(open ? "tasks" : null, { refresh: false });
@@ -119,17 +127,30 @@ export function CommandPaletteHost() {
     setOpen(false);
     router.push(href);
   };
+  const ask = () => {
+    const question = query.trim();
+    setOpen(false);
+    openAsk(question);
+  };
 
   return (
     <>
-      <CommandDialog open={open} onOpenChange={setOpen} title="Search" description="Find a project, task, record or page. Use the arrow keys to choose and Enter to open." showCloseButton className="rounded-2xl! shadow-pop sm:max-w-2xl [&_[data-slot=command-input-wrapper]]:pr-14">
-        <CommandInput aria-label="Search projects, tasks, records and pages" placeholder="Search projects, tasks, records and pages…" autoComplete="off" spellCheck={false} />
+      <CommandDialog open={open} onOpenChange={setOpen} title="Search" description="Find a project, task, record or page, or ask a question. Use the arrow keys to choose and Enter to open." showCloseButton className="rounded-2xl! shadow-pop sm:max-w-2xl [&_[data-slot=command-input-wrapper]]:pr-14">
+        <CommandInput aria-label="Search projects, tasks, records and pages" placeholder="Search projects, tasks, records and pages…" autoComplete="off" spellCheck={false} value={query} onValueChange={setQuery} />
         <CommandList aria-label="Search results" className="scroll-thin max-h-[min(28rem,55dvh)] scroll-py-2 p-1">
           <CommandEmpty className="px-6 py-10">
             <SearchIcon aria-hidden="true" className="mx-auto mb-3 size-6 text-muted-foreground/60" />
             <p className="font-medium">{loading ? "Looking…" : "Nothing matches that"}</p>
             <p className="mt-1 text-xs text-muted-foreground">{loading ? "Results appear as they arrive." : errors.length ? "Some results couldn't load. See below." : "Try a project name, a task like TASK-002, a record like ADR-004, or a page."}</p>
           </CommandEmpty>
+          <CommandGroup heading="Ask" className={groupStyle}>
+            <CommandItem value={"ask a question " + query} keywords={["chat", "answer", "help"]} className={itemStyle} onSelect={ask}>
+              <BotMessageSquareIcon aria-hidden="true" className={itemIcon} />
+              <span className="truncate">{query.trim() ? "Ask: “" + query.trim() + "”" : "Ask about your projects"}</span>
+              <CommandShortcut className={shortcutStyle}>⌘J</CommandShortcut>
+            </CommandItem>
+          </CommandGroup>
+          <CommandSeparator />
           <CommandGroup heading="Pages" className={groupStyle}>
             <CommandItem value="page home overview" className={itemStyle} onSelect={() => go(hrefs.home())}>
               <HomeIcon aria-hidden="true" className={itemIcon} /> Home

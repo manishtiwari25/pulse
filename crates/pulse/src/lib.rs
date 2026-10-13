@@ -90,6 +90,7 @@ pub fn register_all() {
         // Store events feed the process bus from the start.
         pulse_bus::install_store_observer();
         register_version();
+        pulse_ask::register();
         pulse_board::register();
         pulse_cred_command::register();
         pulse_evolve::register();

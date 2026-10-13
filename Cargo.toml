@@ -31,6 +31,7 @@ pulse-harness = { path = "crates/pulse-harness" }
 pulse-tally = { path = "crates/pulse-tally" }
 pulse-tasks = { path = "crates/pulse-tasks" }
 pulse-goals-command = { path = "crates/pulse-goals-command" }
+pulse-ask = { path = "crates/pulse-ask" }
 pulse-codedelivery = { path = "crates/pulse-codedelivery" }
 pulse-evolve = { path = "crates/pulse-evolve" }
 pulse-hooks = { path = "crates/pulse-hooks" }

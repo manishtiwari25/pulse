@@ -13,6 +13,7 @@ import { hashHue } from "@/lib/format";
 import { useApi, useEventStream } from "@/lib/use-api";
 import { COMMONS_HINT, type Org } from "@/lib/api";
 import { useInbox } from "@/components/pulse/inbox";
+import { AskHost, AskTrigger } from "@/components/ask/ask-panel";
 import { CommandPalette, CommandPaletteHost } from "./command-palette";
 import { PulseMark } from "./pulse-mark";
 import { ThemeToggle } from "./theme-toggle";
@@ -228,6 +229,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-dvh min-w-0 flex-1 flex-col pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pr-0 lg:pl-64">
       <Suspense fallback={null}>
         <CommandPaletteHost />
+        <AskHost />
         <DocumentTitle />
       </Suspense>
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-3 focus:text-primary-foreground focus:shadow-pop">
@@ -239,10 +241,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <PulseMark />
           <span className="text-[17px] font-semibold tracking-tight">PULSE</span>
         </Link>
-        <div className="px-3 pb-3">
+        <div className="grid gap-2 px-3 pb-3">
           <Suspense fallback={<div className="h-9 rounded-lg border bg-card" />}>
             <CommandPalette variant="sidebar" />
           </Suspense>
+          <AskTrigger variant="sidebar" />
         </div>
         <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-3 pt-1 pb-4">
           <nav aria-label="Your work">
@@ -280,6 +283,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Suspense fallback={<div className="size-10" />}>
             <CommandPalette variant="icon" />
           </Suspense>
+          <AskTrigger variant="icon" />
           <ThemeToggle />
         </div>
       </header>

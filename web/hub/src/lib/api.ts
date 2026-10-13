@@ -927,7 +927,7 @@ export interface HarnessStatus {
   harness: HarnessKind;
   provider: HarnessProviderInfo;
   providers: HarnessProviderInfo[];
-  models: { worker: string; light: string };
+  models: { worker: string; light: string; ask: string };
   limits: { max_steps: number; step_timeout_seconds: number; output_limit: number; minutes_per_job: number; max_cost?: number; keep_observations?: number };
   sessions: { running: number; today: number; failed_today: number; submitted_today: number; cost_today: number };
   settings: Setting[];
@@ -1800,6 +1800,53 @@ export interface SkillInput {
 
 export type SkillPatch = Partial<SkillInput>;
 
+// ----- Ask: a quick answer about a project (`pulse ask`, POST /api/v1/ask) ----
+
+export type AskTurn = { role: "user" | "assistant"; content: string };
+
+// One thing the answer cites, by the id that appears in its text.
+export type AskSource = {
+  id: string;
+  source: "post" | "record" | "task" | "job" | "run";
+  kind: string;
+  summary: string;
+  date: string;
+  project: string;
+  thread: string;
+};
+
+export type AskAnswer = {
+  answer: string;
+  project: string;
+  model: string;
+  provider: string;
+  // No model spoke (not signed in, timed out, failed); `note` says why and
+  // `answer` holds the matching facts instead.
+  facts_only: boolean;
+  note: string;
+  sources: AskSource[];
+  elapsed_ms: number;
+  usage: { prompt_tokens: number; completion_tokens: number; cost: number };
+};
+
+export type AskInput = {
+  project?: string;
+  all_projects?: boolean;
+  question: string;
+  history?: AskTurn[];
+  model?: string;
+};
+
+// GET /api/v1/ask: which model would answer and whether the provider is signed in.
+export type AskStatus = {
+  model: string;
+  ask_model: string;
+  light_model: string;
+  logged_in: boolean;
+  max_question: number;
+  provider: { name: string; label: string; error?: string };
+};
+
 // ----- writes (one CLI command each; every one logs the same event) -------
 
 // The human gates in the console (ADR-028): a Proposed ADR is accepted,
@@ -1859,4 +1906,6 @@ export const writes = {
   addSkill: (input: SkillInput) => post<{ skill: Skill }>("skills", input),
   updateSkill: (id: string, input: SkillPatch) => patch<{ skill: Skill }>("skills/" + enc(id), input),
   setSkillStatus: (id: string, status: McpStatus) => post<{ skill: Skill }>("skills/" + enc(id) + "/status", { status }),
+  // Read-only apart from one `ask` event: the answer cites ids from the store.
+  ask: (input: AskInput) => post<AskAnswer>("ask", input),
 };

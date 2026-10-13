@@ -131,6 +131,7 @@ impl Handler {
             "light".into(),
             Value::String(store.setting("light_model", "")),
         );
+        models.insert("ask".into(), Value::String(store.setting("ask.model", "")));
         out.insert("models".into(), Value::Object(models.into_iter().collect()));
         let mut limits = JsonMap::new();
         limits.insert(
@@ -867,6 +868,7 @@ impl Handler {
             "harness.output_limit",
             "worker_model",
             "light_model",
+            "ask.model",
         ]
         .into_iter()
         .map(|name| {

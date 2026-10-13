@@ -37,6 +37,7 @@ pub(crate) fn allocated_bytes() -> usize {
 }
 
 pub mod additions;
+pub mod ask;
 pub mod board;
 pub mod code_deliveries;
 pub mod cred;

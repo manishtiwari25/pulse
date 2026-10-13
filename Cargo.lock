@@ -1129,6 +1129,7 @@ name = "pulse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pulse-ask",
  "pulse-board",
  "pulse-bus",
  "pulse-cli",
@@ -1148,6 +1149,26 @@ dependencies = [
  "pulse-tally",
  "pulse-tasks",
  "pulse-testutil",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "pulse-ask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pulse-board",
+ "pulse-cli",
+ "pulse-goals",
+ "pulse-harness",
+ "pulse-provider",
+ "pulse-provider-fake",
+ "pulse-store",
+ "pulse-tally",
+ "pulse-testutil",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1398,6 +1419,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "mime_guess",
+ "pulse-ask",
  "pulse-board",
  "pulse-bus",
  "pulse-cli",

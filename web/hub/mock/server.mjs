@@ -433,6 +433,28 @@ async function handle(req, res) {
     } catch (e) {
       return fail(res, 400, "bad request", String(e.message), "send a JSON object");
     }
+    // Ask: a canned, cited answer about the project; the real hub asks a model.
+    if (segs[0] === "ask" && segs.length === 1) {
+      const question = String(body.question ?? "").trim();
+      if (!question) return fail(res, 400, "Nothing to ask", "The question is empty.", "Ask one question of up to 2000 characters.");
+      const project = String(body.project ?? "").trim();
+      if (project && !state.projects.some((p) => p.slug === project) && project !== "commons") return fail(res, 404, "No such project", "no project named " + project + ".", "Pick a project from the list.");
+      const tasks = state.tasks.filter((t) => (!project || t.project === project) && t.status !== "done" && t.status !== "cancelled");
+      const slug = project || "demo-app";
+      const sources = tasks.slice(0, 2).map((t) => ({ id: t.id, source: "task", kind: t.status, summary: t.title, date: t.updated_at, project: t.project, thread: "" }));
+      sources.push({ id: "20260901T140800Z-cinder", source: "post", kind: "finding", summary: "p95 of /checkout is 840 ms against a 400 ms budget", date: "2026-09-01T14:08:00Z", project: slug, thread: "checkout-latency" });
+      const facts = q.get("facts") === "1" || /facts only/i.test(question);
+      const lines = facts
+        ? ["No model answered (not signed in), so here are the facts that match.", "", ...sources.map((s) => "- [" + s.id + "] " + s.summary)]
+        : [
+            (tasks.length ? tasks.length + " open task" + (tasks.length === 1 ? "" : "s") : "Nothing open") + (project ? " in **" + project + "**" : " across all projects") + ". " + (sources[0] ? "The one moving now is **" + sources[0].summary + "** [" + sources[0].id + "]." : ""),
+            "",
+            "The checkout latency finding [20260901T140800Z-cinder] still stands: p95 is 840 ms against a 400 ms budget. " + (body.history?.length ? "As before, nothing waits for your decision here." : "Nothing waits for your decision here."),
+          ];
+      emit("human:console", "ask", project, { question_chars: question.length, model: facts ? "" : "gpt-4.1", facts_only: facts, elapsed_ms: 640, sources: sources.length });
+      await new Promise((r) => setTimeout(r, 650));
+      return send(res, 200, { answer: lines.join("\n"), project, model: facts ? "" : "gpt-4.1", provider: facts ? "" : "copilot", facts_only: facts, note: facts ? "not signed in" : "", sources, elapsed_ms: 640, usage: { prompt_tokens: facts ? 0 : 1840, completion_tokens: facts ? 0 : 96, cost: 0 } });
+    }
     if (segs[0] === "jobs" && segs[1] === "repair") {
       if (req.headers["x-pulse-job-repair"] !== "yes") return fail(res, 403, "missing X-Pulse-Job-Repair: yes", "An explicit confirmation header is required.", "Select jobs and confirm their repair.");
       const result = state.jobRepairs.repair(body, q.get("project") || "");

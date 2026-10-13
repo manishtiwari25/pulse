@@ -21,6 +21,7 @@ pulse-board.workspace = true
 pulse-cred-command.workspace = true
 pulse-evolve.workspace = true
 pulse-goals-command.workspace = true
+pulse-ask.workspace = true
 pulse-harness.workspace = true
 pulse-hooks.workspace = true
 pulse-hub.workspace = true

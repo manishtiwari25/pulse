@@ -24,7 +24,8 @@
   ],
   "models": {
     "worker": "claude-sonnet-4.5",
-    "light": "gpt-4.1"
+    "light": "gpt-4.1",
+    "ask": ""
   },
   "limits": {
     "max_steps": 60,
