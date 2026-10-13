@@ -255,7 +255,10 @@ mod tests {
         let stderr = String::from_utf8_lossy(&b.stderr).to_string();
         assert!(stderr.contains("another verification holds"), "{stderr}");
         assert!(stderr.contains(RAN_MARKER), "{stderr}");
-        assert_eq!(ran_seconds(&stderr), Some(0), "{stderr}");
+        assert!(
+            matches!(ran_seconds(&stderr), Some(0..=1)),
+            "the second run's own time (whole-second rounding) should be at most a second under load: {stderr}"
+        );
         let a = a.join().unwrap();
         assert_eq!(a.status.code(), Some(3));
         let a_err = String::from_utf8_lossy(&a.stderr).to_string();
