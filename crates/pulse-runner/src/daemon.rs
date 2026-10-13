@@ -4433,9 +4433,12 @@ mod tests {
         let dropped =
             "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND resolution = 'dropped'";
         let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(20));
+        // The pass retires the cards in the store before its lines reach the
+        // daemon log, so the wait covers both: the count and the log line.
+        let line = "retired 5 stale suggestion(s) for proj";
         let retired = loop {
             let n = crate::test_helpers::count(&s, dropped, &[]);
-            if n >= 5 || std::time::Instant::now() > deadline {
+            if (n >= 5 && out.string().contains(line)) || std::time::Instant::now() > deadline {
                 break n;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -4450,10 +4453,7 @@ mod tests {
             retired, 5,
             "no second maintenance pass ran while the fleet was idle ({result}); last lines: {tail:#?}"
         );
-        assert!(
-            out.contains("retired 5 stale suggestion(s) for proj"),
-            "pass lines were lost:\n{out}"
-        );
+        assert!(out.contains(line), "pass lines were lost:\n{out}");
     }
 
     #[test]
