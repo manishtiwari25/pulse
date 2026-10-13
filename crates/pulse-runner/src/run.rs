@@ -1732,13 +1732,17 @@ pub(crate) fn run_job(
                 ..Default::default()
             },
         ) {
-            log.add(format!("post skipped: {}", err_message(&e)));
+            let msg = result_post_failure_message(&job.str("id"), "result", &err_message(&e));
+            eprintln!("run {run_id}: {msg}");
+            log.add(msg);
         }
         if job_status == "done"
             && let Err(e) =
                 post_result_answer(s, job.clone(), agent, now, &run_id, &branch, parsed.clone())
         {
-            log.add(format!("answer skipped: {}", err_message(&e)));
+            let msg = result_post_failure_message(&job.str("id"), "answer", &err_message(&e));
+            eprintln!("run {run_id}: {msg}");
+            log.add(msg);
         }
         for q in &parsed.questions {
             if let Err(e) = crate::board::create_post(
@@ -1945,6 +1949,14 @@ pub(crate) fn watch_run_harness_cancel_every(
         }
         let _ = handle.join();
     })
+}
+
+/// Warning text written to stderr and the run log when a job's result (or
+/// answer) post cannot be saved, so owners see which job lost its report and why.
+pub(crate) fn result_post_failure_message(job_id: &str, what: &str, err: &str) -> String {
+    format!(
+        "warning: job {job_id}: {what} post failed, owners will not see this report on the board: {err}"
+    )
 }
 
 pub(crate) fn err_message(err: &anyhow::Error) -> String {
@@ -2467,6 +2479,20 @@ pub(crate) fn base_tree_verify_red(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn result_post_failure_message_names_job_and_error() {
+        let m = super::result_post_failure_message("job-1", "result", "disk I/O error");
+        assert!(m.starts_with("warning: "), "{m}");
+        assert!(m.contains("job job-1"), "{m}");
+        assert!(m.contains("result post failed"), "{m}");
+        assert!(m.ends_with("disk I/O error"), "{m}");
+        let a = super::result_post_failure_message("job-2", "answer", "no question");
+        assert!(
+            a.contains("job job-2") && a.contains("answer post failed"),
+            "{a}"
+        );
+    }
+
     use super::*;
     use crate::test_helpers::*;
     use std::sync::atomic::{AtomicBool, Ordering};
