@@ -569,8 +569,10 @@ Agents work in a shell, and a shell sees only the checkout. The MCP registry
 gives them the rest: issue trackers, user feedback, documentation, a service
 that sets up environments - anything that speaks the Model Context Protocol.
 You register a server once, with where it runs and how it authenticates; the
-daemon tells every worker of that project what is there, and the worker calls
-it from its shell through `pulse mcp`. PULSE holds a small client of its own
+daemon tells every worker of that project what is there, the [harness](#the-harness)
+offers the servers' tools to the model directly as `mcp__<server>__<tool>`
+(`harness.mcp_tools`), and a worker can also call them from its shell
+through `pulse mcp`. PULSE holds a small client of its own
 (`crates/pulse-mcp`): `initialize`, `tools/list`, `tools/call`,
 `resources/list`, `resources/read`, `prompts/list`, JSON-RPC 2.0, asking for
 protocol `2025-06-18` and taking what the server answers.
@@ -1259,16 +1261,68 @@ queued deliveries are stored for the next start.
 Every job runs through PULSE's own agent harness, `pulse harness run` - a
 small, readable loop in the lineage of
 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent): one model,
-one shell tool (`bash`), three cheaper native action blocks (`read`, `grep`,
-`edit`), a linear history, and limits the owner sets.
+seven typed tools (`bash`, `read`, `grep`, `glob`, `edit`, `write`, `plan`)
+plus the project's MCP servers' tools, a linear history, and limits the
+owner sets.
 
 ```text
-system prompt + the job's brief
-  ─► model answers (a tool call, or exactly one fenced bash/read/grep/edit block)
-  ─► the command or native action runs in the clone root; cd <root> is unnecessary
-  ─► output (cut in the middle past harness.output_limit) goes back as the observation
-  ─► ... until the model answers with no command/action: that message is the final report
+system prompt (+ the clone's AGENTS.md) + the job's brief
+  ─► model answers (one or more tool calls, or exactly one fenced bash/read/grep/edit block)
+  ─► every call runs in the clone root, in order; cd <root> is unnecessary
+  ─► each result (cut in the middle past harness.output_limit) goes back as that call's observation
+  ─► ... until the model answers with no call: that message is the final report
 ```
+
+**The tool set.** Every run offers the same typed tools, each a JSON
+schema the provider's tool-calling API sees, each confined to the clone
+and subject to the same deny rules and output cap as a shell command:
+
+| tool | what it does |
+|------|--------------|
+| `bash` | one non-interactive `/bin/sh -c` command, a fresh process each time |
+| `read` | one file, every line numbered; `start`/`end` read a range, a binary file reports its size |
+| `grep` | a Rust regex over the clone, a directory, a file or a glob; `path:line: text` lines back |
+| `glob` | the files whose path matches a glob (`*` crosses `/`), at most 500, `.git` left out |
+| `edit` | exact search/replace in one file, each search matching once; `edits` applies several in order; an empty search creates the file |
+| `write` | a whole new file, parents created; refuses an existing file unless `overwrite` is true |
+| `plan` | the task's checklist (todo / doing / done), shown in the transcript and echoed back |
+
+A reply may carry **several calls**: they run in order and every one gets
+its own observation, so a model reads three files in one turn instead of
+three. A call to a tool that does not exist, or with arguments of the wrong
+shape, comes back as an error naming the tools and counts like a prose-only
+reply towards `format_error`; a call that ran but found nothing (a missing
+file, a search that matched twice) is an ordinary observation with a
+non-zero return code. The fenced blocks below are still accepted for models
+without tool calling - the typed tools are the same operations.
+
+**Repository instructions.** A run reads the clone's `AGENTS.md`,
+`CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` - each once
+(a copy of another is skipped), 16 KB per file with a marker where it was
+cut, 32 KB in all - and places them in the system prompt where the
+template's `{{.Instructions}}` key stands (the built-in template puts them
+just before the task; a custom template without the key gets them appended),
+under the sentence that the harness's own rules still win where they
+differ. `harness.instructions` (`on`; Settings → Harness **Run mode and
+transcript size**) turns it off for every run, `--no-instructions` for one;
+`pulse harness prompt -C <clone>` shows the prompt a run there would start
+with. The transcript's first `note` step says which files were read.
+
+**MCP servers as tools.** With a store at hand, a run connects the
+project's enabled [MCP servers](#connecting-the-outside-world-pulse-mcp)
+when it starts and offers their tools to the model by name,
+`mcp__<server>__<tool>` (letters, digits, `-` and `_`; longer names are
+cut, clashes get a numeric suffix), described as the server describes them
+and called through the same client as `pulse mcp call`. Past 32 tools the
+run offers `mcp_search` instead - the model looks tools up by words in their
+name or description, the matches come back with their schema and are
+advertised from the next reply on, and any known tool is callable by name
+even before it was looked up. A server that does not answer within 45
+seconds is noted in the transcript and skipped; the run goes on without it.
+`harness.mcp_tools` (`on`) turns it off, `--no-mcp` for one run; the
+`pulse mcp` commands stay available from `bash` either way. Each MCP call is
+an `mcp` step in the transcript with the arguments it sent and the text the
+server returned.
 
 The first-turn contract says that exactly one fenced block per reply is
 executed, prose-only replies are not executed, and a command block can use
@@ -1327,8 +1381,9 @@ step in the transcript (`collapsed 4 older observations …`) so the console
 shows what the model no longer sees; notes never count as calls or commands,
 and nothing is ever summarised by a model.
 
-**Native action blocks.** Native actions avoid shell round trips for common
-reads and edits and use the same output truncation and clone-root confinement
+**Native action blocks.** For models without tool calling, the same
+`read`, `grep` and `edit` operations are accepted as fenced blocks - one
+per reply - and use the same output truncation and clone-root confinement
 as shell observations:
 
 ````text
@@ -1438,7 +1493,10 @@ harness prompt` the rendered prompt for the current settings and directory,
 those for the console's **System prompt** editor (Settings → Harness:
 Save, Reset to default, Undo, Preview). Available fields: `{{.Cwd}}`, `{{.Info.cwd}}`,
 `{{.Info.os}}`, `{{.Info.shell}}`, `{{.Model}}`, `{{.Provider}}`,
-`{{.StepTimeout}}`, `{{.OutputLimit}}`, `{{.MaxSteps}}`. A template that does
+`{{.StepTimeout}}`, `{{.OutputLimit}}`, `{{.MaxSteps}}`, and
+`{{.Instructions}}` for where the clone's instruction files go (a template
+without it gets them appended; their text is never scanned for keys, so an
+`AGENTS.md` that documents `{{.Something}}` is safe). A template that does
 not parse is refused when saved; one that fails to render fails the run with
 the template error rather than a silent default. `--prompt-file PATH` (or
 `PULSE_HARNESS_PROMPT_FILE`) overrides the setting for one run.
@@ -1475,7 +1533,7 @@ worked it.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

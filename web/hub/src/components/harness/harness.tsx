@@ -11,13 +11,20 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
+  CircleIcon,
   CircleXIcon,
   ClipboardIcon,
   CopyIcon,
   DownloadIcon,
+  FileCodeIcon,
+  FilePenIcon,
+  FilePlusIcon,
+  FilesIcon,
   InfoIcon,
+  ListChecksIcon,
   LoaderCircleIcon,
   PlayIcon,
+  PlugIcon,
   ScrollTextIcon,
   SearchIcon,
   TerminalIcon,
@@ -385,21 +392,92 @@ function Observation({ s }: { s: HarnessStep }) {
 const STEP_DOT: Record<string, string> = {
   assistant: "bg-primary/10 text-primary",
   command: "bg-muted text-foreground",
+  read: "bg-muted text-foreground",
+  grep: "bg-muted text-foreground",
+  glob: "bg-muted text-foreground",
+  edit: "bg-muted text-foreground",
+  write: "bg-muted text-foreground",
+  plan: "bg-primary/10 text-primary",
+  mcp: "bg-muted text-foreground",
   observation: "bg-muted text-muted-foreground",
   note: "bg-muted text-muted-foreground",
   error: "bg-warn/15 text-warn",
   exit: "bg-card text-foreground ring-1 ring-border",
 };
 
-const STEP_LABEL: Record<string, string> = { assistant: "The agent", command: "Ran a command", observation: "What came back", note: "Note from PULSE", error: "Something went wrong", exit: "How it ended" };
+const STEP_LABEL: Record<string, string> = {
+  assistant: "The agent",
+  command: "Ran a command",
+  read: "Read a file",
+  grep: "Searched the files",
+  glob: "Listed files by name",
+  edit: "Edited a file",
+  write: "Wrote a file",
+  plan: "Updated its plan",
+  mcp: "Called an MCP tool",
+  observation: "What came back",
+  note: "Note from PULSE",
+  error: "Something went wrong",
+  exit: "How it ended",
+};
+
+// The typed tools of the harness (read, grep, glob, edit, write, mcp) show
+// their request the way a command shows its line; the reply follows as an
+// observation like any command's output.
+const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp"];
+
+const STEP_ICON: Record<string, typeof InfoIcon> = {
+  assistant: BotIcon,
+  command: TerminalIcon,
+  observation: TerminalIcon,
+  read: FileCodeIcon,
+  grep: SearchIcon,
+  glob: FilesIcon,
+  edit: FilePenIcon,
+  write: FilePlusIcon,
+  plan: ListChecksIcon,
+  mcp: PlugIcon,
+  error: TriangleAlertIcon,
+};
 
 function StepIcon({ s, session }: { s: HarnessStep; session: HarnessSession }) {
   if (s.kind === "exit") {
     const st = runState(session);
     return <st.Icon className={cn("size-3.5", RUN_ICON_TONE[st.tone])} />;
   }
-  const Icon = s.kind === "assistant" ? BotIcon : s.kind === "command" || s.kind === "observation" ? TerminalIcon : s.kind === "error" ? TriangleAlertIcon : InfoIcon;
+  const Icon = STEP_ICON[s.kind] ?? InfoIcon;
   return <Icon className="size-3.5" />;
+}
+
+// A plan step holds the checklist the agent keeps: "plan: 1/3 done" then
+// one "- [ ]", "- [~]" or "- [x]" line per item. It reads as a list.
+export function planItems(content: string): { text: string; status: "todo" | "doing" | "done" }[] {
+  const items: { text: string; status: "todo" | "doing" | "done" }[] = [];
+  for (const line of (content || "").split("\n")) {
+    const m = /^-\s*\[([ x~])\]\s*(.*)$/.exec(line.trim());
+    if (!m) continue;
+    items.push({ text: m[2], status: m[1] === "x" ? "done" : m[1] === "~" ? "doing" : "todo" });
+  }
+  return items;
+}
+
+function PlanCard({ s }: { s: HarnessStep }) {
+  const items = planItems(s.content);
+  const head = (s.content || "").split("\n")[0] || "";
+  if (!items.length) return <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>;
+  return (
+    <div className="grid min-w-0 gap-1.5 rounded-xl border bg-muted/30 px-4 py-3">
+      <p className="text-[13px] font-medium text-muted-foreground">{head}</p>
+      <ul className="grid gap-1 text-sm leading-relaxed">
+        {items.map((it, i) => (
+          <li key={i} className="flex min-w-0 items-start gap-2">
+            {it.status === "done" ? <CircleCheckIcon className="mt-1 size-3.5 shrink-0 text-ok" aria-label="done" /> : it.status === "doing" ? <LoaderCircleIcon className="mt-1 size-3.5 shrink-0 animate-spin text-primary" aria-label="in progress" /> : <CircleIcon className="mt-1 size-3.5 shrink-0 text-muted-foreground" aria-label="to do" />}
+            <span className={cn("min-w-0 anywhere", it.status === "done" && "text-muted-foreground line-through")}>{it.text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 // Steps of one run are minutes apart: the clock time says more than "1mo ago".
@@ -440,6 +518,10 @@ function StepItem({ s, session, last }: { s: HarnessStep; session: HarnessSessio
             <span className="text-emerald-300 select-none">$ </span>
             {s.command}
           </pre>
+        ) : TOOL_STEP_KINDS.includes(s.kind) ? (
+          <pre className="min-w-0 rounded-xl border bg-muted/30 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">{s.content || s.command}</pre>
+        ) : s.kind === "plan" ? (
+          <PlanCard s={s} />
         ) : s.kind === "observation" ? (
           <Observation s={s} />
         ) : s.kind === "note" ? (

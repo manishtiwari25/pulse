@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Disclosure, ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
@@ -25,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the run mode and the
 // transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.system_prompt", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -418,6 +419,24 @@ function ModelSelect({ name, label, note, current, models, disabled }: { name: "
   );
 }
 
+// An on/off choice setting of the harness (repository instructions, MCP
+// tools) as a switch that saves as soon as it flips.
+function OnOffSwitch({ s, onSave }: { s: Setting; onSave: (name: string, value: string) => void }) {
+  const on = s.value !== "off";
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1.5">
+        <Switch id={"sw-" + s.name} checked={on} onCheckedChange={(v) => onSave(s.name, v ? "on" : "off")} aria-label={settingLabel(s.name)} />
+        <label htmlFor={"sw-" + s.name} className="text-sm font-medium text-foreground">
+          {settingLabel(s.name)}
+        </label>
+        <KeyName name={s.name} />
+      </div>
+      <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp(s.name, s.description)}</p>
+    </div>
+  );
+}
+
 function LimitInput({ s }: { s: Setting }) {
   const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });
   const [error, setError] = useState("");
@@ -566,6 +585,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const toggles = ["harness.instructions", "harness.mcp_tools"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const words = signInWords(d?.provider);
   const now = useNow();
   const login = d?.provider.login;
@@ -715,6 +735,13 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                 </div>
                 {legacy ? <Notice tone="warn">The Copilot CLI mode needs the copilot command installed and signed in on every machine that runs agents. The Agent program and Model credits per run settings under Limits apply to it.</Notice> : null}
               </div>
+              {toggles.length ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {toggles.map((s) => (
+                    <OnOffSwitch key={s.name} s={s} onSave={saveChoice} />
+                  ))}
+                </div>
+              ) : null}
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </>
           </Disclosure>

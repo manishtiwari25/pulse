@@ -15,7 +15,7 @@
       "exit_status": "",
       "submission": "",
       "error": "",
-      "steps": 8,
+      "steps": 10,
       "calls": 6,
       "prompt_tokens": 45000,
       "completion_tokens": 3200,

@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use pulse_provider::{CancelToken, Message, Provider, Request, Role, Tool, ToolCall, Usage};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -39,6 +39,125 @@ pub fn bash_tool() -> Tool {
         parameters: json!({"type":"object","properties":{"command":{"type":"string","description":"The shell command to run with /bin/sh -c."}},"required":["command"]}),
     }
 }
+
+pub fn read_tool() -> Tool {
+    Tool {
+        name: "read".to_string(),
+        description: "Read one file inside the clone, every line numbered. Give start and end (1-based, inclusive) to read a range; a binary file reports its size.".to_string(),
+        parameters: json!({"type":"object","properties":{
+            "path":{"type":"string","description":"Path relative to the clone root."},
+            "start":{"type":"integer","description":"First line to show (1-based)."},
+            "end":{"type":"integer","description":"Last line to show (inclusive)."}
+        },"required":["path"]}),
+    }
+}
+
+pub fn grep_tool() -> Tool {
+    Tool {
+        name: "grep".to_string(),
+        description: "Search file contents inside the clone with a regular expression; every matching line comes back as path:line: text. path is a file, a directory, or a glob such as src/*.rs (default: the whole clone).".to_string(),
+        parameters: json!({"type":"object","properties":{
+            "pattern":{"type":"string","description":"Rust regex syntax (no look-around)."},
+            "path":{"type":"string","description":"File, directory or glob relative to the clone root."}
+        },"required":["pattern"]}),
+    }
+}
+
+pub fn glob_tool() -> Tool {
+    Tool {
+        name: "glob".to_string(),
+        description: format!(
+            "List files inside the clone whose path matches a glob; * matches any characters, / included, so *.rs finds every Rust file. Give path to search one directory. At most {GLOB_RESULT_LIMIT} paths come back."
+        ),
+        parameters: json!({"type":"object","properties":{
+            "pattern":{"type":"string","description":"Glob matched against each file's path relative to the searched directory."},
+            "path":{"type":"string","description":"Directory to search, relative to the clone root (default: the clone root)."}
+        },"required":["pattern"]}),
+    }
+}
+
+pub fn edit_tool() -> Tool {
+    Tool {
+        name: "edit".to_string(),
+        description: "Edit one file by exact text replacement: search must occur exactly once (include enough surrounding lines to make it unique) and is replaced by replace. An empty search on a path that does not exist creates the file with replace as its content. Several replacements in the same file go in edits, applied in order.".to_string(),
+        parameters: json!({"type":"object","properties":{
+            "path":{"type":"string","description":"Path relative to the clone root."},
+            "search":{"type":"string","description":"Exact text to find once, whitespace included."},
+            "replace":{"type":"string","description":"Text that takes its place."},
+            "edits":{"type":"array","description":"Several search/replace pairs for the same file, applied in order.","items":{"type":"object","properties":{"search":{"type":"string"},"replace":{"type":"string"}},"required":["search","replace"]}}
+        },"required":["path"]}),
+    }
+}
+
+pub fn write_tool() -> Tool {
+    Tool {
+        name: "write".to_string(),
+        description: "Create a file inside the clone with the given content; missing parent directories are created. The file must not exist unless overwrite is true. For a change inside an existing file use edit.".to_string(),
+        parameters: json!({"type":"object","properties":{
+            "path":{"type":"string","description":"Path relative to the clone root."},
+            "content":{"type":"string","description":"The whole file content."},
+            "overwrite":{"type":"boolean","description":"Replace the file when it already exists (default false)."}
+        },"required":["path","content"]}),
+    }
+}
+
+pub fn plan_tool() -> Tool {
+    Tool {
+        name: "plan".to_string(),
+        description: "Keep the checklist of this task's steps: send the whole list each time, each item with its status (todo, doing, done). The owner sees it next to your run; the rendered list comes back to you. Use it for work of three or more steps and update it as steps finish.".to_string(),
+        parameters: json!({"type":"object","properties":{
+            "items":{"type":"array","items":{"type":"object","properties":{
+                "text":{"type":"string","description":"One short step."},
+                "status":{"type":"string","enum":["todo","doing","done"]}
+            },"required":["text","status"]}}
+        },"required":["items"]}),
+    }
+}
+
+/// The tools every run offers, in the order the model sees them.
+pub fn native_tools() -> Vec<Tool> {
+    vec![
+        bash_tool(),
+        read_tool(),
+        grep_tool(),
+        glob_tool(),
+        edit_tool(),
+        write_tool(),
+        plan_tool(),
+    ]
+}
+
+pub const NATIVE_TOOL_NAMES: &[&str] = &["bash", "read", "grep", "glob", "edit", "write", "plan"];
+
+/// Paths a `glob` call lists at most; the rest is counted.
+pub const GLOB_RESULT_LIMIT: usize = 500;
+
+/// MCP tools advertised with their full schema on every model call. Past
+/// this many, the run advertises `mcp_search` instead and loads the tools
+/// the model looks up, so one catalogue-sized server does not take the
+/// context of every call.
+pub const MCP_INLINE_TOOL_LIMIT: usize = 32;
+
+/// The name of the lookup tool a run with many MCP tools offers.
+pub const MCP_SEARCH_TOOL: &str = "mcp_search";
+
+/// Prefix of every MCP tool name the model sees: `mcp__<server>__<tool>`.
+pub const MCP_TOOL_PREFIX: &str = "mcp__";
+
+/// Repository instruction files, in the order they are read from the
+/// clone root. Identical contents (CLAUDE.md as a copy of AGENTS.md) are
+/// read once.
+pub const INSTRUCTION_FILES: &[&str] = &[
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    ".github/copilot-instructions.md",
+];
+
+/// Bytes of one instruction file the prompt carries before it is cut.
+pub const INSTRUCTION_FILE_LIMIT: usize = 16 * 1024;
+/// Bytes of instructions the prompt carries in total.
+pub const INSTRUCTIONS_LIMIT: usize = 32 * 1024;
 
 pub const DEFAULT_DENY: &[&str] = &[
     r"(?i)(^|[;&|]\s*)git\s+push\b",
@@ -79,6 +198,10 @@ pub struct Config {
     pub provider: String,
     pub cancel_file: String,
     pub cancel_reason: String,
+    /// Repository instructions (AGENTS.md and friends, see
+    /// [`load_instructions`]) rendered into the system prompt; empty when
+    /// the clone has none or the owner turned them off.
+    pub instructions: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,7 +211,11 @@ pub enum StepKind {
     Command,
     Read,
     Grep,
+    Glob,
     Edit,
+    Write,
+    Plan,
+    Mcp,
     Observation,
     Note,
     FormatRetry,
@@ -102,6 +229,10 @@ pub const STEP_EDIT: StepKind = StepKind::Edit;
 pub const STEP_OBSERVATION: StepKind = StepKind::Observation;
 pub const STEP_FORMAT_RETRY: StepKind = StepKind::FormatRetry;
 pub const STEP_GREP: StepKind = StepKind::Grep;
+pub const STEP_GLOB: StepKind = StepKind::Glob;
+pub const STEP_WRITE: StepKind = StepKind::Write;
+pub const STEP_PLAN: StepKind = StepKind::Plan;
+pub const STEP_MCP: StepKind = StepKind::Mcp;
 pub const STEP_NOTE: StepKind = StepKind::Note;
 pub const STEP_READ: StepKind = StepKind::Read;
 pub const STEP_ERROR: StepKind = StepKind::Error;
@@ -125,7 +256,11 @@ impl std::fmt::Display for StepKind {
             Self::Command => "command",
             Self::Read => "read",
             Self::Grep => "grep",
+            Self::Glob => "glob",
             Self::Edit => "edit",
+            Self::Write => "write",
+            Self::Plan => "plan",
+            Self::Mcp => "mcp",
             Self::Observation => "observation",
             Self::Note => "note",
             Self::FormatRetry => "format_retry",
@@ -268,6 +403,226 @@ pub struct Agent {
     /// directory is gone); the loop ends the run with it before the next
     /// model call.
     fatal: Option<(&'static str, String)>,
+    /// The MCP servers this run may call, as tools.
+    mcp: McpTools,
+    /// Notes the caller left before the run (an MCP server that did not
+    /// answer, the instruction files read); emitted as the first steps.
+    start_notes: Vec<String>,
+}
+
+/// One call to an MCP tool, from the harness's side: the client behind
+/// `pulse mcp` in a run, a fake in tests.
+pub trait McpBackend: Send {
+    fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<McpToolResult>;
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpToolResult {
+    pub is_error: bool,
+    pub text: String,
+}
+
+impl McpBackend for pulse_mcp::Client {
+    fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<McpToolResult> {
+        let r = pulse_mcp::Client::call_tool(self, name, arguments)?;
+        Ok(McpToolResult {
+            is_error: r.is_error,
+            text: r.text,
+        })
+    }
+}
+
+/// A connected MCP server and the tools it listed, ready for
+/// [`Agent::add_mcp_server`].
+pub struct McpServerTools {
+    /// The server's registry name (`pulse mcp add <name>`).
+    pub server: String,
+    /// The tools as the server lists them: remote name, description, input
+    /// schema.
+    pub tools: Vec<pulse_mcp::ToolInfo>,
+    pub backend: Box<dyn McpBackend>,
+}
+
+struct McpToolEntry {
+    server: usize,
+    remote: String,
+    tool: Tool,
+}
+
+#[derive(Default)]
+struct McpTools {
+    servers: Vec<McpServerTools>,
+    /// Exposed name (`mcp__server__tool`) to its entry.
+    table: BTreeMap<String, McpToolEntry>,
+    /// Tools the model looked up through `mcp_search`; advertised with
+    /// their schema while the catalogue is deferred.
+    loaded: BTreeSet<String>,
+}
+
+impl McpTools {
+    fn deferred(&self) -> bool {
+        self.table.len() > MCP_INLINE_TOOL_LIMIT
+    }
+
+    fn advertised(&self) -> Vec<Tool> {
+        if !self.deferred() {
+            return self.table.values().map(|e| e.tool.clone()).collect();
+        }
+        let mut out = vec![self.search_tool()];
+        out.extend(
+            self.loaded
+                .iter()
+                .filter_map(|n| self.table.get(n))
+                .map(|e| e.tool.clone()),
+        );
+        out
+    }
+
+    fn search_tool(&self) -> Tool {
+        let servers = self
+            .servers
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let n = self.table.values().filter(|e| e.server == i).count();
+                format!("{} ({n} tools)", s.server)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Tool {
+            name: MCP_SEARCH_TOOL.to_string(),
+            description: format!(
+                "Find tools of the connected MCP servers - {servers} - by keywords in their name or description. The matches come back with their schema and become callable tools from your next reply on."
+            ),
+            parameters: json!({"type":"object","properties":{"query":{"type":"string","description":"Words to look for; a server name narrows to that server."}},"required":["query"]}),
+        }
+    }
+
+    /// Tools matching `query`; the matches become advertised.
+    fn search(&mut self, query: &str) -> String {
+        let words: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        if words.is_empty() {
+            return "mcp_search: give one or more words to look for".to_string();
+        }
+        let mut scored: Vec<(usize, &String, &McpToolEntry)> = self
+            .table
+            .iter()
+            .filter_map(|(name, e)| {
+                let hay = format!(
+                    "{} {} {}",
+                    name.to_ascii_lowercase(),
+                    self.servers[e.server].server.to_ascii_lowercase(),
+                    e.tool.description.to_ascii_lowercase()
+                );
+                let score = words.iter().filter(|w| hay.contains(w.as_str())).count();
+                (score > 0).then_some((score, name, e))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        scored.truncate(10);
+        if scored.is_empty() {
+            return format!(
+                "mcp_search: no tool matches {query:?}; try other words or a server name"
+            );
+        }
+        let mut out = String::new();
+        let names: Vec<String> = scored.iter().map(|(_, n, _)| (*n).clone()).collect();
+        for (_, name, e) in &scored {
+            out.push_str(&format!(
+                "{name}: {}\n  parameters: {}\n",
+                one_line(&e.tool.description, 300),
+                compact_json(&e.tool.parameters, 600)
+            ));
+        }
+        self.loaded.extend(names);
+        out.push_str("These tools are callable from your next reply.");
+        out
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.table.contains_key(name)
+    }
+
+    fn call(&mut self, name: &str, arguments: Value) -> anyhow::Result<McpToolResult> {
+        let Some(entry) = self.table.get(name) else {
+            return Err(anyhow!("unknown MCP tool {name}"));
+        };
+        let (server, remote) = (entry.server, entry.remote.clone());
+        self.servers[server].backend.call_tool(&remote, arguments)
+    }
+
+    fn add(&mut self, server: McpServerTools) {
+        let idx = self.servers.len();
+        let server_slug = tool_name_slug(&server.server);
+        for info in &server.tools {
+            let mut name = format!(
+                "{MCP_TOOL_PREFIX}{server_slug}__{}",
+                tool_name_slug(&info.name)
+            );
+            name.truncate(60);
+            let base = name.clone();
+            let mut n = 2;
+            while self.table.contains_key(&name) {
+                name = format!("{base}_{n}");
+                n += 1;
+            }
+            let parameters = if info.input_schema.is_object() {
+                info.input_schema.clone()
+            } else {
+                json!({"type":"object","properties":{}})
+            };
+            self.table.insert(
+                name.clone(),
+                McpToolEntry {
+                    server: idx,
+                    remote: info.name.clone(),
+                    tool: Tool {
+                        name,
+                        description: if info.description.is_empty() {
+                            format!("{} tool of the {} MCP server.", info.name, server.server)
+                        } else {
+                            info.description.clone()
+                        },
+                        parameters,
+                    },
+                },
+            );
+        }
+        self.servers.push(server);
+    }
+}
+
+/// A tool name part the providers accept: letters, digits, `_` and `-`.
+fn tool_name_slug(s: &str) -> String {
+    let slug: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('_').to_string();
+    if slug.is_empty() {
+        "tool".to_string()
+    } else {
+        slug
+    }
+}
+
+fn compact_json(v: &Value, limit: usize) -> String {
+    let s = serde_json::to_string(v).unwrap_or_default();
+    if s.len() <= limit {
+        s
+    } else {
+        format!("{}...", &s[..s.floor_char_boundary(limit)])
+    }
 }
 
 pub const ERR_OWNER_CANCELLED: &str = "cancelled by the owner";
@@ -300,6 +655,8 @@ pub fn new(
         started: Instant::now(),
         cancel_reason: String::new(),
         fatal: None,
+        mcp: McpTools::default(),
+        start_notes: Vec::new(),
     }
 }
 
@@ -308,6 +665,34 @@ pub use new as New;
 impl Agent {
     pub fn run(&mut self) -> anyhow::Result<ResultSummary> {
         self.run_with_cancel(&CancelToken::new())
+    }
+
+    /// Offers a connected MCP server's tools to the model as
+    /// `mcp__<server>__<tool>`; call before `run`.
+    pub fn add_mcp_server(&mut self, server: McpServerTools) {
+        self.mcp.add(server);
+    }
+
+    /// Leaves a note the run emits as one of its first steps.
+    pub fn note_at_start(&mut self, text: impl Into<String>) {
+        self.start_notes.push(text.into());
+    }
+
+    /// The tools the next model call offers.
+    pub fn tools(&self) -> Vec<Tool> {
+        let mut out = native_tools();
+        out.extend(self.mcp.advertised());
+        out
+    }
+
+    fn tool_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = NATIVE_TOOL_NAMES.iter().map(|s| (*s).to_string()).collect();
+        if self.mcp.deferred() {
+            out.push(MCP_SEARCH_TOOL.to_string());
+        } else {
+            out.extend(self.mcp.table.keys().cloned());
+        }
+        out
     }
 
     pub fn run_with_cancel(&mut self, cancel: &CancelToken) -> anyhow::Result<ResultSummary> {
@@ -332,6 +717,13 @@ impl Agent {
             self.cfg.system_prompt = render_prompt(tmpl, prompt_data(&self.env.info(), &self.cfg))?;
         }
         self.compile_deny()?;
+        for note in std::mem::take(&mut self.start_notes) {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: note,
+                ..Step::default()
+            });
+        }
         self.msgs = vec![
             Message {
                 role: Role::System,
@@ -404,7 +796,7 @@ impl Agent {
             let req = Request {
                 model: self.cfg.model.clone(),
                 messages: clone_messages(&self.msgs),
-                tools: vec![bash_tool()],
+                tools: self.tools(),
                 initiator: initiator.clone(),
                 ..Request::default()
             };
@@ -607,45 +999,16 @@ impl Agent {
         if !msg.tool_calls.is_empty() {
             let mut all_clean = true;
             for call in msg.tool_calls {
-                if call.name != "bash" {
-                    let text = format!("unknown tool {}; only bash exists", call.name);
-                    self.msgs.push(tool_message(&call, &text));
-                    self.emit(Step {
-                        kind: StepKind::Error,
-                        content: text,
-                        ..Step::default()
-                    });
+                let outcome = self.dispatch_tool_call(cancel, &call);
+                self.msgs.push(tool_message(&call, &outcome.text));
+                if !outcome.clean {
                     all_clean = false;
-                    continue;
                 }
-                let Some(command) = parse_command(&call.arguments) else {
-                    let text =
-                        "tool arguments must be a JSON object with a string command".to_string();
-                    self.msgs.push(Message {
-                        role: Role::Tool,
-                        tool_call_id: call.id,
-                        name: "bash".to_string(),
-                        content: text.clone(),
-                        tool_calls: Vec::new(),
-                    });
-                    self.emit(Step {
-                        kind: StepKind::Error,
-                        content: text,
-                        ..Step::default()
-                    });
-                    all_clean = false;
-                    continue;
-                };
-                let (obs_text, _obs, submit, sub) = self.run_command(cancel, &command);
-                self.msgs.push(Message {
-                    role: Role::Tool,
-                    tool_call_id: call.id,
-                    name: "bash".to_string(),
-                    content: obs_text,
-                    tool_calls: Vec::new(),
-                });
-                if submit {
-                    return (true, true, sub, false);
+                if outcome.submitted {
+                    return (true, true, outcome.submission, false);
+                }
+                if self.fatal.is_some() {
+                    break;
                 }
             }
             return (all_clean, false, String::new(), false);
@@ -675,7 +1038,7 @@ impl Agent {
         }
         if actions.len() > 1 {
             let text =
-                "write exactly one fenced bash/read/grep/edit block per message, or your final report with no command"
+                "write exactly one fenced bash/read/grep/edit block per message (or call several tools in one reply), or your final report with no command"
                     .to_string();
             self.msgs.push(Message {
                 role: Role::User,
@@ -694,7 +1057,7 @@ impl Agent {
         if is_report(&msg.content) {
             return (true, true, msg.content, false);
         }
-        let text = "Your message had no command and no report. Either call the bash tool (or write one ```bash block) to keep working, or finish with your report: a `SUMMARY:` line plus any `FINDING:`/`SUGGESTION:`/`QUESTION:`/`VOTE:` lines.".to_string();
+        let text = "Your message had no command and no report. Either call a tool (bash, read, grep, glob, edit, write, plan; or write one ```bash block) to keep working, or finish with your report: a `SUMMARY:` line plus any `FINDING:`/`SUGGESTION:`/`QUESTION:`/`VOTE:` lines.".to_string();
         self.msgs.push(Message {
             role: Role::User,
             content: text.clone(),
@@ -712,6 +1075,110 @@ impl Agent {
             ..Step::default()
         });
         (false, false, String::new(), true)
+    }
+
+    /// Runs one typed tool call and returns what the model gets back.
+    fn dispatch_tool_call(&mut self, cancel: &CancelToken, call: &ToolCall) -> ToolOutcome {
+        match call.name.as_str() {
+            "bash" => {
+                let Some(command) = parse_command(&call.arguments) else {
+                    return self.tool_error(
+                        "tool arguments must be a JSON object with a string command".to_string(),
+                    );
+                };
+                let (text, _obs, submitted, submission) = self.run_command(cancel, &command);
+                ToolOutcome {
+                    text,
+                    clean: true,
+                    submitted,
+                    submission,
+                }
+            }
+            name if NATIVE_TOOL_NAMES.contains(&name) => {
+                match NativeCall::from_args(name, &call.arguments) {
+                    Ok(native) => ToolOutcome::clean(self.run_native_call(&native)),
+                    Err(e) => self.tool_error(format!("{name}: {e}")),
+                }
+            }
+            MCP_SEARCH_TOOL if self.mcp.deferred() => {
+                let query = serde_json::from_str::<Value>(&call.arguments)
+                    .ok()
+                    .and_then(|v| v.get("query").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default();
+                self.result.steps += 1;
+                self.emit(Step {
+                    kind: StepKind::Mcp,
+                    content: format!("{MCP_SEARCH_TOOL} {query}"),
+                    command: MCP_SEARCH_TOOL.to_string(),
+                    ..Step::default()
+                });
+                let start = Instant::now();
+                let text = self.mcp.search(&query);
+                let obs = Observation {
+                    output: text,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                };
+                self.emit_observation(MCP_SEARCH_TOOL, &obs);
+                ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+            }
+            name if self.mcp.has(name) => self.run_mcp_tool(name, &call.arguments),
+            name => self.tool_error(format!(
+                "unknown tool {name}; available tools: {}",
+                self.tool_names().join(", ")
+            )),
+        }
+    }
+
+    fn tool_error(&mut self, text: String) -> ToolOutcome {
+        self.emit(Step {
+            kind: StepKind::Error,
+            content: text.clone(),
+            ..Step::default()
+        });
+        ToolOutcome {
+            text,
+            clean: false,
+            submitted: false,
+            submission: String::new(),
+        }
+    }
+
+    fn run_mcp_tool(&mut self, name: &str, arguments: &str) -> ToolOutcome {
+        let args: Value = match serde_json::from_str(arguments) {
+            Ok(Value::Null) => json!({}),
+            Ok(v) if v.is_object() => v,
+            Ok(_) => return self.tool_error(format!("{name}: arguments must be a JSON object")),
+            Err(e) if arguments.trim().is_empty() => {
+                let _ = e;
+                json!({})
+            }
+            Err(e) => return self.tool_error(format!("{name}: arguments are not JSON: {e}")),
+        };
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: StepKind::Mcp,
+            content: format!("{name} {}", compact_json(&args, 2000)),
+            command: name.to_string(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let obs = match self.mcp.call(name, args) {
+            Ok(r) => Observation {
+                output: r.text,
+                exit_code: i32::from(r.is_error),
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            Err(e) => Observation {
+                output: format!("{name}: {}", one_line(&e.to_string(), 2000)),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+        };
+        self.emit_observation(name, &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
     }
 
     fn run_command(
@@ -795,6 +1262,8 @@ impl Agent {
         !self.cfg.cwd.is_empty() && !Path::new(&self.cfg.cwd).is_dir()
     }
 
+    /// A fenced ```read/```grep/```edit block: the spec is parsed, then run
+    /// like the typed tool of the same name.
     fn run_native_action(&mut self, action: NativeAction, spec: &str) -> (String, bool, String) {
         self.result.steps += 1;
         self.emit(Step {
@@ -803,15 +1272,53 @@ impl Agent {
             command: spec.to_string(),
             ..Step::default()
         });
-        let obs = match action {
-            NativeAction::Read => self.native_read(spec),
-            NativeAction::Grep => self.native_grep(spec),
-            NativeAction::Edit => self.native_edit(spec),
+        let start = Instant::now();
+        let obs = match NativeCall::from_fenced(action, spec) {
+            Ok(call) => self.execute_native(&call),
+            Err(e) => action_error(e, start, 1),
         };
         let command = format!("{} action", action.name());
         self.emit_observation(&command, &obs);
         let formatted = format_observation(&obs, self.cfg.output_limit);
         (formatted, false, String::new())
+    }
+
+    /// A typed tool call (read, grep, glob, edit, write, plan).
+    fn run_native_call(&mut self, call: &NativeCall) -> String {
+        self.result.steps += 1;
+        let spec = call.spec();
+        self.emit(Step {
+            kind: call.step_kind(),
+            content: spec.clone(),
+            command: spec,
+            ..Step::default()
+        });
+        let obs = self.execute_native(call);
+        let command = format!("{} tool", call.name());
+        self.emit_observation(&command, &obs);
+        format_observation(&obs, self.cfg.output_limit)
+    }
+
+    fn execute_native(&self, call: &NativeCall) -> Observation {
+        match call {
+            NativeCall::Read(targets) => self.native_read(targets),
+            NativeCall::Grep { pattern, scope } => self.native_grep(pattern, scope),
+            NativeCall::Glob { pattern, scope } => self.native_glob(pattern, scope),
+            NativeCall::Edit { path, blocks } => self.native_edit(path, blocks),
+            NativeCall::Write {
+                path,
+                content,
+                overwrite,
+            } => self.native_write(path, content, *overwrite),
+            NativeCall::Plan(items) => {
+                let start = Instant::now();
+                Observation {
+                    output: render_plan(items),
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+        }
     }
 
     /// The verify gate a command would trigger: `Some(gate)` when the command
@@ -845,17 +1352,27 @@ impl Agent {
         d
     }
 
-    fn native_read(&self, spec: &str) -> Observation {
+    fn native_read(&self, targets: &[ReadTarget]) -> Observation {
         let start = Instant::now();
+        if targets.is_empty() {
+            return action_error("read: missing path".into(), start, 1);
+        }
         let mut out = String::new();
-        for raw in spec.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let (path, range) = parse_read_target(raw);
+        for target in targets {
+            let path = target.path.as_str();
             let resolved = match self.resolve_action_path(path, false) {
                 Ok(p) => p,
                 Err(e) => return action_error(e, start, 126),
             };
             if !resolved.path.exists() {
                 return action_error(format!("read: {} does not exist", path), start, 1);
+            }
+            if resolved.path.is_dir() {
+                return action_error(
+                    format!("read: {} is a directory; use glob to list it", path),
+                    start,
+                    1,
+                );
             }
             let data = match fs::read(&resolved.path) {
                 Ok(d) => d,
@@ -873,14 +1390,20 @@ impl Agent {
                     continue;
                 }
             };
+            let total = text.lines().count();
             for (idx, line) in text.lines().enumerate() {
                 let n = idx + 1;
-                if let Some((start_line, end_line)) = range
+                if let Some((start_line, end_line)) = target.range
                     && (n < start_line || n > end_line)
                 {
                     continue;
                 }
                 out.push_str(&format!("{n:>6}\t{line}\n"));
+            }
+            if let Some((start_line, end_line)) = target.range
+                && end_line < total
+            {
+                out.push_str(&format!("[lines {start_line}-{end_line} of {total}]\n"));
             }
         }
         Observation {
@@ -890,10 +1413,9 @@ impl Agent {
         }
     }
 
-    fn native_grep(&self, spec: &str) -> Observation {
+    fn native_grep(&self, pattern: &str, scope: &str) -> Observation {
         let start = Instant::now();
-        let mut lines = spec.lines();
-        let pattern = lines.next().unwrap_or("").trim();
+        let pattern = pattern.trim();
         if pattern.is_empty() {
             return action_error("grep: missing regex pattern".into(), start, 1);
         }
@@ -901,11 +1423,8 @@ impl Agent {
             Ok(r) => r,
             Err(e) => return action_error(format!("grep: invalid regex: {e}"), start, 1),
         };
-        let scope = lines
-            .next()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(".");
+        let scope = scope.trim();
+        let scope = if scope.is_empty() { "." } else { scope };
         let root = match self.resolve_action_path(".", false) {
             Ok(p) => p.path,
             Err(e) => return action_error(e, start, 126),
@@ -957,16 +1476,72 @@ impl Agent {
         }
     }
 
-    fn native_edit(&self, spec: &str) -> Observation {
+    fn native_glob(&self, pattern: &str, scope: &str) -> Observation {
         let start = Instant::now();
-        let Some((path, rest)) = spec.split_once('\n') else {
-            return action_error("edit: missing path and replacement block".into(), start, 1);
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return action_error("glob: missing pattern".into(), start, 1);
+        }
+        let scope = scope.trim();
+        let scope = if scope.is_empty() { "." } else { scope };
+        let root = match self.resolve_action_path(".", false) {
+            Ok(p) => p.path,
+            Err(e) => return action_error(e, start, 126),
         };
+        let dir = match self.resolve_action_path(scope, false) {
+            Ok(p) => p,
+            Err(e) => return action_error(e, start, 126),
+        };
+        if !dir.path.is_dir() {
+            return action_error(
+                format!("glob: {} is not a directory inside the clone", scope),
+                start,
+                1,
+            );
+        }
+        let base = fs::canonicalize(&dir.path).unwrap_or(dir.path.clone());
+        let mut files = Vec::new();
+        collect_files(&root, &base, &mut files);
+        let mut matched: Vec<String> = files
+            .iter()
+            .filter_map(|p| {
+                let under = p.strip_prefix(&base).ok()?.to_str()?;
+                if !glob_match(pattern, under) {
+                    return None;
+                }
+                let rel = p.strip_prefix(&root).ok()?.to_str()?.to_string();
+                (self.denied(&rel).is_none()).then_some(rel)
+            })
+            .collect();
+        matched.sort();
+        let total = matched.len();
+        matched.truncate(GLOB_RESULT_LIMIT);
+        let mut out = matched.join("\n");
+        if total == 0 {
+            out = format!("no file under {scope} matches {pattern}");
+        } else if total > GLOB_RESULT_LIMIT {
+            out.push_str(&format!(
+                "\n[... {} more files; narrow the pattern or the path ...]",
+                total - GLOB_RESULT_LIMIT
+            ));
+        }
+        out.push('\n');
+        Observation {
+            output: out,
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
+    fn native_edit(&self, path: &str, blocks: &[EditBlock]) -> Observation {
+        let start = Instant::now();
         let path = path.trim();
-        let blocks = match parse_edit_blocks(rest) {
-            Ok(b) => b,
-            Err(e) => return action_error(e, start, 1),
-        };
+        if path.is_empty() {
+            return action_error("edit: missing path".into(), start, 1);
+        }
+        if blocks.is_empty() {
+            return action_error("edit: missing SEARCH/REPLACE block".into(), start, 1);
+        }
         let create = !Path::new(&self.cfg.cwd).join(path).exists()
             && blocks.len() == 1
             && blocks[0].search.is_empty();
@@ -975,7 +1550,9 @@ impl Agent {
             Err(e) => return action_error(e, start, 126),
         };
         if create {
-            if let Err(e) = fs::write(&resolved.path, &blocks[0].replace) {
+            if let Err(e) = create_parent(&resolved.path)
+                .and_then(|()| fs::write(&resolved.path, &blocks[0].replace))
+            {
                 return action_error(format!("edit {}: {e}", resolved.rel), start, 1);
             }
             return Observation {
@@ -1023,6 +1600,47 @@ impl Agent {
         }
     }
 
+    fn native_write(&self, path: &str, content: &str, overwrite: bool) -> Observation {
+        let start = Instant::now();
+        let path = path.trim();
+        if path.is_empty() {
+            return action_error("write: missing path".into(), start, 1);
+        }
+        let resolved = match self.resolve_action_path(path, true) {
+            Ok(p) => p,
+            Err(e) => return action_error(e, start, 126),
+        };
+        if resolved.path.is_dir() {
+            return action_error(format!("write {}: is a directory", resolved.rel), start, 1);
+        }
+        let existed = resolved.path.exists();
+        if existed && !overwrite {
+            return action_error(
+                format!(
+                    "write {}: file exists; use edit to change it, or write with overwrite true to replace it",
+                    resolved.rel
+                ),
+                start,
+                1,
+            );
+        }
+        if let Err(e) =
+            create_parent(&resolved.path).and_then(|()| fs::write(&resolved.path, content))
+        {
+            return action_error(format!("write {}: {e}", resolved.rel), start, 1);
+        }
+        Observation {
+            output: format!(
+                "{} {} ({} bytes)\n",
+                if existed { "replaced" } else { "wrote" },
+                resolved.rel,
+                content.len()
+            ),
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
     fn resolve_action_path(
         &self,
         rel: &str,
@@ -1058,8 +1676,17 @@ impl Agent {
         })
         .map_err(|e| format!("canonicalize clone root: {e}"))?;
         let path = root.join(rel_path);
+        // A path to create is confined through its nearest existing
+        // ancestor, so a new file in a new directory still resolves.
         let check = if allow_create {
-            path.parent().unwrap_or(&root).to_path_buf()
+            let mut anc = path.parent().unwrap_or(&root).to_path_buf();
+            while !anc.exists() {
+                match anc.parent() {
+                    Some(p) if p.starts_with(&root) => anc = p.to_path_buf(),
+                    _ => break,
+                }
+            }
+            anc
         } else {
             path.clone()
         };
@@ -1133,6 +1760,55 @@ fn tool_message(call: &ToolCall, content: &str) -> Message {
     }
 }
 
+/// What one typed tool call gives back to the loop.
+struct ToolOutcome {
+    text: String,
+    /// False when the call itself was malformed (unknown tool, arguments
+    /// of the wrong shape): that counts as a format error.
+    clean: bool,
+    submitted: bool,
+    submission: String,
+}
+
+impl ToolOutcome {
+    fn clean(text: String) -> Self {
+        Self {
+            text,
+            clean: true,
+            submitted: false,
+            submission: String::new(),
+        }
+    }
+}
+
+fn create_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() && !p.exists() => fs::create_dir_all(p),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanItem {
+    pub text: String,
+    pub status: String,
+}
+
+/// The checklist the `plan` tool shows: `[ ]` todo, `[~]` doing, `[x]` done.
+pub fn render_plan(items: &[PlanItem]) -> String {
+    let done = items.iter().filter(|i| i.status == "done").count();
+    let mut out = format!("plan: {done}/{} done\n", items.len());
+    for item in items {
+        let mark = match item.status.as_str() {
+            "done" => "x",
+            "doing" => "~",
+            _ => " ",
+        };
+        out.push_str(&format!("- [{mark}] {}\n", one_line(&item.text, 200)));
+    }
+    out
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trajectory {
     pub trajectory_format: String,
@@ -1184,14 +1860,16 @@ pub use write_trajectory as WriteTrajectory;
 
 pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.\n",
-    "You have exactly one tool: bash. Call it with a JSON object containing a command string.\n",
+    "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the owner sees.\n",
+    "Call tools with JSON arguments. Independent calls go in one reply and run in order, each with its own result; a call that needs an earlier result waits for your next reply.\n",
+    "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
     "If you cannot call tools, write exactly one fenced block per message; exactly one fenced block is executed.\n",
     "The working directory is already the clone root ({{.Info.cwd}}), so `cd <root> &&` is unnecessary.\n",
     "Example command reply: ```bash\ncargo test -p crate_name\n```.\n",
     "Example report reply: SUMMARY: done\nFINDING: tests pass.\n",
     "Prose-only replies are not executed.\n",
     "Shell command fences may use ```bash, ```sh, ```shell, ```zsh, ```console, or ```terminal.\n",
-    "Native action fences are cheaper than shell for the same job:\n",
+    "Native action fences do what the read, grep and edit tools do:\n",
     "```read\nsrc/lib.rs:1-80\n```\n",
     "```grep\nTODO\nsrc\n```\n",
     "```edit\nsrc/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n",
@@ -1204,7 +1882,8 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "Output over {{.OutputLimit}} characters is cut in the middle.\n",
     "Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.\n",
     "Never run interactive programs: editors, pagers, watch modes, or foreground servers.\n",
-    "To edit files, prefer ```edit blocks; shell heredocs, sed -i, or python3 -c are still available when needed.\n",
+    "To edit files, prefer the edit tool (or ```edit blocks); shell heredocs, sed -i, or python3 -c are still available when needed.\n",
+    "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
     "Verify your work by running the project's own checks.\n",
     "On a command failure, inspect the cause, make a small safe correction and rerun the targeted check.\n",
     "If it still fails, try a different evidence-based approach or use the task's peer-help channel; do not repeat an unchanged failure or poll while waiting for help.\n",
@@ -1216,6 +1895,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "Those key words must start their lines because a program reads the report.\n",
     "A message with neither a command nor a report wastes a call after one corrective retry.\n",
     "You have at most {{.MaxSteps}} model calls.\n",
+    "{{.Instructions}}",
     "The task follows in the next message and its rules apply in full."
 );
 
@@ -1230,37 +1910,114 @@ pub struct PromptData {
     pub output_limit: usize,
     pub max_steps: i32,
     pub info: BTreeMap<String, String>,
+    /// Repository instructions as [`load_instructions`] read them; the
+    /// template's `{{.Instructions}}` renders them as a paragraph, and a
+    /// template without the key gets the paragraph appended.
+    pub instructions: String,
+}
+
+/// The system-prompt paragraph that carries repository instructions.
+pub fn instructions_paragraph(instructions: &str) -> String {
+    let text = instructions.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Repository instructions follow; they apply in addition to the task, and the rules above still win where they differ.\n{text}\n"
+    )
 }
 
 pub fn render_prompt(tmpl: &str, data: PromptData) -> anyhow::Result<String> {
     let data = normalize_prompt_data(data);
-    let mut out = tmpl.to_string();
-    let replacements = [
-        ("{{.Cwd}}", data.cwd.as_str()),
-        ("{{.Model}}", data.model.as_str()),
-        ("{{.Provider}}", data.provider.as_str()),
-        ("{{.StepTimeout}}", data.step_timeout.as_str()),
-    ];
-    for (k, v) in replacements {
-        out = out.replace(k, v);
+    let paragraph = instructions_paragraph(&data.instructions);
+    let has_instructions_key = tmpl.contains("{{.Instructions}}");
+    // The instructions are substituted last and never scanned for keys:
+    // a repository's AGENTS.md may well document `{{.Something}}` itself.
+    let mut rendered = Vec::new();
+    for part in tmpl.split("{{.Instructions}}") {
+        let mut out = part.to_string();
+        let replacements = [
+            ("{{.Cwd}}", data.cwd.as_str()),
+            ("{{.Model}}", data.model.as_str()),
+            ("{{.Provider}}", data.provider.as_str()),
+            ("{{.StepTimeout}}", data.step_timeout.as_str()),
+        ];
+        for (k, v) in replacements {
+            out = out.replace(k, v);
+        }
+        out = out.replace("{{.OutputLimit}}", &data.output_limit.to_string());
+        out = out.replace("{{.MaxSteps}}", &data.max_steps.to_string());
+        for (k, v) in &data.info {
+            out = out.replace(&format!("{{{{.Info.{k}}}}}"), v);
+        }
+        if let Some(start) = out.find("{{.") {
+            let tail = &out[start..];
+            let end = tail.find("}}").map_or(tail.len(), |i| i + 2);
+            return Err(anyhow!(
+                "template: prompt:1: map has no entry for key {:?}",
+                &tail[..end]
+            ));
+        }
+        rendered.push(out);
     }
-    out = out.replace("{{.OutputLimit}}", &data.output_limit.to_string());
-    out = out.replace("{{.MaxSteps}}", &data.max_steps.to_string());
-    for (k, v) in &data.info {
-        out = out.replace(&format!("{{{{.Info.{k}}}}}"), v);
-    }
-    if let Some(start) = out.find("{{.") {
-        let tail = &out[start..];
-        let end = tail.find("}}").map_or(tail.len(), |i| i + 2);
-        return Err(anyhow!(
-            "template: prompt:1: map has no entry for key {:?}",
-            &tail[..end]
-        ));
+    let mut out = rendered.join(&paragraph);
+    if !has_instructions_key && !paragraph.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(paragraph.trim_end());
     }
     Ok(out)
 }
 
 pub use render_prompt as RenderPrompt;
+
+/// Reads the repository's instruction files ([`INSTRUCTION_FILES`]) from
+/// `cwd`: each file once (a copy of another is skipped), cut at
+/// [`INSTRUCTION_FILE_LIMIT`] with a marker, [`INSTRUCTIONS_LIMIT`] in all.
+/// Returns the text and the files it came from.
+pub fn load_instructions(cwd: &str) -> (String, Vec<String>) {
+    let root = if cwd.is_empty() {
+        Path::new(".")
+    } else {
+        Path::new(cwd)
+    };
+    let mut out = String::new();
+    let mut files = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for name in INSTRUCTION_FILES {
+        let path = root.join(name);
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let text = raw.trim();
+        if text.is_empty() || seen.iter().any(|s| s == text) {
+            continue;
+        }
+        seen.push(text.to_string());
+        let mut body = text.to_string();
+        if body.len() > INSTRUCTION_FILE_LIMIT {
+            let cut = body.floor_char_boundary(INSTRUCTION_FILE_LIMIT);
+            body = format!(
+                "{}\n[... {name} continues for {} more bytes; read the file for the rest ...]",
+                &body[..cut],
+                text.len() - cut
+            );
+        }
+        let section = format!("--- {name} ---\n{body}\n");
+        if out.len() + section.len() > INSTRUCTIONS_LIMIT {
+            out.push_str(&format!(
+                "--- {name} ---\n[omitted: the instructions already fill {} bytes; read the file]\n",
+                out.len()
+            ));
+            files.push((*name).to_string());
+            continue;
+        }
+        out.push_str(&section);
+        files.push((*name).to_string());
+    }
+    (out, files)
+}
 
 pub fn normalize_prompt_data(mut data: PromptData) -> PromptData {
     let mut cp = data.info.clone();
@@ -1308,6 +2065,7 @@ pub fn prompt_data(info: &BTreeMap<String, String>, cfg: &Config) -> PromptData 
         output_limit: cfg.output_limit,
         max_steps: cfg.max_steps,
         info: cp,
+        instructions: cfg.instructions,
     })
 }
 
@@ -1413,13 +2171,328 @@ impl NativeAction {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadTarget {
+    path: String,
+    range: Option<(usize, usize)>,
+}
+
+/// One native tool call with its arguments parsed, whether it arrived as a
+/// typed tool call or as a fenced block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NativeCall {
+    Read(Vec<ReadTarget>),
+    Grep {
+        pattern: String,
+        scope: String,
+    },
+    Glob {
+        pattern: String,
+        scope: String,
+    },
+    Edit {
+        path: String,
+        blocks: Vec<EditBlock>,
+    },
+    Write {
+        path: String,
+        content: String,
+        overwrite: bool,
+    },
+    Plan(Vec<PlanItem>),
+}
+
+impl NativeCall {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Read(_) => "read",
+            Self::Grep { .. } => "grep",
+            Self::Glob { .. } => "glob",
+            Self::Edit { .. } => "edit",
+            Self::Write { .. } => "write",
+            Self::Plan(_) => "plan",
+        }
+    }
+
+    fn step_kind(&self) -> StepKind {
+        match self {
+            Self::Read(_) => StepKind::Read,
+            Self::Grep { .. } => StepKind::Grep,
+            Self::Glob { .. } => StepKind::Glob,
+            Self::Edit { .. } => StepKind::Edit,
+            Self::Write { .. } => StepKind::Write,
+            Self::Plan(_) => StepKind::Plan,
+        }
+    }
+
+    /// The call as a fenced-block spec: what the step records and the
+    /// console shows, the same for both ways of calling.
+    fn spec(&self) -> String {
+        match self {
+            Self::Read(targets) => targets
+                .iter()
+                .map(|t| match t.range {
+                    Some((a, b)) => format!("{}:{a}-{b}", t.path),
+                    None => t.path.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Grep { pattern, scope } | Self::Glob { pattern, scope } => {
+                if scope.is_empty() || scope == "." {
+                    pattern.clone()
+                } else {
+                    format!("{pattern}\n{scope}")
+                }
+            }
+            Self::Edit { path, blocks } => {
+                let mut out = path.clone();
+                for b in blocks {
+                    out.push_str(&format!(
+                        "\n<<<<<<< SEARCH\n{}\n=======\n{}\n>>>>>>> REPLACE",
+                        b.search, b.replace
+                    ));
+                }
+                out
+            }
+            Self::Write { path, content, .. } => {
+                format!("{path} ({} bytes)", content.len())
+            }
+            Self::Plan(items) => render_plan(items),
+        }
+    }
+
+    fn from_fenced(action: NativeAction, spec: &str) -> std::result::Result<Self, String> {
+        match action {
+            NativeAction::Read => Ok(Self::Read(
+                spec.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(|raw| {
+                        let (path, range) = parse_read_target(raw);
+                        ReadTarget {
+                            path: path.to_string(),
+                            range,
+                        }
+                    })
+                    .collect(),
+            )),
+            NativeAction::Grep => {
+                let mut lines = spec.lines();
+                let pattern = lines.next().unwrap_or("").trim().to_string();
+                let scope = lines.next().map(str::trim).unwrap_or("").to_string();
+                Ok(Self::Grep { pattern, scope })
+            }
+            NativeAction::Edit => {
+                let Some((path, rest)) = spec.split_once('\n') else {
+                    return Err("edit: missing path and replacement block".into());
+                };
+                Ok(Self::Edit {
+                    path: path.trim().to_string(),
+                    blocks: parse_edit_blocks(rest)?,
+                })
+            }
+        }
+    }
+
+    /// Parses a typed tool call's JSON arguments.
+    fn from_args(name: &str, arguments: &str) -> std::result::Result<Self, String> {
+        let args: Value = if arguments.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(arguments).map_err(|e| format!("arguments are not JSON: {e}"))?
+        };
+        if !args.is_object() {
+            return Err("arguments must be a JSON object".into());
+        }
+        let str_arg = |key: &str| -> std::result::Result<String, String> {
+            match args.get(key) {
+                Some(Value::String(s)) => Ok(s.clone()),
+                Some(Value::Null) | None => Err(format!("missing string argument {key}")),
+                Some(other) => Err(format!(
+                    "argument {key} must be a string, not {}",
+                    json_kind(other)
+                )),
+            }
+        };
+        let opt_str = |key: &str| -> std::result::Result<String, String> {
+            match args.get(key) {
+                Some(Value::String(s)) => Ok(s.clone()),
+                Some(Value::Null) | None => Ok(String::new()),
+                Some(other) => Err(format!(
+                    "argument {key} must be a string, not {}",
+                    json_kind(other)
+                )),
+            }
+        };
+        let opt_line = |key: &str| -> std::result::Result<Option<usize>, String> {
+            match args.get(key) {
+                Some(Value::Null) | None => Ok(None),
+                Some(Value::Number(n)) => n
+                    .as_u64()
+                    .map(|n| Some(n as usize))
+                    .ok_or_else(|| format!("argument {key} must be a positive whole number")),
+                Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+                Some(Value::String(s)) => s
+                    .trim()
+                    .parse::<usize>()
+                    .map(Some)
+                    .map_err(|_| format!("argument {key} must be a positive whole number")),
+                Some(other) => Err(format!(
+                    "argument {key} must be a whole number, not {}",
+                    json_kind(other)
+                )),
+            }
+        };
+        match name {
+            "read" => {
+                let path = str_arg("path")?;
+                let range = match (opt_line("start")?, opt_line("end")?) {
+                    (None, None) => None,
+                    (start, end) => {
+                        let start = start.unwrap_or(1).max(1);
+                        let end = end.unwrap_or(usize::MAX);
+                        if end < start {
+                            return Err(format!("end ({end}) is before start ({start})"));
+                        }
+                        Some((start, end))
+                    }
+                };
+                Ok(Self::Read(vec![ReadTarget { path, range }]))
+            }
+            "grep" => Ok(Self::Grep {
+                pattern: str_arg("pattern")?,
+                scope: opt_str("path")?,
+            }),
+            "glob" => Ok(Self::Glob {
+                pattern: str_arg("pattern")?,
+                scope: opt_str("path")?,
+            }),
+            "edit" => {
+                let path = str_arg("path")?;
+                let mut blocks = Vec::new();
+                if let Some(edits) = args.get("edits").filter(|v| !v.is_null()) {
+                    let Some(list) = edits.as_array() else {
+                        return Err("argument edits must be an array of {search, replace}".into());
+                    };
+                    for (i, e) in list.iter().enumerate() {
+                        let search = e.get("search").and_then(Value::as_str);
+                        let replace = e.get("replace").and_then(Value::as_str);
+                        match (search, replace) {
+                            (Some(s), Some(r)) => blocks.push(EditBlock {
+                                search: s.to_string(),
+                                replace: r.to_string(),
+                            }),
+                            _ => {
+                                return Err(format!("edits[{i}] needs string search and replace"));
+                            }
+                        }
+                    }
+                }
+                if blocks.is_empty() {
+                    let search = opt_str("search")?;
+                    let replace = match args.get("replace") {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(Value::Null) | None => {
+                            return Err("missing string argument replace".into());
+                        }
+                        Some(other) => {
+                            return Err(format!(
+                                "argument replace must be a string, not {}",
+                                json_kind(other)
+                            ));
+                        }
+                    };
+                    blocks.push(EditBlock { search, replace });
+                }
+                Ok(Self::Edit { path, blocks })
+            }
+            "write" => {
+                let path = str_arg("path")?;
+                let content = str_arg("content")?;
+                let overwrite = match args.get("overwrite") {
+                    Some(Value::Bool(b)) => *b,
+                    Some(Value::String(s)) => {
+                        matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1")
+                    }
+                    Some(Value::Null) | None => false,
+                    Some(other) => {
+                        return Err(format!(
+                            "argument overwrite must be a boolean, not {}",
+                            json_kind(other)
+                        ));
+                    }
+                };
+                Ok(Self::Write {
+                    path,
+                    content,
+                    overwrite,
+                })
+            }
+            "plan" => {
+                let Some(list) = args.get("items").and_then(Value::as_array) else {
+                    return Err("missing array argument items".into());
+                };
+                let mut items = Vec::new();
+                for (i, item) in list.iter().enumerate() {
+                    let text = match item {
+                        Value::String(s) => s.clone(),
+                        Value::Object(_) => item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("items[{i}] needs a string text"))?,
+                        _ => return Err(format!("items[{i}] must be an object with text")),
+                    };
+                    let status = item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("todo")
+                        .trim()
+                        .to_ascii_lowercase();
+                    let status = match status.as_str() {
+                        "done" | "completed" | "complete" | "x" => "done",
+                        "doing" | "in_progress" | "in-progress" | "active" | "started" | "wip"
+                        | "~" => "doing",
+                        "todo" | "pending" | "" | "open" => "todo",
+                        other => {
+                            return Err(format!(
+                                "items[{i}] status {other:?} is not one of todo, doing, done"
+                            ));
+                        }
+                    };
+                    items.push(PlanItem {
+                        text,
+                        status: status.to_string(),
+                    });
+                }
+                if items.is_empty() {
+                    return Err("items is empty; list the steps".into());
+                }
+                Ok(Self::Plan(items))
+            }
+            other => Err(format!("{other} is not a native tool")),
+        }
+    }
+}
+
+fn json_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedPath {
     rel: String,
     path: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct EditBlock {
     search: String,
     replace: String,
@@ -1571,6 +2644,10 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        // The repository's own object store is never what a search wants.
+        if path.file_name().is_some_and(|n| n == ".git") {
+            continue;
+        }
         let Ok(canon) = fs::canonicalize(&path) else {
             continue;
         };
@@ -2935,6 +4012,711 @@ mod tests {
             fs::read_to_string(dir.path().join("created.txt")).unwrap(),
             "hello"
         );
+    }
+
+    /// An assistant turn made of typed tool calls, each `(id, tool, args)`.
+    fn calls(items: &[(&str, &str, Value)]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: String::new(),
+            tool_calls: items
+                .iter()
+                .map(|(id, name, args)| ToolCall {
+                    id: (*id).to_string(),
+                    name: (*name).to_string(),
+                    arguments: pulse_store::gojson::to_string(args).unwrap(),
+                })
+                .collect(),
+            tool_call_id: String::new(),
+            name: String::new(),
+        }
+    }
+
+    fn local_agent(dir: &Path, p: Arc<FakeProvider>) -> Agent {
+        let mut cfg = base_config();
+        cfg.cwd = dir.display().to_string();
+        cfg.max_steps = 20;
+        new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(crate::localenv::new_local_env(
+                dir.display().to_string(),
+                None,
+            )),
+            cfg,
+            Vec::new(),
+        )
+    }
+
+    fn tool_replies(h: &Agent) -> Vec<(String, String)> {
+        h.messages()
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| (m.tool_call_id.clone(), m.content.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn typed_tools_read_grep_glob_edit_write_plan_in_one_turn() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn main() {\n    println!(\"old\");\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("src/deep/more.rs"), "// more\n").unwrap();
+        fs::write(dir.path().join("README.md"), "# hi\n").unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            // Four independent calls in one reply: all run, all answered.
+            resp(calls(&[
+                (
+                    "r1",
+                    "read",
+                    json!({"path":"src/lib.rs","start":"1","end":2}),
+                ),
+                ("g1", "grep", json!({"pattern":"println","path":"src"})),
+                ("l1", "glob", json!({"pattern":"*.rs"})),
+                (
+                    "p1",
+                    "plan",
+                    json!({"items":[
+                        {"text":"read the code","status":"done"},
+                        {"text":"change the greeting","status":"in_progress"},
+                        "add the test"
+                    ]}),
+                ),
+            ])),
+            resp(calls(&[
+                (
+                    "e1",
+                    "edit",
+                    json!({"path":"src/lib.rs","search":"println!(\"old\");","replace":"println!(\"new\");"}),
+                ),
+                (
+                    "w1",
+                    "write",
+                    json!({"path":"src/deep/new/file.txt","content":"made\n"}),
+                ),
+                ("w2", "write", json!({"path":"README.md","content":"x"})),
+                ("l2", "glob", json!({"pattern":"*.rs","path":"src/deep"})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.steps, 8, "one step per tool call");
+        assert_eq!(got.format_errors, 0);
+
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert_eq!(replies.len(), 8, "{replies:?}");
+        assert!(
+            replies["r1"].contains("     1\tfn main()"),
+            "{}",
+            replies["r1"]
+        );
+        assert!(
+            replies["r1"].contains("[lines 1-2 of 3]"),
+            "{}",
+            replies["r1"]
+        );
+        assert!(replies["g1"].contains("src/lib.rs:2:"), "{}", replies["g1"]);
+        assert!(
+            replies["l1"].contains("src/deep/more.rs\n"),
+            "{}",
+            replies["l1"]
+        );
+        assert!(replies["l1"].contains("src/lib.rs\n"), "{}", replies["l1"]);
+        assert!(!replies["l1"].contains(".git/"), "{}", replies["l1"]);
+        assert!(!replies["l1"].contains("README"), "{}", replies["l1"]);
+        assert!(
+            replies["p1"].contains(
+                "plan: 1/3 done\n- [x] read the code\n- [~] change the greeting\n- [ ] add the test"
+            ),
+            "{}",
+            replies["p1"]
+        );
+        assert!(
+            replies["e1"].contains("edited src/lib.rs"),
+            "{}",
+            replies["e1"]
+        );
+        assert!(
+            replies["w1"].contains("wrote src/deep/new/file.txt (5 bytes)"),
+            "{}",
+            replies["w1"]
+        );
+        assert!(
+            replies["w2"].contains("file exists; use edit")
+                && replies["w2"].contains("<returncode>1</returncode>"),
+            "{}",
+            replies["w2"]
+        );
+        assert!(
+            replies["l2"].contains("more.rs") && !replies["l2"].contains("lib.rs"),
+            "glob under src/deep lists only that directory: {}",
+            replies["l2"]
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+            "fn main() {\n    println!(\"new\");\n}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/deep/new/file.txt")).unwrap(),
+            "made\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "# hi\n"
+        );
+
+        let kinds: Vec<StepKind> = h
+            .trajectory()
+            .steps
+            .iter()
+            .map(|s| s.kind.clone())
+            .collect();
+        for k in [
+            StepKind::Read,
+            StepKind::Grep,
+            StepKind::Glob,
+            StepKind::Plan,
+            StepKind::Edit,
+            StepKind::Write,
+        ] {
+            assert!(kinds.contains(&k), "no {k} step in {kinds:?}");
+        }
+        let plan = h
+            .trajectory()
+            .steps
+            .into_iter()
+            .find(|s| s.kind == StepKind::Plan)
+            .unwrap();
+        assert!(plan.content.starts_with("plan: 1/3 done\n"), "{plan:?}");
+        assert!(
+            p.requests()[0]
+                .tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .eq(NATIVE_TOOL_NAMES.iter().copied()),
+            "every run offers the native tool set"
+        );
+    }
+
+    #[test]
+    fn unknown_tool_and_bad_arguments_count_as_format_errors() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("x1", "fetch_url", json!({"url":"https://x"}))])),
+            resp(calls(&[("r1", "read", json!({"path": 7}))])),
+            resp(calls(&[("w1", "write", json!({"path":"a.txt"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.cfg.format_retries = 0;
+        let got = h.run().unwrap();
+        // Three unclean turns in a row end the run before the summary.
+        assert_eq!(got.exit_status, EXIT_FORMAT_ERROR, "{got:?}");
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.contains(
+                "unknown tool fetch_url; available tools: bash, read, grep, glob, edit, write, plan"
+            ),
+            "{}",
+            replies[0].1
+        );
+        assert!(replies[1].1.starts_with("read: "), "{}", replies[1].1);
+        assert!(replies[2].1.contains("content"), "{}", replies[2].1);
+        assert!(
+            h.trajectory()
+                .steps
+                .iter()
+                .filter(|s| s.kind == StepKind::Error)
+                .count()
+                >= 3
+        );
+    }
+
+    #[test]
+    fn glob_reports_no_match_and_caps_the_listing() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("many")).unwrap();
+        for i in 0..(GLOB_RESULT_LIMIT + 5) {
+            fs::write(dir.path().join(format!("many/f{i:04}.txt")), "x").unwrap();
+        }
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("a", "glob", json!({"pattern":"*.nothing"})),
+                ("b", "glob", json!({"pattern":"many/*.txt"})),
+                ("c", "glob", json!({"pattern":"*.txt","path":"missing"})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(replies["a"].contains("no file under"), "{}", replies["a"]);
+        assert!(replies["a"].contains("*.nothing"), "{}", replies["a"]);
+        assert_eq!(
+            replies["b"].matches("many/f").count(),
+            GLOB_RESULT_LIMIT,
+            "{}",
+            &replies["b"][replies["b"].len().saturating_sub(300)..]
+        );
+        assert!(
+            replies["b"].contains("5 more"),
+            "{}",
+            &replies["b"][replies["b"].len().saturating_sub(300)..]
+        );
+        assert!(
+            !replies["c"].contains("<returncode>0</returncode>")
+                && replies["c"].contains("missing"),
+            "{}",
+            replies["c"]
+        );
+    }
+
+    #[test]
+    fn render_plan_marks_each_status() {
+        let items = vec![
+            PlanItem {
+                text: "one\nwith newline".into(),
+                status: "done".into(),
+            },
+            PlanItem {
+                text: "two".into(),
+                status: "doing".into(),
+            },
+            PlanItem {
+                text: "three".into(),
+                status: "todo".into(),
+            },
+        ];
+        assert_eq!(
+            render_plan(&items),
+            "plan: 1/3 done\n- [x] one with newline\n- [~] two\n- [ ] three\n"
+        );
+        assert_eq!(render_plan(&[]), "plan: 0/0 done\n");
+    }
+
+    #[test]
+    fn native_call_from_args_is_lenient_about_shapes() {
+        let read =
+            NativeCall::from_args("read", r#"{"path":"a.rs","start":"3","end":"4"}"#).unwrap();
+        assert_eq!(read.spec(), "a.rs:3-4");
+        let plan = NativeCall::from_args(
+            "plan",
+            r#"{"items":["a",{"text":"b","status":"DONE"},{"text":"c","status":"wip"}]}"#,
+        )
+        .unwrap();
+        let NativeCall::Plan(items) = plan else {
+            panic!("not a plan");
+        };
+        assert_eq!(
+            items.iter().map(|i| i.status.as_str()).collect::<Vec<_>>(),
+            vec!["todo", "done", "doing"]
+        );
+        let edit = NativeCall::from_args(
+            "edit",
+            r#"{"path":"f","edits":[{"search":"a","replace":"b"},{"search":"c","replace":"d"}]}"#,
+        )
+        .unwrap();
+        let NativeCall::Edit { blocks, .. } = edit else {
+            panic!("not an edit");
+        };
+        assert_eq!(blocks.len(), 2);
+        assert!(NativeCall::from_args("read", "not json").is_err());
+        assert!(NativeCall::from_args("grep", r#"{"path":"x"}"#).is_err());
+        assert!(NativeCall::from_args("write", r#"{"path":"x"}"#).is_err());
+        assert!(NativeCall::from_args("plan", r#"{"items":"a"}"#).is_err());
+    }
+
+    struct FakeMcp {
+        calls: Arc<Mutex<Vec<(String, Value)>>>,
+        fail: bool,
+    }
+
+    impl McpBackend for FakeMcp {
+        fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<McpToolResult> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((name.to_string(), arguments.clone()));
+            if self.fail {
+                return Err(anyhow!("server went away"));
+            }
+            Ok(McpToolResult {
+                is_error: name == "broken",
+                text: format!("{name} saw {arguments}"),
+            })
+        }
+    }
+
+    fn tool_info(name: &str, description: &str) -> pulse_mcp::ToolInfo {
+        pulse_mcp::ToolInfo {
+            name: name.into(),
+            description: description.into(),
+            input_schema: json!({"type":"object","properties":{"q":{"type":"string"}}}),
+        }
+    }
+
+    #[test]
+    fn mcp_tools_are_offered_by_prefixed_name_and_called_through_the_backend() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("m1", "mcp__github__list_issues", json!({"q":"open"})),
+                ("m2", "mcp__github__broken", json!({"q":"x"})),
+                ("m3", "mcp__github__list_issues", json!("not an object")),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        h.add_mcp_server(McpServerTools {
+            server: "github".into(),
+            tools: vec![
+                tool_info("list_issues", "List the open issues."),
+                tool_info("broken", ""),
+                pulse_mcp::ToolInfo {
+                    name: "odd name!".into(),
+                    description: "d".into(),
+                    input_schema: Value::Null,
+                },
+            ],
+            backend: Box::new(FakeMcp {
+                calls: seen.clone(),
+                fail: false,
+            }),
+        });
+        h.note_at_start("MCP server github connected");
+        let offered: Vec<String> = h.tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(
+            offered,
+            [
+                NATIVE_TOOL_NAMES.to_vec(),
+                vec![
+                    "mcp__github__broken",
+                    "mcp__github__list_issues",
+                    "mcp__github__odd_name"
+                ]
+            ]
+            .concat()
+        );
+        let odd = h
+            .tools()
+            .into_iter()
+            .find(|t| t.name == "mcp__github__odd_name")
+            .unwrap();
+        assert_eq!(odd.parameters, json!({"type":"object","properties":{}}));
+        let broken = h
+            .tools()
+            .into_iter()
+            .find(|t| t.name == "mcp__github__broken")
+            .unwrap();
+        assert_eq!(broken.description, "broken tool of the github MCP server.");
+
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.steps, 2, "the malformed call is no step");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["m1"].contains("list_issues saw {\"q\":\"open\"}"),
+            "{}",
+            replies["m1"]
+        );
+        assert!(
+            replies["m2"].contains("<returncode>1</returncode>"),
+            "{}",
+            replies["m2"]
+        );
+        assert!(replies["m3"].contains("JSON object"), "{}", replies["m3"]);
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            vec!["list_issues", "broken"],
+            "the malformed call never reaches the server"
+        );
+        let steps = h.trajectory().steps;
+        assert_eq!(steps[0].kind, StepKind::Note);
+        assert!(steps[0].content.contains("github connected"));
+        let mcp_steps: Vec<_> = steps.iter().filter(|s| s.kind == StepKind::Mcp).collect();
+        assert_eq!(mcp_steps.len(), 2);
+        assert_eq!(mcp_steps[0].command, "mcp__github__list_issues");
+        assert!(
+            mcp_steps[0]
+                .content
+                .starts_with("mcp__github__list_issues {")
+        );
+        assert_eq!(
+            p.requests()[0].tools.len(),
+            NATIVE_TOOL_NAMES.len() + 3,
+            "the model saw the MCP tools"
+        );
+    }
+
+    #[test]
+    fn mcp_catalogue_past_the_limit_is_searched_then_loaded() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "s1",
+                "mcp_search",
+                json!({"query":"deploy the site"}),
+            )])),
+            resp(calls(&[
+                ("c1", "mcp__ops__deploy_site", json!({"q":"now"})),
+                ("c2", "mcp__ops__tool_0003", json!({})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        let mut tools: Vec<pulse_mcp::ToolInfo> = (0..MCP_INLINE_TOOL_LIMIT)
+            .map(|i| tool_info(&format!("tool_{i:04}"), "Something unrelated."))
+            .collect();
+        tools.push(tool_info("deploy_site", "Deploy the documentation site."));
+        h.add_mcp_server(McpServerTools {
+            server: "ops".into(),
+            tools,
+            backend: Box::new(FakeMcp {
+                calls: seen.clone(),
+                fail: false,
+            }),
+        });
+        let offered: Vec<String> = h.tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(
+            offered,
+            [NATIVE_TOOL_NAMES.to_vec(), vec![MCP_SEARCH_TOOL]].concat(),
+            "past the limit only the search tool is offered"
+        );
+        let search = h
+            .tools()
+            .into_iter()
+            .find(|t| t.name == MCP_SEARCH_TOOL)
+            .unwrap();
+        assert!(
+            search.description.contains("ops (33 tools)"),
+            "{}",
+            search.description
+        );
+
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["s1"]
+                .contains("<output>\nmcp__ops__deploy_site: Deploy the documentation site."),
+            "{}",
+            replies["s1"]
+        );
+        assert!(
+            !replies["s1"].contains("tool_0003"),
+            "unrelated tools stay out of the search result: {}",
+            replies["s1"]
+        );
+        assert!(replies["s1"].contains("callable from your next reply"));
+        assert!(
+            replies["c1"].contains("deploy_site saw"),
+            "{}",
+            replies["c1"]
+        );
+        assert!(
+            replies["c2"].contains("tool_0003 saw"),
+            "a known tool is callable even before it was looked up: {}",
+            replies["c2"]
+        );
+        let second: Vec<String> = p.requests()[1]
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(
+            second.contains(&"mcp__ops__deploy_site".to_string()),
+            "the looked-up tool is advertised next: {second:?}"
+        );
+        assert!(!second.contains(&"mcp__ops__tool_0003".to_string()));
+        assert!(second.contains(&MCP_SEARCH_TOOL.to_string()));
+    }
+
+    #[test]
+    fn mcp_search_without_a_catalogue_is_an_unknown_tool() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("s1", "mcp_search", json!({"query":"x"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.contains("unknown tool mcp_search"),
+            "{}",
+            replies[0].1
+        );
+    }
+
+    #[test]
+    fn mcp_backend_failure_is_an_observation_not_a_crash() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("m1", "mcp__gone__ping", json!({}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.add_mcp_server(McpServerTools {
+            server: "gone".into(),
+            tools: vec![tool_info("ping", "Ping.")],
+            backend: Box::new(FakeMcp {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail: true,
+            }),
+        });
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.contains("server went away"),
+            "{}",
+            replies[0].1
+        );
+        assert!(
+            replies[0].1.contains("<returncode>1</returncode>"),
+            "{}",
+            replies[0].1
+        );
+    }
+
+    #[test]
+    fn tool_name_slug_keeps_provider_safe_names() {
+        assert_eq!(tool_name_slug("list-issues"), "list-issues");
+        assert_eq!(tool_name_slug("odd name!"), "odd_name");
+        assert_eq!(tool_name_slug("__x__"), "x");
+        assert_eq!(tool_name_slug("###"), "tool");
+    }
+
+    #[test]
+    fn load_instructions_reads_each_file_once_within_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_instructions(&dir.path().display().to_string()),
+            (String::new(), Vec::new())
+        );
+        fs::create_dir_all(dir.path().join(".github")).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# Agents\nRun cargo test.\n").unwrap();
+        // A CLAUDE.md that is a copy of AGENTS.md (a common symlink stand-in) is skipped.
+        fs::write(
+            dir.path().join("CLAUDE.md"),
+            "# Agents\nRun cargo test.\n\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("GEMINI.md"), "   \n").unwrap();
+        let big = "x".repeat(INSTRUCTION_FILE_LIMIT + 100);
+        fs::write(dir.path().join(".github/copilot-instructions.md"), &big).unwrap();
+        let (text, files) = load_instructions(&dir.path().display().to_string());
+        assert_eq!(files, vec!["AGENTS.md", ".github/copilot-instructions.md"]);
+        assert!(
+            text.starts_with("--- AGENTS.md ---\n# Agents\nRun cargo test.\n"),
+            "{text}"
+        );
+        assert!(text.contains("--- .github/copilot-instructions.md ---\n"));
+        assert!(
+            text.contains("[... .github/copilot-instructions.md continues for 100 more bytes"),
+            "{}",
+            &text[text.len() - 200..]
+        );
+        assert!(text.len() < INSTRUCTION_FILE_LIMIT + 600, "{}", text.len());
+    }
+
+    #[test]
+    fn load_instructions_caps_the_total() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".github")).unwrap();
+        fs::write(
+            dir.path().join("AGENTS.md"),
+            "a".repeat(INSTRUCTION_FILE_LIMIT),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("CLAUDE.md"),
+            "b".repeat(INSTRUCTION_FILE_LIMIT),
+        )
+        .unwrap();
+        fs::write(dir.path().join("GEMINI.md"), "c".repeat(100)).unwrap();
+        let (text, files) = load_instructions(&dir.path().display().to_string());
+        assert_eq!(files, vec!["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
+        // The second 16 KB file would overflow the total: its section is
+        // the marker alone; the small third file still fits.
+        assert!(
+            text.contains("--- CLAUDE.md ---\n[omitted: the instructions already fill"),
+            "{}",
+            &text[text.len() - 300..]
+        );
+        assert!(!text.contains("bbb"));
+        assert!(text.contains("--- GEMINI.md ---\nccc"));
+        assert!(text.len() <= INSTRUCTIONS_LIMIT + 200);
+    }
+
+    #[test]
+    fn render_prompt_places_instructions_and_never_scans_them_for_keys() {
+        let data = |instructions: &str| PromptData {
+            cwd: "/c".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            step_timeout: "5s".into(),
+            output_limit: 10,
+            max_steps: 3,
+            info: BTreeMap::new(),
+            instructions: instructions.into(),
+        };
+        // The default template carries the key: the paragraph lands there.
+        let out = render_prompt(
+            DEFAULT_PROMPT_TEMPLATE,
+            data("--- AGENTS.md ---\nUse {{.Nope}} literally.\n"),
+        )
+        .unwrap();
+        assert!(out.contains("Repository instructions follow"), "{out}");
+        assert!(out.contains("Use {{.Nope}} literally."), "{out}");
+        assert!(!out.contains("{{.Instructions}}"));
+        let tail = out.rsplit("Repository instructions follow").next().unwrap();
+        assert!(
+            tail.contains("The task follows"),
+            "the task line stays last: {tail}"
+        );
+        // Without instructions the key leaves no trace.
+        let out = render_prompt(DEFAULT_PROMPT_TEMPLATE, data("")).unwrap();
+        assert!(!out.contains("Repository instructions"), "{out}");
+        assert!(!out.contains("{{.Instructions}}"));
+        assert!(
+            !out.contains("\n\n\n"),
+            "no empty paragraph where the key stood: {out:?}"
+        );
+        // A custom template without the key gets the paragraph appended.
+        let out = render_prompt("Hello {{.Cwd}}", data("be nice")).unwrap();
+        assert_eq!(
+            out,
+            "Hello /c\nRepository instructions follow; they apply in addition to the task, and the rules above still win where they differ.\nbe nice"
+        );
+        assert_eq!(
+            render_prompt("Hello {{.Cwd}}", data("")).unwrap(),
+            "Hello /c"
+        );
+        // An unknown key in the template itself is still an error.
+        assert!(render_prompt("Hello {{.Nope}}", data("x")).is_err());
     }
 
     #[test]

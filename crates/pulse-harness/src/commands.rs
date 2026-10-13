@@ -132,6 +132,16 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         "read the system prompt template from PATH",
     );
     fs.bool_var("no-store", false, "do not open the PULSE store");
+    fs.bool_var(
+        "no-instructions",
+        false,
+        "do not read AGENTS.md and the other repository instruction files into the prompt",
+    );
+    fs.bool_var(
+        "no-mcp",
+        false,
+        "do not offer the project's enabled MCP servers as tools",
+    );
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
     apply_raw_globals(c, &fs);
@@ -349,6 +359,15 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             "GIT_TERMINAL_PROMPT=0".to_string(),
         ])
         .collect();
+    let instructions_on = !fs.get_bool("no-instructions")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.instructions", "on") != "off");
+    let (instructions, instruction_files) = if instructions_on {
+        load_instructions(&abs_cwd)
+    } else {
+        (String::new(), Vec::new())
+    };
     let mut cfg = Config {
         model: model_name.clone(),
         task,
@@ -366,6 +385,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         context_window,
         system_prompt_template,
         cancel_file,
+        instructions,
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
@@ -390,7 +410,24 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     }
     let trajectory_sink =
         (!trajectory_path.is_empty()).then(|| TrajectorySink::new(c, &trajectory_path));
-    let agent = new(p, Box::new(LocalEnv::new(abs_cwd, Some(env))), cfg, sinks);
+    let mut agent = new(p, Box::new(LocalEnv::new(abs_cwd, Some(env))), cfg, sinks);
+    if !instruction_files.is_empty() {
+        agent.note_at_start(format!(
+            "read repository instructions from {} ({} bytes) into the system prompt",
+            instruction_files.join(", "),
+            agent.cfg.instructions.len()
+        ));
+    }
+    let mcp_on = !fs.get_bool("no-mcp")
+        && st
+            .as_ref()
+            .is_some_and(|s| s.setting("harness.mcp_tools", "on") != "off");
+    if mcp_on && let Some(s) = &st {
+        let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
+        for note in attach_mcp_servers(&mut agent, s, &project, &c.home) {
+            agent.note_at_start(note);
+        }
+    }
     let shared = shared_agent(agent);
     if let Some(ts) = trajectory_sink {
         shared
@@ -979,10 +1016,19 @@ fn harness_prompt(c: &mut Context, args: &[String]) -> Result<()> {
     } else {
         fs.get_string("model")
     };
+    let instructions = if st
+        .as_ref()
+        .is_none_or(|s| s.setting("harness.instructions", "on") != "off")
+    {
+        load_instructions(&abs_cwd).0
+    } else {
+        String::new()
+    };
     let cfg = apply_defaults(Config {
         cwd: abs_cwd.clone(),
         provider: provider_name,
         model: model_name,
+        instructions,
         ..Config::default()
     });
     let prompt = render_prompt(
@@ -1157,6 +1203,56 @@ pub fn harness_provider_options(c: &Context, st: Option<&Store>) -> ProviderOpti
         settings: st.map_or_else(BTreeMap::new, Store::provider_settings),
         ..ProviderOptions::default()
     }
+}
+
+/// How long a run waits for one MCP server to answer `initialize` before
+/// it goes on without it: a cold `npx` server takes a while, a dead one
+/// should not hold the run for the client's full 90 s.
+pub const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Connects the enabled MCP servers of `project` and offers their tools to
+/// the agent. Returns the notes to emit: one per connected server, one per
+/// server that did not answer (the run goes on without it).
+pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &str) -> Vec<String> {
+    let mut notes = Vec::new();
+    let servers = match s.mcp_servers_for(project) {
+        Ok(v) => v,
+        Err(e) => return vec![format!("MCP servers not read from the store: {e}")],
+    };
+    if servers.is_empty() {
+        return notes;
+    }
+    let resolver = pulse_mcp::resolver(home);
+    for server in servers {
+        let connected = pulse_mcp::prepare(&server, &resolver)
+            .and_then(|wire| pulse_mcp::Client::connect_with(&server, wire, MCP_CONNECT_TIMEOUT))
+            .and_then(|mut cl| {
+                let tools = cl.tools()?;
+                Ok((cl, tools))
+            });
+        match connected {
+            Ok((cl, tools)) => {
+                notes.push(format!(
+                    "MCP server {} connected: {} tool{} offered as mcp__{}__<tool>",
+                    server.name,
+                    tools.len(),
+                    if tools.len() == 1 { "" } else { "s" },
+                    server.name
+                ));
+                agent.add_mcp_server(McpServerTools {
+                    server: server.name.clone(),
+                    tools,
+                    backend: Box::new(cl),
+                });
+            }
+            Err(e) => notes.push(format!(
+                "MCP server {} unavailable, the run goes on without it: {}",
+                server.name,
+                one_line(&pulse_cred::redact(&e.to_string(), &[]), 300)
+            )),
+        }
+    }
+    notes
 }
 
 pub fn default_run_model(
@@ -1555,7 +1651,12 @@ impl Sink for ProgressSink {
             StepKind::Command => {
                 let _ = writeln!(self.w, "{}$ {}", prefix, one_line(&step.command, 160));
             }
-            StepKind::Read | StepKind::Grep | StepKind::Edit => {
+            StepKind::Read
+            | StepKind::Grep
+            | StepKind::Glob
+            | StepKind::Edit
+            | StepKind::Write
+            | StepKind::Mcp => {
                 let _ = writeln!(
                     self.w,
                     "{}{}: {}",
@@ -1563,6 +1664,9 @@ impl Sink for ProgressSink {
                     step.kind,
                     one_line(&step.command, 160)
                 );
+            }
+            StepKind::Plan => {
+                let _ = writeln!(self.w, "{}plan: {}", prefix, one_line(&step.content, 160));
             }
             StepKind::Observation => {
                 let code = step.exit_code.unwrap_or(0);
@@ -1876,6 +1980,10 @@ pub fn write_harness_transcript(
             )?,
             "error" => writeln!(w, "[{}] error: {}\n", s.n, s.content)?,
             "exit" => writeln!(w, "[{}] exit: {}\n", s.n, s.content)?,
+            "plan" => writeln!(w, "[{}] {}\n", s.n, s.content)?,
+            "read" | "grep" | "glob" | "edit" | "write" | "mcp" => {
+                writeln!(w, "[{}] {} {}\n", s.n, s.kind, head_tail(&s.content, 20))?
+            }
             _ => {}
         }
     }

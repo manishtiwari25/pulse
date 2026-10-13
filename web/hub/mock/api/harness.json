@@ -183,6 +183,30 @@
       "secret": false
     },
     {
+      "name": "harness.instructions",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run reads the clone's repository instruction files - AGENTS.md, CLAUDE.md, GEMINI.md, .github/copilot-instructions.md - into its system prompt; off: the task alone speaks for the repository",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.mcp_tools",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run with a store connects the project's enabled MCP servers at its start and offers their tools to the model as mcp__<server>__<tool>; off: workers call servers through pulse mcp call only",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
       "name": "worker_model",
       "value": "claude-sonnet-4.5",
       "default": "",

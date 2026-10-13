@@ -733,7 +733,7 @@ mod go_harness_tests {
                 .to_string()
                 .contains("harness takes one of native, copilot-cli")
         );
-        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.context_window, harness.format_retries, harness.keep_observations, harness.max_cost, harness.max_steps, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.context_window, harness.format_retries, harness.instructions, harness.keep_observations, harness.max_cost, harness.max_steps, harness.mcp_tools, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
         assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
         assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
         assert_eq!(
@@ -907,9 +907,11 @@ mod go_harness_tests {
                 "harness.commit_timeout",
                 "harness.context_window",
                 "harness.format_retries",
+                "harness.instructions",
                 "harness.keep_observations",
                 "harness.max_cost",
                 "harness.max_steps",
+                "harness.mcp_tools",
                 "harness.output_limit",
                 "harness.step_timeout",
                 "harness.system_prompt",

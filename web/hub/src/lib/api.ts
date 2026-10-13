@@ -1002,7 +1002,7 @@ export interface HarnessSession {
   cancel_requested_at: string;
 }
 
-export type HarnessStepKind = "assistant" | "command" | "observation" | "note" | "error" | "exit";
+export type HarnessStepKind = "assistant" | "command" | "read" | "grep" | "glob" | "edit" | "write" | "plan" | "mcp" | "observation" | "note" | "error" | "exit";
 
 export interface HarnessStep {
   n: number;

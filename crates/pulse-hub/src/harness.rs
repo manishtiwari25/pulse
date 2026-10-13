@@ -178,6 +178,13 @@ impl Handler {
             output_limit: store.setting_int("harness.output_limit") as usize,
             max_steps: store.setting_int("harness.max_steps") as i32,
             info: BTreeMap::new(),
+            // The preview has no clone to read: it stands in for the
+            // repository instructions a run would load.
+            instructions: if store.setting("harness.instructions", "on") == "off" {
+                String::new()
+            } else {
+                "<the clone's AGENTS.md, CLAUDE.md, GEMINI.md and .github/copilot-instructions.md, when it has them>".to_string()
+            },
         };
         let rendered = pulse_harness::render_prompt(&render_template, data);
         let mut out = JsonMap::new();
@@ -879,6 +886,8 @@ impl Handler {
                 "harness.keep_observations",
                 "harness.context_window",
                 "harness.system_prompt",
+                "harness.instructions",
+                "harness.mcp_tools",
                 "harness.step_timeout",
                 "harness.commit_timeout",
                 "harness.output_limit",
@@ -1689,6 +1698,24 @@ mod tests {
             "Hello {{.Cwd}} {{.Provider}}",
         )
         .unwrap();
+        let (status, result, raw) = crate::test_helpers_http::request(
+            crate::test_helpers_http::handler(&s),
+            "GET",
+            "/api/v1/harness/prompt",
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        // The preview stands in for the clone's instruction files; a
+        // template without the key gets them appended.
+        let rendered = result["rendered"].as_str().unwrap();
+        assert!(
+            rendered.starts_with("Hello <project clone> hubfake\nRepository instructions follow"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<the clone's AGENTS.md"), "{rendered}");
+        s.set_setting("human", "harness.instructions", "off")
+            .unwrap();
         let (status, result, raw) = crate::test_helpers_http::request(
             crate::test_helpers_http::handler(&s),
             "GET",

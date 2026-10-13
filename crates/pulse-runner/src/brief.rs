@@ -697,6 +697,10 @@ pub(crate) fn write_mcp_brief_section(
         b.push(mcp_server_line(m));
     }
     b.push(String::new());
+    if s.setting("harness", "native") == "native" && s.setting("harness.mcp_tools", "on") != "off" {
+        b.push("The harness connects these servers when your run starts and offers their tools to you directly, named `mcp__<server>__<tool>`; call them like any other tool. Past 32 tools it offers `mcp_search` instead - look a tool up by what it does and call what it finds. A server that does not answer is noted at the start of your run and skipped.".into());
+        b.push(String::new());
+    }
     b.push("`pulse mcp tools NAME` lists a server's tools with their descriptions; `pulse mcp call NAME TOOL --args '{...}'` calls one and prints its text result (exit 1 when the tool reports an error); `pulse mcp resources NAME` and `pulse mcp read NAME URI` read what it publishes.".into());
     b.push(String::new());
     b.push("Use them to read the outside world (issues, feedback, docs) and to act where a tool exists; never write a secret into a file, a commit or your report; say in your report which servers you used.".into());
@@ -1231,6 +1235,7 @@ mod tests {
             ),
             "- docs (http). Never checked; `pulse mcp connect` shows its tools.",
             &format!("- broken (http). The last check ({TEST_NOW}) failed: HTTP 502 Bad Gateway."),
+            "offers their tools to you directly, named `mcp__<server>__<tool>`",
             "`pulse mcp tools NAME` lists a server's tools",
             "`pulse mcp call NAME TOOL --args '{...}'`",
             "never write a secret into a file, a commit or your report; say in your report which servers you used.",

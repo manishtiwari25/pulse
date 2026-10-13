@@ -146,6 +146,8 @@ const LABELS: Record<string, string> = {
   "harness.keep_observations": "Recent command results kept in full",
   "harness.context_window": "Context window the model takes (tokens, 0 = from the model list)",
   "harness.system_prompt": "System prompt",
+  "harness.instructions": "Read AGENTS.md and other repository instructions into the prompt",
+  "harness.mcp_tools": "Offer the project's MCP servers as tools",
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
   "harness.output_limit": "Output kept per command (characters)",
@@ -249,6 +251,10 @@ const HELP: Record<string, string> = {
   "harness.context_window":
     "How many tokens of context the model takes; past 80% of it older command results are summarised harder. 0 reads the window from the provider's model list, which is where the 1M-token Claude and Gemini models report it.",
   "harness.system_prompt": "The instructions every run starts with.",
+  "harness.instructions":
+    "On: a run reads the clone's AGENTS.md, CLAUDE.md, GEMINI.md and .github/copilot-instructions.md (each once, 16 KB per file) into its system prompt. Off: the task alone speaks for the repository.",
+  "harness.mcp_tools":
+    "On: a run connects the project's enabled MCP servers at its start and the model calls their tools directly as mcp__server__tool; a server that does not answer is skipped. Off: workers reach servers through pulse mcp call only.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
   "harness.commit_timeout":
     "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",
