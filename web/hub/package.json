@@ -48,7 +48,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "serve": "^14.2.6",
     "shadcn": "^4.21.0",
     "tailwindcss": "^4",
     "typescript": "^5"
