@@ -4409,7 +4409,19 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        std::thread::sleep(test_wait(Duration::from_millis(500)));
+        // Wait for the idle line itself rather than a fixed pause: under
+        // full-workspace test load the first pass can outlast any sleep, and
+        // posts created mid-pass are retired by it without the second pass
+        // this test is about.
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(20));
+        while !out.string().contains("idle: ") {
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "the daemon did not reach its idle wait:\n{}",
+                out.string()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let old = crate::util::plus_hours(TEST_NOW, -8.0 * 24.0);
         for n in 0..5 {
             crate::board::create_post(
