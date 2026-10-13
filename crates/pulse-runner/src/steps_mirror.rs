@@ -65,6 +65,8 @@ pub(crate) struct RemoteStepsStep {
     pub finish_reason: Option<String>,
     #[serde(rename = "choices", default)]
     pub choices: Option<i64>,
+    #[serde(rename = "depth", default)]
+    pub depth: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -261,6 +263,7 @@ impl RemoteStepsMirror {
                         model: ev.model,
                         finish_reason: ev.finish_reason,
                         choices: ev.choices,
+                        depth: ev.depth,
                     })?;
                 }
                 "finish" => {

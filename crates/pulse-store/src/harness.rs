@@ -47,6 +47,13 @@ pub struct HarnessStep {
     pub finish_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choices: Option<i64>,
+    /// 0 for the run's own steps, 1 for a subagent's.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub depth: i64,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 #[derive(Debug, Clone, Default)]
 pub struct HarnessSessionFilter {
@@ -104,7 +111,7 @@ pub struct HarnessCounts {
     pub cost_today: f64,
 }
 const SESSION_COLS: &str = "id, run_id, job_id, agent, project, executor, provider, model, cwd, status, exit_status, submission, error, steps, calls, prompt_tokens, completion_tokens, cost, started_at, updated_at, ended_at, trajectory, cancel_requested_at";
-const STEP_COLS: &str = "session_id, n, at, kind, content, command, exit_code, duration_ms, prompt_tokens, completion_tokens, model, finish_reason, choices";
+const STEP_COLS: &str = "session_id, n, at, kind, content, command, exit_code, duration_ms, prompt_tokens, completion_tokens, model, finish_reason, choices, depth";
 fn scan_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessSession> {
     Ok(HarnessSession {
         id: r.get(0)?,
@@ -147,6 +154,7 @@ fn scan_step(r: &rusqlite::Row<'_>) -> rusqlite::Result<HarnessStep> {
         model: r.get(10)?,
         finish_reason: r.get(11)?,
         choices: r.get(12)?,
+        depth: r.get(13)?,
     })
 }
 #[derive(Debug, thiserror::Error)]
@@ -181,8 +189,8 @@ impl Store {
             step.at = self.now();
         }
         let tx = self.begin()?;
-        tx.execute(&format!("INSERT OR REPLACE INTO harness_steps ({STEP_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),params![step.session_id,step.n,step.at,step.kind,step.content,step.command,step.exit_code,step.duration_ms,step.prompt_tokens,step.completion_tokens,step.model,step.finish_reason,step.choices])?;
-        let n=tx.execute("UPDATE harness_sessions SET updated_at = ?, steps = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind IN ('command', 'read', 'grep', 'edit')), calls = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'assistant'), prompt_tokens = (SELECT COALESCE(SUM(prompt_tokens), 0) FROM harness_steps WHERE session_id = ?), completion_tokens = (SELECT COALESCE(SUM(completion_tokens), 0) FROM harness_steps WHERE session_id = ?) WHERE id = ?",params![self.now(),step.session_id,step.session_id,step.session_id,step.session_id,step.session_id])?;
+        tx.execute(&format!("INSERT OR REPLACE INTO harness_steps ({STEP_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),params![step.session_id,step.n,step.at,step.kind,step.content,step.command,step.exit_code,step.duration_ms,step.prompt_tokens,step.completion_tokens,step.model,step.finish_reason,step.choices,step.depth])?;
+        let n=tx.execute("UPDATE harness_sessions SET updated_at = ?, steps = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind IN ('command', 'read', 'grep', 'glob', 'edit', 'write', 'plan', 'mcp', 'skill', 'fetch', 'subagent')), calls = (SELECT COUNT(*) FROM harness_steps WHERE session_id = ? AND kind = 'assistant'), prompt_tokens = (SELECT COALESCE(SUM(prompt_tokens), 0) FROM harness_steps WHERE session_id = ?), completion_tokens = (SELECT COALESCE(SUM(completion_tokens), 0) FROM harness_steps WHERE session_id = ?) WHERE id = ?",params![self.now(),step.session_id,step.session_id,step.session_id,step.session_id,step.session_id])?;
         if n == 0 {
             return Err(input_err(format!(
                 "harness session {:?} does not exist",
@@ -733,7 +741,7 @@ mod go_harness_tests {
                 .to_string()
                 .contains("harness takes one of native, copilot-cli")
         );
-        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.context_window, harness.format_retries, harness.instructions, harness.keep_observations, harness.max_cost, harness.max_steps, harness.mcp_tools, harness.output_limit, harness.step_timeout, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.compact_at, harness.context_window, harness.fetch_allow, harness.format_retries, harness.hooks, harness.instructions, harness.keep_observations, harness.max_cost, harness.max_steps, harness.mcp_tools, harness.output_limit, harness.skills, harness.step_timeout, harness.subagents, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
         assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
         assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
         assert_eq!(
@@ -905,15 +913,20 @@ mod go_harness_tests {
             vec![
                 "harness",
                 "harness.commit_timeout",
+                "harness.compact_at",
                 "harness.context_window",
+                "harness.fetch_allow",
                 "harness.format_retries",
+                "harness.hooks",
                 "harness.instructions",
                 "harness.keep_observations",
                 "harness.max_cost",
                 "harness.max_steps",
                 "harness.mcp_tools",
                 "harness.output_limit",
+                "harness.skills",
                 "harness.step_timeout",
+                "harness.subagents",
                 "harness.system_prompt",
                 "provider",
                 "provider.anthropic.base_url",

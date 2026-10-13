@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeftIcon,
   BanIcon,
+  BookOpenIcon,
   BotIcon,
   CheckIcon,
   CircleAlertIcon,
@@ -20,6 +21,8 @@ import {
   FilePenIcon,
   FilePlusIcon,
   FilesIcon,
+  GitForkIcon,
+  GlobeIcon,
   InfoIcon,
   ListChecksIcon,
   LoaderCircleIcon,
@@ -30,6 +33,7 @@ import {
   TerminalIcon,
   TimerOffIcon,
   TriangleAlertIcon,
+  WebhookIcon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -399,6 +403,10 @@ const STEP_DOT: Record<string, string> = {
   write: "bg-muted text-foreground",
   plan: "bg-primary/10 text-primary",
   mcp: "bg-muted text-foreground",
+  skill: "bg-muted text-foreground",
+  fetch: "bg-muted text-foreground",
+  subagent: "bg-primary/10 text-primary",
+  hook: "bg-muted text-muted-foreground",
   observation: "bg-muted text-muted-foreground",
   note: "bg-muted text-muted-foreground",
   error: "bg-warn/15 text-warn",
@@ -415,16 +423,20 @@ const STEP_LABEL: Record<string, string> = {
   write: "Wrote a file",
   plan: "Updated its plan",
   mcp: "Called an MCP tool",
+  skill: "Loaded a skill",
+  fetch: "Read a web page",
+  subagent: "Handed a sub-task to a helper",
+  hook: "Ran one of your hooks",
   observation: "What came back",
   note: "Note from PULSE",
   error: "Something went wrong",
   exit: "How it ended",
 };
 
-// The typed tools of the harness (read, grep, glob, edit, write, mcp) show
-// their request the way a command shows its line; the reply follows as an
-// observation like any command's output.
-const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp"];
+// The typed tools of the harness (read, grep, glob, edit, write, mcp, skill,
+// fetch, hook) show their request the way a command shows its line; the
+// reply follows as an observation like any command's output.
+const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "hook"];
 
 const STEP_ICON: Record<string, typeof InfoIcon> = {
   assistant: BotIcon,
@@ -437,14 +449,20 @@ const STEP_ICON: Record<string, typeof InfoIcon> = {
   write: FilePlusIcon,
   plan: ListChecksIcon,
   mcp: PlugIcon,
+  skill: BookOpenIcon,
+  fetch: GlobeIcon,
+  subagent: GitForkIcon,
+  hook: WebhookIcon,
   error: TriangleAlertIcon,
 };
 
 function StepIcon({ s, session }: { s: HarnessStep; session: HarnessSession }) {
-  if (s.kind === "exit") {
+  // A helper's exit is its own, not the run's.
+  if (s.kind === "exit" && !(s.depth ?? 0)) {
     const st = runState(session);
     return <st.Icon className={cn("size-3.5", RUN_ICON_TONE[st.tone])} />;
   }
+  if (s.kind === "exit") return s.content === "submitted" ? <CircleCheckIcon className="size-3.5 text-ok" /> : <CircleAlertIcon className="size-3.5 text-warn" />;
   const Icon = STEP_ICON[s.kind] ?? InfoIcon;
   return <Icon className="size-3.5" />;
 }
@@ -493,17 +511,19 @@ function StepTime({ d }: { d: string }) {
 
 function StepItem({ s, session, last }: { s: HarnessStep; session: HarnessSession; last: boolean }) {
   const tokens = (s.prompt_tokens || 0) + (s.completion_tokens || 0);
-  const tip = ["Step " + s.n, s.model ? "model " + s.model : "", tokens ? compact(tokens) + " tokens" : ""].filter(Boolean).join(", ");
+  // A helper's steps (depth 1) sit one indent in under the subagent step.
+  const depth = Math.min(s.depth ?? 0, 3);
+  const tip = ["Step " + s.n, depth ? "helper, depth " + depth : "", s.model ? "model " + s.model : "", tokens ? compact(tokens) + " tokens" : ""].filter(Boolean).join(", ");
   // An observation reads as the second half of the command above it.
   const quiet = s.kind === "observation";
   return (
-    <li className={cn("relative min-w-0 pl-9", !last && "pb-5")}>
+    <li className={cn("relative min-w-0 pl-9", !last && "pb-5")} style={depth ? { marginLeft: depth * 28 } : undefined} data-depth={depth || undefined}>
       {!last ? <span className="absolute top-7 bottom-0 left-[13px] w-px bg-border" aria-hidden /> : null}
       <span className={cn("absolute top-0 left-0 flex size-7 items-center justify-center rounded-full", STEP_DOT[s.kind] ?? STEP_DOT.note)} aria-hidden>
         <StepIcon s={s} session={session} />
       </span>
       <div className={cn("flex min-h-7 min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[13px] leading-relaxed", quiet && "sr-only")}>
-        <span className="font-medium text-foreground">{STEP_LABEL[s.kind] ?? "Step " + s.n}</span>
+        <span className="font-medium text-foreground">{s.kind === "exit" && depth ? "How the helper ended" : (STEP_LABEL[s.kind] ?? "Step " + s.n)}</span>
         <span className="text-muted-foreground" title={tip}>
           {s.at ? <StepTime d={s.at} /> : "Step " + s.n}
         </span>
@@ -522,12 +542,19 @@ function StepItem({ s, session, last }: { s: HarnessStep; session: HarnessSessio
           <pre className="min-w-0 rounded-xl border bg-muted/30 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">{s.content || s.command}</pre>
         ) : s.kind === "plan" ? (
           <PlanCard s={s} />
+        ) : s.kind === "subagent" ? (
+          <div className="grid min-w-0 gap-1 rounded-xl border border-primary/30 bg-primary/[0.05] px-4 py-3">
+            <p className="text-[13px] font-medium text-muted-foreground">{s.command || "subagent"}</p>
+            <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>
+          </div>
         ) : s.kind === "observation" ? (
           <Observation s={s} />
         ) : s.kind === "note" ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground anywhere">{sentence(s.content)}</p>
         ) : s.kind === "error" ? (
           <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>
+        ) : depth ? (
+          <p className="text-sm leading-relaxed text-muted-foreground">{s.content === "submitted" ? "The helper reported back." : "The helper stopped: " + (s.content || "unknown") + "."}</p>
         ) : (
           <EndCard s={s} session={session} />
         )}
@@ -559,7 +586,7 @@ function EndCard({ s, session }: { s: HarnessStep; session: HarnessSession }) {
 function transcriptText(d: HarnessSessionResponse): string {
   const lines = [`${d.session.id} ${d.session.status}`, `${d.session.project} ${d.session.job_id} ${d.session.job_title}`, `${d.session.agent} ${d.session.provider}/${d.session.model}`, ""];
   for (const s of d.steps) {
-    lines.push(`## ${s.n} ${s.kind} ${s.at || ""}`.trim());
+    lines.push(`## ${s.n}${s.depth ? " >" + s.depth : ""} ${s.kind} ${s.at || ""}`.trim());
     if (s.command) lines.push("$ " + s.command);
     if (s.content) lines.push(s.content);
     if (s.exit_code !== null) lines.push("exit " + s.exit_code);

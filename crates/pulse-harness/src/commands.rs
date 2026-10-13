@@ -1,5 +1,9 @@
+use crate::compact::DEFAULT_COMPACT_AT;
+use crate::fetch::FetchPolicy;
 use crate::harness::*;
+use crate::hooks::load_hooks;
 use crate::localenv::LocalEnv;
+use crate::skills::{Skill, load_skills};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, table, write_json};
 use pulse_provider::{CancelToken, Login, Options as ProviderOptions, Provider};
@@ -141,6 +145,31 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         "no-mcp",
         false,
         "do not offer the project's enabled MCP servers as tools",
+    );
+    fs.bool_var(
+        "no-skills",
+        false,
+        "do not offer the clone's, the owner's and the registry's skills through the skill tool",
+    );
+    fs.bool_var(
+        "no-hooks",
+        false,
+        "do not run the owner's hooks (.pulse/hooks.json) around the run and its tool calls",
+    );
+    fs.bool_var(
+        "no-subagents",
+        false,
+        "do not offer the subagent tool (a bounded helper run on a sub-task)",
+    );
+    fs.string_var(
+        "fetch-allow",
+        "",
+        "hosts the fetch tool may read web pages from (comma-separated, *.example.com, or *); overrides harness.fetch_allow",
+    );
+    fs.int_var(
+        "compact-at",
+        -1,
+        "percent of the context window at which the conversation is summarised and compacted; 0 turns it off; overrides harness.compact_at",
     );
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
@@ -368,6 +397,16 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     } else {
         (String::new(), Vec::new())
     };
+    let subagents = !fs.get_bool("no-subagents")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.subagents", "on") != "off");
+    let compact_at = match fs.get_int("compact-at") {
+        n if n >= 0 => n.min(95),
+        _ => st.as_ref().map_or(DEFAULT_COMPACT_AT, |s| {
+            s.setting_int("harness.compact_at") as i32
+        }),
+    };
     let mut cfg = Config {
         model: model_name.clone(),
         task,
@@ -386,6 +425,8 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         system_prompt_template,
         cancel_file,
         instructions,
+        subagents,
+        compact_at,
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
@@ -422,11 +463,38 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         && st
             .as_ref()
             .is_some_and(|s| s.setting("harness.mcp_tools", "on") != "off");
+    let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
     if mcp_on && let Some(s) = &st {
-        let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
         for note in attach_mcp_servers(&mut agent, s, &project, &c.home) {
             agent.note_at_start(note);
         }
+    }
+    let skills_on = !fs.get_bool("no-skills")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.skills", "on") != "off");
+    if skills_on && let Some(note) = attach_skills(&mut agent, st.as_ref(), &project, &c.home) {
+        agent.note_at_start(note);
+    }
+    let hooks_on = !fs.get_bool("no-hooks")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.hooks", "on") != "off");
+    if hooks_on {
+        for note in attach_hooks(&mut agent, &c.home) {
+            agent.note_at_start(note);
+        }
+    }
+    let fetch_allow = match fs.get_string("fetch-allow") {
+        spec if !spec.trim().is_empty() => spec,
+        _ => st
+            .as_ref()
+            .map_or_else(String::new, |s| s.setting("harness.fetch_allow", "")),
+    };
+    let fetch_policy = FetchPolicy::parse(&fetch_allow);
+    if !fetch_policy.is_empty() {
+        agent.note_at_start(format!("fetch tool on for {}", fetch_policy.describe()));
+        agent.set_fetch_policy(fetch_policy);
     }
     let shared = shared_agent(agent);
     if let Some(ts) = trajectory_sink {
@@ -1255,6 +1323,100 @@ pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &st
     notes
 }
 
+/// Offers the clone's, the owner's and the registry's skills through the
+/// `skill` tool. Returns the start note when there are any.
+pub fn attach_skills(
+    agent: &mut Agent,
+    st: Option<&Store>,
+    project: &str,
+    home: &str,
+) -> Option<String> {
+    let mut skills = load_skills(&agent.cfg.cwd, home);
+    let folders = skills.len();
+    let mut registry = 0;
+    if let Some(s) = st {
+        match s.skills_for(project) {
+            Ok(list) => {
+                for k in list {
+                    if skills.iter().any(|x| x.name == k.name) {
+                        continue;
+                    }
+                    skills.push(Skill::inline(
+                        &k.name,
+                        &k.description,
+                        &k.body,
+                        "pulse skill",
+                    ));
+                    registry += 1;
+                }
+            }
+            Err(e) => {
+                agent.note_at_start(format!("skill registry unavailable: {e}"));
+            }
+        }
+    }
+    if skills.is_empty() {
+        return None;
+    }
+    let mut sources: Vec<String> = Vec::new();
+    for k in &skills {
+        if !sources.contains(&k.source) {
+            sources.push(k.source.clone());
+        }
+    }
+    let names: Vec<&str> = skills.iter().take(12).map(|k| k.name.as_str()).collect();
+    let note = format!(
+        "offered {} skill(s) through the skill tool ({} from {}, {} from the pulse skill registry): {}{}",
+        skills.len(),
+        folders,
+        sources
+            .iter()
+            .filter(|s| s.as_str() != "pulse skill")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        registry,
+        names.join(", "),
+        if skills.len() > names.len() {
+            format!(" and {} more", skills.len() - names.len())
+        } else {
+            String::new()
+        }
+    );
+    agent.set_skills(skills);
+    Some(note)
+}
+
+/// Runs the owner's hooks from the clone and the home around the run.
+/// Returns the start notes: what was loaded and what did not parse.
+pub fn attach_hooks(agent: &mut Agent, home: &str) -> Vec<String> {
+    let set = load_hooks(&agent.cfg.cwd, home);
+    let mut notes: Vec<String> = set
+        .errors
+        .iter()
+        .map(|e| format!("hook file skipped: {e}"))
+        .collect();
+    if set.hooks.is_empty() {
+        return notes;
+    }
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for h in &set.hooks {
+        *counts.entry(h.event.to_string()).or_default() += 1;
+    }
+    notes.push(format!(
+        "loaded {} hook(s) from {}: {}",
+        set.hooks.len(),
+        set.files.join(", "),
+        counts
+            .iter()
+            .map(|(e, n)| format!("{n} {e}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    agent.set_hooks(set);
+    notes
+}
+
 pub fn default_run_model(
     cancel: &CancelToken,
     st: Option<&Store>,
@@ -1414,6 +1576,7 @@ impl Sink for StoreSink {
             model: step.model.clone(),
             finish_reason: step.finish_reason.clone(),
             choices: step.choices,
+            depth: i64::from(step.depth),
         }) {
             self.warn(&e);
             return;
@@ -1422,6 +1585,9 @@ impl Sink for StoreSink {
         if let Value::Object(ref mut map) = payload {
             if let Some(code) = step.exit_code {
                 map.insert("exit_code".into(), json!(code));
+            }
+            if step.depth > 0 {
+                map.insert("depth".into(), json!(step.depth));
             }
             if let Ok(job) = std::env::var("PULSE_JOB")
                 && !job.is_empty()
@@ -1638,7 +1804,13 @@ impl ProgressSink {
 impl Sink for ProgressSink {
     fn step(&mut self, step: Step) {
         let elapsed = self.start.elapsed().as_secs();
-        let prefix = format!("{:02}:{:02} [{}] ", elapsed / 60, elapsed % 60, step.n);
+        let prefix = format!(
+            "{:02}:{:02} [{}] {}",
+            elapsed / 60,
+            elapsed % 60,
+            step.n,
+            "  ".repeat(usize::from(step.depth))
+        );
         match step.kind {
             StepKind::Assistant => {
                 let _ = writeln!(
@@ -1656,13 +1828,24 @@ impl Sink for ProgressSink {
             | StepKind::Glob
             | StepKind::Edit
             | StepKind::Write
-            | StepKind::Mcp => {
+            | StepKind::Mcp
+            | StepKind::Skill
+            | StepKind::Fetch
+            | StepKind::Hook => {
                 let _ = writeln!(
                     self.w,
                     "{}{}: {}",
                     prefix,
                     step.kind,
                     one_line(&step.command, 160)
+                );
+            }
+            StepKind::Subagent => {
+                let _ = writeln!(
+                    self.w,
+                    "{}subagent: {}",
+                    prefix,
+                    one_line(&step.content, 160)
                 );
             }
             StepKind::Plan => {
@@ -1734,6 +1917,8 @@ pub fn run_json(
         ("steps".into(), json!(result.steps)),
         ("calls".into(), json!(result.calls)),
         ("format_errors".into(), json!(result.format_errors)),
+        ("compactions".into(), json!(result.compactions)),
+        ("subagents".into(), json!(result.subagents)),
         (
             "usage".into(),
             json!(pulse_store::gomap! {
@@ -1967,22 +2152,29 @@ pub fn write_harness_transcript(
         h.id, h.status, h.project, h.agent, h.model
     )?;
     for s in steps {
+        // A subagent's steps carry their depth: `[12 >1]`.
+        let tag = if s.depth > 0 {
+            format!("{} >{}", s.n, s.depth)
+        } else {
+            s.n.to_string()
+        };
         match s.kind.as_str() {
-            "assistant" => writeln!(w, "[{}] assistant\n{}\n", s.n, s.content)?,
-            "command" => writeln!(w, "[{}] $ {}\n", s.n, s.command)?,
+            "assistant" => writeln!(w, "[{}] assistant\n{}\n", tag, s.content)?,
+            "command" => writeln!(w, "[{}] $ {}\n", tag, s.command)?,
             "observation" => writeln!(
                 w,
                 "[{}] output exit={} duration={}ms\n{}\n",
-                s.n,
+                tag,
                 s.exit_code.map_or("-".into(), |c| c.to_string()),
                 s.duration_ms,
                 head_tail(&s.content, 20)
             )?,
-            "error" => writeln!(w, "[{}] error: {}\n", s.n, s.content)?,
-            "exit" => writeln!(w, "[{}] exit: {}\n", s.n, s.content)?,
-            "plan" => writeln!(w, "[{}] {}\n", s.n, s.content)?,
-            "read" | "grep" | "glob" | "edit" | "write" | "mcp" => {
-                writeln!(w, "[{}] {} {}\n", s.n, s.kind, head_tail(&s.content, 20))?
+            "error" => writeln!(w, "[{}] error: {}\n", tag, s.content)?,
+            "exit" => writeln!(w, "[{}] exit: {}\n", tag, s.content)?,
+            "plan" => writeln!(w, "[{}] {}\n", tag, s.content)?,
+            "read" | "grep" | "glob" | "edit" | "write" | "mcp" | "skill" | "fetch"
+            | "subagent" | "hook" => {
+                writeln!(w, "[{}] {} {}\n", tag, s.kind, head_tail(&s.content, 20))?
             }
             _ => {}
         }

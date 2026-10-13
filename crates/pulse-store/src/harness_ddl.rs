@@ -40,6 +40,7 @@ pub const HARNESS_DDL: &[&str] = &[
   model TEXT NOT NULL DEFAULT '',
   finish_reason TEXT,
   choices INTEGER,
+  depth INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id, n)
 )"####,
 ];
@@ -64,5 +65,10 @@ pub const HARNESS_COLUMNS: &[Column] = &[
         table: r####"harness_steps"####,
         name: r####"choices"####,
         ddl: r####"INTEGER"####,
+    },
+    Column {
+        table: r####"harness_steps"####,
+        name: r####"depth"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
     },
 ];

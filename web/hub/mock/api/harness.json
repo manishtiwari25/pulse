@@ -207,6 +207,66 @@
       "secret": false
     },
     {
+      "name": "harness.skills",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run offers the skill tool, which loads one skill's SKILL.md when the model asks; off: skills reach the model through the brief alone",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.hooks",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run runs the owner's hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json; off: no hooks run",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.subagents",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run offers the subagent tool: a bounded helper run on a self-contained sub-task; off: the tool is not offered",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.fetch_allow",
+      "value": "docs.rs, *.rust-lang.org",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "hosts a native-harness run's fetch tool may read web pages from; empty turns the tool off",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
+      "name": "harness.compact_at",
+      "value": "70",
+      "default": "70",
+      "kind": "count",
+      "min": 0,
+      "choices": null,
+      "description": "percent of the context window at which a native-harness run summarises the older part of the conversation; 0 turns compaction off",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
       "name": "worker_model",
       "value": "claude-sonnet-4.5",
       "default": "",

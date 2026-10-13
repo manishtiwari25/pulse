@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the run mode and the
 // transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.fetch_allow", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -485,6 +485,48 @@ function LimitInput({ s }: { s: Setting }) {
   );
 }
 
+// A free-text setting (the fetch tool's allowed hosts) that saves on blur
+// or Enter, like a limit does.
+function TextInput({ s, placeholder }: { s: Setting; placeholder?: string }) {
+  const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });
+  const [error, setError] = useState("");
+  const draft = draftState.name === s.name && draftState.value === s.value ? draftState.draft : s.value;
+  const setDraft = (value: string) => setDraftState({ name: s.name, value: s.value, draft: value });
+  const save = () => {
+    if (draft.trim() === s.value.trim()) return;
+    setError("");
+    saveSetting(s.name, draft.trim())
+      .then(() => toast.success(settingLabel(s.name) + " saved."))
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
+      });
+  };
+  return (
+    <div className="grid min-w-0 content-start gap-1.5">
+      <Label htmlFor={"harness-" + s.name}>{settingLabel(s.name)}</Label>
+      <Input
+        id={"harness-" + s.name}
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") setDraft(s.value);
+        }}
+        aria-invalid={!!error}
+        aria-describedby={"harness-" + s.name + "-help"}
+        className="max-w-xl font-mono text-[13px]"
+      />
+      <p id={"harness-" + s.name + "-help"} className={cn("text-[13px] leading-snug", error ? "text-bad" : "text-muted-foreground")}>
+        {error || settingHelp(s.name, s.description)}
+      </p>
+      <KeyName name={s.name} />
+    </div>
+  );
+}
+
 function PromptEditor() {
   const prompt = useApi<HarnessPrompt>("harness/prompt", { refresh: 30000 });
   const [draftState, setDraftState] = useState({ marker: "", draft: "" });
@@ -584,8 +626,9 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const mode = setting(rows, "harness");
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
-  const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
-  const toggles = ["harness.instructions", "harness.mcp_tools"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window", "harness.compact_at"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const toggles = ["harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const fetchAllow = setting(rows, "harness.fetch_allow");
   const words = signInWords(d?.provider);
   const now = useNow();
   const login = d?.provider.login;
@@ -742,6 +785,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                   ))}
                 </div>
               ) : null}
+              {fetchAllow ? <TextInput s={fetchAllow} placeholder="docs.rs, *.rust-lang.org" /> : null}
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">{limits.map((s) => <LimitInput key={s.name} s={s} />)}</div>
             </>
           </Disclosure>

@@ -148,6 +148,11 @@ const LABELS: Record<string, string> = {
   "harness.system_prompt": "System prompt",
   "harness.instructions": "Read AGENTS.md and other repository instructions into the prompt",
   "harness.mcp_tools": "Offer the project's MCP servers as tools",
+  "harness.skills": "Offer repository and registry skills as a tool",
+  "harness.hooks": "Run the owner's hooks around the run and its tools",
+  "harness.subagents": "Let a run start a bounded helper on a sub-task",
+  "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
+  "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
   "harness.output_limit": "Output kept per command (characters)",
@@ -255,6 +260,16 @@ const HELP: Record<string, string> = {
     "On: a run reads the clone's AGENTS.md, CLAUDE.md, GEMINI.md and .github/copilot-instructions.md (each once, 16 KB per file) into its system prompt. Off: the task alone speaks for the repository.",
   "harness.mcp_tools":
     "On: a run connects the project's enabled MCP servers at its start and the model calls their tools directly as mcp__server__tool; a server that does not answer is skipped. Off: workers reach servers through pulse mcp call only.",
+  "harness.skills":
+    "On: the model can load a skill's instructions on demand - the clone's .pulse/skills, .claude/skills, .github/skills and .agents/skills, your ~/.pulse/skills, and the enabled entries of the skill registry; only the names and descriptions sit in the prompt. Off: skills reach the model through the brief alone.",
+  "harness.hooks":
+    "On: your hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json run around the run: run_start output joins the prompt, a pre_tool hook can block a call (exit 2), post_tool output is appended to the result, run_end hears the outcome. Off: no hooks run.",
+  "harness.subagents":
+    "On: a run can hand a self-contained sub-task to a helper that works in the same clone with the same budget and returns a report; its steps show indented in the session. Off: the tool is not offered.",
+  "harness.fetch_allow":
+    "The hosts a run may read web pages from, comma-separated - docs.rs, *.rust-lang.org, or * for any. Pages come back as text (2 MB, 30 s). Empty turns the fetch tool off.",
+  "harness.compact_at":
+    "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. The summary call is free of the step cap. 0 turns compaction off.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
   "harness.commit_timeout":
     "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",

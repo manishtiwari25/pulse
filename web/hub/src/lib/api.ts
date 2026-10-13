@@ -1002,7 +1002,24 @@ export interface HarnessSession {
   cancel_requested_at: string;
 }
 
-export type HarnessStepKind = "assistant" | "command" | "read" | "grep" | "glob" | "edit" | "write" | "plan" | "mcp" | "observation" | "note" | "error" | "exit";
+export type HarnessStepKind =
+  | "assistant"
+  | "command"
+  | "read"
+  | "grep"
+  | "glob"
+  | "edit"
+  | "write"
+  | "plan"
+  | "mcp"
+  | "skill"
+  | "fetch"
+  | "subagent"
+  | "hook"
+  | "observation"
+  | "note"
+  | "error"
+  | "exit";
 
 export interface HarnessStep {
   n: number;
@@ -1015,6 +1032,8 @@ export interface HarnessStep {
   prompt_tokens: number;
   completion_tokens: number;
   model: string;
+  /** 0 for the run's own steps, 1 for a subagent's; absent means 0. */
+  depth?: number;
 }
 
 export interface HarnessSessionsResponse {

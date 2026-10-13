@@ -1212,6 +1212,13 @@ record, read with `pulse record show WF-evolve`.
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `harness.context_window` | `0` tokens (= the model list) | The context window the harness assumes for context discipline (collapsing harder past 80% of it); `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none keeps the first level. `pulse harness run --context-window N` overrides it for one run. |
+| `harness.compact_at` | `70` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness)). `--compact-at N` for one run. |
+| `harness.instructions` | `on` | A native-harness run reads the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` into its system prompt. |
+| `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
+| `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
+| `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
+| `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
+| `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
@@ -1262,8 +1269,8 @@ Every job runs through PULSE's own agent harness, `pulse harness run` - a
 small, readable loop in the lineage of
 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent): one model,
 seven typed tools (`bash`, `read`, `grep`, `glob`, `edit`, `write`, `plan`)
-plus the project's MCP servers' tools, a linear history, and limits the
-owner sets.
+plus `skill`, `fetch` and `subagent` where the owner allows them and the
+project's MCP servers' tools, a linear history, and limits the owner sets.
 
 ```text
 system prompt (+ the clone's AGENTS.md) + the job's brief
@@ -1286,6 +1293,9 @@ and subject to the same deny rules and output cap as a shell command:
 | `edit` | exact search/replace in one file, each search matching once; `edits` applies several in order; an empty search creates the file |
 | `write` | a whole new file, parents created; refuses an existing file unless `overwrite` is true |
 | `plan` | the task's checklist (todo / doing / done), shown in the transcript and echoed back |
+| `skill` | one skill's `SKILL.md` by name, or one file of it (**Skills as tools**, below) |
+| `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
+| `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
 
 A reply may carry **several calls**: they run in order and every one gets
 its own observation, so a model reads three files in one turn instead of
@@ -1323,6 +1333,106 @@ seconds is noted in the transcript and skipped; the run goes on without it.
 `pulse mcp` commands stay available from `bash` either way. Each MCP call is
 an `mcp` step in the transcript with the arguments it sent and the text the
 server returned.
+
+**Skills as tools.** A run finds the clone's skill folders - `.pulse/skills`,
+`.claude/skills`, `.github/skills`, `.agents/skills`, then
+`~/.pulse/skills` - each `<name>/SKILL.md` (front-matter `name:` and
+`description:` read when present, the folder name otherwise; the first
+folder to define a name wins) - and, with a store, the project's
+[`pulse skill`](#shared-skills-pulse-skill) registry for the names the
+folders do not define. The model sees them as the `skill` tool, each name
+with its one-line description in the tool's schema, and loads one when the
+task calls for it: `skill(name)` returns the body (and the list of files
+the folder carries), `skill(name, file)` one of those files. An unknown
+name comes back with the names that exist. The system prompt gets a line
+saying skills exist and how to load one; nothing is loaded that the model
+did not ask for, so a project with forty skills costs the context a few
+hundred tokens, not forty documents. `harness.skills` (`on`) turns it off,
+`--no-skills` for one run; the brief still carries the skills the lead
+chose, exactly as before. Each load is a `skill` step.
+
+**Hooks.** The clone's `.pulse/hooks.json` and the owner's
+`~/.pulse/hooks.json` name commands the harness runs at four moments of a
+run - `run_start`, `pre_tool`, `post_tool`, `run_end` - and the clone's
+hooks run first:
+
+```json
+{"hooks": [
+  {"event": "pre_tool",  "tools": ["bash"],          "command": "pulse-guard --stdin", "timeout": 10},
+  {"event": "post_tool", "tools": ["edit", "write"], "command": "npm run lint:changed"},
+  {"event": "run_end",                               "command": "./scripts/after-run.sh"}
+]}
+```
+
+(a bare array is accepted too; `tools` left out means every tool, `timeout`
+defaults to 60 seconds, 600 at most). Each hook runs through `/bin/sh -c`
+in the clone root with the event as JSON on stdin (`event`, `cwd`, `tool`,
+`input` for the tool events; `task`, `model`, `depth` at the start;
+`exit_status`, `calls`, `steps`, `submission` at the end) and
+`PULSE_HOOK_EVENT` / `PULSE_TOOL` in the environment. A `pre_tool` hook
+that exits `2` **blocks the call**: the model sees ``blocked by hook `cmd`:
+<its stderr or stdout>`` as the observation and the tool never runs; any other
+failure is noted and the call proceeds. A `post_tool` hook's output is
+appended to the observation under ``[hook `cmd`]``, so a linter that runs
+after every edit speaks to the model in the same turn. What a `run_start`
+hook prints is appended to the system prompt (a build number, the branch
+policy, today's date); `run_end` runs once, before the clone is released,
+whatever the exit status. Hooks run as the owner within their own
+`timeout`, and never count as model calls or tool steps; each is a `hook`
+step in the transcript with the event and the tool it answered.
+`harness.hooks` (`on`) turns them off, `--no-hooks` for one run. These are
+the model's in-run hooks; the daemon's own `harness.step` and job events
+on the bus are a different thing.
+
+**Helpers.** A top-level run may delegate a self-contained sub-task - "find
+every caller of X and report which pass a delay", "run the suite and
+summarise the failures" - to the `subagent` tool: a second agent loop on
+the same model and clone (`cwd` shared, nothing copied) with its own
+message history, the parent's skills, hooks and fetch policy, no MCP
+servers and no helpers of its own (one level deep). The parent chooses
+`max_steps` (20 by default); the child is given at most the parent's
+remaining calls minus a reserve of four, the remaining minutes minus one,
+and the remaining cost, and the parent is told plainly when too little
+remains (`subagent: only 3 model calls remain in this run; do the work
+yourself and finish`). The child's final report returns as the observation
+- `subagent submitted: 2 model calls, 1 tool steps, 17s` and the text - and
+every one of its steps lands in the parent's session tagged with `depth:
+1`, numbered after the parent's; the console indents them and the
+transcript's `## 25 >1 grep` heading marks them. The child's calls, tool
+steps and usage count against the parent's budgets; a child that loses
+the clone ends the parent with `sandbox_lost` too. `harness.subagents`
+(`on`) turns it off, `--no-subagents` for one run. A helper never sees the
+tool; a job's brief is still written for one agent and the lead still plans
+with jobs, not helpers.
+
+**Web pages.** The `fetch` tool reads one `http(s)` page - a documentation
+page, a changelog, an issue the model was pointed at - as text (HTML
+reduced to its text with links kept, JSON and plain text as they are, 2 MB
+read at most, 30 seconds, five redirects), cut past `harness.output_limit`
+like any observation. It exists only where the owner says which hosts:
+`harness.fetch_allow` (empty; Settings → Harness **Run mode and transcript
+size**) is a comma-separated list of hosts, `*.` for subdomains -
+`docs.rs, *.rust-lang.org, github.com` - and `--fetch-allow HOSTS` sets it
+for one run. Empty means the tool is not offered; a URL whose host is not
+listed, or that redirects off the list, is refused with the list named
+(`refused by policy: host "x" is not in harness.fetch_allow …`) as an
+`error` step. The deny rules for credentials do not apply to a page the
+model reads, but a page's text is observation, never instruction - the
+system prompt says so. Each fetch is a `fetch` step with the URL.
+
+**Compaction.** When a long run's prompt passes `harness.compact_at`
+percent of the model's context window (`70`; Settings → Harness
+**Transcript limits**, `--compact-at N` for one run, `0` turns it off, 95
+at most), the harness asks the model itself for a summary of the older
+part of the conversation - what was asked, what was learned, what changed,
+what remains - and replaces those messages with it, keeping the system
+prompt, the task and the last six messages verbatim; a `note` step
+(`compacted 12 older messages into a 1480-character summary (31 messages
+became 20)`) marks the moment. The summary call costs usage but not a
+model call, a run compacts again only after three more calls, and a
+conversation too short to cut is left alone - the collapsing of old
+observations described under **Context discipline** still runs first and
+is usually enough. The trajectory JSON keeps the compacted messages.
 
 The first-turn contract says that exactly one fenced block per reply is
 executed, prose-only replies are not executed, and a command block can use
@@ -1379,7 +1489,8 @@ overrides it when the list says nothing or less than the deployment really
 takes, `0` meaning "whatever the model lists". Each collapse leaves a `note`
 step in the transcript (`collapsed 4 older observations …`) so the console
 shows what the model no longer sees; notes never count as calls or commands,
-and nothing is ever summarised by a model.
+and nothing is summarised by a model until **Compaction** (above) steps in
+at `harness.compact_at` percent of the window.
 
 **Native action blocks.** For models without tool calling, the same
 `read`, `grep` and `edit` operations are accepted as fenced blocks - one
@@ -1533,7 +1644,7 @@ worked it.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

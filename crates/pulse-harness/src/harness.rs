@@ -1,3 +1,13 @@
+use crate::compact::{
+    COMPACT_KEEP_RECENT, COMPACT_MIN_GAP_CALLS, apply_compaction, compaction_cut,
+    render_transcript, should_compact, summary_request,
+};
+use crate::fetch::{FETCH_BYTE_LIMIT, FETCH_TIMEOUT, FETCH_TOOL, FetchPolicy, fetch, fetch_tool};
+use crate::hooks::{
+    HOOK_BLOCK_EXIT, HOOK_OUTPUT_LIMIT, Hook, HookEvent, HookSet, cut_bytes, hook_command,
+    run_payload, tool_payload,
+};
+use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
 use pulse_provider::{CancelToken, Message, Provider, Request, Role, Tool, ToolCall, Usage};
 use regex::Regex;
@@ -6,7 +16,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const DEFAULT_MAX_STEPS: i32 = 60;
@@ -129,6 +139,35 @@ pub fn native_tools() -> Vec<Tool> {
 
 pub const NATIVE_TOOL_NAMES: &[&str] = &["bash", "read", "grep", "glob", "edit", "write", "plan"];
 
+/// The name of the tool that runs a helper agent on a sub-task.
+pub const SUBAGENT_TOOL: &str = "subagent";
+
+/// Model calls a subagent gets when the call does not say.
+pub const SUBAGENT_DEFAULT_STEPS: i32 = 20;
+
+/// Model calls the parent must still have after the subagent's budget so
+/// it can read the report and finish.
+pub const SUBAGENT_RESERVE: i32 = 4;
+
+/// Seconds of its own wall time the parent keeps back from a subagent.
+pub const SUBAGENT_TIME_RESERVE: Duration = Duration::from_secs(60);
+
+/// Characters of a subagent's report the parent reads.
+pub const SUBAGENT_REPORT_LIMIT: usize = 12_000;
+
+pub fn subagent_tool() -> Tool {
+    Tool {
+        name: SUBAGENT_TOOL.to_string(),
+        description: format!(
+            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Use it for parallel-free, bounded work such as surveying part of the code or running and summarising a long check. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls."
+        ),
+        parameters: json!({"type":"object","properties":{
+            "task":{"type":"string","description":"The complete brief for the helper, including what to report back."},
+            "max_steps":{"type":"integer","description":"Model calls the helper may spend (capped by what remains of this run)."}
+        },"required":["task"]}),
+    }
+}
+
 /// Paths a `glob` call lists at most; the rest is counted.
 pub const GLOB_RESULT_LIMIT: usize = 500;
 
@@ -202,6 +241,14 @@ pub struct Config {
     /// [`load_instructions`]) rendered into the system prompt; empty when
     /// the clone has none or the owner turned them off.
     pub instructions: String,
+    /// Whether the run offers the `subagent` tool.
+    pub subagents: bool,
+    /// How many parents this run has: 0 for a run the owner started, 1 for
+    /// its subagents. A subagent never offers `subagent` itself.
+    pub depth: u8,
+    /// Percent of the context window the prompt may use before the older
+    /// part of the conversation is compacted into a summary; 0 is off.
+    pub compact_at: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +263,10 @@ pub enum StepKind {
     Write,
     Plan,
     Mcp,
+    Skill,
+    Fetch,
+    Subagent,
+    Hook,
     Observation,
     Note,
     FormatRetry,
@@ -233,6 +284,10 @@ pub const STEP_GLOB: StepKind = StepKind::Glob;
 pub const STEP_WRITE: StepKind = StepKind::Write;
 pub const STEP_PLAN: StepKind = StepKind::Plan;
 pub const STEP_MCP: StepKind = StepKind::Mcp;
+pub const STEP_SKILL: StepKind = StepKind::Skill;
+pub const STEP_FETCH: StepKind = StepKind::Fetch;
+pub const STEP_SUBAGENT: StepKind = StepKind::Subagent;
+pub const STEP_HOOK: StepKind = StepKind::Hook;
 pub const STEP_NOTE: StepKind = StepKind::Note;
 pub const STEP_READ: StepKind = StepKind::Read;
 pub const STEP_ERROR: StepKind = StepKind::Error;
@@ -261,6 +316,10 @@ impl std::fmt::Display for StepKind {
             Self::Write => "write",
             Self::Plan => "plan",
             Self::Mcp => "mcp",
+            Self::Skill => "skill",
+            Self::Fetch => "fetch",
+            Self::Subagent => "subagent",
+            Self::Hook => "hook",
             Self::Observation => "observation",
             Self::Note => "note",
             Self::FormatRetry => "format_retry",
@@ -293,6 +352,13 @@ pub struct Step {
     /// on other kinds or when the provider did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choices: Option<i64>,
+    /// How deep the step is: 0 for the run itself, 1 for a subagent's step.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub depth: u8,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 impl Default for Step {
@@ -309,6 +375,7 @@ impl Default for Step {
             model: String::new(),
             finish_reason: None,
             choices: None,
+            depth: 0,
         }
     }
 }
@@ -360,10 +427,20 @@ pub struct ResultSummary {
     pub calls: i32,
     pub usage: Usage,
     pub format_errors: i32,
+    /// Times the older conversation was compacted into a summary.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub compactions: i32,
+    /// Subagent runs the run started.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub subagents: i32,
     #[serde(skip)]
     pub elapsed: Duration,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+}
+
+fn is_zero_i32(v: &i32) -> bool {
+    *v == 0
 }
 
 pub type Result = ResultSummary;
@@ -384,10 +461,16 @@ pub trait Environment: Send {
     fn close(&mut self) -> Vec<pulse_cli::procs::KilledProc> {
         Vec::new()
     }
+    /// A second environment on the same working directory for a subagent;
+    /// None when the environment cannot be shared, which turns the
+    /// `subagent` tool off.
+    fn fork(&self) -> Option<Box<dyn Environment>> {
+        None
+    }
 }
 
 pub struct Agent {
-    p: Box<dyn Provider>,
+    p: Arc<dyn Provider>,
     env: Box<dyn Environment>,
     pub cfg: Config,
     pub(crate) sinks: Vec<Box<dyn Sink>>,
@@ -408,6 +491,12 @@ pub struct Agent {
     /// Notes the caller left before the run (an MCP server that did not
     /// answer, the instruction files read); emitted as the first steps.
     start_notes: Vec<String>,
+    /// The skills the `skill` tool can load; empty means no tool.
+    skills: Vec<Skill>,
+    /// The owner's and the clone's hooks.
+    hooks: HookSet,
+    /// The hosts `fetch` may read; empty means no tool.
+    fetch: FetchPolicy,
 }
 
 /// One call to an MCP tool, from the harness's side: the client behind
@@ -641,6 +730,16 @@ pub fn new(
     cfg: Config,
     sinks: Vec<Box<dyn Sink>>,
 ) -> Agent {
+    new_shared(Arc::from(p), env, cfg, sinks)
+}
+
+/// [`new`] with a provider that is shared with a subagent.
+pub fn new_shared(
+    p: Arc<dyn Provider>,
+    env: Box<dyn Environment>,
+    cfg: Config,
+    sinks: Vec<Box<dyn Sink>>,
+) -> Agent {
     Agent {
         p,
         env,
@@ -657,6 +756,9 @@ pub fn new(
         fatal: None,
         mcp: McpTools::default(),
         start_notes: Vec::new(),
+        skills: Vec::new(),
+        hooks: HookSet::default(),
+        fetch: FetchPolicy::default(),
     }
 }
 
@@ -678,15 +780,52 @@ impl Agent {
         self.start_notes.push(text.into());
     }
 
+    /// Offers these skills through the `skill` tool; call before `run`.
+    pub fn set_skills(&mut self, skills: Vec<Skill>) {
+        self.skills = skills;
+    }
+
+    /// Runs these hooks around the run and its tool calls; call before `run`.
+    pub fn set_hooks(&mut self, hooks: HookSet) {
+        self.hooks = hooks;
+    }
+
+    /// Offers the `fetch` tool for the hosts of `policy`; call before `run`.
+    pub fn set_fetch_policy(&mut self, policy: FetchPolicy) {
+        self.fetch = policy;
+    }
+
+    fn offers_subagents(&self) -> bool {
+        self.cfg.subagents && self.cfg.depth == 0
+    }
+
     /// The tools the next model call offers.
     pub fn tools(&self) -> Vec<Tool> {
         let mut out = native_tools();
+        if !self.skills.is_empty() {
+            out.push(skill_tool(&self.skills));
+        }
+        if !self.fetch.is_empty() {
+            out.push(fetch_tool(&self.fetch));
+        }
+        if self.offers_subagents() {
+            out.push(subagent_tool());
+        }
         out.extend(self.mcp.advertised());
         out
     }
 
     fn tool_names(&self) -> Vec<String> {
         let mut out: Vec<String> = NATIVE_TOOL_NAMES.iter().map(|s| (*s).to_string()).collect();
+        if !self.skills.is_empty() {
+            out.push(SKILL_TOOL.to_string());
+        }
+        if !self.fetch.is_empty() {
+            out.push(FETCH_TOOL.to_string());
+        }
+        if self.offers_subagents() {
+            out.push(SUBAGENT_TOOL.to_string());
+        }
         if self.mcp.deferred() {
             out.push(MCP_SEARCH_TOOL.to_string());
         } else {
@@ -724,6 +863,7 @@ impl Agent {
                 ..Step::default()
             });
         }
+        self.run_start_hooks(cancel);
         self.msgs = vec![
             Message {
                 role: Role::System,
@@ -748,10 +888,25 @@ impl Agent {
         let mut last_prune_level = 0;
         let mut budget_notice_sent = false;
         let mut emitted_prune_notes = BTreeSet::new();
+        let mut calls_at_compaction = 0;
         loop {
             if let Some(status) = self.limit_status(cancel) {
                 let msg = self.limit_error(&status);
                 return Ok(self.finish(&status, "", &msg));
+            }
+            if self.result.calls > 0
+                && should_compact(
+                    self.cfg.compact_at,
+                    self.cfg.context_window,
+                    last_prompt_tokens,
+                )
+                && self.result.calls - calls_at_compaction >= COMPACT_MIN_GAP_CALLS
+                && let Some(changed) = self.compact(cancel)
+            {
+                calls_at_compaction = self.result.calls;
+                if changed {
+                    last_prompt_tokens = 0;
+                }
             }
             if self.result.calls > 0 {
                 let mut level = 1;
@@ -961,7 +1116,9 @@ impl Agent {
         }
         let reserve = 5.min(self.cfg.max_steps / 10);
         let remaining = self.cfg.max_steps - self.result.calls;
-        if remaining != reserve {
+        // `<=`, not `==`: a subagent's calls can carry the count past the
+        // exact mark in one step.
+        if remaining > reserve {
             return None;
         }
         Some(format!(
@@ -1015,15 +1172,33 @@ impl Agent {
         }
         let actions = action_blocks(&msg.content);
         if actions.len() == 1 {
-            let (obs_text, submit, sub) = match &actions[0] {
-                ActionBlock::Command(command) => {
-                    let (text, _, submit, sub) = self.run_command(cancel, command);
-                    (text, submit, sub)
-                }
-                ActionBlock::Read(spec) => self.run_native_action(NativeAction::Read, spec),
-                ActionBlock::Grep(spec) => self.run_native_action(NativeAction::Grep, spec),
-                ActionBlock::Edit(spec) => self.run_native_action(NativeAction::Edit, spec),
+            let (tool_name, args) = match &actions[0] {
+                ActionBlock::Command(command) => ("bash", json!({ "command": command })),
+                ActionBlock::Read(spec) => ("read", json!({ "spec": spec })),
+                ActionBlock::Grep(spec) => ("grep", json!({ "spec": spec })),
+                ActionBlock::Edit(spec) => ("edit", json!({ "spec": spec })),
             };
+            let args = args.to_string();
+            let (obs_text, submit, sub) =
+                if let Some(blocked) = self.pre_tool_hooks(cancel, tool_name, &args) {
+                    (blocked, false, String::new())
+                } else {
+                    let (text, submit, sub) = match &actions[0] {
+                        ActionBlock::Command(command) => {
+                            let (text, _, submit, sub) = self.run_command(cancel, command);
+                            (text, submit, sub)
+                        }
+                        ActionBlock::Read(spec) => self.run_native_action(NativeAction::Read, spec),
+                        ActionBlock::Grep(spec) => self.run_native_action(NativeAction::Grep, spec),
+                        ActionBlock::Edit(spec) => self.run_native_action(NativeAction::Edit, spec),
+                    };
+                    let text = if submit {
+                        text
+                    } else {
+                        self.with_post_tool_hooks(cancel, tool_name, &args, text)
+                    };
+                    (text, submit, sub)
+                };
             self.msgs.push(Message {
                 role: Role::User,
                 content: obs_text,
@@ -1077,8 +1252,21 @@ impl Agent {
         (false, false, String::new(), true)
     }
 
-    /// Runs one typed tool call and returns what the model gets back.
+    /// Runs one typed tool call, with the owner's hooks around it, and
+    /// returns what the model gets back.
     fn dispatch_tool_call(&mut self, cancel: &CancelToken, call: &ToolCall) -> ToolOutcome {
+        if let Some(blocked) = self.pre_tool_hooks(cancel, &call.name, &call.arguments) {
+            return ToolOutcome::clean(blocked);
+        }
+        let mut outcome = self.dispatch_tool_call_inner(cancel, call);
+        if outcome.clean && !outcome.submitted {
+            let text = std::mem::take(&mut outcome.text);
+            outcome.text = self.with_post_tool_hooks(cancel, &call.name, &call.arguments, text);
+        }
+        outcome
+    }
+
+    fn dispatch_tool_call_inner(&mut self, cancel: &CancelToken, call: &ToolCall) -> ToolOutcome {
         match call.name.as_str() {
             "bash" => {
                 let Some(command) = parse_command(&call.arguments) else {
@@ -1100,6 +1288,9 @@ impl Agent {
                     Err(e) => self.tool_error(format!("{name}: {e}")),
                 }
             }
+            SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
+            FETCH_TOOL if !self.fetch.is_empty() => self.run_fetch_tool(&call.arguments),
+            SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
             MCP_SEARCH_TOOL if self.mcp.deferred() => {
                 let query = serde_json::from_str::<Value>(&call.arguments)
                     .ok()
@@ -1128,6 +1319,525 @@ impl Agent {
                 self.tool_names().join(", ")
             )),
         }
+    }
+
+    /// The `skill` tool: the instructions of one skill, or one of its files.
+    fn run_skill_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if name.is_empty() {
+            return self.tool_error(
+                "skill: arguments must be a JSON object with a string name".to_string(),
+            );
+        }
+        let file = args
+            .get("file")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        self.result.steps += 1;
+        let spec = if file.is_empty() {
+            name.clone()
+        } else {
+            format!("{name} {file}")
+        };
+        self.emit(Step {
+            kind: StepKind::Skill,
+            content: spec.clone(),
+            command: spec,
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let obs = match load_skill(&self.skills, &name, &file) {
+            Ok(text) => Observation {
+                output: text,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            Err(text) => action_error(text, start, 1),
+        };
+        self.emit_observation("skill tool", &obs);
+        // A skill is read whole: its body is already capped by the loader.
+        let limit = self
+            .cfg
+            .output_limit
+            .max(crate::skills::SKILL_FILE_LIMIT + 1024);
+        ToolOutcome::clean(format_observation(&obs, limit))
+    }
+
+    /// The `fetch` tool: one web page as text, for the allowed hosts.
+    fn run_fetch_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let url = args
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if url.is_empty() {
+            return self.tool_error(
+                "fetch: arguments must be a JSON object with a string url".to_string(),
+            );
+        }
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: StepKind::Fetch,
+            content: url.clone(),
+            command: url.clone(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let r = fetch(&url, &self.fetch, FETCH_BYTE_LIMIT, FETCH_TIMEOUT);
+        let obs = Observation {
+            output: r.output,
+            exit_code: r.exit_code,
+            duration: start.elapsed(),
+            ..Observation::default()
+        };
+        if r.exit_code == crate::fetch::FETCH_REFUSED_EXIT {
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: url.clone(),
+                ..Step::default()
+            });
+        }
+        self.emit_observation("fetch tool", &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// The `subagent` tool: a helper run on a sub-task, sharing this run's
+    /// provider, budget, clone, skills, hooks and fetch policy. Its steps
+    /// reach this run's sinks one level deeper; its report comes back as
+    /// the tool result.
+    fn run_subagent(&mut self, cancel: &CancelToken, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let task = args
+            .get("task")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if task.is_empty() {
+            return self.tool_error(
+                "subagent: arguments must be a JSON object with a string task".to_string(),
+            );
+        }
+        let requested = args
+            .get("max_steps")
+            .and_then(Value::as_i64)
+            .map_or(SUBAGENT_DEFAULT_STEPS, |n| {
+                n.clamp(1, i64::from(i32::MAX)) as i32
+            });
+        self.result.steps += 1;
+        let start = Instant::now();
+        let remaining = self.cfg.max_steps - self.result.calls;
+        let budget = requested.min(remaining - SUBAGENT_RESERVE);
+        let time_left = (!self.cfg.wall_time.is_zero()).then(|| {
+            self.cfg
+                .wall_time
+                .saturating_sub(self.started.elapsed())
+                .saturating_sub(SUBAGENT_TIME_RESERVE)
+        });
+        let cost_left =
+            (self.cfg.max_cost > 0.0).then_some(self.cfg.max_cost - self.result.usage.cost);
+        let refusal = if budget < 1 {
+            Some(format!(
+                "subagent: only {remaining} model calls remain in this run; do the work yourself and finish"
+            ))
+        } else if time_left.is_some_and(|t| t < Duration::from_secs(30)) {
+            Some("subagent: too little of the run's time budget remains; do the work yourself and finish".to_string())
+        } else if cost_left.is_some_and(|c| c <= 0.0) {
+            Some("subagent: the run's cost budget is spent; finish now".to_string())
+        } else {
+            None
+        };
+        self.emit(Step {
+            kind: StepKind::Subagent,
+            content: task.clone(),
+            command: format!("{SUBAGENT_TOOL} ({} calls)", budget.max(0)),
+            ..Step::default()
+        });
+        if let Some(text) = refusal {
+            let obs = action_error(text, start, 1);
+            self.emit_observation(SUBAGENT_TOOL, &obs);
+            return ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit));
+        }
+        let Some(env) = self.env.fork() else {
+            let obs = action_error(
+                "subagent: this environment cannot run a helper; do the work yourself".to_string(),
+                start,
+                1,
+            );
+            self.emit_observation(SUBAGENT_TOOL, &obs);
+            return ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit));
+        };
+        let mut cfg = self.cfg.clone();
+        cfg.task = format!(
+            "You are a helper agent of a larger run, working in the same clone. Do only the sub-task below. Then reply with no tool call and a report that starts with SUMMARY: and carries everything the main agent needs: findings, exact file paths, commands and their results. The main agent does not see your conversation, only that report. Do not commit unless the sub-task says so.\n\nSub-task:\n{task}"
+        );
+        cfg.max_steps = budget;
+        cfg.depth = self.cfg.depth.saturating_add(1);
+        cfg.subagents = false;
+        cfg.system_prompt = String::new();
+        cfg.cancel_reason = String::new();
+        if let Some(t) = time_left {
+            cfg.wall_time = t;
+        }
+        if let Some(c) = cost_left {
+            cfg.max_cost = c;
+        }
+        self.result.subagents += 1;
+        let depth = cfg.depth;
+        let mut child = new_shared(self.p.clone(), env, cfg, Vec::new());
+        child.skills = self.skills.clone();
+        child.hooks = self.hooks.clone();
+        child.fetch = self.fetch.clone();
+        child.next_n = self.next_n;
+        // The child's steps go to this run's sinks, one level deeper, and
+        // the sinks come back when it is done.
+        let shared = Arc::new(Mutex::new(std::mem::take(&mut self.sinks)));
+        child.sinks = vec![Box::new(NestedSink {
+            sinks: shared.clone(),
+            depth,
+        })];
+        let run = child.run_with_cancel(cancel);
+        child.sinks.clear();
+        self.sinks = match Arc::try_unwrap(shared) {
+            Ok(m) => m.into_inner().unwrap_or_else(|e| e.into_inner()),
+            Err(shared) => std::mem::take(&mut *shared.lock().unwrap_or_else(|e| e.into_inner())),
+        };
+        self.next_n = child.next_n;
+        let child_steps = std::mem::take(&mut child.steps);
+        let last_child_message = child_steps
+            .iter()
+            .rev()
+            .find(|s| s.kind == StepKind::Assistant && !s.content.trim().is_empty())
+            .map(|s| s.content.trim().to_string());
+        self.steps.extend(child_steps);
+        let obs = match run {
+            Ok(r) => {
+                self.result.usage.add(r.usage);
+                self.result.calls += r.calls;
+                self.result.steps += r.steps;
+                if r.exit_status == EXIT_SANDBOX_LOST && self.fatal.is_none() {
+                    self.fatal = Some((EXIT_SANDBOX_LOST, r.error.clone()));
+                }
+                let report = if !r.submission.trim().is_empty() {
+                    r.submission.trim().to_string()
+                } else if !r.error.is_empty() {
+                    format!("(no report; {})", r.error)
+                } else {
+                    last_child_message
+                        .map(|m| format!("(no report; last message) {m}"))
+                        .unwrap_or_else(|| "(no report)".to_string())
+                };
+                let report = if report.len() > SUBAGENT_REPORT_LIMIT {
+                    format!(
+                        "{}\n[... report cut at {SUBAGENT_REPORT_LIMIT} characters]",
+                        &report[..report.floor_char_boundary(SUBAGENT_REPORT_LIMIT)]
+                    )
+                } else {
+                    report
+                };
+                Observation {
+                    output: format!(
+                        "subagent {}: {} model calls, {} tool steps, {}s\n\n{report}",
+                        r.exit_status,
+                        r.calls,
+                        r.steps,
+                        start.elapsed().as_secs()
+                    ),
+                    exit_code: i32::from(r.exit_status != EXIT_SUBMITTED),
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+            Err(e) => action_error(format!("subagent could not start: {e}"), start, 1),
+        };
+        self.emit_observation(SUBAGENT_TOOL, &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// Runs the `pre_tool` hooks for a call. Some(text) is the observation
+    /// of a call a hook blocked (exit [`HOOK_BLOCK_EXIT`]); the call does
+    /// not run. Any other failure is noted and the call goes ahead.
+    fn pre_tool_hooks(
+        &mut self,
+        cancel: &CancelToken,
+        tool: &str,
+        arguments: &str,
+    ) -> Option<String> {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::PreTool, tool)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return None;
+        }
+        let payload = tool_payload(HookEvent::PreTool, tool, arguments, None, &self.cfg.cwd);
+        for hook in hooks {
+            let obs = self.run_hook(cancel, &hook, tool, &payload);
+            if obs.exit_code == HOOK_BLOCK_EXIT {
+                let reason = cut_bytes(obs.output.trim(), HOOK_OUTPUT_LIMIT);
+                let blocked = Observation {
+                    output: format!(
+                        "blocked by hook `{}`{}{}",
+                        hook.command,
+                        if reason.is_empty() { "" } else { ": " },
+                        reason
+                    ),
+                    exit_code: 126,
+                    duration: obs.duration,
+                    ..Observation::default()
+                };
+                self.emit(Step {
+                    kind: StepKind::Error,
+                    content: blocked.output.clone(),
+                    command: tool.to_string(),
+                    ..Step::default()
+                });
+                self.emit_observation(&format!("{tool} tool"), &blocked);
+                return Some(format_observation(&blocked, self.cfg.output_limit));
+            }
+            if obs.exit_code != 0 {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: format!(
+                        "pre_tool hook `{}` failed (exit {}); the call goes ahead: {}",
+                        hook.command,
+                        obs.exit_code,
+                        one_line(&obs.output, 300)
+                    ),
+                    ..Step::default()
+                });
+            }
+        }
+        None
+    }
+
+    /// Runs the `post_tool` hooks for a call and appends what they say to
+    /// the tool's result.
+    fn with_post_tool_hooks(
+        &mut self,
+        cancel: &CancelToken,
+        tool: &str,
+        arguments: &str,
+        text: String,
+    ) -> String {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::PostTool, tool)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return text;
+        }
+        let (_, output, ok) = split_observation(&text);
+        let output = if ok { output } else { text.clone() };
+        let exit_code = observation_exit_code(&text).unwrap_or(0);
+        let payload = tool_payload(
+            HookEvent::PostTool,
+            tool,
+            arguments,
+            Some((&output, exit_code)),
+            &self.cfg.cwd,
+        );
+        let mut text = text;
+        for hook in hooks {
+            let obs = self.run_hook(cancel, &hook, tool, &payload);
+            let said = obs.output.trim();
+            if obs.exit_code == 0 && said.is_empty() {
+                continue;
+            }
+            text.push_str(&format!(
+                "\n[hook `{}`{}] {}",
+                hook.command,
+                if obs.exit_code == 0 {
+                    String::new()
+                } else {
+                    format!(" exit {}", obs.exit_code)
+                },
+                cut_bytes(said, HOOK_OUTPUT_LIMIT)
+            ));
+        }
+        text
+    }
+
+    /// Runs the `run_start` hooks; what they print joins the system prompt.
+    fn run_start_hooks(&mut self, cancel: &CancelToken) {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::RunStart, "")
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return;
+        }
+        let payload = run_payload(
+            HookEvent::RunStart,
+            &self.cfg.cwd,
+            json!({
+                "model": self.cfg.model,
+                "task": cut_bytes(&self.cfg.task, 4000),
+                "depth": self.cfg.depth,
+            }),
+        );
+        let mut said: Vec<String> = Vec::new();
+        for hook in hooks {
+            let obs = self.run_hook(cancel, &hook, "", &payload);
+            if obs.exit_code == 0 {
+                let out = obs.output.trim();
+                if !out.is_empty() {
+                    said.push(cut_bytes(out, HOOK_OUTPUT_LIMIT));
+                }
+            } else {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: format!(
+                        "run_start hook `{}` failed (exit {}): {}",
+                        hook.command,
+                        obs.exit_code,
+                        one_line(&obs.output, 300)
+                    ),
+                    ..Step::default()
+                });
+            }
+        }
+        if said.is_empty() {
+            return;
+        }
+        if !self.cfg.system_prompt.ends_with('\n') {
+            self.cfg.system_prompt.push('\n');
+        }
+        self.cfg
+            .system_prompt
+            .push_str(&format!("Hook output at run start:\n{}\n", said.join("\n")));
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: format!(
+                "added {} characters of run_start hook output to the system prompt",
+                said.iter().map(String::len).sum::<usize>()
+            ),
+            ..Step::default()
+        });
+    }
+
+    /// Runs the `run_end` hooks with the outcome; what they say is
+    /// recorded, nothing more.
+    fn run_end_hooks(&mut self, cancel: &CancelToken, status: &str, submission: &str) {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::RunEnd, "")
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return;
+        }
+        let payload = run_payload(
+            HookEvent::RunEnd,
+            &self.cfg.cwd,
+            json!({
+                "model": self.cfg.model,
+                "exit_status": status,
+                "calls": self.result.calls,
+                "steps": self.result.steps,
+                "submission": cut_bytes(submission, 4000),
+                "depth": self.cfg.depth,
+            }),
+        );
+        for hook in hooks {
+            self.run_hook(cancel, &hook, "", &payload);
+        }
+    }
+
+    /// Runs one hook in the run's environment and records it as a step.
+    fn run_hook(
+        &mut self,
+        cancel: &CancelToken,
+        hook: &Hook,
+        tool: &str,
+        payload: &Value,
+    ) -> Observation {
+        self.emit(Step {
+            kind: StepKind::Hook,
+            content: hook.command.clone(),
+            command: if tool.is_empty() {
+                hook.event.to_string()
+            } else {
+                format!("{} {tool}", hook.event)
+            },
+            ..Step::default()
+        });
+        let line = hook_command(hook, tool, payload);
+        let obs = self.env.execute(cancel, &line, hook.timeout);
+        self.emit_observation(&format!("hook {}", hook.event), &obs);
+        obs
+    }
+
+    /// Replaces the older part of the conversation with a summary the
+    /// model writes. None when the conversation is too short to compact;
+    /// Some(true) when it changed.
+    fn compact(&mut self, cancel: &CancelToken) -> Option<bool> {
+        let cut = compaction_cut(&self.msgs, COMPACT_KEEP_RECENT)?;
+        let transcript = render_transcript(&self.msgs, cut);
+        let req = summary_request(&self.cfg.model, &self.cfg.task, &transcript);
+        let start = Instant::now();
+        let resp = match self.p.chat(cancel, req) {
+            Ok(r) => r,
+            Err(e) => {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: format!(
+                        "context compaction failed; going on with the pruned history: {}",
+                        one_line(&e.to_string(), 300)
+                    ),
+                    ..Step::default()
+                });
+                return Some(false);
+            }
+        };
+        self.result.usage.add(resp.usage);
+        let summary = resp
+            .message
+            .map(|m| m.content.trim().to_string())
+            .unwrap_or_default();
+        if summary.is_empty() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: "context compaction failed: the model returned no summary".to_string(),
+                ..Step::default()
+            });
+            return Some(false);
+        }
+        let before = self.msgs.len();
+        let replaced = cut - 2;
+        self.msgs = apply_compaction(&self.msgs, cut, &summary);
+        self.result.compactions += 1;
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: format!(
+                "compacted {replaced} older messages into a {}-character summary ({before} messages became {}); the system prompt, the task and the last {} messages are unchanged",
+                summary.len(),
+                self.msgs.len(),
+                before - cut
+            ),
+            usage: resp.usage,
+            duration_ms: start.elapsed().as_millis() as i64,
+            ..Step::default()
+        });
+        Some(true)
     }
 
     fn tool_error(&mut self, text: String) -> ToolOutcome {
@@ -1713,6 +2423,11 @@ impl Agent {
     }
 
     fn finish(&mut self, status: &str, submission: &str, err_text: &str) -> ResultSummary {
+        self.result.exit_status = status.to_string();
+        self.result.submission = submission.to_string();
+        self.result.error = err_text.to_string();
+        // A fresh token: the end hooks run even when the run was cancelled.
+        self.run_end_hooks(&CancelToken::new(), status, submission);
         let stragglers = self.env.close();
         if !stragglers.is_empty() {
             self.emit(Step {
@@ -1725,9 +2440,6 @@ impl Agent {
                 ..Step::default()
             });
         }
-        self.result.exit_status = status.to_string();
-        self.result.submission = submission.to_string();
-        self.result.error = err_text.to_string();
         self.result.elapsed = self.started.elapsed();
         self.emit(Step {
             kind: StepKind::Exit,
@@ -1741,6 +2453,7 @@ impl Agent {
         s.n = self.next_n;
         self.next_n += 1;
         s.at = now_rfc3339();
+        s.depth = self.cfg.depth;
         self.steps.push(s.clone());
         for sink in &mut self.sinks {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1748,6 +2461,35 @@ impl Agent {
             }));
         }
     }
+}
+
+/// The parent's sinks, as a subagent sees them: every step the child emits
+/// reaches them marked with the child's depth.
+struct NestedSink {
+    sinks: Arc<Mutex<Vec<Box<dyn Sink>>>>,
+    depth: u8,
+}
+
+impl Sink for NestedSink {
+    fn step(&mut self, mut step: Step) {
+        step.depth = step.depth.max(self.depth);
+        let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
+        for sink in sinks.iter_mut() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sink.step(step.clone());
+            }));
+        }
+    }
+}
+
+/// The exit code of a formatted observation (`<returncode>N</returncode>`).
+fn observation_exit_code(text: &str) -> Option<i32> {
+    text.strip_prefix(RETURN_CODE_PREFIX)?
+        .split("</returncode>")
+        .next()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn tool_message(call: &ToolCall, content: &str) -> Message {
@@ -1861,6 +2603,7 @@ pub use write_trajectory as WriteTrajectory;
 pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.\n",
     "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the owner sees.\n",
+    "Some runs also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report) and mcp__ tools; use them when they are offered.\n",
     "Call tools with JSON arguments. Independent calls go in one reply and run in order, each with its own result; a call that needs an earlier result waits for your next reply.\n",
     "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
     "If you cannot call tools, write exactly one fenced block per message; exactly one fenced block is executed.\n",
@@ -3293,6 +4036,9 @@ mod tests {
                 ("os".into(), "testos".into()),
                 ("shell".into(), "/bin/sh".into()),
             ])
+        }
+        fn fork(&self) -> Option<Box<dyn Environment>> {
+            Some(Box::new(self.clone()))
         }
     }
 
@@ -5627,5 +6373,619 @@ mod tests {
         let (out, changed) = prune_history(&msgs, 1, 1);
         assert_eq!(changed, 1);
         assert!(out[2].content.contains("characters elided"));
+    }
+    fn hook(event: HookEvent, tools: &[&str], command: &str) -> Hook {
+        Hook {
+            event,
+            tools: tools.iter().map(|t| (*t).to_string()).collect(),
+            command: command.to_string(),
+            timeout: Duration::from_secs(5),
+            source: ".pulse/hooks.json".to_string(),
+        }
+    }
+
+    fn observed(output: &str, exit_code: i32) -> Observation {
+        Observation {
+            output: output.to_string(),
+            exit_code,
+            ..Observation::default()
+        }
+    }
+
+    #[test]
+    fn pre_tool_hook_blocks_a_call_and_post_tool_hook_speaks_after_it() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("touch x")),
+            resp(tool("echo ok")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![
+                observed("no file creation in this clone\n", HOOK_BLOCK_EXIT),
+                observed("", 0),
+                observed("ok\n", 0),
+                observed("audited\n", 0),
+            ],
+            ..FakeEnv::default()
+        }));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env.clone()),
+            base_config(),
+            Vec::new(),
+        );
+        h.set_hooks(HookSet {
+            hooks: vec![
+                hook(HookEvent::PreTool, &["bash"], "guard.sh"),
+                hook(HookEvent::PostTool, &[], "audit.sh"),
+            ],
+            ..HookSet::default()
+        });
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.steps, 1, "a blocked call and hooks are not tool steps");
+        let replies = tool_replies(&h);
+        assert_eq!(replies.len(), 2);
+        assert!(
+            replies[0].1.starts_with("<returncode>126</returncode>"),
+            "{}",
+            replies[0].1
+        );
+        assert!(
+            replies[0]
+                .1
+                .contains("blocked by hook `guard.sh`: no file creation in this clone"),
+            "{}",
+            replies[0].1
+        );
+        assert!(replies[1].1.contains("ok\n"), "{}", replies[1].1);
+        assert!(
+            replies[1].1.ends_with("\n[hook `audit.sh`] audited"),
+            "{}",
+            replies[1].1
+        );
+        let commands = env.lock().unwrap().commands.clone();
+        assert_eq!(commands.len(), 4, "{commands:?}");
+        assert!(
+            commands[0]
+                .contains("PULSE_HOOK_EVENT='pre_tool' PULSE_TOOL='bash' /bin/sh -c 'guard.sh'"),
+            "{}",
+            commands[0]
+        );
+        assert!(
+            commands[0].contains(
+                r#"{"cwd":"","event":"pre_tool","input":{"command":"touch x"},"tool":"bash"}"#
+            ),
+            "{}",
+            commands[0]
+        );
+        assert_eq!(commands[2], "echo ok");
+        assert!(
+            commands[3].contains("PULSE_HOOK_EVENT='post_tool'"),
+            "{}",
+            commands[3]
+        );
+        assert!(
+            commands[3].contains(r#""exit_code":0"#) && commands[3].contains(r#""output":"ok\n""#),
+            "{}",
+            commands[3]
+        );
+        let kinds: Vec<String> = h.steps.iter().map(|s| s.kind.to_string()).collect();
+        assert_eq!(
+            kinds.iter().filter(|k| *k == "hook").count(),
+            3,
+            "{kinds:?}"
+        );
+        let blocked = h
+            .steps
+            .iter()
+            .find(|s| s.kind == StepKind::Error)
+            .expect("an error step for the blocked call");
+        assert!(blocked.content.starts_with("blocked by hook `guard.sh`"));
+        assert_eq!(blocked.command, "bash");
+    }
+
+    #[test]
+    fn run_hooks_feed_the_prompt_and_hear_the_outcome() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![resp(msg("SUMMARY: done"))]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![
+                observed("branch: main\nopen incidents: 0\n", 0),
+                observed("", 0),
+            ],
+            ..FakeEnv::default()
+        }));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p.clone())),
+            Box::new(env.clone()),
+            base_config(),
+            Vec::new(),
+        );
+        h.set_hooks(HookSet {
+            hooks: vec![
+                hook(HookEvent::RunStart, &[], "context.sh"),
+                hook(HookEvent::RunEnd, &[], "notify.sh"),
+            ],
+            ..HookSet::default()
+        });
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(
+            reqs[0].messages[0].content,
+            "system\nHook output at run start:\nbranch: main\nopen incidents: 0\n"
+        );
+        let commands = env.lock().unwrap().commands.clone();
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(
+            commands[0]
+                .contains("PULSE_HOOK_EVENT='run_start' PULSE_TOOL='' /bin/sh -c 'context.sh'")
+        );
+        assert!(
+            commands[0]
+                .contains(r#"{"cwd":"","depth":0,"event":"run_start","model":"m","task":"do it"}"#),
+            "{}",
+            commands[0]
+        );
+        assert!(
+            commands[1].contains("PULSE_HOOK_EVENT='run_end'"),
+            "{}",
+            commands[1]
+        );
+        assert!(
+            commands[1].contains(r#""exit_status":"submitted""#)
+                && commands[1].contains(r#""submission":"SUMMARY: done""#)
+                && commands[1].contains(r#""calls":1,"#),
+            "{}",
+            commands[1]
+        );
+        let kinds: Vec<String> = h.steps.iter().map(|s| s.kind.to_string()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "hook",
+                "observation",
+                "note",
+                "assistant",
+                "hook",
+                "observation",
+                "exit"
+            ],
+            "{kinds:?}"
+        );
+        assert!(
+            h.steps[2]
+                .content
+                .starts_with("added 30 characters of run_start hook output")
+        );
+    }
+
+    #[test]
+    fn skill_tool_serves_folder_and_inline_skills() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let folder = dir.path().join(".pulse/skills/deploy");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("SKILL.md"),
+            "---\nname: deploy\ndescription: Ship a release\n---\n# Deploy\nRun ship.sh first.\n",
+        )
+        .unwrap();
+        fs::write(folder.join("notes.md"), "staging needs a warm cache\n").unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("c1", "skill", json!({"name": "deploy"})),
+                ("c2", "skill", json!({"name": "deploy", "file": "notes.md"})),
+                ("c3", "skill", json!({"name": "triage"})),
+                ("c4", "skill", json!({"name": "nope"})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        let mut skills = crate::skills::load_skills(dir.path().to_str().unwrap(), "");
+        skills.push(Skill::inline(
+            "triage",
+            "Sort the inbox",
+            "Read every FINDING first.",
+            "pulse skill",
+        ));
+        h.set_skills(skills);
+        assert!(h.tools().iter().any(|t| t.name == "skill"));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.steps, 4);
+        let replies = tool_replies(&h);
+        assert_eq!(replies.len(), 4);
+        assert!(
+            replies[0]
+                .1
+                .contains("skill deploy (.pulse/skills/deploy)\n# Deploy\nRun ship.sh first.\n")
+                && replies[0]
+                    .1
+                    .contains("Files in this skill (pass file to read one): notes.md"),
+            "{}",
+            replies[0].1
+        );
+        assert!(
+            replies[1]
+                .1
+                .contains("notes.md of skill deploy\nstaging needs a warm cache"),
+            "{}",
+            replies[1].1
+        );
+        assert!(
+            replies[2]
+                .1
+                .contains("skill triage (pulse skill)\nRead every FINDING first."),
+            "{}",
+            replies[2].1
+        );
+        assert!(
+            replies[3].1.starts_with("<returncode>1</returncode>")
+                && replies[3]
+                    .1
+                    .contains("unknown skill \"nope\"; available: deploy, triage"),
+            "{}",
+            replies[3].1
+        );
+        let skill_steps: Vec<&Step> = h
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Skill)
+            .collect();
+        assert_eq!(skill_steps.len(), 4);
+        assert_eq!(skill_steps[1].command, "deploy notes.md");
+        let req = &p.requests()[0];
+        let tool = req.tools.iter().find(|t| t.name == "skill").unwrap();
+        assert!(
+            tool.description.contains("deploy: Ship a release")
+                && tool.description.contains("triage: Sort the inbox"),
+            "{}",
+            tool.description
+        );
+    }
+
+    #[test]
+    fn fetch_tool_needs_a_policy_and_refuses_hosts_outside_it() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "fetch",
+                json!({"url": "https://evil.example.org/x"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env),
+            base_config(),
+            Vec::new(),
+        );
+        assert!(!h.tools().iter().any(|t| t.name == "fetch"));
+        h.set_fetch_policy(FetchPolicy::parse("docs.example.com, *.rust-lang.org"));
+        assert!(h.tools().iter().any(|t| t.name == "fetch"));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.steps, 1);
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.starts_with("<returncode>126</returncode>")
+                && replies[0]
+                    .1
+                    .contains("refused by policy: host \"evil.example.org\""),
+            "{}",
+            replies[0].1
+        );
+        let kinds: Vec<String> = h.steps.iter().map(|s| s.kind.to_string()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "assistant",
+                "fetch",
+                "error",
+                "observation",
+                "assistant",
+                "exit"
+            ],
+            "{kinds:?}"
+        );
+
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "fetch",
+                json!({"url": "https://docs.example.com/"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env),
+            base_config(),
+            Vec::new(),
+        );
+        h.run().unwrap();
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0]
+                .1
+                .starts_with("unknown tool fetch; available tools: bash, read"),
+            "{}",
+            replies[0].1
+        );
+    }
+
+    #[test]
+    fn subagent_is_offered_only_to_a_top_level_run_that_allows_it() {
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let offered = |cfg: Config| {
+            let p = Arc::new(FakeProvider::new(Vec::new()));
+            let h = new(
+                Box::new(SharedFakeProvider(p)),
+                Box::new(env.clone()),
+                cfg,
+                Vec::new(),
+            );
+            h.tools().iter().any(|t| t.name == SUBAGENT_TOOL)
+        };
+        assert!(!offered(base_config()));
+        let mut on = base_config();
+        on.subagents = true;
+        assert!(offered(on.clone()));
+        on.depth = 1;
+        assert!(!offered(on));
+    }
+
+    #[test]
+    fn subagent_runs_a_helper_whose_steps_and_usage_join_the_run() {
+        let _serial = crate::test_helpers::serial();
+        let with_usage = |mut r: pulse_provider::Response, prompt: i32| {
+            r.usage.prompt_tokens = prompt;
+            r
+        };
+        let p = Arc::new(FakeProvider::new(vec![
+            with_usage(
+                resp(calls(&[(
+                    "c1",
+                    "subagent",
+                    json!({"task": "count the files under src", "max_steps": 5}),
+                )])),
+                100,
+            ),
+            with_usage(resp(tool("ls src | wc -l")), 10),
+            with_usage(resp(msg("SUMMARY: three files under src")), 20),
+            with_usage(resp(msg("SUMMARY: done; the helper counted three")), 200),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![observed("3\n", 0)],
+            ..FakeEnv::default()
+        }));
+        let seen: Arc<Mutex<Vec<Step>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_steps = seen.clone();
+        let mut cfg = base_config();
+        cfg.subagents = true;
+        cfg.max_steps = 12;
+        let mut h = new(
+            Box::new(SharedFakeProvider(p.clone())),
+            Box::new(env.clone()),
+            cfg,
+            vec![Box::new(SinkFunc(move |s: Step| {
+                sink_steps.lock().unwrap().push(s)
+            }))],
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.submission, "SUMMARY: done; the helper counted three");
+        assert_eq!(got.calls, 4, "the helper's calls count against the run");
+        assert_eq!(got.steps, 2, "the subagent call and the helper's command");
+        assert_eq!(got.subagents, 1);
+        assert_eq!(got.usage.prompt_tokens, 330);
+        let replies = tool_replies(&h);
+        assert_eq!(replies.len(), 1);
+        assert!(
+            replies[0].1.starts_with(
+                "<returncode>0</returncode>\n<output>\nsubagent submitted: 2 model calls, 1 tool steps, "
+            ),
+            "{}",
+            replies[0].1
+        );
+        assert!(
+            replies[0]
+                .1
+                .ends_with("\n\nSUMMARY: three files under src\n</output>"),
+            "{}",
+            replies[0].1
+        );
+        assert_eq!(
+            env.lock().unwrap().commands,
+            vec!["ls src | wc -l".to_string()]
+        );
+
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 4);
+        let child = &reqs[1];
+        assert!(
+            child.messages[0].content.contains("Your tools:"),
+            "child gets a rendered prompt"
+        );
+        assert!(
+            child.messages[1]
+                .content
+                .starts_with("You are a helper agent of a larger run")
+        );
+        assert!(
+            child.messages[1]
+                .content
+                .ends_with("Sub-task:\ncount the files under src")
+        );
+        assert!(
+            !child.tools.iter().any(|t| t.name == SUBAGENT_TOOL),
+            "no nesting"
+        );
+        assert!(reqs[0].tools.iter().any(|t| t.name == SUBAGENT_TOOL));
+
+        let steps = seen.lock().unwrap();
+        let ns: Vec<i32> = steps.iter().map(|s| s.n).collect();
+        let mut sorted = ns.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(ns, sorted, "step numbers run through the helper: {ns:?}");
+        let summary: Vec<(String, u8)> = steps
+            .iter()
+            .map(|s| (s.kind.to_string(), s.depth))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("assistant".to_string(), 0),
+                ("subagent".to_string(), 0),
+                ("assistant".to_string(), 1),
+                ("command".to_string(), 1),
+                ("observation".to_string(), 1),
+                ("assistant".to_string(), 1),
+                ("exit".to_string(), 1),
+                ("observation".to_string(), 0),
+                ("assistant".to_string(), 0),
+                ("exit".to_string(), 0),
+            ],
+            "{summary:?}"
+        );
+        assert_eq!(steps[1].command, "subagent (5 calls)");
+        assert_eq!(steps[6].content, EXIT_SUBMITTED);
+        assert_eq!(
+            h.steps.len(),
+            steps.len(),
+            "the trajectory keeps the helper's steps too"
+        );
+        assert!(
+            h.steps
+                .iter()
+                .any(|s| s.depth == 1 && s.kind == StepKind::Command)
+        );
+    }
+
+    #[test]
+    fn subagent_is_refused_when_the_run_is_nearly_out_of_calls() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("c1", "subagent", json!({"task": "look around"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.subagents = true;
+        cfg.max_steps = 5;
+        let (h, got) = run_agent(p.clone(), env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.calls, 2);
+        assert_eq!(got.subagents, 0);
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.starts_with("<returncode>1</returncode>")
+                && replies[0]
+                    .1
+                    .contains("subagent: only 4 model calls remain in this run; do the work yourself and finish"),
+            "{}",
+            replies[0].1
+        );
+        assert_eq!(p.requests().len(), 2, "no helper ran");
+    }
+
+    #[test]
+    fn compaction_replaces_older_messages_with_a_summary_the_model_writes() {
+        let _serial = crate::test_helpers::serial();
+        let with_usage = |mut r: pulse_provider::Response, prompt: i32| {
+            r.usage.prompt_tokens = prompt;
+            r
+        };
+        let p = Arc::new(FakeProvider::new(vec![
+            with_usage(resp(tool("echo 1")), 800),
+            with_usage(resp(tool("echo 2")), 800),
+            with_usage(resp(tool("echo 3")), 800),
+            with_usage(resp(tool("echo 4")), 800),
+            with_usage(resp(msg("Earlier: ran echo 1, saw one.")), 50),
+            with_usage(resp(msg("SUMMARY: done")), 300),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            default_output: "line\n".to_string(),
+            ..FakeEnv::default()
+        }));
+        let mut cfg = base_config();
+        cfg.max_steps = 20;
+        cfg.context_window = 1000;
+        cfg.compact_at = 70;
+        let (h, got) = run_agent(p.clone(), env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.calls, 5, "the summary call is not a step of the run");
+        assert_eq!(got.compactions, 1);
+        assert_eq!(got.usage.prompt_tokens, 4 * 800 + 50 + 300);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 6);
+        let summary_req = &reqs[4];
+        assert!(summary_req.tools.is_empty());
+        assert_eq!(summary_req.initiator, "agent");
+        assert!(
+            summary_req
+                .messages
+                .iter()
+                .any(|m| m.content.contains("echo 1")),
+            "the transcript carries the cut messages"
+        );
+        let after = &reqs[5].messages;
+        assert_eq!(after[0].content, "system");
+        assert_eq!(after[1].content, "do it");
+        assert!(
+            after[2].content.starts_with(crate::compact::COMPACT_MARKER)
+                && after[2].content.contains("Earlier: ran echo 1, saw one."),
+            "{}",
+            after[2].content
+        );
+        assert!(
+            !after
+                .iter()
+                .any(|m| m.tool_calls.iter().any(|c| c.arguments.contains("echo 1"))),
+            "the first call is gone from the live history"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|m| m.tool_calls.iter().any(|c| c.arguments.contains("echo 2")))
+        );
+        let note = h
+            .steps
+            .iter()
+            .find(|s| s.kind == StepKind::Note && s.content.starts_with("compacted "))
+            .expect("a compaction note");
+        assert!(
+            note.content.starts_with(
+                "compacted 2 older messages into a 29-character summary (10 messages became 9)"
+            ),
+            "{}",
+            note.content
+        );
+        assert_eq!(note.usage.prompt_tokens, 50);
+
+        let mut off = base_config();
+        off.max_steps = 20;
+        off.context_window = 1000;
+        let p = Arc::new(FakeProvider::new(vec![
+            with_usage(resp(tool("echo 1")), 800),
+            with_usage(resp(tool("echo 2")), 800),
+            with_usage(resp(tool("echo 3")), 800),
+            with_usage(resp(tool("echo 4")), 800),
+            with_usage(resp(msg("SUMMARY: done")), 800),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let (_, got) = run_agent(p.clone(), env, off).unwrap();
+        assert_eq!(got.compactions, 0, "compact_at 0 is off");
+        assert_eq!(p.requests().len(), 5);
     }
 }

@@ -1383,6 +1383,7 @@ dependencies = [
  "pulse-testutil",
  "rand",
  "regex",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

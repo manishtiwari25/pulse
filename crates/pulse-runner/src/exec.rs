@@ -1026,6 +1026,25 @@ pub(crate) fn worker_command(
                 (crate::util::setting_int(s, "minutes_per_job") - 1).to_string(),
             ]);
         }
+        // Likewise the Wave 2 switches: only a departure from the default
+        // travels.
+        for (setting, flag) in [
+            ("harness.skills", "--no-skills"),
+            ("harness.hooks", "--no-hooks"),
+            ("harness.subagents", "--no-subagents"),
+        ] {
+            if s.setting(setting, "on") == "off" {
+                cmd.push(flag.into());
+            }
+        }
+        let fetch_allow = s.setting("harness.fetch_allow", "");
+        if !fetch_allow.trim().is_empty() {
+            cmd.extend(["--fetch-allow".into(), fetch_allow]);
+        }
+        let compact_at = s.setting("harness.compact_at", "70");
+        if compact_at != "70" {
+            cmd.extend(["--compact-at".into(), compact_at]);
+        }
         let model = s.run_model(kind);
         if !model.is_empty() {
             cmd.extend(["--model".into(), model]);
@@ -1733,6 +1752,39 @@ mod tests {
             "{cmd:?}"
         );
         set_setting(&s, "harness.context_window", "0");
+        // The Wave 2 switches travel only when they leave their defaults.
+        for flag in [
+            "--no-skills",
+            "--no-hooks",
+            "--no-subagents",
+            "--fetch-allow",
+            "--compact-at",
+        ] {
+            assert!(!cmd.contains(&flag.to_string()), "{cmd:?}");
+        }
+        set_setting(&s, "harness.skills", "off");
+        set_setting(&s, "harness.hooks", "off");
+        set_setting(&s, "harness.subagents", "off");
+        set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
+        set_setting(&s, "harness.compact_at", "0");
+        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", &[], true);
+        for flag in ["--no-skills", "--no-hooks", "--no-subagents"] {
+            assert!(cmd.contains(&flag.to_string()), "{cmd:?}");
+        }
+        assert!(
+            cmd.windows(2)
+                .any(|w| w == ["--fetch-allow", "docs.rs, *.rust-lang.org"]),
+            "{cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|w| w == ["--compact-at", "0"]),
+            "{cmd:?}"
+        );
+        for key in ["harness.skills", "harness.hooks", "harness.subagents"] {
+            set_setting(&s, key, "on");
+        }
+        set_setting(&s, "harness.fetch_allow", "");
+        set_setting(&s, "harness.compact_at", "70");
         set_setting(&s, "harness", "copilot-cli");
         let (cmd, custom) = worker_command(
             &s,

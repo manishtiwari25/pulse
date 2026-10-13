@@ -262,6 +262,10 @@ impl Environment for LocalEnv {
         self.sweep()
     }
 
+    fn fork(&self) -> Option<Box<dyn Environment>> {
+        Some(Box::new(self.clone()))
+    }
+
     fn info(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("cwd".to_string(), self.cwd.clone()),
