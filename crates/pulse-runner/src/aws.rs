@@ -538,7 +538,7 @@ impl AwsProvider {
             );
         } else {
             let (subnet, group) = aws_network(ctx, cfg.clone(), &*log)?;
-            let rendered = crate::provider::write_cloud_init(pubkey, !s.harness_native())?;
+            let rendered = crate::provider::write_cloud_init(pubkey)?;
             log(
                 "aws ec2 run-instances %s (%s, %s, %s GiB)",
                 &[

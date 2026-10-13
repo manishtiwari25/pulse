@@ -13,8 +13,9 @@ Runner and evolution caps (built-in defaults):
   minutes_per_job  default {} minutes
     Worker wall-clock cap; also the deadline for each measurement harness and
     scorer. Measurement requires a positive value.
-  max_ai_credits   default {} credits (minimum {})
-    Passed to Copilot workers; not automatically applied to measurement harnesses.
+  harness.max_steps  default {} model calls
+    Model calls one worker run may make before the built-in harness stops it;
+    harness.max_cost caps what a run may spend ({} = no cap).
   worker_model     default empty (the runner's default model)
     Model of the runs that change code: task, improve and experiment jobs; also
     every other run while light_model is empty.
@@ -31,8 +32,8 @@ not aliases for the settings above.
 Use pulse settings get NAME for an effective value, or pulse settings list --json
 for values, defaults, validation rules and descriptions. Only the owner changes caps."#,
         pulse_store::DEFAULT_SETTINGS["minutes_per_job"],
-        pulse_store::DEFAULT_SETTINGS["max_ai_credits"],
-        pulse_store::SETTING_RULES["max_ai_credits"].min,
+        pulse_store::HARNESS_SETTINGS["harness.max_steps"],
+        pulse_store::HARNESS_SETTINGS["harness.max_cost"],
         pulse_store::EVOLVE_SETTINGS["evolve.limits"]
     )
 }
@@ -311,7 +312,7 @@ mod tests {
             vec!["set", "workers", "-1"],
             vec!["set", "parallel_per_project", "0"],
             vec!["set", "jobs_per_day", "two"],
-            vec!["set", "max_ai_credits", "29"],
+            vec!["set", "harness.max_steps", "0"],
             vec!["set", "amend_majority", "1/0"],
             vec!["set", "landing", "automatic"],
         ] {

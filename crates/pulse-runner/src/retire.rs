@@ -730,7 +730,7 @@ mod tests {
     use crate::test_helpers_cloud::*;
     use crate::test_helpers_daemon::must_one;
     use crate::test_helpers_environment::drained_by_login;
-    use crate::test_helpers_provider::{invoke_ok, stub_gh};
+    use crate::test_helpers_provider::invoke_ok;
     use crate::util::json_map;
     use rusqlite::params;
 
@@ -791,7 +791,6 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         let placed = stub_place_login(true);
 
         let lines = tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
@@ -892,7 +891,6 @@ mod tests {
         drained_by_login(&s, "vm-seven", "pulse@vm-seven");
         let az = RetireAz::broken();
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         let lines = tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert!(!az.has("vm deallocate"), "az calls: {:?}", az.joined());
         assert_eq!(
@@ -930,7 +928,6 @@ mod tests {
         drained_by_login(&s, "laptop", "pulse@laptop.local");
         let az = RetireAz::default();
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert!(
             !az.has("vm deallocate") && az.has("vm list"),
@@ -1081,7 +1078,6 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         crate::test_helpers_daemon::exec1(
             &s,
             "INSERT INTO runs (id, job_id, project, agent, status, started_at, executor) VALUES ('run-1', 'job-1', ?, 'aurora', 'running', ?, 'vm-seven')",
@@ -1111,7 +1107,6 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         assert_eq!(
             count(
@@ -1123,7 +1118,7 @@ mod tests {
         );
         // The owner starts vm-nine's machine again and activates it before the grace ends: the row revives.
         let _probe = crate::test_helpers_hands::install_run_ssh(|_, _argv, _stdin, _| {
-            Ok((0, "hands=ok git=ok copilot=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse logged_in=yes harness=yes pulse=1.2.3 disk_free_mb=20000\n".into(), String::new()))
+            Ok((0, "hands=ok git=ok keys=- keys_ok=yes remotes=0 workdir=/srv/pulse harness=yes pulse=1.2.3 disk_free_mb=20000\n".into(), String::new()))
         });
         let out = invoke_ok(&s, "executor", "", &["activate", "vm-nine"]);
         assert!(out.contains("vm-nine"), "activate: {out:?}");
@@ -1235,7 +1230,6 @@ mod tests {
             r#"[{"name":"pulse-cr-007","rg":"pulse-hands","ip":"203.0.113.7"}]"#,
         );
         let _az_guard = install_retire_az(&az);
-        let _stub = stub_gh("");
         let log = once_daemon(
             &s,
             crate::daemon::DaemonOpts {
@@ -1272,7 +1266,6 @@ mod tests {
         ] {
             set_setting(&s, k, v);
         }
-        let _stub = stub_gh("");
         let _az = install_run_az(|_, _, _| {
             panic!("az was called without a login source");
         });

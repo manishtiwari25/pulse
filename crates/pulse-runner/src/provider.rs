@@ -137,7 +137,7 @@ pub(crate) fn not_found_answer(stdout: String, stderr: String) -> bool {
     .any(|w| low.contains(w))
 }
 
-pub(crate) fn cloud_init_config(admin_key: String, install_copilot: bool) -> String {
+pub(crate) fn cloud_init_config(admin_key: String) -> String {
     let mut b = String::from(
         "#cloud-config\n# PULSE compute machine (agents' hands) - Ubuntu 24.04 (ADR-020, D-D). Prepared for `pulse pair`, which\n# adds the pulse user, its forced-command key, the linux pulse binary and the sshd drop-in over the admin session.\npackage_update: true\npackage_upgrade: true\npackages:\n  - git\n  - python3\n  - ca-certificates\n  - curl\n  - gnupg\n  - build-essential\nusers:\n  - default\n",
     );
@@ -150,19 +150,16 @@ pub(crate) fn cloud_init_config(admin_key: String, install_copilot: bool) -> Str
     b.push_str(&format!(
         "runcmd:\n  # The host key on the serial console: the channel the provider vouches for (aws, gcp read it back).\n  - sh -c 'echo \"{HOSTKEY_MARKER}$(cat /etc/ssh/ssh_host_ed25519_key.pub)\" > /dev/console'\n"
     ));
-    if install_copilot {
-        b.push_str("  # Node.js 22 and the copilot CLI, for every user (the legacy worker prerequisites).\n  - mkdir -p /etc/apt/keyrings\n  - curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg\n  - echo \"deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\" > /etc/apt/sources.list.d/nodesource.list\n  - apt-get update\n  - apt-get install -y nodejs\n  - npm install -g @github/copilot\n");
-    }
     b.push_str(&format!(
         "  # The work directory the forced command roots every path in; pairing sets the owner.\n  - mkdir -p {HANDS_WORKDIR}\nfinal_message: \"pulse compute machine ready after $UPTIME seconds\"\n"
     ));
     b
 }
 
-pub(crate) fn write_cloud_init(admin_key: String, install_copilot: bool) -> anyhow::Result<String> {
+pub(crate) fn write_cloud_init(admin_key: String) -> anyhow::Result<String> {
     let mut path = std::env::temp_dir();
     path.push(format!("pulse-cloud-init-{}.yaml", uuid::Uuid::new_v4()));
-    std::fs::write(&path, cloud_init_config(admin_key, install_copilot))?;
+    std::fs::write(&path, cloud_init_config(admin_key))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -351,7 +348,6 @@ pub(crate) fn provision_finish(
             workdir: HANDS_WORKDIR.into(),
             workers: 1,
             projects: req.project.clone(),
-            install_copilot: !s.harness_native(),
             actor: crate::util::HUMAN_AGENT.into(),
             hub_home: hub_home.clone(),
             ..Default::default()
@@ -558,7 +554,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
     fn cloud_init_config_admin_key() {
         let _serial = crate::test_helpers::serial();
         let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUBHUB pulse-hub";
-        let with = cloud_init_config(key.to_string(), true);
+        let with = cloud_init_config(key.to_string());
         for want in [
             "#cloud-config",
             &format!("name: {ADMIN_USER}"),
@@ -567,11 +563,20 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             HOSTKEY_MARKER,
             "/dev/console",
             &format!("mkdir -p {HANDS_WORKDIR}"),
-            "@github/copilot",
         ] {
             assert!(with.contains(want), "cloud-init lacks {want:?}:\n{with}");
         }
-        let without = cloud_init_config(String::new(), true);
+        for absent in [
+            "deb.nodesource.com",
+            "apt-get install -y nodejs",
+            "npm install -g @github/copilot",
+        ] {
+            assert!(
+                !with.contains(absent),
+                "cloud-init has a legacy install line {absent:?}:\n{with}"
+            );
+        }
+        let without = cloud_init_config(String::new());
         assert!(
             !without.contains(&format!("name: {ADMIN_USER}"))
                 && !without.contains("ssh_authorized_keys"),
@@ -581,23 +586,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             without.contains(HOSTKEY_MARKER),
             "host key line missing without a key"
         );
-        let native = cloud_init_config(key.to_string(), false);
-        for absent in [
-            "deb.nodesource.com",
-            "apt-get install -y nodejs",
-            "npm install -g @github/copilot",
-        ] {
-            assert!(
-                !native.contains(absent),
-                "native cloud-init has legacy install line {absent:?}:\n{native}"
-            );
-        }
-        assert!(
-            native.contains(&format!("mkdir -p {HANDS_WORKDIR}"))
-                && native.contains(HOSTKEY_MARKER),
-            "native cloud-init lacks base setup:\n{native}"
-        );
-        let path = write_cloud_init(key.to_string(), true).expect("write cloud-init");
+        let path = write_cloud_init(key.to_string()).expect("write cloud-init");
         let data = std::fs::read_to_string(&path).expect("read cloud-init");
         let _ = std::fs::remove_file(path);
         assert_eq!(data, with);
@@ -1187,7 +1176,6 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
             Box::new(move |ctx, args, timeout| aws.run(ctx, args, timeout))
         });
         let _host = install_ssh_hostname(|_host| "203.0.113.7".into());
-        let _stub = stub_gh("");
 
         let lines = crate::retire::tend_executors(&s, TEST_NOW.into(), TEST_DAEMON.into());
         let calls = aws.joined();

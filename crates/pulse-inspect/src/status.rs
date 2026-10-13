@@ -152,13 +152,6 @@ pub fn runner_stopped(s: &pulse_store::Store) -> Result<String> {
 }
 
 pub fn harness_line(s: &pulse_store::Store) -> String {
-    let mode = s.setting("harness", "native");
-    if mode == "copilot-cli" {
-        return format!(
-            "copilot-cli (legacy: runner_cmd={})",
-            s.setting("runner_cmd", "copilot")
-        );
-    }
     let name = s.setting("provider", pulse_provider::DEFAULT);
     let mut label = pulse_provider::label_of(&name);
     if label.is_empty() {

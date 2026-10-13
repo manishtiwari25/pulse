@@ -123,6 +123,7 @@ const PRESENCE_ORDER: AgentPresence[] = ["online", "idle", "dead", "unknown", "l
 
 // What the agent runs on, in words; the raw name stays in the tooltip.
 const RUNNER_WORD: Record<string, string> = {
+  pulse: "PULSE harness",
   "claude-code": "Claude Code",
   "copilot-cli": "Copilot CLI",
   codex: "Codex",
@@ -140,7 +141,7 @@ function roleWord(g: AgentGroup): string {
   if (g.primary.kind === "legacy") return "Agent";
   return "Worker";
 }
-// "Worker, Copilot CLI": the role and what it runs on.
+// "Worker, PULSE harness": the role and what it runs on.
 function roleLine(g: AgentGroup): string {
   const on = isHuman(g) ? "" : runnerWord(g.primary.runner);
   return roleWord(g) + (on ? ", " + on : "");

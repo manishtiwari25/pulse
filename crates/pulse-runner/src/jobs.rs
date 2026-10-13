@@ -792,7 +792,7 @@ mod tests {
         Ok((
             0,
             "uname=Linux\narch=x86_64\nsudo=yes\nuser=absent\nhands=absent\nworkdir=absent\nworkdir_owner=\nauthorized_keys=absent\nauthorized_keys_lines=0\n\
-dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing\ngit=present\nmise=missing\ngitconfig=missing\nhostkeys=\nhostkey ssh-ed25519 AAAB host\n"
+dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=missing\nhostkeys=\nhostkey ssh-ed25519 AAAB host\n"
                 .to_string(),
             String::new(),
         ))
@@ -1845,7 +1845,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             args.extend(bad.iter().map(|s| s.to_string()));
             let e = h.run("JOB-1", "1", &args).unwrap_err().to_string();
             assert!(
-                e.contains("only the copilot or pulse harness worker may run here"),
+                e.contains("only the pulse harness worker may run here"),
                 "{bad:?}: {e}"
             );
         }
@@ -1924,7 +1924,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "/srv/pulse".into(),
             "ssh-ed25519 AAAA pulse-hub".into(),
             payload.clone(),
-            false,
         );
         for want in [
             "useradd -m -s /bin/bash pulse",
@@ -1933,7 +1932,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             "step workdir",
             "step authorized_keys",
             "step gitconfig",
-            "step copilot skipped",
             "step dropin",
             "step sshd_reload",
             "sshd -t",
@@ -1954,16 +1952,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         )
         .unwrap();
         assert_eq!(decoded, payload);
-
-        let with_copilot = crate::pair::pair_apply_script(
-            "hands-two".into(),
-            "/srv/pulse".into(),
-            "k".into(),
-            payload,
-            true,
+        assert!(
+            !apply.contains("copilot") && !apply.contains("nodesource"),
+            "apply script still installs the legacy worker"
         );
-        assert!(with_copilot.contains("npm install -g @github/copilot"));
-        assert!(!with_copilot.contains("step copilot skipped"));
 
         let inspect = crate::pair::pair_inspect_script(
             "/srv/pulse".into(),
@@ -2006,7 +1998,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             [("uname".to_string(), "Darwin".to_string())]
                 .into_iter()
                 .collect(),
-            false,
         );
         assert_eq!(r.len(), 1);
         assert!(r[0].contains("not Linux"));
@@ -2074,10 +2065,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         ] {
             assert!(text.contains(want), "dry run lacks {want:?}:\n{text}");
         }
-        assert!(
-            !text.contains("hint: copilot is missing"),
-            "native dry run should not warn about missing copilot:\n{text}"
-        );
         let scripts = PAIR_SCRIPTS.lock().unwrap().clone();
         assert!(
             scripts.len() == 1 && scripts[0].contains("printf 'uname=%s\\n'"),
@@ -3239,7 +3226,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_probe_ssh);
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=missing logged_in=no harness=no pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=no pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -3250,10 +3237,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         crate::executor::restore_run_ssh(old);
         assert!(!ok, "probe passed without harness login: {note}");
         assert!(
-            note.contains("harness login missing")
-                && !note.contains("copilot missing")
-                && !note.contains("copilot is not logged in"),
-            "native probe note: {note:?}"
+            note.contains("harness login missing"),
+            "probe note: {note:?}"
         );
     }
     #[test]
@@ -3334,7 +3319,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             let old = crate::executor::run_ssh_hook();
             crate::executor::set_run_ssh(fake_probe_ssh);
             *PROBE_REPLY.write().unwrap() = format!(
-                "hands=ok user=pulse workdir={workdir} git=2.40 copilot=ok logged_in=yes harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb={free_mb} jobs=- keys=- heartbeat=1\n"
+                "hands=ok user=pulse workdir={workdir} git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb={free_mb} jobs=- keys=- heartbeat=1\n"
             );
             let (ok, note) = crate::executor::probe_executor(
                 &s,
@@ -3376,7 +3361,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
         .unwrap();
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_probe_ssh);
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=present remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=present remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -3393,7 +3378,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
                 && note.contains("pulse pair <admin@host> --name hands"),
             "doctor note: {note:?}"
         );
-        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 copilot=ok logged_in=yes harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
+        *PROBE_REPLY.write().unwrap() = "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1\n".into();
         let (ok, note) = crate::executor::probe_executor(
             &s,
             "hands",
@@ -4299,7 +4284,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=missing\nnode=missing
             if paired.name != "hands-cr-001"
                 || paired.admin != "pulseadmin@pulse-cr-001-admin"
                 || paired.opts.projects != "proj"
-                || paired.opts.install_copilot
                 || paired.opts.workdir != crate::provider::HANDS_WORKDIR
             {
                 panic!(

@@ -1,5 +1,4 @@
 {
-  "harness": "native",
   "provider": {
     "name": "copilot",
     "label": "GitHub Copilot",
@@ -79,18 +78,6 @@
     "cost_today": 20
   },
   "settings": [
-    {
-      "name": "harness",
-      "value": "native",
-      "default": "native",
-      "kind": "choice",
-      "min": null,
-      "choices": ["native", "copilot-cli"],
-      "description": "native runs jobs through the built-in PULSE harness; copilot-cli keeps the legacy npm CLI path",
-      "updated_at": "2026-09-11T07:00:00Z",
-      "updated_by": "owner",
-      "secret": false
-    },
     {
       "name": "provider",
       "value": "copilot",

@@ -904,8 +904,6 @@ export interface CredCleared {
 
 // ----- native harness ----------------------------------------------------
 
-export type HarnessKind = "native" | "copilot-cli";
-
 export interface HarnessLogin {
   logged_in: boolean;
   user: string;
@@ -924,7 +922,6 @@ export interface HarnessProviderInfo {
 }
 
 export interface HarnessStatus {
-  harness: HarnessKind;
   provider: HarnessProviderInfo;
   providers: HarnessProviderInfo[];
   models: { worker: string; light: string; ask: string };

@@ -39,9 +39,18 @@ impl SettingRule {
 macro_rules! map { ($($k:literal => $v:literal,)+) => {{ let mut m=BTreeMap::new(); $(m.insert($k.to_string(), $v.to_string());)+ m }} }
 macro_rules! rules { ($($k:literal => ($kind:literal, $min:expr, [$($c:literal),*], $max:expr, $d:literal),)+) => {{ let mut m=BTreeMap::new(); $(m.insert($k.to_string(), SettingRule::new($kind, $min, &[$($c),*], $max, $d));)+ m }} }
 
+/// Settings earlier releases wrote that no longer mean anything: the
+/// `copilot-cli` run mode and what it alone read. `ensure_records` deletes
+/// their rows so a store that set them lists nothing it cannot explain.
+pub const RETIRED_SETTINGS: &[&str] = &["harness", "max_ai_credits", "runner_cmd"];
+
+/// What the `runner` column of an agent the runner spawns says: every
+/// worker runs through the built-in harness.
+pub const HARNESS_RUNNER: &str = "pulse";
+
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","max_ai_credits"=>"30","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","runner_cmd"=>"copilot","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
@@ -52,7 +61,6 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
         "workers"=>("count",Some(0),[],None,"parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),
         "parallel_per_project"=>("count",Some(1),[],None,"queued or leased jobs one project may have in flight at once (experiments aside); the planner fills every free lane with voted cards each loop, so this is also how many cards a project works in parallel; 1 is one at a time"),
-        "max_ai_credits"=>("credits",Some(30),[],None,"AI credits one copilot CLI worker run may spend; the copilot CLI refuses anything below 30"),
         "prune_after_days"=>("count",Some(1),[],None,"days without useful output after which an agent is pruned (its history stays)"),
         "claim_hours"=>("count",Some(1),[],None,"hours a board claim stays active before it is treated as stale"),
         "quorum"=>("count",Some(1),[],None,"distinct voters a suggestion needs before it is eligible for the queue"),
@@ -60,7 +68,6 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "stale_days"=>("count",Some(1),[],None,"days after which an untouched thread counts as stale"),
         "amend_quorum"=>("count",Some(1),[],None,"distinct sessions an amendment needs; may be raised by vote, lowered only by a human"),
         "amend_majority"=>("fraction",None,[],None,"share of counted votes an amendment needs, as a fraction such as 2/3"),
-        "runner_cmd"=>("command",None,[],None,"the worker program the runner starts in each clone when harness is copilot-cli (copilot, or a path to a stand-in)"),
         "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"),
         "stop"=>("switch",None,["0","1"],None,"the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
         "landing"=>("choice",None,["agents","human"],None,"agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
@@ -79,7 +86,7 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "harness"=>"native","provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.fetch_allow"=>"","harness.compact_at"=>"70",
+    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.fetch_allow"=>"","harness.compact_at"=>"70",
     // One endpoint per API-key provider (the registry name is the middle
     // segment); azure-openai has no default because the resource is the owner's.
     "provider.openai.base_url"=>"https://api.openai.com/v1","provider.anthropic.base_url"=>"https://api.anthropic.com","provider.gemini.base_url"=>"https://generativelanguage.googleapis.com","provider.azure-openai.base_url"=>"","provider.openrouter.base_url"=>"https://openrouter.ai/api/v1","provider.groq.base_url"=>"https://api.groq.com/openai/v1","provider.mistral.base_url"=>"https://api.mistral.ai/v1","provider.deepseek.base_url"=>"https://api.deepseek.com/v1","provider.xai.base_url"=>"https://api.x.ai/v1","provider.together.base_url"=>"https://api.together.xyz/v1","provider.fireworks.base_url"=>"https://api.fireworks.ai/inference/v1","provider.cerebras.base_url"=>"https://api.cerebras.ai/v1","provider.github-models.base_url"=>"https://models.github.ai/inference","provider.ollama.base_url"=>"http://127.0.0.1:11434/v1","provider.lmstudio.base_url"=>"http://127.0.0.1:1234/v1","provider.vllm.base_url"=>"http://127.0.0.1:8000/v1",
@@ -89,7 +96,6 @@ pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
 });
 pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-        "harness"=>("choice",None,["native","copilot-cli"],None,"native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone"),
         "provider"=>("choice",None,["copilot","openai","anthropic","gemini","azure-openai","openrouter","groq","mistral","deepseek","xai","together","fireworks","cerebras","github-models","ollama","lmstudio","vllm"],None,"the model provider of the native harness; copilot and github-models sign in with GitHub and azure-openai with Microsoft (a device code: pulse harness login --provider <name> or the console's Harness card); every provider but copilot also takes an API key - pasted in the Harness card or read by pulse harness login --provider <name> --with-token - or borrows it from the environment; ollama, lmstudio and vllm need none; the login lives on this machine, never in the store"),
         "provider.openai.base_url"=>("text",None,[],None,"the OpenAI-compatible endpoint the openai provider calls: OpenAI itself or any server that speaks its chat completions API; OPENAI_BASE_URL in the environment stands in while this keeps its default; the other vendors have their own provider.<name>.base_url"),
         "provider.anthropic.base_url"=>("text",None,[],None,"the Anthropic Messages API endpoint the anthropic provider calls; ANTHROPIC_BASE_URL in the environment stands in while this keeps its default"),
@@ -646,9 +652,6 @@ impl Store {
             }
         }
         out
-    }
-    pub fn harness_native(&self) -> bool {
-        self.setting("harness", "") == "native"
     }
     pub fn setting(&self, key: &str, def: &str) -> String {
         if let Ok(conn) = self.conn()

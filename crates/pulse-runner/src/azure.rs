@@ -195,7 +195,7 @@ impl AzureProvider {
                 &[json!(cfg.resource_group), json!(cfg.location)],
             );
         }
-        let rendered = crate::provider::write_cloud_init(String::new(), !s.harness_native())?;
+        let rendered = crate::provider::write_cloud_init(String::new())?;
         let show = (RUN_AZ.read().unwrap())(
             ctx,
             cfg.args(&[

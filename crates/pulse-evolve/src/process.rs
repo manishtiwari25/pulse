@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 
 /// Nice level of every process a measurement starts (harness, scorer and
@@ -83,12 +85,32 @@ pub(crate) fn command_words(text: &str) -> Result<Vec<String>> {
     }
     Ok(words)
 }
+/// Tests swap the measurement harness for a script per store home: a command
+/// line whose `{prompt}` (or trailing `-p`) takes the request.
+pub(crate) static MEASUREMENT_HARNESS: LazyLock<RwLock<BTreeMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(BTreeMap::new()));
+
+#[cfg(test)]
+pub(crate) fn set_measurement_harness(home: &str, command: Option<String>) {
+    let mut map = MEASUREMENT_HARNESS
+        .write()
+        .expect("measurement harness poisoned");
+    match command {
+        Some(command) => {
+            map.insert(home.to_string(), command);
+        }
+        None => {
+            map.remove(home);
+        }
+    }
+}
+
 pub(crate) fn harness_args(command: &str, request: &str) -> Result<Vec<String>> {
     let mut args = command_words(command).map_err(|_| {
         crate::fixtures::input_error(
             "Cannot start measurement harness",
-            "runner_cmd is not a quoted executable and arguments",
-            "pulse settings set runner_cmd copilot",
+            "the measurement harness is not a quoted executable and arguments",
+            "pulse evolve fixture list",
         )
     })?;
     let mut replaced = false;
@@ -104,8 +126,8 @@ pub(crate) fn harness_args(command: &str, request: &str) -> Result<Vec<String>> 
                 if i != args.len() - 1 {
                     return Err(crate::fixtures::input_error(
                         "Cannot start measurement harness",
-                        "use {prompt} for an existing prompt argument in runner_cmd",
-                        "pulse settings set runner_cmd 'copilot -p {prompt} --allow-all-tools'",
+                        "use {prompt} for an existing prompt argument in the measurement harness",
+                        "pulse evolve fixture list",
                     ));
                 }
                 args.push(request.to_string());
@@ -120,73 +142,60 @@ pub(crate) fn harness_args(command: &str, request: &str) -> Result<Vec<String>> 
     }
     Ok(args)
 }
-/// The measurement harness for one fixture request: the same non-interactive
-/// agent runtime the workers get, so a fixture can never wait at a permission
-/// prompt. With `harness` `native` and the default `runner_cmd` it is `pulse
-/// harness run` from `exe` with the Settings limits; a bare `copilot` gets the
-/// worker's non-interactive flags; any other `runner_cmd` runs as written.
+/// The measurement harness for one fixture request: `pulse harness run` from
+/// `exe` with the Settings limits - the same non-interactive runtime the
+/// workers get, so a fixture can never wait at a permission prompt.
 pub(crate) fn measurement_argv(
     s: &pulse_store::Store,
     exe: &str,
     request: &str,
 ) -> Result<Vec<String>> {
-    let command = s.setting("runner_cmd", "");
-    let words = command_words(&command).unwrap_or_default();
-    let bare_copilot = words.len() == 1
-        && std::path::Path::new(&words[0])
-            .file_name()
-            .is_some_and(|name| name == "copilot");
-    let model = s.run_model("task");
-    if bare_copilot && s.harness_native() && !exe.is_empty() {
-        let mut argv = vec![
-            exe.to_string(),
-            "harness".to_string(),
-            "run".to_string(),
-            "-p".to_string(),
-            request.to_string(),
-            "--quiet".to_string(),
-        ];
-        for (flag, key) in [
-            ("--max-steps", "harness.max_steps"),
-            ("--step-timeout", "harness.step_timeout"),
-            ("--commit-timeout", "harness.commit_timeout"),
-            ("--output-limit", "harness.output_limit"),
-            ("--max-cost", "harness.max_cost"),
-            ("--keep-observations", "harness.keep_observations"),
-        ] {
-            let value = s.setting(key, "");
-            if !value.trim().is_empty() {
-                argv.extend([flag.to_string(), value.trim().to_string()]);
-            }
-        }
-        let context_window = s.setting_int("harness.context_window");
-        if context_window > 0 {
-            argv.extend(["--context-window".to_string(), context_window.to_string()]);
-        }
-        let minutes = s.setting_int("minutes_per_job");
-        if minutes > 1 {
-            argv.extend(["--minutes".to_string(), (minutes - 1).to_string()]);
-        }
-        if !model.is_empty() {
-            argv.extend(["--model".to_string(), model]);
-        }
-        return Ok(argv);
+    if let Some(command) = MEASUREMENT_HARNESS
+        .read()
+        .expect("measurement harness poisoned")
+        .get(&s.home)
+    {
+        return harness_args(command, request);
     }
-    let mut argv = harness_args(&command, request)?;
-    if bare_copilot {
-        argv.push("--allow-all-tools".to_string());
-        for tool in pulse_store::DENIED_TOOLS {
-            argv.extend(["--deny-tool".to_string(), (*tool).to_string()]);
+    if exe.is_empty() {
+        return Err(crate::fixtures::input_error(
+            "Cannot start measurement harness",
+            "the pulse executable is unknown",
+            "run the measurement from an installed pulse",
+        ));
+    }
+    let model = s.run_model("task");
+    let mut argv = vec![
+        exe.to_string(),
+        "harness".to_string(),
+        "run".to_string(),
+        "-p".to_string(),
+        request.to_string(),
+        "--quiet".to_string(),
+    ];
+    for (flag, key) in [
+        ("--max-steps", "harness.max_steps"),
+        ("--step-timeout", "harness.step_timeout"),
+        ("--commit-timeout", "harness.commit_timeout"),
+        ("--output-limit", "harness.output_limit"),
+        ("--max-cost", "harness.max_cost"),
+        ("--keep-observations", "harness.keep_observations"),
+    ] {
+        let value = s.setting(key, "");
+        if !value.trim().is_empty() {
+            argv.extend([flag.to_string(), value.trim().to_string()]);
         }
-        argv.extend([
-            "--disable-builtin-mcps".to_string(),
-            "--no-ask-user".to_string(),
-            "-s".to_string(),
-            "--autopilot".to_string(),
-        ]);
-        if !model.is_empty() {
-            argv.extend(["--model".to_string(), model]);
-        }
+    }
+    let context_window = s.setting_int("harness.context_window");
+    if context_window > 0 {
+        argv.extend(["--context-window".to_string(), context_window.to_string()]);
+    }
+    let minutes = s.setting_int("minutes_per_job");
+    if minutes > 1 {
+        argv.extend(["--minutes".to_string(), (minutes - 1).to_string()]);
+    }
+    if !model.is_empty() {
+        argv.extend(["--model".to_string(), model]);
     }
     Ok(argv)
 }

@@ -17,7 +17,6 @@ pub(crate) const LOCAL_EXECUTOR: &str = "local";
 pub(crate) const UNREACHABLE_AFTER: i32 = 3;
 pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
 pub(crate) const REMOTE_EXIT_TIMEOUT: i32 = 124;
-pub(crate) const LOGIN_CHECK_PROMPT: &str = "Reply with exactly the word ok and nothing else.";
 pub(crate) const NATIVE_LOGIN_PROMPT: &str = "Reply with exactly one line: SUMMARY: ok";
 pub(crate) const LOGIN_CHECK_MINUTES: i32 = 2;
 pub(crate) const LOGIN_EXPIRY_WARN: i32 = 7;
@@ -757,10 +756,13 @@ pub(crate) fn admin_ssh_run(
     }
 }
 
-pub(crate) const LOGIN_PREP_SCRIPT: &str = "set -e; d=\"$HOME/.copilot\"; f=\"$d/settings.json\"; umask 077; mkdir -p \"$d\"; chmod 700 \"$d\"; if [ ! -s \"$f\" ]; then printf \"{\\n  \\\"storeTokenPlaintext\\\": true\\n}\\n\" > \"$f\"; echo settings=written; elif grep -q \"\\\"storeTokenPlaintext\\\"[[:space:]]*:[[:space:]]*true\" \"$f\"; then echo settings=present; elif command -v node >/dev/null 2>&1; then node -e \"const fs=require(\\\"fs\\\");const p=process.argv[1];const c=JSON.parse(fs.readFileSync(p,\\\"utf8\\\"));c.storeTokenPlaintext=true;fs.writeFileSync(p,JSON.stringify(c,null,2)+\\\"\\n\\\")\" \"$f\"; echo settings=merged; else echo settings=unmergeable; exit 4; fi";
-pub(crate) static LOGIN_PREP_COMMAND: LazyLock<String> =
-    LazyLock::new(|| format!("sudo -n -u pulse -H sh -c '{}'", LOGIN_PREP_SCRIPT));
-pub(crate) const LOGIN_COMMAND: &str = "sudo -n -u pulse -H timeout 90 copilot login --with-token";
+/// How a hand's token lands: `pulse harness login --with-token` as the
+/// `pulse` user, the token on stdin.
+pub(crate) const LOGIN_COMMAND: &str =
+    "sudo -n -u pulse -H timeout 90 pulse harness login --with-token";
+/// `pulse executor login NAME --remove`: forget the hand's stored login.
+pub(crate) const REMOVE_LOGIN_COMMAND: &str =
+    r#"sudo -n -u pulse -H sh -c 'rm -f -- "$HOME/.pulse/private/providers/copilot.json"'"#;
 
 pub(crate) fn classify_token(token: &str) -> Result<String> {
     if token.is_empty() {
@@ -971,46 +973,22 @@ pub(crate) fn expiry_warning(expires: &str, now: &str, days: i32) -> String {
 }
 
 pub(crate) fn login_check_command(s: &pulse_store::Store) -> Vec<String> {
-    if s.harness_native() {
-        let mut cmd = vec![
-            "pulse".to_string(),
-            "harness".to_string(),
-            "run".to_string(),
-            "-p".to_string(),
-            NATIVE_LOGIN_PROMPT.to_string(),
-            "--max-steps".to_string(),
-            "2".to_string(),
-            "--no-store".to_string(),
-            "--quiet".to_string(),
-        ];
-        let model = s.light_model();
-        if !model.is_empty() {
-            cmd.extend(["--model".to_string(), model]);
-        }
-        return cmd;
-    }
     let mut cmd = vec![
-        runner_cmd(s),
+        "pulse".to_string(),
+        "harness".to_string(),
+        "run".to_string(),
         "-p".to_string(),
-        LOGIN_CHECK_PROMPT.to_string(),
-        "--no-ask-user".to_string(),
-        "--disable-builtin-mcps".to_string(),
-        "-s".to_string(),
+        NATIVE_LOGIN_PROMPT.to_string(),
+        "--max-steps".to_string(),
+        "2".to_string(),
+        "--no-store".to_string(),
+        "--quiet".to_string(),
     ];
     let model = s.light_model();
     if !model.is_empty() {
         cmd.extend(["--model".to_string(), model]);
     }
     cmd
-}
-
-pub(crate) fn runner_cmd(s: &pulse_store::Store) -> String {
-    let v = s.setting("runner_cmd", "");
-    if v.is_empty() {
-        "copilot".to_string()
-    } else {
-        v
-    }
 }
 
 pub(crate) fn tiny_bundle() -> Result<Vec<u8>> {
@@ -1119,22 +1097,13 @@ pub(crate) fn login_check(
                 Ok((code, out, err_text)) => {
                     rc = code;
                     said = fault_line(&(err_text.clone() + "\n" + &out), 200);
-                    if s.harness_native() {
-                        if rc == 0 && out.contains("SUMMARY:") {
-                            ok = true;
-                            kind = "ok".to_string();
-                        } else if rc == 4
-                            || err_text.trim().to_lowercase().starts_with("not logged in:")
-                            || login_fault(&said)
-                        {
-                            kind = "refused".to_string();
-                        } else {
-                            kind = "failed".to_string();
-                        }
-                    } else if rc == 0 && !login_fault(&said) {
+                    if rc == 0 && out.contains("SUMMARY:") {
                         ok = true;
                         kind = "ok".to_string();
-                    } else if login_fault(&said) {
+                    } else if rc == 4
+                        || err_text.trim().to_lowercase().starts_with("not logged in:")
+                        || login_fault(&said)
+                    {
                         kind = "refused".to_string();
                     } else {
                         kind = "failed".to_string();
@@ -1145,11 +1114,7 @@ pub(crate) fn login_check(
         }
     }
     let seconds = started.elapsed().as_secs() as i32;
-    let worker = if s.harness_native() {
-        "harness"
-    } else {
-        "copilot"
-    };
+    let worker = "harness";
     let note = if ok {
         format!("login ok: {worker} answered in {seconds}s")
     } else if kind == "refused" {
@@ -1305,14 +1270,9 @@ pub(crate) fn executor_login(
 
     if remove {
         res.kind = "removed".to_string();
-        let remove_command = if s.harness_native() {
-            r#"sudo -n -u pulse -H sh -c 'rm -f -- "$HOME/.pulse/private/providers/copilot.json"'"#
-        } else {
-            r#"sudo -n -u pulse -H sh -c 'rm -rf -- "$HOME/.copilot"'"#
-        };
         match admin_ssh_run(
             admin_address,
-            remove_command,
+            REMOVE_LOGIN_COMMAND,
             &[],
             Duration::from_secs(120),
             "",
@@ -1397,49 +1357,11 @@ pub(crate) fn executor_login(
             expiry_warning(&facts.expires, now, LOGIN_EXPIRY_WARN)
         ));
     }
-    let mut settings_note = "settings=unknown".to_string();
-    let login_cmd = if s.harness_native() {
-        settings_note = "settings=native".to_string();
-        "sudo -n -u pulse -H timeout 90 pulse harness login --with-token".to_string()
-    } else {
-        match admin_ssh_run(
-            admin_address,
-            &LOGIN_PREP_COMMAND,
-            &[],
-            Duration::from_secs(120),
-            "",
-        ) {
-            Err(err) if err.downcast_ref::<ExecutorUnreachable>().is_some() => {
-                let u = err.downcast_ref::<ExecutorUnreachable>().unwrap();
-                res.rc = SSH_EXIT_UNREACH;
-                res.lines.push(format!("{name} unreachable: {}", u.msg));
-                log_login_event(&conn, now, actor, name, &res, json!({}));
-                return Ok(res);
-            }
-            Err(err) => return Err(err),
-            Ok((prep_rc, prep_out, prep_err)) => {
-                if prep_rc != 0 {
-                    res.rc = prep_rc;
-                    res.lines.push(format!("preparing ~/.copilot/settings.json for user pulse on {name} failed (exit {prep_rc}); the token was not sent"));
-                    res.lines.extend(last_lines(&(prep_out + &prep_err), 5));
-                    log_login_event(&conn, now, actor, name, &res, json!({"step": "settings"}));
-                    return Ok(res);
-                }
-                for l in prep_out.split('\n') {
-                    if l.starts_with("settings=") {
-                        settings_note = l.trim().to_string();
-                        break;
-                    }
-                }
-            }
-        }
-        LOGIN_COMMAND.to_string()
-    };
     let mut input = tok.into_bytes();
     input.push(b'\n');
     match admin_ssh_run(
         admin_address,
-        &login_cmd,
+        LOGIN_COMMAND,
         &input,
         Duration::from_secs(120),
         "",
@@ -1457,7 +1379,7 @@ pub(crate) fn executor_login(
             res.ok = rc == 0;
             if res.ok {
                 res.lines.push(format!(
-                    "login stored for user pulse on {name} (kind {kind}, {settings_note})"
+                    "login stored for user pulse on {name} (kind {kind})"
                 ));
                 let (probe_ok, note) = probe_executor(s, name, actor, now)?;
                 if probe_ok {
@@ -1654,12 +1576,8 @@ pub(crate) fn probe_executor(
                 if get(&fields, "git", "missing") == "missing" {
                     problems.push("git missing".to_string());
                 }
-                if s.harness_native() {
-                    if get(&fields, "harness", "no") != "yes" {
-                        problems.push(format!("harness login missing (run `pulse executor login {name} --admin <admin@host> --with-token`)"));
-                    }
-                } else if get(&fields, "copilot", "missing") == "missing" {
-                    problems.push("copilot missing".to_string());
+                if get(&fields, "harness", "no") != "yes" {
+                    problems.push(format!("harness login missing (run `pulse executor login {name} --admin <admin@host> --with-token`)"));
                 }
                 if fields.get("keys_ok").map(String::as_str) != Some("yes") {
                     problems.push("authorized key lacks command=/restrict".to_string());
@@ -1679,12 +1597,6 @@ pub(crate) fn probe_executor(
                         fields.get("workdir").cloned().unwrap_or_default(),
                         r.str("workdir")
                     ));
-                }
-                if !s.harness_native() && get(&fields, "logged_in", "yes") != "yes" {
-                    problems.push(
-                        "copilot is not logged in (run `copilot login` as the executor user)"
-                            .to_string(),
-                    );
                 }
                 if !fields.contains_key("keys") {
                     problems.push(format!("hands predate ADR-022 (no keys= field); refresh them with `pulse pair <admin@host> --name {name}`"));

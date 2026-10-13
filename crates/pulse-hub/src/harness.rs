@@ -107,10 +107,6 @@ impl Handler {
         };
         let mut out = JsonMap::new();
         out.insert(
-            "harness".into(),
-            Value::String(store.setting("harness", "")),
-        );
-        out.insert(
             "provider".into(),
             Value::Object(
                 self.harness_provider_summary(p, login)
@@ -873,7 +869,7 @@ impl Handler {
                     .collect()
             })
             .unwrap_or_default();
-        let mut names = vec!["harness".to_string(), "provider".to_string()];
+        let mut names = vec!["provider".to_string()];
         names.extend(endpoints);
         names.extend(
             [
@@ -1269,7 +1265,8 @@ mod tests {
             &[],
         );
         assert_eq!(status, 200, "{raw}");
-        assert_eq!(result["harness"], "native");
+        // The run-mode switch is gone: the built-in harness is the only one.
+        assert!(!result.contains_key("harness"), "{raw}");
         assert_eq!(result["provider"]["name"], "hubfake");
         assert_eq!(result["provider"]["label"], "Hub Fake");
         assert_eq!(result["provider"]["device_login"], true);

@@ -100,16 +100,12 @@ pub(crate) fn ensure_lead(
         }
         return Ok((Some(a), false));
     }
-    let mut runner = s.setting("runner_cmd", "");
-    if let Some(first) = runner.split_whitespace().next() {
-        runner = first.to_string();
-    }
     let (a, created) = pulse_board::join_agent(
         s,
         pulse_board::JoinInput {
             name,
             kind: LEAD_KIND.into(),
-            runner,
+            runner: pulse_store::HARNESS_RUNNER.into(),
             model: s.run_model("lead"),
             display: format!("{slug} lead"),
             ..Default::default()

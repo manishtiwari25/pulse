@@ -163,8 +163,7 @@ pub(crate) fn fake_harness(s: &pulse_store::Store, body: &str) -> String {
     let dir = crate::test_helpers::temp_path();
     let file = dir.join("fake harness");
     put_file(&file, &format!("#!/bin/sh\nset -eu\n{body}\n"), 0o700);
-    s.set_setting("human", "runner_cmd", &format!("'{}'", file.display()))
-        .expect("set runner_cmd");
+    crate::process::set_measurement_harness(&s.home, Some(format!("'{}'", file.display())));
     file.display().to_string()
 }
 

@@ -23,10 +23,10 @@ import { cn } from "@/lib/utils";
 
 // The Harness section of Settings (the runner points people here as
 // "Settings -> Harness"): sign in to the model provider, pick the models,
-// cap one run, and - folded away - the system prompt, the run mode and the
-// transcript sizes. These controls save as soon as they change.
+// cap one run, and - folded away - the system prompt, the tool switches and
+// the transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["harness", "provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.fetch_allow", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.fetch_allow", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -623,7 +623,6 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
   const d = h.data;
   const rows = d?.settings;
-  const mode = setting(rows, "harness");
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window", "harness.compact_at"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
@@ -638,7 +637,6 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const commands = [...new Set([loginCommand(login?.detail || ""), loginCommand(runner.data?.hold || "")].filter(Boolean))];
   const currentModels = models.data?.models ?? [];
   const modelError = models.error && !models.data ? models.error : "";
-  const legacy = d?.harness === "copilot-cli";
 
   const saveChoice = (name: string, value: string) => {
     const id = toast.loading("Saving " + settingLabel(name).toLowerCase() + "…");
@@ -755,29 +753,11 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
 
           <Disclosure
             variant="row"
-            open={legacy || undefined}
             className="border-t px-3 py-2 sm:px-4"
             contentClassName="mt-1 grid gap-5 pb-3"
-            summary={<RowSummary title="Run mode and transcript size" note="Which program runs agents, and how much command output a run keeps." badge={<ToneBadge tone={legacy ? "warn" : "neutral"}>{legacy ? "Copilot CLI" : "Built-in"}</ToneBadge>} />}
+            summary={<RowSummary title="Tools and transcript size" note="What an agent may use while it works, and how much command output a run keeps." />}
           >
             <>
-              <div className="grid gap-1.5">
-                <Label id="harness-mode-label">Run mode</Label>
-                <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp("harness")}</p>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                  <Select value={mode?.value || d.harness} onValueChange={(v) => saveChoice("harness", v)}>
-                    <SelectTrigger className="w-64 max-w-full" aria-labelledby="harness-mode-label">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="native">Built-in harness (recommended)</SelectItem>
-                      <SelectItem value="copilot-cli">Copilot CLI (older)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <KeyName name="harness" />
-                </div>
-                {legacy ? <Notice tone="warn">The Copilot CLI mode needs the copilot command installed and signed in on every machine that runs agents. The Agent program and Model credits per run settings under Limits apply to it.</Notice> : null}
-              </div>
               {toggles.length ? (
                 <div className="grid gap-4 sm:grid-cols-2">
                   {toggles.map((s) => (

@@ -91,18 +91,6 @@
     },
     {
       "choices": null,
-      "default": "30",
-      "description": "AI credits one worker run may spend; the copilot CLI refuses anything below 30",
-      "kind": "credits",
-      "min": 30,
-      "name": "max_ai_credits",
-      "secret": false,
-      "updated_at": "2026-09-01T09:07:00Z",
-      "updated_by": "init",
-      "value": "30"
-    },
-    {
-      "choices": null,
       "default": "10",
       "description": "wall-clock minutes one worker run may take before the runner stops it",
       "kind": "count",
@@ -112,21 +100,6 @@
       "updated_at": "2026-09-01T09:07:00Z",
       "updated_by": "init",
       "value": "10"
-    },
-    {
-      "choices": [
-        "native",
-        "copilot-cli"
-      ],
-      "default": "native",
-      "description": "native: the built-in harness runs each job through the model provider (no copilot CLI needed); copilot-cli: the legacy path starting runner_cmd in each clone",
-      "kind": "choice",
-      "min": null,
-      "name": "harness",
-      "secret": false,
-      "updated_at": "",
-      "updated_by": "default",
-      "value": "native"
     },
     {
       "choices": [
@@ -481,18 +454,6 @@
       "updated_at": "2026-09-01T09:07:00Z",
       "updated_by": "init",
       "value": "2"
-    },
-    {
-      "choices": null,
-      "default": "copilot",
-      "description": "the worker program the runner starts in each clone (copilot, or a path to a stand-in)",
-      "kind": "command",
-      "min": null,
-      "name": "runner_cmd",
-      "secret": false,
-      "updated_at": "2026-09-01T09:07:00Z",
-      "updated_by": "init",
-      "value": "copilot"
     },
     {
       "choices": null,

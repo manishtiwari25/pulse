@@ -474,7 +474,7 @@ pub(crate) fn measurement_failure(
     crate::fixtures::input_error(
         &format!("Measurement failed for {label}"),
         &why,
-        "pulse evolve fixture list (owner: review the scorer and runner_cmd)",
+        "pulse evolve fixture list (owner: review the scorer and the harness settings)",
     )
 }
 
@@ -1035,26 +1035,7 @@ rm -f "$running/$(basename "$PWD")"
         let _guard = measure_test_lock();
         let s = test_store();
         let request = "Improve the value in the clone.";
-        s.set_setting("human", "harness", "copilot-cli").unwrap();
         s.set_setting("human", "worker_model", "fable").unwrap();
-        s.set_setting("human", "runner_cmd", "copilot").unwrap();
-        let legacy = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
-        assert_eq!(&legacy[..3], ["copilot", "-p", request]);
-        for flag in ["--allow-all-tools", "--no-ask-user", "--autopilot", "-s"] {
-            assert!(
-                legacy.contains(&flag.to_string()),
-                "{legacy:?} lacks {flag}"
-            );
-        }
-        for tool in pulse_store::DENIED_TOOLS {
-            assert!(
-                legacy.contains(&(*tool).to_string()),
-                "{legacy:?} lacks {tool}"
-            );
-        }
-        assert_eq!(legacy[legacy.len() - 2..], ["--model", "fable"]);
-
-        s.set_setting("human", "harness", "native").unwrap();
         s.set_setting("human", "harness.max_steps", "7").unwrap();
         s.set_setting("human", "minutes_per_job", "5").unwrap();
         let native = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
@@ -1086,11 +1067,18 @@ rm -f "$running/$(basename "$PWD")"
         );
         s.set_setting("human", "harness.context_window", "0")
             .unwrap();
+        assert!(
+            crate::process::measurement_argv(&s, "", request).is_err(),
+            "an unknown executable must not start a measurement"
+        );
 
-        // A custom command is the measurement harness as written, whatever `harness` says.
-        s.set_setting("human", "runner_cmd", "'/tmp/my harness' --flag")
-            .unwrap();
+        // Tests swap in a script; it runs as written, the request as one argument.
+        crate::process::set_measurement_harness(
+            &s.home,
+            Some("'/tmp/my harness' --flag".to_string()),
+        );
         let custom = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        crate::process::set_measurement_harness(&s.home, None);
         assert_eq!(custom, ["/tmp/my harness", "--flag", "-p", request]);
     }
 

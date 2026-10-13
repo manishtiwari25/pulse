@@ -290,18 +290,12 @@ impl Executor for LocalExec {
             observer.as_ref(),
         )
         .map_err(|e| {
-            let setting = self
-                .s
-                .as_ref()
-                .map(|s| s.setting("runner_cmd", ""))
-                .unwrap_or_default();
             let exec_err = e.to_string().to_lowercase();
             crate::util::fail(
                 1,
                 format!(
-                    "worker command not found: {} (setting runner_cmd={}): {exec_err}",
-                    cmd.first().cloned().unwrap_or_default(),
-                    setting
+                    "worker command not found: {}: {exec_err}",
+                    cmd.first().cloned().unwrap_or_default()
                 ),
             )
         })?;
@@ -976,103 +970,73 @@ pub(crate) fn worker_command(
     brief_text: &str,
     clone: &str,
     worker_cmd: &str,
-    dirs: &[String],
     remote: bool,
 ) -> (Vec<String>, bool) {
     if !worker_cmd.is_empty() {
         return (crate::util::split_shell(worker_cmd), true);
     }
-    if s.harness_native() {
-        let bin = if remote {
-            "pulse".to_string()
-        } else {
-            std::env::current_exe()
-                .ok()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "pulse".into())
-        };
-        let mut cmd = vec![
-            bin,
-            "harness".into(),
-            "run".into(),
-            "-p".into(),
-            brief_text.into(),
-            "-C".into(),
-            clone.into(),
-            "--max-steps".into(),
-            s.setting("harness.max_steps", ""),
-            "--step-timeout".into(),
-            s.setting("harness.step_timeout", ""),
-            "--commit-timeout".into(),
-            s.setting("harness.commit_timeout", ""),
-            "--output-limit".into(),
-            s.setting("harness.output_limit", ""),
-            "--max-cost".into(),
-            s.setting("harness.max_cost", ""),
-            "--keep-observations".into(),
-            s.setting("harness.keep_observations", ""),
-        ];
-        // The override travels only when set, so a remote hand without
-        // the store still honours it and the default argv stays short.
-        if crate::util::setting_int(s, "harness.context_window") > 0 {
-            cmd.extend([
-                "--context-window".into(),
-                crate::util::setting_int(s, "harness.context_window").to_string(),
-            ]);
-        }
-        if crate::util::setting_int(s, "minutes_per_job") > 1 {
-            cmd.extend([
-                "--minutes".into(),
-                (crate::util::setting_int(s, "minutes_per_job") - 1).to_string(),
-            ]);
-        }
-        // Likewise the Wave 2 switches: only a departure from the default
-        // travels.
-        for (setting, flag) in [
-            ("harness.skills", "--no-skills"),
-            ("harness.hooks", "--no-hooks"),
-            ("harness.subagents", "--no-subagents"),
-        ] {
-            if s.setting(setting, "on") == "off" {
-                cmd.push(flag.into());
-            }
-        }
-        let fetch_allow = s.setting("harness.fetch_allow", "");
-        if !fetch_allow.trim().is_empty() {
-            cmd.extend(["--fetch-allow".into(), fetch_allow]);
-        }
-        let compact_at = s.setting("harness.compact_at", "70");
-        if compact_at != "70" {
-            cmd.extend(["--compact-at".into(), compact_at]);
-        }
-        let model = s.run_model(kind);
-        if !model.is_empty() {
-            cmd.extend(["--model".into(), model]);
-        }
-        return (cmd, false);
-    }
+    let bin = if remote {
+        "pulse".to_string()
+    } else {
+        std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "pulse".into())
+    };
     let mut cmd = vec![
-        crate::executor::runner_cmd(s),
+        bin,
+        "harness".into(),
+        "run".into(),
         "-p".into(),
         brief_text.into(),
         "-C".into(),
         clone.into(),
-        "--allow-all-tools".into(),
+        "--max-steps".into(),
+        s.setting("harness.max_steps", ""),
+        "--step-timeout".into(),
+        s.setting("harness.step_timeout", ""),
+        "--commit-timeout".into(),
+        s.setting("harness.commit_timeout", ""),
+        "--output-limit".into(),
+        s.setting("harness.output_limit", ""),
+        "--max-cost".into(),
+        s.setting("harness.max_cost", ""),
+        "--keep-observations".into(),
+        s.setting("harness.keep_observations", ""),
     ];
-    for p in crate::brief::DENIED_TOOLS {
-        cmd.extend(["--deny-tool".into(), (*p).into()]);
+    // The override travels only when set, so a remote hand without
+    // the store still honours it and the default argv stays short.
+    if crate::util::setting_int(s, "harness.context_window") > 0 {
+        cmd.extend([
+            "--context-window".into(),
+            crate::util::setting_int(s, "harness.context_window").to_string(),
+        ]);
     }
-    for d in dirs {
-        cmd.extend(["--add-dir".into(), d.clone()]);
+    if crate::util::setting_int(s, "minutes_per_job") > 1 {
+        cmd.extend([
+            "--minutes".into(),
+            (crate::util::setting_int(s, "minutes_per_job") - 1).to_string(),
+        ]);
     }
-    cmd.extend([
-        "--disable-builtin-mcps".into(),
-        "--no-ask-user".into(),
-        "-s".into(),
-        "--max-ai-credits".into(),
-        s.setting("max_ai_credits", ""),
-        "--autopilot".into(),
-    ]);
+    // Likewise the Wave 2 switches: only a departure from the default
+    // travels.
+    for (setting, flag) in [
+        ("harness.skills", "--no-skills"),
+        ("harness.hooks", "--no-hooks"),
+        ("harness.subagents", "--no-subagents"),
+    ] {
+        if s.setting(setting, "on") == "off" {
+            cmd.push(flag.into());
+        }
+    }
+    let fetch_allow = s.setting("harness.fetch_allow", "");
+    if !fetch_allow.trim().is_empty() {
+        cmd.extend(["--fetch-allow".into(), fetch_allow]);
+    }
+    let compact_at = s.setting("harness.compact_at", "70");
+    if compact_at != "70" {
+        cmd.extend(["--compact-at".into(), compact_at]);
+    }
     let model = s.run_model(kind);
     if !model.is_empty() {
         cmd.extend(["--model".into(), model]);
@@ -1653,7 +1617,7 @@ mod tests {
         set_setting(&s, "worker_model", "heavy-test");
         set_setting(&s, "light_model", "light-test");
         for kind in pulse_board::JOB_KINDS {
-            let (cmd, custom) = worker_command(&s, kind, "brief", "/tmp/clone", "", &[], false);
+            let (cmd, custom) = worker_command(&s, kind, "brief", "/tmp/clone", "", false);
             assert!(!custom, "{kind}: a custom command without worker_cmd");
             let want = if pulse_store::IMPLEMENTATION_JOB_KINDS.contains(kind) {
                 "heavy-test"
@@ -1662,15 +1626,8 @@ mod tests {
             };
             assert_eq!(model_arg(&cmd), want, "{kind}");
         }
-        let (cmd, custom) = worker_command(
-            &s,
-            "task",
-            "brief",
-            "/tmp/clone",
-            "sh -c 'echo hi'",
-            &[],
-            false,
-        );
+        let (cmd, custom) =
+            worker_command(&s, "task", "brief", "/tmp/clone", "sh -c 'echo hi'", false);
         assert!(custom);
         assert_eq!(model_arg(&cmd), "");
     }
@@ -1702,11 +1659,11 @@ mod tests {
     }
 
     #[test]
-    fn worker_command_native_and_legacy_argv() {
+    fn worker_command_argv() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         set_setting(&s, "worker_model", "heavy-test");
-        let (cmd, custom) = worker_command(&s, "task", "brief text", "/tmp/clone", "", &[], false);
+        let (cmd, custom) = worker_command(&s, "task", "brief text", "/tmp/clone", "", false);
         assert!(!custom);
         let exe = std::env::current_exe().unwrap().display().to_string();
         let want = vec![
@@ -1735,7 +1692,7 @@ mod tests {
             "heavy-test".into(),
         ];
         assert_eq!(cmd, want);
-        let (cmd, custom) = worker_command(&s, "lead", "brief text", "/tmp/clone", "", &[], true);
+        let (cmd, custom) = worker_command(&s, "lead", "brief text", "/tmp/clone", "", true);
         assert!(
             !custom
                 && cmd.len() >= 3
@@ -1746,7 +1703,7 @@ mod tests {
         assert!(!cmd.contains(&"--context-window".to_string()));
         // A context window override rides along once set.
         set_setting(&s, "harness.context_window", "1000000");
-        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", &[], true);
+        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
         assert!(
             cmd.windows(2).any(|w| w == ["--context-window", "1000000"]),
             "{cmd:?}"
@@ -1767,7 +1724,7 @@ mod tests {
         set_setting(&s, "harness.subagents", "off");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
-        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", &[], true);
+        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
         for flag in ["--no-skills", "--no-hooks", "--no-subagents"] {
             assert!(cmd.contains(&flag.to_string()), "{cmd:?}");
         }
@@ -1785,32 +1742,11 @@ mod tests {
         }
         set_setting(&s, "harness.fetch_allow", "");
         set_setting(&s, "harness.compact_at", "70");
-        set_setting(&s, "harness", "copilot-cli");
-        let (cmd, custom) = worker_command(
-            &s,
-            "task",
-            "brief text",
-            "/tmp/clone",
-            "",
-            &["/tmp".into(), "/work".into()],
-            false,
-        );
-        assert!(!custom);
-        let joined = cmd.join(" ");
-        for want in [
-            "copilot",
-            "-p brief text",
-            "-C /tmp/clone",
-            "--allow-all-tools",
-            "--add-dir /tmp",
-            "--add-dir /work",
-            "--disable-builtin-mcps",
-            "--no-ask-user",
-            "--autopilot",
-            "--model heavy-test",
-        ] {
-            assert!(joined.contains(want), "legacy argv lacks {want:?}: {cmd:?}");
-        }
+        // Back at the defaults a remote hand gets the same argv behind `pulse`.
+        let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
+        let mut remote = want.clone();
+        remote[0] = "pulse".into();
+        assert_eq!(cmd, remote);
     }
 
     #[test]
@@ -2030,86 +1966,6 @@ mod tests {
     }
 
     #[test]
-    fn run_job_records_the_model_of_each_run_on_the_agent() {
-        let _serial = crate::test_helpers::serial();
-        if which::which("ssh-keygen").is_err() {
-            return;
-        }
-        let s = crate::test_helpers::new_store();
-        let project = insert_git_project(&s);
-        crate::test_helpers::join(&s, "aurora");
-        let args_file = std::path::Path::new(&s.home).join("worker-args");
-        let script = std::path::Path::new(&s.home).join("runner.sh");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'SUMMARY: looked and left the tree as it was'\n",
-                args_file.display()
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        set_setting(&s, "runner_cmd", &script.display().to_string());
-        set_setting(&s, "harness", "copilot-cli");
-        set_setting(&s, "worker_model", "heavy-test");
-        set_setting(&s, "light_model", "light-test");
-
-        for (kind, want) in [
-            ("answer", "light-test"),
-            ("task", "heavy-test"),
-            ("reflect", "light-test"),
-        ] {
-            let (job, _) = crate::jobs::add_job(
-                &s,
-                project.str("slug"),
-                kind.to_string(),
-                format!("{kind} job"),
-                "look around".to_string(),
-                1,
-                0,
-                format!("test:{kind}"),
-                crate::util::HUMAN_AGENT.to_string(),
-                false,
-            )
-            .unwrap();
-            let job = crate::jobs::lease_job(
-                &s,
-                "aurora".to_string(),
-                crate::test_helpers::TEST_NOW.to_string(),
-                crate::jobs::LeaseOpts {
-                    job_id: job.str("id"),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let run = crate::run::run_job(
-                &s,
-                job,
-                "aurora",
-                crate::test_helpers::TEST_NOW,
-                crate::run::RunOpts::default(),
-            )
-            .unwrap();
-            assert!(!run.0.is_empty(), "{kind}");
-            let args = std::fs::read_to_string(&args_file).unwrap();
-            let argv = args
-                .trim_end_matches('\n')
-                .lines()
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            assert_eq!(model_arg(&argv), want, "{kind}: {args}");
-            let conn = s.conn().unwrap();
-            let agent = crate::board::agent_row(&conn, "aurora".to_string());
-            assert_eq!(agent.str("model"), want, "{kind}: {agent:?}");
-            let _ = std::fs::remove_file(&args_file);
-        }
-    }
-
-    #[test]
     fn lead_runs_with_the_light_model() {
         let _serial = crate::test_helpers::serial();
         pulse_bus::reset_default();
@@ -2120,7 +1976,7 @@ mod tests {
         assert!(created, "lead: {lead:?}");
         assert_eq!(lead.as_ref().map(|a| a.model.as_str()), Some("heavy-test"));
         set_setting(&s, "light_model", "light-test");
-        let (cmd, _) = worker_command(&s, "lead", "brief", "/tmp/clone", "", &[], false);
+        let (cmd, _) = worker_command(&s, "lead", "brief", "/tmp/clone", "", false);
         assert_eq!(model_arg(&cmd), "light-test");
         let (lead2, _) = crate::board::join_agent(
             &s,
@@ -2142,14 +1998,12 @@ mod tests {
         pulse_bus::reset_default();
         let s = crate::test_helpers::new_store();
         set_setting(&s, "quorum", "1");
-        set_setting(&s, "runner_cmd", "copilot");
-        set_setting(&s, "harness", "copilot-cli");
         set_setting(&s, "worker_model", "gpt-5-mini");
         let mut old = Vec::new();
         for _ in 0..2 {
             let r = crate::board::spawn_agent(
                 &s,
-                "copilot".to_string(),
+                pulse_store::HARNESS_RUNNER.to_string(),
                 "gpt-5-mini".to_string(),
                 "worker".to_string(),
             )

@@ -76,7 +76,7 @@ impl FakeGitHub {
             );
             Ok((status, h, body.into_bytes()))
         });
-        crate::token::GH_SOURCE.lock().unwrap().forget();
+        crate::token::PROVIDER_SOURCE.lock().unwrap().forget();
         let old = crate::executor::set_github_http(fake);
         FakeGitHubInstall { old: Some(old) }
     }
@@ -95,7 +95,7 @@ impl Drop for FakeGitHubInstall {
         if let Some(old) = self.old.take() {
             let _ = crate::executor::set_github_http(old);
         }
-        crate::token::GH_SOURCE.lock().unwrap().forget();
+        crate::token::PROVIDER_SOURCE.lock().unwrap().forget();
     }
 }
 

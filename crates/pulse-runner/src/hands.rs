@@ -20,8 +20,6 @@ static HANDS_UPLOAD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^git-upload-pack '([^'[:cntrl:]]+)'$").unwrap());
 static HANDS_PINNED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^command="[^"]*pulse-hands[^"]*",([^ ]*,)?restrict"#).unwrap());
-static HANDS_LOGGED_IN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""(authTokens":\{"|loggedInUsers":\[\{")"#).unwrap());
 #[derive(Debug, Clone)]
 pub(crate) struct HandsError {
     pub(crate) msg: String,
@@ -72,7 +70,6 @@ pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
         })
         .as_deref()
     {
-        Some("copilot") => true,
         Some("pulse") => rest.len() >= 3 && rest[1] == "harness" && rest[2] == "run",
         _ => false,
     }
@@ -198,23 +195,6 @@ impl Hands {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .and_then(|s| s.split_whitespace().nth(2).map(ToOwned::to_owned))
             .unwrap_or_else(|| "missing".into());
-        let mut copv = (PROBE_VERSION.read().unwrap())().unwrap_or_else(|_| "missing".into());
-        let mut logged_in = "no".to_string();
-        if copv != "missing" {
-            let token_env = std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
-                + &std::env::var("GH_TOKEN").unwrap_or_default()
-                + &std::env::var("GITHUB_TOKEN").unwrap_or_default();
-            if !token_env.is_empty() {
-                logged_in = "yes".into();
-            } else if let Ok(data) =
-                std::fs::read_to_string(Path::new(&self.home).join(".copilot/config.json"))
-            {
-                let flat = data.replace([' ', '\t', '\r', '\n'], "");
-                if HANDS_LOGGED_IN_RE.is_match(&flat) {
-                    logged_in = "yes".into();
-                }
-            }
-        }
         let token_env = std::env::var("COPILOT_GITHUB_TOKEN").unwrap_or_default()
             + &std::env::var("GH_TOKEN").unwrap_or_default()
             + &std::env::var("GITHUB_TOKEN").unwrap_or_default();
@@ -244,10 +224,6 @@ impl Hands {
             pulse_lookup = "-".into();
         }
         if std::env::var("PULSE_HANDS_ALLOW_ANY_WORKER").as_deref() == Ok("1") {
-            if copv == "missing" {
-                copv = "test".into();
-            }
-            logged_in = "yes".into();
             if pulsev == "missing" {
                 pulsev = "test".into();
             }
@@ -344,7 +320,7 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} copilot={copv} logged_in={logged_in} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1",
             self.workdir,
             dash(jobs),
             dash(keys)
@@ -516,17 +492,9 @@ impl Hands {
         if std::env::var("PULSE_HANDS_ALLOW_ANY_WORKER").as_deref() != Ok("1")
             && !hands_allowed_worker(cmd)
         {
-            return Err(hands_die(
-                "only the copilot or pulse harness worker may run here",
-            ));
+            return Err(hands_die("only the pulse harness worker may run here"));
         }
         let budget = hands_budget(minutes)?;
-        if std::env::var("COPILOT_SUBAGENT_MAX_CONCURRENT").is_err() {
-            extra.insert("COPILOT_SUBAGENT_MAX_CONCURRENT".into(), "256".into());
-        }
-        if std::env::var("COPILOT_SUBAGENT_MAX_DEPTH").is_err() {
-            extra.insert("COPILOT_SUBAGENT_MAX_DEPTH".into(), "128".into());
-        }
         Err(anyhow!(HandsExit {
             code: self.with_timeout_observed(budget, &clone, cmd, &extra, None)
         }))
@@ -787,35 +755,6 @@ pub(crate) fn hands_budget(budget: &str) -> Result<Duration> {
 }
 pub(crate) static HANDS_KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(30)));
-pub(crate) type ProbeVersionFn = fn() -> Result<String>;
-pub(crate) static PROBE_VERSION: LazyLock<RwLock<ProbeVersionFn>> =
-    LazyLock::new(|| RwLock::new(copilot_version));
-pub(crate) fn copilot_version() -> Result<String> {
-    let path = which::which("copilot")?;
-    let out = Command::new(path).arg("--version").output();
-    let Ok(out) = out else {
-        return Ok("present".into());
-    };
-    if !out.status.success() {
-        return Ok("present".into());
-    }
-    let first = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .to_string();
-    let v = Regex::new(r"[^0-9.]")
-        .unwrap()
-        .replace_all(&first, "")
-        .trim_matches('.')
-        .to_string();
-    if v.is_empty() {
-        Ok("present".into())
-    } else {
-        Ok(v)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

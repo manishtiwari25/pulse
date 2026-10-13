@@ -8,7 +8,6 @@ use std::sync::{Arc, LazyLock, Mutex, Once};
 
 pub(crate) const LOGIN_REUSE_PROVIDER_NAME: &str = "loginreusefake";
 pub(crate) const LOGIN_REUSE_PROVIDER_TOKEN: &str = "gho_provider000000000000000000000000";
-pub(crate) const LOGIN_REUSE_GH_TOKEN: &str = "gho_hubtoken00000000000000000000000000";
 
 struct LoginReuseProvider {
     state: Arc<LoginReuseState>,
@@ -121,6 +120,5 @@ impl Drop for LoginReuseCleanup {
     fn drop(&mut self) {
         LOGIN_REUSE_STATES.lock().unwrap().remove(&self.home);
         crate::token::PROVIDER_SOURCE.lock().unwrap().forget();
-        crate::token::GH_SOURCE.lock().unwrap().forget();
     }
 }

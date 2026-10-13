@@ -106,34 +106,6 @@ pub(crate) fn with_stdin(text: &str, f: impl FnOnce()) {
     let _ = writer.join();
 }
 
-static STUB_GH_TOKEN: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
-
-fn stub_gh_auth_token() -> anyhow::Result<String> {
-    Ok(STUB_GH_TOKEN.lock().unwrap().clone())
-}
-
-/// Makes the hub's `gh auth token` answer tok for the test; dropping the guard puts the old
-/// `GH_AUTH_TOKEN` back and forgets the gh source cache.
-#[must_use = "hold the guard for the test's life; dropping it restores gh auth token"]
-pub(crate) fn stub_gh(tok: &str) -> StubGh {
-    let old = *crate::token::GH_AUTH_TOKEN.read().unwrap();
-    crate::token::GH_SOURCE.lock().unwrap().forget();
-    *STUB_GH_TOKEN.lock().unwrap() = tok.to_string();
-    *crate::token::GH_AUTH_TOKEN.write().unwrap() = stub_gh_auth_token;
-    StubGh { old }
-}
-
-pub(crate) struct StubGh {
-    old: crate::token::GhAuthTokenFn,
-}
-
-impl Drop for StubGh {
-    fn drop(&mut self) {
-        *crate::token::GH_AUTH_TOKEN.write().unwrap() = self.old;
-        crate::token::GH_SOURCE.lock().unwrap().forget();
-    }
-}
-
 pub(crate) const TEST_HOST_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE root@vm";
 
@@ -1050,7 +1022,6 @@ impl ComputeHarness {
         assert_eq!(paired.name, "hands-cr-001");
         assert_eq!(paired.admin, "pulseadmin@pulse-cr-001-admin");
         assert_eq!(paired.opts.projects, "proj");
-        assert!(!paired.opts.install_copilot);
         assert_eq!(paired.opts.workdir, crate::provider::HANDS_WORKDIR);
         let ex = crate::executor::executor_row(s, "hands-cr-001");
         assert_eq!(ex.str("status"), "active", "executor: {ex:?}");

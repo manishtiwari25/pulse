@@ -49,7 +49,7 @@ pub fn register() {
         cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
         cli_register(Command { name:"env".into(), group:"runner".into(), summary:"the environment recipe per project (a CTX-environment record): show, set, import, check".into(), usage:"pulse env show|set|import|check [--project SLUG] [--executor NAME] [--file F] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_env, flags:Some(env_flags) });
         cli_register(Command { name:"hands".into(), group:"runner".into(), summary:"the forced command on a paired machine (probe, prepare, key, run, ...)".into(), usage:"pulse hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)".into(), aliases:vec![], no_store:true, read_only:false, raw:true, run:cmd_hands, flags:None });
-        cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--install-copilot] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
+        cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
         cli_register(Command { name:"onboard".into(), group:"runner".into(), summary:"register a project (init) and queue its onboarding job; prints what stays human".into(), usage:"pulse onboard [PATH] [--name N] [--remote URL] [--verify CMD] [--brain] [--now T]".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:cmd_onboard, flags:Some(onboard_flags) });
     });
 }
@@ -60,7 +60,7 @@ fn work_flags(fs: &mut FlagSet) {
     fs.string_var(
         "worker-cmd",
         "",
-        "harness command (the brief text goes in for {brief}; default: the runner_cmd setting)",
+        "harness command (the brief text goes in for {brief}; default: pulse harness run)",
     );
     fs.string_var("executor", "", "run on this executor");
 }
@@ -157,11 +157,6 @@ fn pair_flags(fs: &mut FlagSet) {
     fs.string_var("workdir", "/srv/pulse", "work directory on the machine");
     fs.int_var("workers", 1, "parallel workers there");
     fs.string_var("projects", "*", "comma-separated project slugs or *");
-    fs.bool_var(
-        "install-copilot",
-        false,
-        "legacy copilot-cli harness: install node and copilot through apt",
-    );
     fs.bool_var(
         "dry-run",
         false,
@@ -1183,7 +1178,6 @@ pub(crate) fn cmd_pair(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             workdir: str_flag(fs, "workdir"),
             workers: int_flag(fs, "workers"),
             projects: str_flag(fs, "projects"),
-            install_copilot: bool_flag(fs, "install-copilot"),
             dry_run: bool_flag(fs, "dry-run") || bool_flag(fs, "inspect"),
             actor: actor_of(c),
             ..Default::default()

@@ -658,7 +658,7 @@ mod go_harness_tests {
     use super::*;
     use crate::store::{has_column, init_schema};
     use crate::{
-        HARNESS_RULES, HARNESS_SETTINGS, SETTING_RULES, STORE_NAME, harness_setting_names,
+        HARNESS_RULES, HARNESS_SETTINGS, RETIRED_SETTINGS, STORE_NAME, harness_setting_names,
         validate_setting,
     };
     use crate::{Options, Store};
@@ -730,18 +730,35 @@ mod go_harness_tests {
         for (key, want) in HARNESS_SETTINGS.iter() {
             assert_eq!(s.setting(key, ""), *want, "{key}");
         }
-        let stored: i64 = s.conn().unwrap().query_row("SELECT COUNT(*) FROM settings WHERE name IN ('harness', 'provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.system_prompt', 'harness.step_timeout', 'harness.output_limit')", [], |r| r.get(0)).unwrap();
+        let stored: i64 = s.conn().unwrap().query_row("SELECT COUNT(*) FROM settings WHERE name IN ('provider', 'harness.max_steps', 'harness.max_cost', 'harness.keep_observations', 'harness.system_prompt', 'harness.step_timeout', 'harness.output_limit')", [], |r| r.get(0)).unwrap();
         assert_eq!(stored, 0);
-        assert!(s.harness_native());
-        s.set_setting("human", "harness", "copilot-cli").unwrap();
-        assert!(!s.harness_native());
-        assert!(
-            s.set_setting("human", "harness", "moon")
-                .unwrap_err()
-                .to_string()
-                .contains("harness takes one of native, copilot-cli")
-        );
-        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness, harness.commit_timeout, harness.compact_at, harness.context_window, harness.fetch_allow, harness.format_retries, harness.hooks, harness.instructions, harness.keep_observations, harness.max_cost, harness.max_steps, harness.mcp_tools, harness.output_limit, harness.skills, harness.step_timeout, harness.subagents, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
+        // The copilot-cli run mode is gone: its settings are refused when set
+        // and swept from a store that still carries them.
+        for retired in RETIRED_SETTINGS {
+            assert!(
+                s.set_setting("human", retired, "x")
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with(&format!("Unknown setting '{retired}'")),
+                "{retired}"
+            );
+        }
+        s.conn().unwrap().execute("INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('harness', 'copilot-cli', '2026-09-01T00:00:00Z', 'human'), ('runner_cmd', 'copilot', '2026-09-01T00:00:00Z', 'human')", []).unwrap();
+        assert!(!s.additive_complete());
+        s.ensure_records().unwrap();
+        assert!(s.additive_complete());
+        assert_eq!(s.setting("harness", "none"), "none");
+        let retired_events: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'setting.retired'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(retired_events, 2);
+        assert!(validate_setting("harness.mode", "native").unwrap_err().to_string().contains("Harness settings: harness.commit_timeout, harness.compact_at, harness.context_window, harness.fetch_allow, harness.format_retries, harness.hooks, harness.instructions, harness.keep_observations, harness.max_cost, harness.max_steps, harness.mcp_tools, harness.output_limit, harness.skills, harness.step_timeout, harness.subagents, harness.system_prompt, provider, provider.anthropic.base_url, provider.azure-openai.base_url, provider.azure-openai.tenant, provider.cerebras.base_url, provider.deepseek.base_url, provider.fireworks.base_url, provider.gemini.base_url, provider.github-models.base_url, provider.groq.base_url, provider.lmstudio.base_url, provider.max_body_mb, provider.mistral.base_url, provider.ollama.base_url, provider.openai.base_url, provider.openrouter.base_url, provider.retry_after_cap_s, provider.together.base_url, provider.vllm.base_url, provider.xai.base_url"));
         assert_eq!(validate_setting("provider", "Copilot").unwrap(), "copilot");
         assert_eq!(validate_setting("provider", "OpenAI").unwrap(), "openai");
         assert_eq!(
@@ -898,20 +915,9 @@ mod go_harness_tests {
                 .to_string()
                 .contains("harness.system_prompt is not a valid Go text/template")
         );
-        assert!(
-            SETTING_RULES["runner_cmd"]
-                .description
-                .contains("copilot-cli")
-        );
-        assert!(
-            SETTING_RULES["max_ai_credits"]
-                .description
-                .contains("copilot CLI")
-        );
         assert_eq!(
             harness_setting_names(),
             vec![
-                "harness",
                 "harness.commit_timeout",
                 "harness.compact_at",
                 "harness.context_window",

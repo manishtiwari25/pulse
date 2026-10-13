@@ -289,7 +289,6 @@ function syncHarnessSetting(name, value) {
     hs.updated_by = "owner";
   }
   if (!state.harness) return;
-  if (name === "harness") state.harness.harness = value;
   if (name === "provider") state.harness.provider.name = value;
   if (name === "worker_model") state.harness.models.worker = value;
   if (name === "light_model") state.harness.models.light = value;

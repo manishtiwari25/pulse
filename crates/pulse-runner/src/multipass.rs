@@ -223,7 +223,7 @@ impl MultipassProvider {
                 }
             }
         } else {
-            let rendered = crate::provider::write_cloud_init(pubkey, !s.harness_native())?;
+            let rendered = crate::provider::write_cloud_init(pubkey)?;
             let mut args = vec![
                 "launch".into(),
                 cfg.image.clone(),

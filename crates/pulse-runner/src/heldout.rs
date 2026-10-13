@@ -1,6 +1,5 @@
 #![allow(dead_code, reason = "not every item has a caller in the crate")]
 
-use anyhow::anyhow;
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone, Default)]
@@ -29,98 +28,40 @@ pub(crate) fn run_sealed_call(
     s: &pulse_store::Store,
     prompt: String,
 ) -> anyhow::Result<String> {
-    if s.harness_native() {
-        let p = pulse_provider::open(
-            &s.setting("provider", pulse_provider::DEFAULT),
-            pulse_provider::Options {
-                home: s.home.clone(),
-                settings: s.provider_settings(),
-                ..Default::default()
-            },
-        )?;
-        let provider_cancel = pulse_provider::CancelToken::new();
-        if cancel.is_cancelled() {
-            provider_cancel.cancel();
-        }
-        let resp = p.chat(
-            &provider_cancel,
-            pulse_provider::Request {
-                model: s.light_model(),
-                messages: vec![pulse_provider::Message {
-                    role: pulse_provider::Role::USER,
-                    content: prompt,
-                    tool_calls: vec![],
-                    tool_call_id: String::new(),
-                    name: String::new(),
-                }],
-                tools: vec![],
-                initiator: "user".into(),
-                ..Default::default()
-            },
-        )?;
-        return Ok(resp
-            .message
-            .map(|m| m.content)
-            .unwrap_or_default()
-            .trim()
-            .to_string());
+    let p = pulse_provider::open(
+        &s.setting("provider", pulse_provider::DEFAULT),
+        pulse_provider::Options {
+            home: s.home.clone(),
+            settings: s.provider_settings(),
+            ..Default::default()
+        },
+    )?;
+    let provider_cancel = pulse_provider::CancelToken::new();
+    if cancel.is_cancelled() {
+        provider_cancel.cancel();
     }
-    let dir = std::env::temp_dir().join(format!("pulse-heldout-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&dir).map_err(|_| anyhow!("cannot create an empty working directory"))?;
-    let mut args = vec![
-        "-p".to_string(),
-        prompt,
-        "--no-ask-user".to_string(),
-        "--disable-builtin-mcps".to_string(),
-        "-s".to_string(),
-    ];
-    let model = s.light_model();
-    if !model.is_empty() {
-        args.extend(["--model".to_string(), model]);
-    }
-    let mut cmd = std::process::Command::new(crate::executor::runner_cmd(s));
-    cmd.args(args).current_dir(&dir).env_clear();
-    for kv in sealed_env(
-        &std::env::vars()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>(),
-    ) {
-        if let Some((k, v)) = kv.split_once('=') {
-            cmd.env(k, v);
-        }
-    }
-    let out = cmd.output()?;
-    if !out.status.success() {
-        let mut line = crate::executor::fault_line(&String::from_utf8_lossy(&out.stderr), 200);
-        if cancel.deadline_exceeded() {
-            line = "the model call timed out".into();
-        }
-        if line.is_empty() {
-            line = format!("exit {}", out.status.code().unwrap_or(-1));
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        anyhow::bail!(
-            "{}",
-            crate::executor::cut(&crate::compute::redact_secrets(&line), 200)
-        );
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(text)
-}
-
-pub(crate) fn sealed_env(environ: &[String]) -> Vec<String> {
-    environ
-        .iter()
-        .filter(|entry| {
-            let key = entry.split_once('=').map(|(k, _)| k).unwrap_or(entry);
-            matches!(
-                key,
-                "PATH" | "HOME" | "TMPDIR" | "LANG" | "GH_TOKEN" | "GITHUB_TOKEN"
-            ) || key.starts_with("COPILOT_")
-        })
-        .cloned()
-        .collect()
+    let resp = p.chat(
+        &provider_cancel,
+        pulse_provider::Request {
+            model: s.light_model(),
+            messages: vec![pulse_provider::Message {
+                role: pulse_provider::Role::USER,
+                content: prompt,
+                tool_calls: vec![],
+                tool_call_id: String::new(),
+                name: String::new(),
+            }],
+            tools: vec![],
+            initiator: "user".into(),
+            ..Default::default()
+        },
+    )?;
+    Ok(resp
+        .message
+        .map(|m| m.content)
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 
 pub(crate) fn tend_heldout(s: &pulse_store::Store, now: String) -> Vec<String> {
@@ -208,7 +149,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_daemon::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{Duration, Instant};
 
     const SEALED_REPLY: &str = "Please rebase our feature branch on main and tidy the last few commit messages before you push.";
@@ -491,64 +432,119 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sealed_env_keeps_only_the_runner_needs() {
-        let _serial = crate::test_helpers::serial();
-        let got = sealed_env(&[
-            "PATH=/bin".into(),
-            "HOME=/h".into(),
-            "TMPDIR=/t".into(),
-            "LANG=C".into(),
-            "PULSE_HOME=/p".into(),
-            "PULSE_JOB=j".into(),
-            "GIT_DIR=x".into(),
-            "COPILOT_MODEL=m".into(),
-            "GH_TOKEN=a".into(),
-            "GITHUB_TOKEN=b".into(),
-            "AWS_SECRET=c".into(),
-            "SSH_AUTH_SOCK=d".into(),
-        ]);
-        assert_eq!(
-            got.join(" "),
-            "PATH=/bin HOME=/h TMPDIR=/t LANG=C COPILOT_MODEL=m GH_TOKEN=a GITHUB_TOKEN=b"
+    #[derive(Clone, Default)]
+    struct SealedFakeState {
+        reply: String,
+        err: String,
+        models: Vec<String>,
+        prompts: Vec<String>,
+    }
+
+    static SEALED_FAKE_ONCE: std::sync::Once = std::sync::Once::new();
+    static SEALED_FAKE_STATES: LazyLock<
+        Mutex<std::collections::BTreeMap<String, SealedFakeState>>,
+    > = LazyLock::new(|| Mutex::new(std::collections::BTreeMap::new()));
+
+    struct SealedFakeProvider {
+        home: String,
+    }
+
+    impl pulse_provider::Provider for SealedFakeProvider {
+        fn name(&self) -> &str {
+            "sealedfake"
+        }
+        fn label(&self) -> &str {
+            "Sealed Fake"
+        }
+        fn chat(
+            &self,
+            _cancel: &pulse_provider::CancelToken,
+            req: pulse_provider::Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            let mut states = SEALED_FAKE_STATES.lock().unwrap();
+            let st = states.entry(self.home.clone()).or_default();
+            st.models.push(req.model.clone());
+            st.prompts.push(
+                req.messages
+                    .first()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default(),
+            );
+            if !st.err.is_empty() {
+                anyhow::bail!("{}", st.err);
+            }
+            Ok(pulse_provider::Response {
+                message: Some(pulse_provider::Message {
+                    role: pulse_provider::Role::ASSISTANT,
+                    content: st.reply.clone(),
+                    tool_calls: vec![],
+                    tool_call_id: String::new(),
+                    name: String::new(),
+                }),
+                finish_reason: "stop".into(),
+                ..Default::default()
+            })
+        }
+        fn models(
+            &self,
+            _cancel: &pulse_provider::CancelToken,
+        ) -> anyhow::Result<Vec<pulse_provider::Model>> {
+            Ok(Vec::new())
+        }
+        fn status(
+            &self,
+            _cancel: &pulse_provider::CancelToken,
+        ) -> anyhow::Result<pulse_provider::Login> {
+            Ok(pulse_provider::Login {
+                logged_in: true,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn sealed_fake_store(reply: &str, err: &str) -> crate::test_helpers::TestStore {
+        SEALED_FAKE_ONCE.call_once(|| {
+            pulse_provider::register("sealedfake", "Sealed Fake", |o| {
+                Ok(Box::new(SealedFakeProvider { home: o.home }))
+            });
+        });
+        let s = auto_store();
+        // The catalogue refuses unknown provider names; the fake goes in directly.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(name, value, updated_at, updated_by) VALUES ('provider', 'sealedfake', ?, 'test')",
+                rusqlite::params![TEST_NOW],
+            )
+            .unwrap();
+        set_setting(&s, "worker_model", "gpt-test");
+        set_setting(&s, "light_model", "gpt-light");
+        SEALED_FAKE_STATES.lock().unwrap().insert(
+            s.home.clone(),
+            SealedFakeState {
+                reply: reply.into(),
+                err: err.into(),
+                ..Default::default()
+            },
         );
+        s
+    }
+
+    fn sealed_fake_state(s: &pulse_store::Store) -> SealedFakeState {
+        SEALED_FAKE_STATES
+            .lock()
+            .unwrap()
+            .get(&s.home)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[test]
-    fn sealed_call_runs_the_runner_command() {
+    fn sealed_call_asks_the_provider_with_the_light_model() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         reset_heldout();
-        let s = auto_store();
-        let scratch_dir = tempfile::tempdir().expect("scratch");
-        let scratch = scratch_dir.path();
-        let args_file = scratch.join("args");
-        let env_file = scratch.join("env");
-        let cwd_file = scratch.join("cwd");
-        let script = scratch.join("runner.sh");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nenv > '{}'\npwd > '{}'\necho 'this is stderr, never the reply' >&2\nprintf '  {SEALED_REPLY}\\n\\n'\n",
-                args_file.display(),
-                env_file.display(),
-                cwd_file.display()
-            ),
-        )
-        .expect("script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
-        }
-        set_setting(&s, "runner_cmd", &script.display().to_string());
-        set_setting(&s, "harness", "copilot-cli");
-        set_setting(&s, "worker_model", "gpt-test");
-        set_setting(&s, "light_model", "gpt-light");
-        let _env_1 = pulse_testutil::setenv("PULSE_HOME", &s.home);
-        let _env_2 = pulse_testutil::setenv("COPILOT_TEST_FLAG", "yes");
-        let _env_3 = pulse_testutil::setenv("GH_TOKEN", "gh-test-token");
+        let s = sealed_fake_store(&format!("  {SEALED_REPLY}\n\n"), "");
         set_sealed_call(Box::new(run_sealed_call));
         tend_heldout(&s, TEST_NOW.into());
         wait_heldout_idle();
@@ -557,38 +553,13 @@ mod tests {
             lines,
             vec!["held-out: generated fixture 1 of 2 (judge starter-hardstop-history)"]
         );
-        let args = std::fs::read_to_string(&args_file).unwrap();
-        let got = args.trim_end_matches('\n').lines().collect::<Vec<_>>();
+        let st = sealed_fake_state(&s);
+        assert_eq!(st.models, vec!["gpt-light".to_string()], "model");
         assert!(
-            got.len() == 7
-                && got[0] == "-p"
-                && got[1].contains("Nothing changed and no commit was made")
-                && got[2] == "--no-ask-user"
-                && got[3] == "--disable-builtin-mcps"
-                && got[4] == "-s"
-                && got[5] == "--model"
-                && got[6] == "gpt-light",
-            "args: {got:?}"
-        );
-        let env = std::fs::read_to_string(&env_file).unwrap();
-        for forbidden in ["PULSE_HOME=", "PULSE_JOB=", "GIT_"] {
-            assert!(
-                !env.contains(forbidden),
-                "environment leaked {forbidden}:\n{env}"
-            );
-        }
-        for want in ["PATH=", "COPILOT_TEST_FLAG=yes", "GH_TOKEN=gh-test-token"] {
-            assert!(env.contains(want), "environment lacks {want}:\n{env}");
-        }
-        let cwd = std::fs::read_to_string(&cwd_file).unwrap();
-        let dir = cwd.trim();
-        assert!(
-            !dir.is_empty() && dir != s.home && !dir.starts_with(&s.home),
-            "working directory: {dir:?}"
-        );
-        assert!(
-            std::fs::metadata(dir).is_err(),
-            "the temporary directory was left behind"
+            st.prompts.len() == 1
+                && st.prompts[0].contains("Nothing changed and no commit was made"),
+            "prompts: {:?}",
+            st.prompts
         );
         assert_eq!(
             std::fs::read_to_string(
@@ -607,21 +578,10 @@ mod tests {
             vec!["held-out: generated fixture 2 of 2 (judge starter-hardstop-publish)"]
         );
 
-        let failing = scratch.join("failing.sh");
-        std::fs::write(
-            &failing,
-            "#!/bin/sh\necho 'the reply that must not be quoted'\necho 'login failed for ******' >&2\necho second >&2\nexit 1\n",
-        )
-        .expect("failing");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
-        }
-        let s = auto_store();
-        set_setting(&s, "runner_cmd", &failing.display().to_string());
-        set_setting(&s, "harness", "copilot-cli");
+        let s = sealed_fake_store(
+            "the reply that must not be quoted",
+            "login failed for ******",
+        );
         tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 2.0));
         wait_heldout_idle();
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 3.0));

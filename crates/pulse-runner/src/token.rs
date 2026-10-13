@@ -6,9 +6,8 @@ use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use std::time::SystemTime;
 pub(crate) const EXECUTOR_TOKEN_FILE: &str = "executor-token";
-pub(crate) const GH_SOURCE_CACHE_MINS: u64 = 10;
+pub(crate) const SOURCE_CACHE_MINS: u64 = 10;
 pub(crate) const LOGIN_SOURCE_TOKEN: &str = "executor token";
-pub(crate) const LOGIN_SOURCE_HUB_LOGIN: &str = "hub login";
 pub(crate) const LOGIN_SOURCE_PROVIDER: &str = "provider login";
 pub(crate) const LOGIN_SOURCE_NONE: &str = "none";
 pub(crate) fn executor_token_path(s: &pulse_store::Store) -> String {
@@ -17,25 +16,6 @@ pub(crate) fn executor_token_path(s: &pulse_store::Store) -> String {
         .join(EXECUTOR_TOKEN_FILE)
         .display()
         .to_string()
-}
-pub(crate) type GhAuthTokenFn = fn() -> Result<String>;
-/// Asks the hub's gh for its token; tests stub it.
-/// "" with no error means gh has no login.
-pub(crate) static GH_AUTH_TOKEN: LazyLock<RwLock<GhAuthTokenFn>> =
-    LazyLock::new(|| RwLock::new(gh_auth_token_default));
-
-fn gh_auth_token_default() -> Result<String> {
-    match std::process::Command::new("gh")
-        .args(["auth", "token"])
-        .stdin(std::process::Stdio::null())
-        .output()
-    {
-        // exec.ErrNotFound and *exec.ExitError both mean "no login here".
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e.into()),
-        Ok(out) if !out.status.success() => Ok(String::new()),
-        Ok(out) => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
-    }
 }
 pub(crate) fn check_executor_token(token: &str) -> Result<crate::executor::TokenFacts> {
     classify_executor_token(token)?;
@@ -81,7 +61,7 @@ pub(crate) fn executor_token_set(
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    GH_SOURCE.lock().unwrap().forget();
+    PROVIDER_SOURCE.lock().unwrap().forget();
     let mut lines = vec![
         facts.note.clone(),
         "the token reaches no repository".into(),
@@ -140,7 +120,7 @@ pub(crate) fn executor_token_remove(
     let path = executor_token_path(s);
     match std::fs::remove_file(&path) {
         Ok(()) => {
-            GH_SOURCE.lock().unwrap().forget();
+            PROVIDER_SOURCE.lock().unwrap().forget();
             if let Ok(conn) = s.conn() {
                 crate::util::event_at(
                     &conn,
@@ -221,34 +201,18 @@ pub(crate) fn finding_project(s: &pulse_store::Store) -> String {
     .map(|r| r.str("slug"))
     .unwrap_or_default()
 }
+/// Remembers GitHub's verdict on the last borrowed token for SOURCE_CACHE_MINS.
 #[derive(Debug, Default)]
-pub(crate) struct GhSourceCache {
+pub(crate) struct SourceCache {
     pub(crate) token: String,
     pub(crate) ok: bool,
     pub(crate) at: Option<SystemTime>,
-    pub(crate) fetched: String,
-    pub(crate) fetched_at: Option<SystemTime>,
 }
-pub(crate) static GH_SOURCE: LazyLock<Mutex<GhSourceCache>> =
-    LazyLock::new(|| Mutex::new(GhSourceCache::default()));
-pub(crate) static PROVIDER_SOURCE: LazyLock<Mutex<GhSourceCache>> =
-    LazyLock::new(|| Mutex::new(GhSourceCache::default()));
-impl GhSourceCache {
+pub(crate) static PROVIDER_SOURCE: LazyLock<Mutex<SourceCache>> =
+    LazyLock::new(|| Mutex::new(SourceCache::default()));
+impl SourceCache {
     pub(crate) fn forget(&mut self) {
         *self = Self::default()
-    }
-    pub(crate) fn fetch(&mut self) -> Result<String> {
-        let now = (*crate::run::WALL_CLOCK.read().expect("wall clock"))();
-        if self.fetched_at.is_some_and(|t| {
-            now.duration_since(t).unwrap_or(Duration::ZERO)
-                < Duration::from_secs(GH_SOURCE_CACHE_MINS * 60)
-        }) {
-            return Ok(self.fetched.clone());
-        }
-        let tok = (GH_AUTH_TOKEN.read().unwrap())()?;
-        self.fetched = tok.clone();
-        self.fetched_at = Some(now);
-        Ok(tok)
     }
     /// Says whether tok is an acceptable source, asking GitHub only when the cache is cold or stale.
     pub(crate) fn passes(&mut self, tok: &str) -> bool {
@@ -256,7 +220,7 @@ impl GhSourceCache {
         if self.token == tok
             && self.at.is_some_and(|t| {
                 now.duration_since(t).unwrap_or(Duration::ZERO)
-                    < Duration::from_secs(GH_SOURCE_CACHE_MINS * 60)
+                    < Duration::from_secs(SOURCE_CACHE_MINS * 60)
             })
         {
             return self.ok;
@@ -268,10 +232,10 @@ impl GhSourceCache {
         self.ok
     }
 }
-/// ADR-034 rule 2: the executor token on file, else (native) the stored provider login or (legacy)
-/// the hub's `gh auth token` when the source reaches no repository, else none. The file is trusted
-/// after classifyToken alone (it was checked when placed); borrowed sources are checked against
-/// GitHub and cached per process for GH_SOURCE_CACHE_MINS.
+/// ADR-034 rule 2: the executor token on file, else the stored provider login when it reaches no
+/// repository, else none. The file is trusted after classifyToken alone (it was checked when
+/// placed); the borrowed provider login is checked against GitHub and cached per process for
+/// SOURCE_CACHE_MINS.
 pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> {
     match std::fs::read_to_string(executor_token_path(s)) {
         Ok(data) => {
@@ -283,33 +247,26 @@ pub(crate) fn login_source(s: &pulse_store::Store) -> Result<(Vec<u8>, String)> 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    if s.harness_native() {
-        let p = crate::login_gate::local_provider(
-            s.home.clone(),
-            s.setting("provider", pulse_provider::DEFAULT),
-            s.provider_settings(),
-        )?;
-        let Some(exporter) = p.as_login_exporter() else {
-            return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
-        };
-        let tok = match exporter.export_login() {
-            Ok((tok, _)) => tok,
-            Err(err) => {
-                if is_no_stored_login(&err) {
-                    return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
-                }
-                return Err(err);
-            }
-        };
-        let tok = tok.trim();
-        if !tok.is_empty() && PROVIDER_SOURCE.lock().unwrap().passes(tok) {
-            return Ok((tok.as_bytes().to_vec(), LOGIN_SOURCE_PROVIDER.into()));
-        }
+    let p = crate::login_gate::local_provider(
+        s.home.clone(),
+        s.setting("provider", pulse_provider::DEFAULT),
+        s.provider_settings(),
+    )?;
+    let Some(exporter) = p.as_login_exporter() else {
         return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
-    }
-    let tok = GH_SOURCE.lock().unwrap().fetch()?;
-    if !tok.is_empty() && GH_SOURCE.lock().unwrap().passes(&tok) {
-        return Ok((tok.into_bytes(), LOGIN_SOURCE_HUB_LOGIN.into()));
+    };
+    let tok = match exporter.export_login() {
+        Ok((tok, _)) => tok,
+        Err(err) => {
+            if is_no_stored_login(&err) {
+                return Ok((Vec::new(), LOGIN_SOURCE_NONE.into()));
+            }
+            return Err(err);
+        }
+    };
+    let tok = tok.trim();
+    if !tok.is_empty() && PROVIDER_SOURCE.lock().unwrap().passes(tok) {
+        return Ok((tok.as_bytes().to_vec(), LOGIN_SOURCE_PROVIDER.into()));
     }
     Ok((Vec::new(), LOGIN_SOURCE_NONE.into()))
 }
@@ -346,10 +303,8 @@ mod tests {
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store, serial};
     use crate::test_helpers_daemon::{must_one, must_rows, set_setting};
     use crate::test_helpers_hands::{TEST_EXECUTOR_TOKEN, write_executor_token};
-    use crate::test_helpers_provider::{invoke, invoke_ok, stub_gh, with_stdin};
-    use crate::test_helpers_token::{
-        FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
-    };
+    use crate::test_helpers_provider::{invoke, invoke_ok, with_stdin};
+    use crate::test_helpers_token::{FakeGitHub, FakeGitHubState, fixed_wall_clock, time_date};
     use crate::util::json_map;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
@@ -497,13 +452,11 @@ mod tests {
     }
 
     #[test]
-    fn login_source_precedence_and_cache() {
+    fn login_source_precedence() {
         let _serial = serial();
         let s = new_store();
         let gh = FakeGitHub::default();
         let _gh = gh.install();
-        // Each stubGh stacks a cleanup; the guards drop in the same LIFO order.
-        let _stub_1 = stub_gh("");
         let _clock = fixed_wall_clock(time_date(2026, 9, 6, 10, 0, 0));
 
         // Nothing anywhere: none, and GitHub is not asked.
@@ -516,40 +469,7 @@ mod tests {
         );
         assert!(!has_login_source(&s), "has a source from nothing");
 
-        // The hub's gh token counts only after passing the same checks; the answer is cached for ten minutes.
-        set_setting(&s, "harness", "copilot-cli");
-        let _stub_2 = stub_gh("gho_hubtoken00000000000000000000000000");
-        let (tok, origin) = login_source(&s).unwrap_or_default();
-        assert!(
-            tok.as_slice() == b"gho_hubtoken00000000000000000000000000"
-                && origin == LOGIN_SOURCE_HUB_LOGIN,
-            "gh: {tok:?} {origin}"
-        );
-        let n = gh.count();
-        assert!(
-            n == 2,
-            "GitHub calls for the hub login: {n} {:?}",
-            gh.lock().calls
-        );
-        let _ = login_source(&s);
-        let _ = login_source(&s);
-        let n = gh.count();
-        assert!(n == 2, "cache missed: {n} calls");
-        advance_wall_clock(Duration::from_secs(11 * 60));
-        let _ = login_source(&s);
-        let n = gh.count();
-        assert!(n == 4, "cache never expired: {n} calls");
-
-        // A hub login that reaches a repository is not a source.
-        gh.lock().repos = 1;
-        let _stub_3 = stub_gh("gho_reaches000000000000000000000000000000");
-        let (tok, origin) = login_source(&s).unwrap_or_default();
-        assert!(
-            tok.is_empty() && origin == LOGIN_SOURCE_NONE,
-            "repo-reaching gh token accepted: {tok:?} {origin}"
-        );
-
-        // The file wins over gh and is trusted without a network call.
+        // The file wins and is trusted without a network call.
         let before = gh.count();
         write_executor_token(&s);
         let (tok, origin) = login_source(&s).unwrap_or_default();
@@ -560,7 +480,7 @@ mod tests {
             "file: {tok:?} {origin} ({} calls)",
             gh.count() - before
         );
-        // A damaged file falls back to gh (which here is refused): none.
+        // A damaged file falls back to the provider login (none here): none.
         let _ = std::fs::write(executor_token_path(&s), b"not a token\n");
         let (tok, origin) = login_source(&s).unwrap_or_default();
         assert!(

@@ -357,7 +357,7 @@ impl GcpProvider {
             *i
         } else {
             gcp_firewall_rule(ctx, cfg.clone(), &*log)?;
-            let rendered = crate::provider::write_cloud_init(pubkey, !s.harness_native())?;
+            let rendered = crate::provider::write_cloud_init(pubkey)?;
             log(
                 "gcloud compute instances create %s (%s, %s, %s GiB)",
                 &[

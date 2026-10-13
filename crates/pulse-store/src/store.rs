@@ -24,8 +24,6 @@ use std::time::Duration;
 pub const SCHEMA_VERSION: i64 = 3;
 pub const STORE_NAME: &str = "pulse.sqlite";
 pub const HUMAN_AGENT: &str = "human";
-/// Tools a worker or measured agent never gets, whatever the harness.
-pub const DENIED_TOOLS: &[&str] = &["shell(git push)", "shell(git remote)", "shell(gh:*)"];
 pub const EVOLUTION_STOP_SUMMARY: &str = "Evolution stopped; owner review needed";
 pub const COMMONS_SLUG: &str = "commons";
 pub const BUSY_TIMEOUT_MS: u64 = 10_000;
@@ -418,6 +416,17 @@ impl Store {
                 .map_err(|e| anyhow!("records schema: {e}"))?;
             }
         }
+        for name in crate::settings::RETIRED_SETTINGS {
+            let value: Option<String> = tx
+                .query_row("SELECT value FROM settings WHERE name = ?", [name], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if let Some(value) = value {
+                tx.execute("DELETE FROM settings WHERE name = ?", [name])?;
+                tx.event("pulse", "setting.retired", name, value.as_str())?;
+            }
+        }
         let changed = tx.execute("INSERT INTO meta (key, value) VALUES ('records_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value <> excluded.value", [RECORDS_VERSION])?;
         if changed > 0 {
             tx.event(
@@ -479,6 +488,9 @@ impl Store {
             table_present(&conn, table).unwrap_or(false)
                 && !table_sql_has(&conn, table, needle).unwrap_or(true)
         }) {
+            return false;
+        }
+        if retired_settings_present(&conn).unwrap_or(true) {
             return false;
         }
         additive_columns()
@@ -950,6 +962,16 @@ pub const SUPERSEDED_SHAPES: &[(&str, &str)] = &[("mcp_servers", "auth")];
 /// create the current shape, copies the rows over by column name and drops
 /// the old table. `mcp_servers`: `auth` gained `oauth`.
 pub const WIDENED_CHECKS: &[(&str, &str)] = &[("mcp_servers", "'oauth'")];
+
+fn retired_settings_present(conn: &Connection) -> rusqlite::Result<bool> {
+    let marks = vec!["?"; crate::settings::RETIRED_SETTINGS.len()].join(", ");
+    let n: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM settings WHERE name IN ({marks})"),
+        rusqlite::params_from_iter(crate::settings::RETIRED_SETTINGS.iter()),
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
 
 pub fn additive_ddl() -> Vec<&'static [&'static str]> {
     vec![
@@ -1794,7 +1816,7 @@ mod tests {
             (
                 "bogus",
                 "1",
-                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, landing.parallel, max_ai_credits, minutes_per_job, parallel_per_project, prune_after_days, quorum, records.auto_adopt, runner_cmd, stale_days, stop, worker_model, workers",
+                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, landing.parallel, minutes_per_job, parallel_per_project, prune_after_days, quorum, records.auto_adopt, stale_days, stop, worker_model, workers",
             ),
             ("quorum", "x", "quorum takes a whole number, not 'x'"),
             (
@@ -1804,9 +1826,9 @@ mod tests {
             ),
             ("quorum", "0", "quorum must be at least 1, not 0"),
             (
-                "max_ai_credits",
-                "10",
-                "max_ai_credits must be at least 30, not 10",
+                "amend_quorum",
+                "0",
+                "amend_quorum must be at least 1, not 0",
             ),
             (
                 "amend_majority",
@@ -1824,7 +1846,6 @@ mod tests {
                 "landing takes one of agents, human, not 'nobody'",
             ),
             ("stop", "yes", "stop takes one of 0, 1, not 'yes'"),
-            ("runner_cmd", "  ", "runner_cmd cannot be empty"),
         ] {
             let err = s.set_setting("human", key, value).unwrap_err();
             assert_eq!(err.to_string(), want);

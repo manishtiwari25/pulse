@@ -870,7 +870,6 @@ pub(crate) fn run_job(
             &brief_text,
             &clone,
             &o.worker_cmd,
-            &ex.worker_dirs(),
             ex.remote(),
         );
         let mut env = BTreeMap::from([
@@ -888,7 +887,6 @@ pub(crate) fn run_job(
             ("PULSE_EXECUTOR".to_string(), ex.name()),
         ]);
         if ex.remote()
-            && s.harness_native()
             && !custom_worker
             && let Some(dir) = ex.worker_dirs().first()
         {
@@ -903,12 +901,6 @@ pub(crate) fn run_job(
         if !ex.remote() {
             worker_cli_env(&mut env, &crate::exec::local_cli(&home));
             env.insert("PULSE_HOME".into(), home.clone());
-            for (k, v) in [
-                ("COPILOT_SUBAGENT_MAX_CONCURRENT", "256"),
-                ("COPILOT_SUBAGENT_MAX_DEPTH", "128"),
-            ] {
-                env.insert(k.to_string(), v.to_string());
-            }
             if let Some(r) = &recipe {
                 for (k, v) in &r.env {
                     env.insert(k.clone(), v.clone());
@@ -1165,11 +1157,9 @@ pub(crate) fn run_job(
                     if ex.remote() {
                         fault = true;
                         summary.push_str(&format!(" - the login on {}, not the job; run `pulse executor login {} --admin <admin@host> --with-token`", ex.name(), ex.name()));
-                    } else if s.harness_native() {
+                    } else {
                         fault = true;
                         summary.push_str(" - the provider login on this machine, not the job; sign in with GitHub in the console (Settings -> Harness) or run `pulse harness login`");
-                    } else {
-                        summary.push_str(" - the Copilot login on this machine, not the job; log in again as the daemon's user (`copilot` then `/login`, or `gh auth login`)");
                     }
                 }
             } else if code != 0 {
@@ -2193,7 +2183,7 @@ pub(crate) fn pick_worker(
     if pool < 1 {
         pool = 1;
     }
-    let runner = s.setting("runner_cmd", "");
+    let runner = pulse_store::HARNESS_RUNNER.to_string();
     let model = s.setting("worker_model", "");
     let c = conn(s);
     let mut active = crate::util::must_one(

@@ -1199,8 +1199,6 @@ record, read with `pulse record show WF-evolve`.
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
-| `max_ai_credits` | `30` credits (minimum `30`) | Legacy `copilot-cli` harness only: passed to Copilot CLI workers; not automatically applied to measurement harnesses. |
-| `harness` | `native` | Which harness runs the workers: `native` (built in, `pulse harness run`) or `copilot-cli` (the legacy `copilot` binary named by `runner_cmd`). |
 | `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
 | `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
 | `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
@@ -1675,10 +1673,12 @@ settings set`) choose among the models the provider lists for the signed-in
 account; empty means the provider's default chat model. The console shows
 each model's vendor, tool-call support, premium multiplier and context window.
 
-**Switching back.** `pulse settings set harness copilot-cli` runs workers
-through the `copilot` CLI named by `runner_cmd` exactly as before (with
-`max_ai_credits`, `--autopilot` and the tool denials); `native` is the
-default and needs nothing installed. The two never mix within one run.
+**Only harness.** The built-in harness is the only way PULSE runs workers,
+leads and measurements; nothing besides the `pulse` binary is installed on a
+machine that runs agents. The settings of the retired `copilot-cli` run mode
+(`harness`, `runner_cmd`, `max_ai_credits`) are swept out of an older store
+the first time a newer binary opens it, each one logged as a `setting.retired`
+event, and `pulse settings set` refuses them as unknown.
 
 **Adding a provider** is one crate under `crates/pulse-provider-<name>`
 that implements `pulse_provider::Provider` (`chat`, `models`, `status`) and,
@@ -2247,11 +2247,11 @@ a decision of its own.
 [--projects a,b|*]` turns a Linux machine into an executor in one run, from
 the account that runs the daemon. Over the admin's ssh session it reads the
 machine first (`uname`, `sudo`, a `pulse` user, installed hands, the workdir,
-`authorized_keys`, the sshd drop-in, git, copilot, …) and refuses before
+`authorized_keys`, the sshd drop-in, git, …) and refuses before
 changing anything when the machine is not fit: not Linux, no passwordless
 sudo, a `pulse` `authorized_keys` with other content, clones with git remotes
 under the workdir, an sshd without `Include sshd_config.d` (the manual Match
-block is printed), `--install-copilot` without apt. Then, in this order:
+block is printed). Then, in this order:
 
 - **Here**, idempotently: `~/.ssh/pulse_hands_ed25519` is generated if it is
   missing; a `Host NAME` block (HostName, Port, `User pulse`, that key) is
@@ -2263,9 +2263,8 @@ block is printed), `--install-copilot` without apt. Then, in this order:
   -p PORT ADMIN@HOST sudo -n sh -s` (ten minutes at most). It creates the
   `pulse` user, installs the hands binary as `/usr/local/bin/pulse-hands` with
   `/usr/local/bin/pulse` linked to it, makes the workdir, writes the one
-  `command="… hands",restrict` line in its `authorized_keys`, a gitconfig,
-  `mise` and - with `--install-copilot` only - node and copilot through apt,
-  then the drop-in `/etc/ssh/sshd_config.d/60-pulse-hands.conf` and reloads
+  `command="… hands",restrict` line in its `authorized_keys`, a gitconfig and
+  `mise`, then the drop-in `/etc/ssh/sshd_config.d/60-pulse-hands.conf` and reloads
   sshd. Every step reports `kept` or `done`, so a re-pair is safe. `sudo -n`
   never prompts: when sudo wants a password the run stops with the dry-run
   output and the way out (a `NOPASSWD` line for the admin, or run the printed
@@ -2280,11 +2279,11 @@ block is printed), `--install-copilot` without apt. Then, in this order:
   passes, the commit script removes the drop-in's `.prev` copy there, the
   executor is `active` and one screen sums it up (host, user, workdir,
   workers, projects, the probe line, the undo one-liner). When the machine is reached
-  but not ready - no harness login, copilot missing, disk under the floor -
-  the pairing stays, the executor stays `drained` with the probe note, the
-  summary names the next step (`pulse executor login NAME --admin ADMIN@HOST`,
-  `pulse pair ADMIN@HOST --name NAME --install-copilot`, or fix it and `pulse
-  executor probe NAME`) and the exit code is 1. When the hand does not answer
+  but not ready - no harness login, disk under the floor - the pairing
+  stays, the executor stays `drained` with the probe note, the summary names
+  the next step (`pulse executor login NAME --admin ADMIN@HOST --with-token`,
+  or fix it and `pulse executor probe NAME`) and the exit code is 1. When the
+  hand does not answer
   at all - ssh refused, the forced command missing, the wrong workdir - the
   undo script runs over the admin session (the drop-in this run wrote is
   restored or removed and sshd reloaded; a drop-in it kept is left alone), a

@@ -61,9 +61,8 @@ pub(crate) fn test_main_setup() {
         // The login gate would ask the real provider about this machine's sign-in; tests that exercise it
         // call local_login_gate with a fake provider (login_gate.rs) or swap the gate themselves.
         let _ = crate::login_gate::set_login_gate(Box::new(|_| String::new()));
-        // ADR-034: no test asks the hub's gh for a token or reaches GitHub; tests that need answers swap
-        // GITHUB_HTTP (or point PULSE_GITHUB_API at a pulse_testutil::httptest server).
-        *crate::token::GH_AUTH_TOKEN.write().unwrap() = || Ok(String::new());
+        // ADR-034: no test reaches GitHub; tests that need answers swap GITHUB_HTTP (or point
+        // PULSE_GITHUB_API at a pulse_testutil::httptest server).
         let _ = crate::executor::set_github_http(Box::new(no_network_github_http));
     });
 }
@@ -522,29 +521,10 @@ pub(crate) fn build_pulse() -> String {
         .to_string()
 }
 
+/// A PATH for test hands: the extra directories (fake workers) ahead of the real one.
 pub(crate) fn fake_hands_path(extra: &[String]) -> String {
-    static FAKE_HANDS_DIRS: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
-    let dir_guard = tempfile::tempdir().expect("fake hands");
-    let dir = dir_guard.path().to_path_buf();
-    std::fs::write(
-        dir.join("copilot"),
-        "#!/bin/sh\necho 'GitHub Copilot CLI 0.0.1-test'\n",
-    )
-    .expect("fake copilot");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ =
-            std::fs::set_permissions(dir.join("copilot"), std::fs::Permissions::from_mode(0o755));
-    }
     let mut dirs = extra.to_vec();
-    dirs.push(dir.display().to_string());
     dirs.push(std::env::var("PATH").unwrap_or_default());
-    FAKE_HANDS_DIRS
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .expect("fake hands dirs")
-        .push(dir_guard);
     format!("PATH={}", dirs.join(if cfg!(windows) { ";" } else { ":" }))
 }
 

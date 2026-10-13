@@ -9,8 +9,7 @@ use crate::api::Scores;
 pub const BASELINE_CACHE_SETTINGS: &[&str] = &[
     "worker_model",
     "light_model",
-    "harness",
-    "runner_cmd",
+    "provider",
     "harness.max_steps",
     "harness.step_timeout",
     "harness.commit_timeout",

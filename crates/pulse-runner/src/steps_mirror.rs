@@ -426,10 +426,6 @@ mod tests {
         }
     }
 
-    fn fake_probe_version() -> anyhow::Result<String> {
-        Ok("0.0.1-test".into())
-    }
-
     fn row(pairs: &[(&str, serde_json::Value)]) -> Row {
         let mut r = Row::new();
         for (k, v) in pairs {
@@ -604,28 +600,5 @@ mod tests {
         let fields = crate::executor::parse_probe(&out.string());
         assert_eq!(fields.get("heartbeat").map(String::as_str), Some("1"));
         assert_eq!(fields.get("steps").map(String::as_str), Some("1"));
-    }
-
-    #[test]
-    fn probe_version_hook_without_path() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        let prev = *crate::hands::PROBE_VERSION.read().unwrap();
-        *crate::hands::PROBE_VERSION.write().unwrap() = fake_probe_version;
-        let workdir = tempfile::tempdir().unwrap();
-        let out = SharedBuf::default();
-        let (mut h, _env) = crate::test_helpers::new_test_hands(
-            &workdir.path().display().to_string(),
-            Some(Box::new(out.clone())),
-            None,
-        );
-        let _env = pulse_testutil::setenv("PATH", "");
-        h.probe().unwrap();
-        *crate::hands::PROBE_VERSION.write().unwrap() = prev;
-        let fields = crate::executor::parse_probe(&out.string());
-        assert_eq!(
-            fields.get("copilot").map(String::as_str),
-            Some("0.0.1-test")
-        );
     }
 }

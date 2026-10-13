@@ -41,9 +41,6 @@ pub(crate) fn swap_login_gate(
 }
 
 pub(crate) fn local_login_gate(s: &pulse_store::Store) -> String {
-    if !s.harness_native() {
-        return String::new();
-    }
     let Ok(provider) = local_provider(
         s.home.clone(),
         s.setting("provider", pulse_provider::DEFAULT),
@@ -131,8 +128,7 @@ pub(crate) fn login_wanted(
     let body = format!(
         "The daemon on this machine holds {queued} queued job(s) because the built-in harness has no provider login \
 here: {gate}. Nothing runs on this machine until someone signs in - Settings -> Harness -> Sign in with GitHub in the \
-console, or `pulse harness login` in a terminal; `pulse settings set harness copilot-cli` keeps the legacy copilot \
-CLI path meanwhile. Remote executors keep working. This post is a measurement, not a request to act ({now}).\n"
+console, or `pulse harness login` in a terminal. Remote executors keep working. This post is a measurement, not a request to act ({now}).\n"
     );
     let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
@@ -166,19 +162,14 @@ CLI path meanwhile. Remote executors keep working. This post is a measurement, n
 mod tests {
     use super::*;
     use crate::test_helpers::TEST_NOW;
-    use crate::test_helpers_daemon::set_setting;
     use crate::test_helpers_login_reuse::{
-        LOGIN_REUSE_GH_TOKEN, LOGIN_REUSE_PROVIDER_NAME, LOGIN_REUSE_PROVIDER_TOKEN,
-        login_reuse_store,
+        LOGIN_REUSE_PROVIDER_NAME, LOGIN_REUSE_PROVIDER_TOKEN, login_reuse_store,
     };
-    use crate::test_helpers_provider::{invoke, invoke_ok, stub_gh};
+    use crate::test_helpers_provider::{invoke, invoke_ok};
     use crate::test_helpers_token::{
         FakeGitHub, FakeGitHubState, advance_wall_clock, fixed_wall_clock, time_date,
     };
-    use crate::token::{
-        LOGIN_SOURCE_HUB_LOGIN, LOGIN_SOURCE_NONE, LOGIN_SOURCE_PROVIDER, has_login_source,
-        login_source,
-    };
+    use crate::token::{LOGIN_SOURCE_NONE, LOGIN_SOURCE_PROVIDER, has_login_source, login_source};
     use anyhow::Result;
     use std::sync::{Arc, LazyLock, Mutex, Once};
     use std::time::Duration;
@@ -271,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn local_login_gate_closes_only_for_native_without_login() {
+    fn local_login_gate_closes_only_without_login() {
         let _serial = crate::test_helpers::serial();
         let s = gate_store();
         set_gate_state(
@@ -310,11 +301,6 @@ mod tests {
         assert!(got.contains("pulse harness login"));
         set_gate_state(&s, pulse_provider::Login::default(), "network down");
         assert_eq!(local_login_gate(&s), "");
-        s.set_setting(pulse_store::HUMAN_AGENT, "harness", "copilot-cli")
-            .unwrap();
-        assert_eq!(local_login_gate(&s), "");
-        s.set_setting(pulse_store::HUMAN_AGENT, "harness", "native")
-            .unwrap();
         set_gate_state(&s, pulse_provider::Login::default(), "");
         let before = gate_calls(&s);
         let _ = local_login_gate(&s);
@@ -504,7 +490,7 @@ mod tests {
         }
     }
     #[test]
-    fn native_login_source_never_uses_gh_token() {
+    fn login_source_without_stored_login_is_none() {
         let _serial = crate::test_helpers::serial();
         let (s, state, _cleanup) = login_reuse_store();
         state.lock().err = Some(pulse_provider::ProviderError::new(
@@ -514,39 +500,19 @@ mod tests {
             "none",
             false,
         ));
-        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
         let gh = FakeGitHub::default();
         let _gh = gh.install();
 
         let res = login_source(&s);
         assert!(
             matches!(&res, Ok((tok, origin)) if tok.is_empty() && origin == LOGIN_SOURCE_NONE),
-            "native gh fallback: {res:?}"
+            "no stored login: {res:?}"
         );
         assert!(
             gh.count() == 0,
-            "native mode asked GitHub about gh token: {:?}",
+            "asked GitHub without a token: {:?}",
             gh.lock().calls
         );
-    }
-    #[test]
-    fn legacy_login_source_still_uses_gh_token() {
-        let _serial = crate::test_helpers::serial();
-        let (s, _, _cleanup) = login_reuse_store();
-        set_setting(&s, "harness", "copilot-cli");
-        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
-        let gh = FakeGitHub::new(FakeGitHubState {
-            login: "hub-user".into(),
-            ..Default::default()
-        });
-        let _gh = gh.install();
-
-        let res = login_source(&s);
-        assert!(
-            matches!(&res, Ok((tok, origin)) if tok.as_slice() == LOGIN_REUSE_GH_TOKEN.as_bytes() && origin == LOGIN_SOURCE_HUB_LOGIN),
-            "legacy gh source: {res:?}"
-        );
-        assert!(gh.count() == 2, "legacy gh checks = {}", gh.count());
     }
     #[test]
     fn executor_login_without_token_reuses_login_source() {
@@ -638,7 +604,6 @@ mod tests {
             "none",
             false,
         ));
-        let _stub = stub_gh(LOGIN_REUSE_GH_TOKEN);
         let gh = FakeGitHub::default();
         let _gh = gh.install();
         crate::executor::add_executor(
@@ -671,8 +636,8 @@ mod tests {
             assert!(err_text.contains(want), "missing {want:?} in {err_text:?}");
         }
         assert!(
-            !err_text.contains(LOGIN_REUSE_GH_TOKEN) && gh.count() == 0,
-            "missing source leaked token or used gh: {err_text:?} calls={:?}",
+            gh.count() == 0,
+            "missing source asked GitHub: {err_text:?} calls={:?}",
             gh.lock().calls
         );
     }

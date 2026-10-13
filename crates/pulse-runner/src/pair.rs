@@ -28,7 +28,6 @@ pub(crate) struct PairOpts {
     pub workdir: String,
     pub workers: i32,
     pub projects: String,
-    pub install_copilot: bool,
     pub dry_run: bool,
     pub actor: String,
     pub hub_home: String,
@@ -224,18 +223,6 @@ pub(crate) fn pair_manual_dropin_lines() -> Vec<String> {
     out
 }
 
-pub(crate) fn pair_manual_copilot_lines() -> Vec<String> {
-    vec![
-        "manual copilot install steps for this machine:".into(),
-        "  mkdir -p /etc/apt/keyrings".into(),
-        "  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg".into(),
-        "  echo \"deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\" > /etc/apt/sources.list.d/nodesource.list".into(),
-        "  apt-get update".into(),
-        "  apt-get install -y nodejs".into(),
-        "  npm install -g @github/copilot".into(),
-    ]
-}
-
 pub(crate) fn pair_inspect_script(
     workdir: String,
     pubkey: String,
@@ -294,9 +281,6 @@ if [ -d "$WORKDIR" ]; then
   remotes="$(find "$WORKDIR" -mindepth 2 -maxdepth 3 -type d -name .git 2>/dev/null | while read d; do git --git-dir="$d" remote 2>/dev/null | grep -q . && echo x; done | wc -l | tr -d ' ')"
 fi
 printf 'remotes=%s\n' "$remotes"
-if command -v apt-get >/dev/null 2>&1; then echo apt=yes; else echo apt=no; fi
-if command -v copilot >/dev/null 2>&1; then echo copilot=present; else echo copilot=missing; fi
-if command -v node >/dev/null 2>&1; then echo node=present; else echo node=missing; fi
 if command -v pulse >/dev/null 2>&1; then echo pulse=present; else echo pulse=missing; fi
 if [ -n "${{COPILOT_GITHUB_TOKEN:-}}${{GH_TOKEN:-}}${{GITHUB_TOKEN:-}}" ] || su -s /bin/sh pulse -c 'test -f "$HOME/.pulse/private/providers/copilot.json"' >/dev/null 2>&1; then echo harness=yes; else echo harness=no; fi
 if command -v git >/dev/null 2>&1; then echo git=present; else echo git=missing; fi
@@ -364,27 +348,7 @@ pub(crate) fn pair_apply_script(
     workdir: String,
     pubkey: String,
     hands: Vec<u8>,
-    install_copilot: bool,
 ) -> String {
-    let install_block = if install_copilot {
-        r#"
-if command -v copilot >/dev/null 2>&1; then
-  step copilot kept
-else
-  mkdir -p /etc/apt/keyrings
-  if [ ! -f /etc/apt/keyrings/nodesource.gpg ]; then
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-  fi
-  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-  apt-get update
-  apt-get install -y nodejs
-  npm install -g @github/copilot
-  step copilot done
-fi
-"#.to_string()
-    } else {
-        "step copilot skipped\n".into()
-    };
     format!(
         r#"#!/bin/sh
 set -eu
@@ -436,7 +400,7 @@ fi
 sudo -u pulse -H git config --global commit.gpgsign false
 sudo -u pulse -H git config --global core.askPass ""
 step gitconfig done
-{install_block}{mise}install -d -m 0755 -o root -g root /etc/ssh/sshd_config.d
+{mise}install -d -m 0755 -o root -g root /etc/ssh/sshd_config.d
 cat > "$DROPIN.tmp" <<'PULSE_DROPIN_EOF'
 {dropin_text}PULSE_DROPIN_EOF
 dropin_changed=0
@@ -762,9 +726,6 @@ pub(crate) fn pair_inspection_summary(
         "dropin",
         "dropin_dir",
         "remotes",
-        "apt",
-        "copilot",
-        "node",
         "pulse",
         "harness",
         "git",
@@ -782,10 +743,7 @@ pub(crate) fn pair_inspection_summary(
     out
 }
 
-pub(crate) fn pair_refusals_from_inspection(
-    insp: BTreeMap<String, String>,
-    install_copilot: bool,
-) -> Vec<String> {
+pub(crate) fn pair_refusals_from_inspection(insp: BTreeMap<String, String>) -> Vec<String> {
     if insp.get("uname").map(String::as_str) != Some("Linux") {
         return vec![format!(
             "remote uname is {}, not Linux",
@@ -818,11 +776,6 @@ pub(crate) fn pair_refusals_from_inspection(
             "{} clone(s) with git remotes exist under the workdir",
             rem
         )];
-    }
-    if install_copilot && insp.get("apt").map(String::as_str) != Some("yes") {
-        let mut out = vec!["--install-copilot needs apt on the remote machine".into()];
-        out.extend(pair_manual_copilot_lines());
-        return out;
     }
     Vec::new()
 }
@@ -877,7 +830,7 @@ pub(crate) fn sha256_bytes(data: Vec<u8>) -> String {
     hex::encode(sha2::Sha256::digest(data))
 }
 
-/// The remote apply may install node, copilot and mise; the undo and commit scripts only touch one file.
+/// The remote apply may install mise; the undo and commit scripts only touch one file.
 pub(crate) const PAIR_APPLY_TIMEOUT: Duration = Duration::from_secs(600);
 pub(crate) const PAIR_FINISH_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const PAIR_REMOTE_COMMAND: &str = "sudo -n sh -s";
@@ -888,10 +841,9 @@ pub(crate) fn pair_shown_apply_script(
     workdir: String,
     pubkey: String,
     arch: String,
-    install_copilot: bool,
 ) -> String {
     let placeholder = format!("<pulse linux/{arch} binary, base64>");
-    pair_apply_script(name, workdir, pubkey, Vec::new(), install_copilot).replace(
+    pair_apply_script(name, workdir, pubkey, Vec::new()).replace(
         "<<'PULSE_HANDS_EOF'\n\nPULSE_HANDS_EOF",
         &format!("<<'PULSE_HANDS_EOF'\n{placeholder}\nPULSE_HANDS_EOF"),
     )
@@ -926,7 +878,7 @@ fn pair_output_tail(out: &str, err_text: &str) -> String {
 }
 
 /// A probe note that means the pairing itself does not work (transport, key, forced command,
-/// workdir), as opposed to hands that answer but are not fit yet (login, copilot, git, disk).
+/// workdir), as opposed to hands that answer but are not fit yet (login, git, disk).
 pub(crate) fn pair_probe_broken(note: &str) -> bool {
     note.starts_with("unreachable:")
         || note.contains("pulse-hands did not answer")
@@ -936,11 +888,7 @@ pub(crate) fn pair_probe_broken(note: &str) -> bool {
 }
 
 pub(crate) fn pair_next_step(name: &str, admin: &str, note: &str) -> String {
-    if note.contains("copilot missing") {
-        format!(
-            "install copilot there (`pulse pair {admin} --name {name} --install-copilot` on an apt machine), then `pulse executor probe {name}`"
-        )
-    } else if note.contains("harness login missing") || note.contains("not logged in") {
+    if note.contains("harness login missing") || note.contains("not logged in") {
         format!(
             "`pulse executor login {name} --admin {admin}` (add --with-token to paste a token), then `pulse executor probe {name}`"
         )
@@ -1144,13 +1092,8 @@ fn pair_apply_live(
         rep.changed.push(key_path);
         pubkey
     };
-    let apply_script = pair_apply_script(
-        name.to_string(),
-        workdir.to_string(),
-        pubkey.clone(),
-        hands,
-        opts.install_copilot,
-    );
+    let apply_script =
+        pair_apply_script(name.to_string(), workdir.to_string(), pubkey.clone(), hands);
     rep.scripts.insert("apply".into(), apply_script.clone());
 
     let (local_lines, local_changed) = pair_apply_local(
@@ -1198,7 +1141,6 @@ fn pair_apply_live(
                     workdir.to_string(),
                     pubkey,
                     arch.to_string(),
-                    opts.install_copilot,
                 ),
                 &undo_script,
                 &commit_script,
@@ -1508,13 +1450,7 @@ pub(crate) fn pair_executor(
             hands.len()
         ));
     }
-    if insp.get("copilot").map(String::as_str) == Some("missing")
-        && !o.install_copilot
-        && !s.harness_native()
-    {
-        rep.lines.push("hint: copilot is missing; the final probe may leave this executor drained until a human installs or logs it in".into());
-    }
-    let refusal = pair_refusals_from_inspection(insp, o.install_copilot);
+    let refusal = pair_refusals_from_inspection(insp);
     if !refusal.is_empty() {
         rep.lines.extend(refusal);
         return Err(crate::util::fail(2, rep.lines.join("\n")).into());
@@ -1525,13 +1461,7 @@ pub(crate) fn pair_executor(
     rep.scripts.insert("undo".into(), undo_script.clone());
     rep.scripts.insert("commit".into(), commit_script.clone());
     if o.dry_run {
-        let shown = pair_shown_apply_script(
-            name.clone(),
-            workdir.clone(),
-            pubkey,
-            arch.clone(),
-            o.install_copilot,
-        );
+        let shown = pair_shown_apply_script(name.clone(), workdir.clone(), pubkey, arch.clone());
         rep.scripts.insert("apply".into(), shown.clone());
         rep.lines
             .extend(pair_script_lines(&shown, &undo_script, &commit_script));
@@ -1858,9 +1788,9 @@ mod tests {
     // ---- the live path, against a recording fake ssh ----
 
     const PROBE_B64: &str = "b64 cHJvYmUA";
-    const INSPECTION_OK: &str = "uname=Linux\narch=x86_64\nsudo=yes\nuser=absent\nhands=absent\nworkdir=absent\nauthorized_keys=absent\ndropin=absent\ndropin_dir=yes\nremotes=0\napt=yes\ncopilot=present\nnode=present\npulse=missing\nharness=no\ngit=present\ngitconfig=missing\nhostkeys=\nhostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEHOSTKEY root@example\n";
-    const APPLY_OK: &str = "step=user result=done\nstep=hands result=done\nstep=pulse result=done\nstep=workdir result=done\nstep=authorized_keys result=done\nstep=gitconfig result=done\nstep=copilot result=skipped\nstep=mise result=done\nstep=dropin result=done\nstep=sshd_reload result=done\n";
-    const PROBE_OK: &str = "hands=ok user=pulse workdir=/srv/pulse git=2.43 copilot=present logged_in=yes harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=200000 jobs=- keys=- heartbeat=1\n";
+    const INSPECTION_OK: &str = "uname=Linux\narch=x86_64\nsudo=yes\nuser=absent\nhands=absent\nworkdir=absent\nauthorized_keys=absent\ndropin=absent\ndropin_dir=yes\nremotes=0\npulse=missing\nharness=no\ngit=present\ngitconfig=missing\nhostkeys=\nhostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEHOSTKEY root@example\n";
+    const APPLY_OK: &str = "step=user result=done\nstep=hands result=done\nstep=pulse result=done\nstep=workdir result=done\nstep=authorized_keys result=done\nstep=gitconfig result=done\nstep=mise result=done\nstep=dropin result=done\nstep=sshd_reload result=done\n";
+    const PROBE_OK: &str = "hands=ok user=pulse workdir=/srv/pulse git=2.43 harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=200000 jobs=- keys=- heartbeat=1\n";
 
     #[derive(Clone, Debug, PartialEq)]
     struct SshCall {
@@ -2097,7 +2027,7 @@ mod tests {
         for want in [
             "added Host hands-two block to",
             "known_hosts: added 1 of 1 line(s) for example.invalid to",
-            "applied on example.invalid as root: user=done hands=done pulse=done workdir=done authorized_keys=done gitconfig=done copilot=skipped mise=done dropin=done sshd_reload=done",
+            "applied on example.invalid as root: user=done hands=done pulse=done workdir=done authorized_keys=done gitconfig=done mise=done dropin=done sshd_reload=done",
             "registered executor hands-two (pulse@hands-two, /srv/pulse, 2 worker(s), projects *)",
             "committed on example.invalid: dropin-prev=removed",
             "paired hands-two: active",

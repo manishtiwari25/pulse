@@ -733,10 +733,10 @@ mod tests {
                     "default {} minutes",
                     pulse_store::DEFAULT_SETTINGS["minutes_per_job"]
                 ),
-                "max_ai_credits".to_string(),
+                "harness.max_steps".to_string(),
                 format!(
-                    "default {} credits",
-                    pulse_store::DEFAULT_SETTINGS["max_ai_credits"]
+                    "default {} model calls",
+                    pulse_store::HARNESS_SETTINGS["harness.max_steps"]
                 ),
                 "evolve.limits".to_string(),
                 format!("default {}", pulse_store::EVOLVE_SETTINGS["evolve.limits"]),
