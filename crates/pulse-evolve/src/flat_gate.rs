@@ -145,6 +145,162 @@ pub fn flat_reason(streak: &FlatStreak) -> String {
     )
 }
 
+/// What the archive shows about one fixture across a project's experiment
+/// cycles (a held-out fixture by its archive name, `H1`, `H2`, ...). The
+/// owner reads it to pick the fixture to replace: one that never told a
+/// variant from its baseline cannot pick a variant, and one that scored a
+/// frozen tree two ways reports differences that are not signal.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FixtureEvidence {
+    pub name: String,
+    /// Cycles whose archived matrix scored it on both trees.
+    pub cycles: usize,
+    /// Cycles where the variant scored differently from its baseline.
+    pub told_apart: usize,
+    /// Times its baseline score changed along with the baseline commit: it
+    /// moves with the default branch, whatever the experiments do.
+    pub moved_with_main: usize,
+    /// It scored the same baseline commit two ways.
+    pub flaky: bool,
+}
+
+/// The evidence for every fixture the project's archived experiment cycles
+/// scored, oldest cycle first, in the order the fixtures first appeared.
+pub fn fixture_evidence(s: &pulse_store::Store, project: &str) -> Result<Vec<FixtureEvidence>> {
+    let conn = s.conn()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT a.fixtures_json FROM evolution_archive a
+		WHERE a.project = ? AND NOT {}
+		ORDER BY a.at ASC, a.rowid ASC",
+        crate::status::BASELINE_ROW_SQL
+    ))?;
+    let rows: Vec<String> = stmt
+        .query_map(params![project], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out: Vec<FixtureEvidence> = Vec::new();
+    // Per fixture: the last baseline (commit, score) and every score seen
+    // per baseline commit.
+    let mut last: Vec<(String, f64)> = Vec::new();
+    let mut by_commit: Vec<std::collections::HashMap<String, f64>> = Vec::new();
+    for json in rows {
+        let Ok(pair) = serde_json::from_str::<crate::archive::ScorePair>(&json) else {
+            continue;
+        };
+        let (Ok(baseline), Ok(variant)) = (
+            crate::archive::public_scores(pair.baseline.as_ref()),
+            crate::archive::public_scores(pair.variant.as_ref()),
+        ) else {
+            continue;
+        };
+        for b in &baseline.fixtures {
+            let Some(v) = variant
+                .fixtures
+                .iter()
+                .find(|v| v.name == b.name && v.kind == b.kind)
+            else {
+                continue;
+            };
+            let i = match out.iter().position(|e| e.name == b.name) {
+                Some(i) => i,
+                None => {
+                    out.push(FixtureEvidence {
+                        name: b.name.clone(),
+                        ..Default::default()
+                    });
+                    last.push((String::new(), f64::NAN));
+                    by_commit.push(Default::default());
+                    out.len() - 1
+                }
+            };
+            let e = &mut out[i];
+            e.cycles += 1;
+            if (v.score - b.score).abs() > 1e-9 {
+                e.told_apart += 1;
+            }
+            let (commit, score) = &last[i];
+            if !commit.is_empty() && *commit != baseline.ref_name && (b.score - score).abs() > 1e-9
+            {
+                e.moved_with_main += 1;
+            }
+            last[i] = (baseline.ref_name.clone(), b.score);
+            if !baseline.ref_name.is_empty() {
+                match by_commit[i].get(&baseline.ref_name) {
+                    Some(seen) if (seen - b.score).abs() > 1e-9 => e.flaky = true,
+                    Some(_) => {}
+                    None => {
+                        by_commit[i].insert(baseline.ref_name.clone(), b.score);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One fixture's evidence as the question body shows it.
+pub fn evidence_line(e: &FixtureEvidence) -> String {
+    let mut line = if e.told_apart == 0 {
+        format!(
+            "told no variant from its baseline in {} cycle{}",
+            e.cycles,
+            if e.cycles == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "told a variant from its baseline in {} of {} cycles",
+            e.told_apart, e.cycles
+        )
+    };
+    if e.moved_with_main > 0 {
+        line.push_str(&format!(
+            "; moved {} time{} with the default branch",
+            e.moved_with_main,
+            if e.moved_with_main == 1 { "" } else { "s" }
+        ));
+    }
+    if e.flaky {
+        line.push_str(
+            "; scored the same baseline commit two ways, so a difference it reports is not a signal on its own",
+        );
+    }
+    line
+}
+
+/// The one sentence `pulse evolve status` adds to the gate's reason: what
+/// the archive says about the fixtures, or empty before any cycle was scored.
+pub fn evidence_summary(evidence: &[FixtureEvidence]) -> String {
+    let scored: Vec<&FixtureEvidence> = evidence.iter().filter(|e| e.cycles > 0).collect();
+    if scored.is_empty() {
+        return String::new();
+    }
+    let cycles = scored.iter().map(|e| e.cycles).max().unwrap_or(0);
+    let moving: Vec<&str> = scored
+        .iter()
+        .filter(|e| e.told_apart > 0)
+        .map(|e| e.name.as_str())
+        .collect();
+    let flaky: Vec<&str> = scored
+        .iter()
+        .filter(|e| e.flaky)
+        .map(|e| e.name.as_str())
+        .collect();
+    let mut line = if moving.is_empty() {
+        format!("no fixture told a variant from its baseline in {cycles} cycles")
+    } else {
+        format!(
+            "only {} told a variant from its baseline in {cycles} cycles",
+            moving.join(", ")
+        )
+    };
+    if !flaky.is_empty() {
+        line.push_str(&format!(
+            "; {} scored the same baseline commit two ways",
+            flaky.join(", ")
+        ));
+    }
+    line
+}
+
 /// The one-line owner step `pulse evolve status` names while the gate holds.
 pub fn flat_owner_step(project: &str, question: &str) -> String {
     let answer = if question.is_empty() {
@@ -175,19 +331,32 @@ pub fn flat_fixture_question_body(s: &pulse_store::Store, project: &str) -> Resu
             c.id, c.baseline_score, c.variant_score, c.at
         ));
     }
-    body.push_str("\nEnabled fixtures (name: kind, metric, weight):\n");
+    body.push_str(
+        "\nEnabled fixtures (name: kind, metric, weight; what the archived cycles show):\n",
+    );
     let fixtures = crate::fixtures::list_fixtures(s, project, true)?;
+    let evidence = fixture_evidence(s, project)?;
     if fixtures.is_empty() {
         body.push_str("- none\n");
     }
     for f in &fixtures {
         body.push_str(&format!(
-            "- {}: {}, metric {}, weight {}\n",
+            "- {}: {}, metric {}, weight {}",
             f.name,
             f.kind,
             if f.metric { "yes" } else { "no" },
             f.weight
         ));
+        if let Some(e) = evidence.iter().find(|e| e.name == f.name && e.cycles > 0) {
+            body.push_str(&format!("; {}", evidence_line(e)));
+        }
+        body.push('\n');
+    }
+    for e in evidence
+        .iter()
+        .filter(|e| e.cycles > 0 && heldout_name(&e.name))
+    {
+        body.push_str(&format!("- {} (held-out): {}\n", e.name, evidence_line(e)));
     }
     body.push_str(&format!(
         "\nNext human step, one of:\n\
@@ -200,6 +369,10 @@ pub fn flat_fixture_question_body(s: &pulse_store::Store, project: &str) -> Resu
          - pulse settings set evolve.flat_cycles 0 turns this gate off.\n"
     ));
     Ok(body)
+}
+
+fn heldout_name(name: &str) -> bool {
+    crate::measure::heldout_name(name)
 }
 
 #[cfg(test)]
@@ -305,6 +478,174 @@ mod tests {
         assert_eq!(
             flat_owner_step("demo", "Q-1"),
             "add a fixture whose score moves (pulse evolve fixture add --project demo --name NAME --metric --scorer CMD) or answer question Q-1"
+        );
+    }
+
+    /// One archived cycle with a real matrix: `metric` scores `m` on both
+    /// trees, `request` scores `rb` on the baseline (commit `commit`) and `rv`
+    /// on the variant, and one held-out fixture ties at 1.
+    fn scored_cycle(
+        s: &pulse_store::Store,
+        id: &str,
+        commit: &str,
+        m: f64,
+        rb: f64,
+        rv: f64,
+        offset: i64,
+    ) {
+        let tree = |r#ref: &str, request: f64| {
+            let fixtures = vec![
+                crate::api::FixtureScore {
+                    name: "metric".into(),
+                    kind: "public".into(),
+                    score: m,
+                    weight: 2.0,
+                    metric: true,
+                    note: String::new(),
+                },
+                crate::api::FixtureScore {
+                    name: "request".into(),
+                    kind: "public".into(),
+                    score: request,
+                    weight: 1.0,
+                    metric: false,
+                    note: String::new(),
+                },
+                crate::api::FixtureScore {
+                    name: "H1".into(),
+                    kind: "heldout".into(),
+                    score: 1.0,
+                    weight: 1.0,
+                    metric: false,
+                    note: String::new(),
+                },
+            ];
+            crate::api::Scores {
+                project: "demo".into(),
+                ref_name: r#ref.into(),
+                total: crate::dispute::weighted_total(&fixtures),
+                fixtures,
+                heldout: 1,
+                ..Default::default()
+            }
+        };
+        let baseline = tree(commit, rb);
+        let variant = tree(&format!("v-{id}"), rv);
+        let pair = crate::archive::ScorePair {
+            baseline: Some(baseline.clone()),
+            variant: Some(variant.clone()),
+        };
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+				VALUES (?, 'demo', 'S-1', 'one constant', '', ?, ?, 0.02, ?, ?, ?)",
+                params![
+                    id,
+                    baseline.total,
+                    variant.total,
+                    (variant.total + 0.02 >= baseline.total) as i64,
+                    serde_json::to_string(&pair).unwrap(),
+                    stamp(s, offset)
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_question_says_which_fixture_never_moves_and_which_one_is_noise() {
+        let _serial = crate::test_helpers::serial();
+        let s = gate_store("3");
+        crate::test_helpers::fixture(&s, "demo", "metric", "printf 1", 2.0);
+        crate::test_helpers::fixture(&s, "demo", "request", "printf 1", 1.0);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE evolution_fixtures SET at = ? WHERE project = 'demo'",
+                [stamp(&s, -1000)],
+            )
+            .unwrap();
+        // The metric moved only when the default branch did (c1 -> c2); the
+        // request fixture flipped the variant once (a discard) and scored
+        // commit c2 two ways across cycles; the rest tied.
+        scored_cycle(&s, "B-001", "c1", 0.50, 1.0, 1.0, -70);
+        scored_cycle(&s, "B-002", "c1", 0.50, 1.0, 0.0, -60);
+        scored_cycle(&s, "B-003", "c2", 0.46, 1.0, 1.0, -50);
+        scored_cycle(&s, "B-004", "c2", 0.46, 0.0, 0.0, -40);
+        scored_cycle(&s, "B-005", "c2", 0.46, 1.0, 1.0, -30);
+        scored_cycle(&s, "B-006", "c2", 0.46, 1.0, 1.0, -20);
+        let evidence = fixture_evidence(&s, "demo").unwrap();
+        assert_eq!(
+            evidence,
+            vec![
+                FixtureEvidence {
+                    name: "metric".into(),
+                    cycles: 6,
+                    told_apart: 0,
+                    moved_with_main: 1,
+                    flaky: false,
+                },
+                FixtureEvidence {
+                    name: "request".into(),
+                    cycles: 6,
+                    told_apart: 1,
+                    moved_with_main: 0,
+                    flaky: true,
+                },
+                FixtureEvidence {
+                    name: "H1".into(),
+                    cycles: 6,
+                    told_apart: 0,
+                    moved_with_main: 0,
+                    flaky: false,
+                },
+            ]
+        );
+        assert_eq!(
+            evidence_summary(&evidence),
+            "only request told a variant from its baseline in 6 cycles; request scored the same baseline commit two ways"
+        );
+        let (question, reason) = flat_fixture_gate(&s, "demo").unwrap();
+        assert!(question.is_empty());
+        assert!(reason.contains("B-004, B-005, B-006"), "{reason}");
+        let body = flat_fixture_question_body(&s, "demo").unwrap();
+        for want in [
+            "- F01: public, metric no, weight 1\n",
+            "- metric: public, metric no, weight 2; told no variant from its baseline in 6 cycles; moved 1 time with the default branch\n",
+            "- request: public, metric no, weight 1; told a variant from its baseline in 1 of 6 cycles; scored the same baseline commit two ways, so a difference it reports is not a signal on its own\n",
+            "- H1 (held-out): told no variant from its baseline in 6 cycles\n",
+        ] {
+            assert!(body.contains(want), "body lacks {want:?}:\n{body}");
+        }
+        let status = crate::readiness::planning_status(
+            &s,
+            &crate::status::LoopStatus {
+                project: "demo".into(),
+                level: "D".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(status.state, "blocked", "{}", status.reason);
+        assert!(
+            status.reason.contains(
+                "; only request told a variant from its baseline in 6 cycles; request scored the same baseline commit two ways; owner: add a fixture"
+            ),
+            "{}",
+            status.reason
+        );
+        // Before any scored cycle the summary is empty and the body says
+        // nothing it cannot show.
+        assert_eq!(evidence_summary(&[]), "");
+        let plain = evidence_summary(&[FixtureEvidence {
+            name: "metric".into(),
+            cycles: 3,
+            ..Default::default()
+        }]);
+        assert_eq!(
+            plain,
+            "no fixture told a variant from its baseline in 3 cycles"
         );
     }
 

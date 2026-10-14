@@ -74,7 +74,7 @@ pub(crate) fn measure(
     opts: crate::api::MeasureOptions,
 ) -> Result<crate::api::Scores> {
     crate::fixtures::valid_project(s, project)?;
-    let fixtures = select_fixtures(s, project, &opts.fixtures)?;
+    let fixtures = select_fixtures(s, project, &opts.fixtures, opts.exact)?;
     let (private, state) = crate::private::load_private(s)?;
     if state.pending != 0 {
         return Err(crate::private::private_error(
@@ -121,8 +121,12 @@ pub(crate) fn measure(
         });
     }
     for (i, f) in private.iter().enumerate() {
+        let name = format!("H{}", i + 1);
+        if opts.exact && !opts.fixtures.is_empty() && !opts.fixtures.contains(&name) {
+            continue;
+        }
         matrix.push(MeasuredFixture {
-            name: format!("H{}", i + 1),
+            name,
             kind: "heldout".into(),
             request: f.request.clone(),
             scorer: vec![f.scorer.clone()],
@@ -180,7 +184,7 @@ pub(crate) fn measure(
         repo: repo.clone(),
         ref_name: commit.clone(),
         fixtures: Vec::new(),
-        heldout: private.len() as i64,
+        heldout: matrix.iter().filter(|f| f.kind == "heldout").count() as i64,
         heldout_generated: state.generated,
         sandbox: root.clone(),
         shadow: opts.shadow,
@@ -569,10 +573,19 @@ fn default_executable() -> std::io::Result<String> {
     std::env::current_exe().map(|p| p.display().to_string())
 }
 
+/// `H1`, `H2`, ...: the names held-out fixtures carry in a measurement and
+/// the archive, the only way an exact subset can name one (their real names
+/// never leave the owner's side).
+pub(crate) fn heldout_name(name: &str) -> bool {
+    name.strip_prefix('H')
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn select_fixtures(
     s: &pulse_store::Store,
     project: &str,
     selected: &[String],
+    exact: bool,
 ) -> Result<Vec<crate::fixtures::Fixture>> {
     let fixtures = crate::fixtures::list_fixtures(s, project, true)?;
     if selected.is_empty() {
@@ -582,6 +595,8 @@ fn select_fixtures(
     for name in selected {
         if let Some(f) = fixtures.iter().find(|f| &f.name == name) {
             out.push(f.clone());
+        } else if exact && heldout_name(name) {
+            // Named by its archive name; the held-out loop picks it up.
         } else {
             return Err(crate::fixtures::input_error(
                 "Cannot select fixture",
@@ -699,20 +714,41 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
         assert_eq!(scores.fixtures.len(), 3);
         assert_eq!(scores.heldout, 2);
         assert!(scores.shadow);
-        assert!(
-            super::measure(
-                &cancel,
-                &s,
-                "demo",
-                &repo,
-                "HEAD",
-                crate::api::MeasureOptions {
-                    fixtures: vec!["missing".into()],
-                    ..Default::default()
-                },
-            )
-            .is_err()
-        );
+        for names in [vec!["missing".to_string()], vec!["H1".to_string()]] {
+            assert!(
+                super::measure(
+                    &cancel,
+                    &s,
+                    "demo",
+                    &repo,
+                    "HEAD",
+                    crate::api::MeasureOptions {
+                        fixtures: names,
+                        ..Default::default()
+                    },
+                )
+                .is_err()
+            );
+        }
+        // An exact subset is the runner's second look: only what it names,
+        // a held-out fixture by its archive name.
+        let exact = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                fixtures: vec!["F02".into(), "H2".into()],
+                exact: true,
+                shadow: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let names: Vec<&str> = exact.fixtures.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["F02", "H2"]);
+        assert_eq!(exact.heldout, 1);
         assert_no_clones(&s);
     }
 

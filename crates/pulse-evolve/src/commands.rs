@@ -19,7 +19,7 @@ impl RepeatedStrings {
 }
 /// Command metadata for `pulse evolve`.
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
-pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
+pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]   (--fixture NAME measures those public fixtures and, always, the held-out set)\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
 pub const REFLECT_SUMMARY: &str =
     "read-only working state, board, ballot, hygiene and evolution gates";
 pub const REFLECT_USAGE: &str = "pulse reflect [--project P] [--area A] [--agent R/M] [--json]";
@@ -1292,6 +1292,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
                     &fs.get_string("ref"),
                     crate::api::MeasureOptions {
                         fixtures: selected.clone(),
+                        exact: false,
                         shadow,
                         out: out_ref,
                     },

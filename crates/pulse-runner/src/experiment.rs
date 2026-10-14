@@ -642,7 +642,68 @@ pub(crate) fn land_experiment_context(
         }
     };
     let (keep, reason) = pulse_evolve::keep(Some(&baseline), Some(&variant), tol);
-    let archive_note = format!("{baseline_cache_note}; {reason}");
+    let disputed = pulse_evolve::hinges_on(&baseline, &variant, tol);
+    let (keep, reason, variant, dispute_note) = if disputed.is_empty() {
+        (keep, reason, variant, String::new())
+    } else {
+        let measure_again = |r#ref: &str| {
+            pulse_evolve::measure(
+                &ctx,
+                s,
+                &slug,
+                &root,
+                r#ref,
+                pulse_evolve::MeasureOptions {
+                    fixtures: disputed.clone(),
+                    exact: true,
+                    ..Default::default()
+                },
+            )
+        };
+        let again = measure_again(&def).and_then(|b| measure_again(&variant_rev).map(|v| (b, v)));
+        let (baseline_again, variant_again) = match again {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    "deferred".into(),
+                    format!(
+                        "{branch} not landed: measuring {} again failed: {}",
+                        disputed.join(", "),
+                        crate::run::err_message(&e)
+                    ),
+                );
+            }
+        };
+        let r = pulse_evolve::reconcile(
+            &baseline,
+            &variant,
+            &baseline_again,
+            &variant_again,
+            &disputed,
+        );
+        let (keep, reason) = pulse_evolve::keep(Some(&baseline), Some(&r.variant), tol);
+        let note = format!(
+            "the discard hinged on {}, measured again on both trees: {}",
+            disputed.join(", "),
+            r.notes.join("; ")
+        );
+        if let Ok(conn) = s.conn() {
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "evolution.measured_again",
+                &branch,
+                serde_json::json!({"project": slug, "fixtures": disputed, "noise": r.noise, "reproduced": r.reproduced, "kept": keep, "line": format!("{branch}: {note}; {reason}")}),
+            );
+        }
+        (keep, reason, r.variant, note)
+    };
+    let archive_note = if dispute_note.is_empty() {
+        format!("{baseline_cache_note}; {reason}")
+    } else {
+        format!("{baseline_cache_note}; {dispute_note}; {reason}")
+    };
     let sandbox = if variant.sandbox.is_empty() {
         baseline.sandbox.clone()
     } else {
@@ -1193,6 +1254,183 @@ mod tests {
         assert!(
             !exists && why.is_empty(),
             "finalized discard retained the branch: {exists}, {why}"
+        );
+    }
+
+    /// One metric fixture at weight 2 and one request fixture at weight 1:
+    /// the request fixture flipping from 1 to 0 moves the total by a third,
+    /// far beyond the tolerance.
+    fn two_fixture_scores(slug: &str, request: f64, only: &[String]) -> pulse_evolve::Scores {
+        let mut fixtures = vec![
+            pulse_evolve::FixtureScore {
+                name: "metric-size".into(),
+                kind: "public".into(),
+                score: 0.5,
+                weight: 2.0,
+                metric: true,
+                note: String::new(),
+            },
+            pulse_evolve::FixtureScore {
+                name: "starter-proposes-first".into(),
+                kind: "public".into(),
+                score: request,
+                weight: 1.0,
+                metric: false,
+                note: String::new(),
+            },
+        ];
+        if !only.is_empty() {
+            fixtures.retain(|f| only.contains(&f.name));
+        }
+        pulse_evolve::Scores {
+            project: slug.into(),
+            total: pulse_evolve::weighted_total(&fixtures),
+            fixtures,
+            ..Default::default()
+        }
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>, bool)>>>;
+
+    /// A measurement whose request fixture scores `first` on the baseline
+    /// and 0 on the variant the first time, then `again` on both trees when
+    /// measured again.
+    fn flaky_measure(first: f64, again: f64) -> Seen {
+        let seen: Seen = Default::default();
+        let log = seen.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, opts| {
+                let mut log = log.lock().unwrap();
+                log.push((r#ref.to_string(), opts.fixtures.clone(), opts.exact));
+                let request = match (log.len(), r#ref == "main") {
+                    (1, true) => first,
+                    (2, false) => 0.0,
+                    (3, true) => again,
+                    _ => 0.0,
+                };
+                Ok(two_fixture_scores(slug, request, &opts.fixtures))
+            }));
+        seen
+    }
+
+    #[test]
+    fn a_discard_on_a_request_fixture_that_does_not_reproduce_is_kept() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        let seen = flaky_measure(1.0, 0.0);
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "landed", "{note}");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4, "both trees measured again: {seen:?}");
+        assert_eq!(seen[0].0, "main");
+        assert!(seen[0].1.is_empty() && seen[1].1.is_empty());
+        assert_eq!(seen[2].0, "main");
+        assert_eq!(
+            seen[3].0, seen[1].0,
+            "the same variant commit is measured again"
+        );
+        assert_eq!(seen[2].1, ["starter-proposes-first"]);
+        assert_eq!(seen[3].1, ["starter-proposes-first"]);
+        assert!(seen[2].2 && seen[3].2, "the second look is exact");
+        let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
+        assert!(row.kept, "{row:?}");
+        assert_eq!(row.baseline_score, row.variant_score);
+        assert!(
+            row.note.contains(
+                "the discard hinged on starter-proposes-first, measured again on both trees: \
+                 starter-proposes-first: baseline 1.0000 then 0.0000, variant 0.0000 then 0.0000; \
+                 a difference that does not reproduce scores as a tie; kept (no regression)"
+            ),
+            "{}",
+            row.note
+        );
+        let variant = row.fixtures.variant.as_ref().unwrap();
+        let fixture = variant
+            .fixtures
+            .iter()
+            .find(|f| f.name == "starter-proposes-first")
+            .unwrap();
+        assert_eq!(fixture.score, 1.0);
+        assert_eq!(
+            fixture.note,
+            "baseline 1.0000 then 0.0000, variant 0.0000 then 0.0000; scored as a tie"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'evolution.measured_again'",
+                &[]
+            ),
+            1
+        );
+        let (exists, _) = crate::land::branch_exists(root, job.str("branch"));
+        assert!(!exists, "a kept experiment lands and its branch goes");
+    }
+
+    #[test]
+    fn a_discard_on_a_request_fixture_that_reproduces_stands() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
+        let seen = flaky_measure(1.0, 1.0);
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "dropped", "{note}");
+        assert_eq!(seen.lock().unwrap().len(), 4);
+        let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
+        assert!(!row.kept);
+        assert!(
+            row.note.contains(
+                "starter-proposes-first: baseline 1.0000 then 1.0000, variant 0.0000 then 0.0000; \
+                 the difference reproduces; discarded"
+            ),
+            "{}",
+            row.note
+        );
+        assert_eq!(ref_of(&root, "HEAD"), before, "nothing landed");
+    }
+
+    #[test]
+    fn a_discard_on_a_metric_fixture_is_not_measured_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, _root, _calls) = measured_keep_fixture();
+        let seen: Seen = Default::default();
+        let log = seen.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, opts| {
+                log.lock()
+                    .unwrap()
+                    .push((r#ref.to_string(), opts.fixtures.clone(), opts.exact));
+                let mut scores = two_fixture_scores(slug, 1.0, &[]);
+                if r#ref != "main" {
+                    scores.fixtures[0].score = 0.1;
+                    scores.total = pulse_evolve::weighted_total(&scores.fixtures);
+                }
+                Ok(scores)
+            }));
+        let (state, note) =
+            land_experiment(&s, project, job, "daemon".into(), TEST_NOW.into(), true);
+        assert_eq!(state, "dropped", "{note}");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "a metric regression needs no second look"
         );
     }
 

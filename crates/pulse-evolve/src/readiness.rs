@@ -38,10 +38,17 @@ pub(crate) fn planning_status(
     }
     let (question, reason) = crate::flat_gate::flat_fixture_gate(s, project)?;
     if !reason.is_empty() {
+        let evidence =
+            crate::flat_gate::evidence_summary(&crate::flat_gate::fixture_evidence(s, project)?);
+        let evidence = if evidence.is_empty() {
+            evidence
+        } else {
+            format!("; {evidence}")
+        };
         return Ok(PlanningStatus {
             state: "blocked".to_string(),
             reason: format!(
-                "{reason}; owner: {}",
+                "{reason}{evidence}; owner: {}",
                 crate::flat_gate::flat_owner_step(project, &question)
             ),
             question,

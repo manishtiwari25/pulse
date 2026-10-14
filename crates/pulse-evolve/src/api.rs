@@ -55,6 +55,11 @@ pub struct Scores {
 #[derive(Default)]
 pub struct MeasureOptions<'a> {
     pub fixtures: Vec<String>,
+    /// With `fixtures`: measure exactly those, a held-out fixture only when
+    /// named by its archive name (`H1`, `H2`, ...). Without it a subset always
+    /// includes the owner's held-out set, so no by-hand measurement can leave
+    /// them out. The runner's second look at a disputed fixture sets it.
+    pub exact: bool,
     pub shadow: bool,
     pub out: Option<&'a mut dyn Write>,
 }

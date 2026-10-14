@@ -1140,7 +1140,18 @@ tie as `kept (no regression)` - and goes to the same landing as any branch,
 where the project's own check decides it; only a larger regression is
 `discarded` and loses its branch. Held-out fixtures are mostly pass/fail, so a
 voted change that keeps every fixture green measures as an exact tie; before
-this rule such ties were discarded and no voted experiment ever landed. An
+this rule such ties were discarded and no voted experiment ever landed. A
+discard must reproduce: when a regression hinges on request fixtures alone (the
+ones that run a harness, whose score depends on a model's answer - a metric
+fixture scores the frozen tree and is believed as measured), the lane measures
+those fixtures again on both trees before the discard stands (`--fixture` on
+the measurement names them; `H1`, `H2`, ... are the held-out fixtures by their
+archive names). A difference that comes back the same way is a discard; one
+that does not scores as a tie, the archive row notes `the discard hinged on
+NAME, measured again on both trees: … scored as a tie`, and the event
+`evolution.measured_again` records which fixtures were noise and which
+reproduced. Before this, a fixture that scored the same commit `1` one cycle
+and `0` the next discarded three voted experiments on its own. An
 experiment the lane could not land stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
@@ -1176,9 +1187,17 @@ not telling a better variant from a worse one, and every further cycle would
 cost a worker run and a measurement and teach nothing. The loop then pauses
 with one owner question (`Evolution paused: the fixtures do not tell variants
 apart`) on the project's `evolution/loop-gate` thread, listing the tied
-cycles, the enabled fixtures and the next step; `pulse evolve status` shows
-the same reason on its `Experiment planning` line (`blocked - …`) and the
-step as `Next human step`. Two things clear it: a
+cycles, the enabled fixtures and the next step. Each fixture line carries
+what the archived cycles show about it, so you know which one to replace:
+`told no variant from its baseline in 26 cycles`, `moved 3 times with the
+default branch` (its baseline score changed when the default branch did -
+it measures main's own commits, not the experiments), or `scored the same
+baseline commit two ways, so a difference it reports is not a signal on its
+own`; held-out fixtures appear by their archive names (`H1 (held-out)`).
+`pulse evolve status` shows the same reason on its `Experiment planning`
+line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
+NAME scored the same baseline commit two ways`) and the step as `Next human
+step`. Two things clear it: a
 fixture enabled after the streak began (usually a metric fixture, `pulse
 evolve fixture add --project P --name N --metric --scorer CMD`, which the loop
 notices on its own), or your answer to the question (`pulse post answer
