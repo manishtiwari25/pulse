@@ -1030,6 +1030,9 @@ pub(crate) fn worker_command(
             cmd.push(flag.into());
         }
     }
+    if s.setting("harness.web_search", "chat") == "on" {
+        cmd.push("--web-search".into());
+    }
     let fetch_allow = s.setting("harness.fetch_allow", "");
     if !fetch_allow.trim().is_empty() {
         cmd.extend(["--fetch-allow".into(), fetch_allow]);
@@ -1747,6 +1750,7 @@ mod tests {
             "--no-hooks",
             "--no-subagents",
             "--no-memory",
+            "--web-search",
             "--fetch-allow",
             "--compact-at",
             "--reasoning",
@@ -1759,6 +1763,7 @@ mod tests {
         set_setting(&s, "harness.hooks", "off");
         set_setting(&s, "harness.subagents", "off");
         set_setting(&s, "harness.memory", "off");
+        set_setting(&s, "harness.web_search", "on");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
         set_setting(&s, "harness.reasoning", "high");
@@ -1773,7 +1778,13 @@ mod tests {
             cmd.windows(2).any(|w| w == ["--reasoning", "high"]),
             "{cmd:?}"
         );
-        for flag in ["--no-skills", "--no-hooks", "--no-subagents", "--no-memory"] {
+        for flag in [
+            "--no-skills",
+            "--no-hooks",
+            "--no-subagents",
+            "--no-memory",
+            "--web-search",
+        ] {
             assert!(cmd.contains(&flag.to_string()), "{cmd:?}");
         }
         assert!(
@@ -1793,6 +1804,7 @@ mod tests {
         ] {
             set_setting(&s, key, "on");
         }
+        set_setting(&s, "harness.web_search", "chat");
         set_setting(&s, "harness.fetch_allow", "");
         set_setting(&s, "harness.compact_at", "70");
         set_setting(&s, "harness.reasoning", "default");

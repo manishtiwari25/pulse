@@ -12,6 +12,7 @@ pub mod localenv;
 pub mod memory;
 pub mod permissions;
 pub mod readonly;
+pub mod search;
 pub mod skills;
 #[cfg(test)]
 pub(crate) mod test_helpers;

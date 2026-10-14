@@ -1013,6 +1013,7 @@ export type HarnessStepKind =
   | "fetch"
   | "process"
   | "memory"
+  | "search"
   | "subagent"
   | "hook"
   | "observation"

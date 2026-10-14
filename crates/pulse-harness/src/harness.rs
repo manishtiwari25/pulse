@@ -15,6 +15,7 @@ use crate::hooks::{
 };
 use crate::memory::{MEMORY_TOOL, Memory, MemoryAction, memory_paragraph, memory_tool};
 use crate::permissions::{self, Rule, Rules};
+use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
 use pulse_provider::{CancelToken, Message, Provider, Request, Role, Tool, ToolCall, Usage};
@@ -341,6 +342,8 @@ pub enum StepKind {
     Process,
     /// A `memory` tool call (remember, forget, list).
     Memory,
+    /// A `web_search` tool call.
+    Search,
     Observation,
     Note,
     FormatRetry,
@@ -396,6 +399,7 @@ impl std::fmt::Display for StepKind {
             Self::Hook => "hook",
             Self::Process => "process",
             Self::Memory => "memory",
+            Self::Search => "search",
             Self::Observation => "observation",
             Self::Note => "note",
             Self::FormatRetry => "format_retry",
@@ -589,6 +593,7 @@ pub struct Agent {
     memory: Option<Memory>,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
+    web_search: WebSearch,
     /// The background processes the model started and has not stopped.
     procs: Procs,
     /// The permission rules in force: what runs without asking, what is
@@ -974,6 +979,7 @@ pub fn new_shared(
         hooks: HookSet::default(),
         memory: None,
         fetch: FetchPolicy::default(),
+        web_search: WebSearch::default(),
         procs: Procs::default(),
         permissions: Rules::new(),
         current_subjects: Vec::new(),
@@ -1032,6 +1038,16 @@ impl Agent {
     /// Offers the `fetch` tool for the hosts of `policy`; call before `run`.
     pub fn set_fetch_policy(&mut self, policy: FetchPolicy) {
         self.fetch = policy;
+    }
+
+    /// Offers the `web_search` tool through `search`'s engine; call before
+    /// `run`. A search that is off offers nothing.
+    pub fn set_web_search(&mut self, search: WebSearch) {
+        self.web_search = search;
+    }
+
+    pub fn offers_web_search(&self) -> bool {
+        !self.web_search.is_off()
     }
 
     /// Sets the permission rules from the flags and settings; call before
@@ -1181,6 +1197,7 @@ impl Agent {
         } else {
             format!("fetch: {}", self.fetch.patterns.join(", "))
         });
+        out.push(format!("web search: {}", self.web_search.describe()));
         out.push(format!(
             "deny rules: {}; subagents: {}",
             cfg.deny.len(),
@@ -1239,6 +1256,9 @@ impl Agent {
         if !self.fetch.is_empty() {
             out.push(fetch_tool(&self.fetch));
         }
+        if self.offers_web_search() {
+            out.push(web_search_tool(&self.web_search));
+        }
         if self.offers_subagents() {
             out.push(subagent_tool());
         }
@@ -1268,6 +1288,9 @@ impl Agent {
         }
         if !self.fetch.is_empty() {
             out.push(FETCH_TOOL.to_string());
+        }
+        if self.offers_web_search() {
+            out.push(WEB_SEARCH_TOOL.to_string());
         }
         if self.offers_subagents() {
             out.push(SUBAGENT_TOOL.to_string());
@@ -1997,6 +2020,10 @@ impl Agent {
                 let url = args.get("url")?.as_str()?.trim();
                 (!url.is_empty()).then(|| ParallelCall::Fetch(url.to_string()))
             }
+            WEB_SEARCH_TOOL if self.offers_web_search() => {
+                let (query, count) = crate::search::parse_arguments(&call.arguments).ok()?;
+                Some(ParallelCall::Search { query, count })
+            }
             _ => None,
         }
     }
@@ -2007,6 +2034,7 @@ impl Agent {
     fn run_parallel(&self, batch: &[Option<ParallelCall>]) -> Vec<Option<Observation>> {
         let fs = self.fs();
         let policy = &self.fetch;
+        let search = &self.web_search;
         let mut out: Vec<Option<Observation>> = (0..batch.len()).map(|_| None).collect();
         let pending: Vec<(usize, &ParallelCall)> = batch
             .iter()
@@ -2019,7 +2047,7 @@ impl Agent {
                     .iter()
                     .map(|(i, p)| {
                         let i = *i;
-                        scope.spawn(move || (i, p.execute(fs, policy)))
+                        scope.spawn(move || (i, p.execute(fs, policy, search)))
                     })
                     .collect();
                 handles
@@ -2107,6 +2135,9 @@ impl Agent {
             MEMORY_TOOL if self.offers_memory() => self.run_memory_tool(&call.arguments),
             SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
             FETCH_TOOL if !self.fetch.is_empty() => self.run_fetch_tool(&call.arguments),
+            WEB_SEARCH_TOOL if self.offers_web_search() => {
+                self.run_web_search_tool(&call.arguments)
+            }
             SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
             QUESTION_TOOL if self.offers_question() => self.run_question_tool(&call.arguments),
             MCP_SEARCH_TOOL if self.mcp.deferred() => {
@@ -2415,6 +2446,30 @@ impl Agent {
         ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
     }
 
+    fn run_web_search_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let (query, count) = match crate::search::parse_arguments(arguments) {
+            Ok(q) => q,
+            Err(e) => return self.tool_error(e),
+        };
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: StepKind::Search,
+            content: query.clone(),
+            command: query.clone(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let r = self.web_search.search(&query, count, SEARCH_TIMEOUT);
+        let obs = Observation {
+            output: r.output,
+            exit_code: r.exit_code,
+            duration: start.elapsed(),
+            ..Observation::default()
+        };
+        self.emit_observation("web_search tool", &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
     /// The `subagent` tool: a helper run on a sub-task, sharing this run's
     /// provider, budget, clone, skills, hooks and fetch policy. Its steps
     /// reach this run's sinks one level deeper; its report comes back as
@@ -2503,6 +2558,7 @@ impl Agent {
         child.hooks = self.hooks.clone();
         child.memory = self.memory.clone();
         child.fetch = self.fetch.clone();
+        child.web_search = self.web_search.clone();
         child.ui = self.ui.clone();
         child.next_n = self.next_n;
         // The child's steps go to this run's sinks, one level deeper, and
@@ -3528,6 +3584,7 @@ impl Agent {
 enum ParallelCall {
     Native(NativeCall),
     Fetch(String),
+    Search { query: String, count: usize },
 }
 
 impl ParallelCall {
@@ -3535,6 +3592,7 @@ impl ParallelCall {
         match self {
             Self::Native(c) => c.name(),
             Self::Fetch(_) => FETCH_TOOL,
+            Self::Search { .. } => WEB_SEARCH_TOOL,
         }
     }
 
@@ -3542,6 +3600,7 @@ impl ParallelCall {
         match self {
             Self::Native(c) => c.step_kind(),
             Self::Fetch(_) => StepKind::Fetch,
+            Self::Search { .. } => StepKind::Search,
         }
     }
 
@@ -3549,6 +3608,7 @@ impl ParallelCall {
         match self {
             Self::Native(c) => c.spec(),
             Self::Fetch(url) => url.clone(),
+            Self::Search { query, .. } => query.clone(),
         }
     }
 
@@ -3569,12 +3629,22 @@ impl ParallelCall {
         }
     }
 
-    fn execute(&self, fs: NativeFs<'_>, policy: &FetchPolicy) -> Observation {
+    fn execute(&self, fs: NativeFs<'_>, policy: &FetchPolicy, search: &WebSearch) -> Observation {
         match self {
             Self::Native(c) => fs.execute(c),
             Self::Fetch(url) => {
                 let start = Instant::now();
                 let r = fetch(url, policy, FETCH_BYTE_LIMIT, FETCH_TIMEOUT);
+                Observation {
+                    output: r.output,
+                    exit_code: r.exit_code,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+            Self::Search { query, count } => {
+                let start = Instant::now();
+                let r = search.search(query, *count, SEARCH_TIMEOUT);
                 Observation {
                     output: r.output,
                     exit_code: r.exit_code,
@@ -5143,6 +5213,7 @@ fn subjects_of(tool: &str, arguments: &str, cwd: &str) -> Vec<String> {
             .unwrap_or_default()
         }
         FETCH_TOOL => vec![url_host(&str_of("url"))],
+        WEB_SEARCH_TOOL => vec![str_of("query")],
         SKILL_TOOL => vec![str_of("name")],
         MEMORY_TOOL => vec![
             MemoryAction::parse(arguments)
@@ -9725,6 +9796,297 @@ mod tests {
         h.run().unwrap();
         let reply = tool_replies(&h).remove(0).1;
         assert!(reply.contains("unknown tool memory"), "{reply}");
+    }
+
+    #[test]
+    fn web_search_tool_answers_with_numbered_results_and_runs_in_a_batch() {
+        use crate::search::test_support::{ddg_page, http, serve};
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        let page = ddg_page(
+            &[
+                (
+                    "read_to_string in std::fs - Rust",
+                    "https://doc.rust-lang.org/std/fs/fn.read_to_string.html",
+                    "Reads the entire contents of a file into a string.",
+                ),
+                (
+                    "std::fs - Rust",
+                    "https://doc.rust-lang.org/std/fs/",
+                    "File system.",
+                ),
+            ],
+            true,
+        );
+        let (base, seen) = serve(vec![
+            http("200 OK", "text/html", &page),
+            http("200 OK", "text/html", &ddg_page(&[], false)),
+            http("200 OK", "text/html", &page),
+        ]);
+        let p = Arc::new(FakeProvider::new(vec![
+            // A lone search, then a search batched beside a read, then one
+            // the engine answers with nothing, then bad arguments.
+            resp(calls(&[(
+                "s1",
+                "web_search",
+                json!({"query": "  rust read_to_string\n  ", "count": 2}),
+            )])),
+            resp(calls(&[
+                ("r1", "read", json!({"path": "a.txt"})),
+                ("s2", "web_search", json!({"query": "nothing here"})),
+            ])),
+            resp(calls(&[("s3", "web_search", json!({"query": "rust fs"}))])),
+            resp(calls(&[("s4", "web_search", json!({"query": "   "}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        assert!(!h.offers_web_search());
+        assert!(h.environment().iter().any(|l| l == "web search: off"));
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        assert!(h.offers_web_search());
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l == "web search: duckduckgo")
+        );
+        assert!(h.tools().iter().any(|t| t.name == WEB_SEARCH_TOOL));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.steps, 4, "bad arguments never become a step");
+        let replies = tool_replies(&h);
+        let ids: Vec<&str> = replies.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["s1", "r1", "s2", "s3", "s4"]);
+        let by_id: BTreeMap<String, String> = replies.into_iter().collect();
+        assert!(
+            by_id["s1"].contains(
+                "2 results for \"rust read_to_string\" from duckduckgo:\n\n1. read_to_string in std::fs - Rust\n   https://doc.rust-lang.org/std/fs/fn.read_to_string.html\n   Reads the entire contents of a file into a string.\n\n2. std::fs - Rust\n   https://doc.rust-lang.org/std/fs/\n   File system."
+            ),
+            "{}",
+            by_id["s1"]
+        );
+        assert!(by_id["r1"].contains("alpha"), "{}", by_id["r1"]);
+        assert!(
+            by_id["s2"]
+                .contains("no results for \"nothing here\" from duckduckgo; try other words"),
+            "{}",
+            by_id["s2"]
+        );
+        assert!(
+            by_id["s3"].contains("2 results for \"rust fs\" from duckduckgo:"),
+            "{}",
+            by_id["s3"]
+        );
+        assert!(
+            by_id["s4"].contains("web_search: the query is empty"),
+            "{}",
+            by_id["s4"]
+        );
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests[0].starts_with("GET /html/?q=rust+read_to_string HTTP/1.1"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[0].contains("pulse-harness/"),
+            "a user agent names the harness: {}",
+            requests[0]
+        );
+        // The batched search is announced before the batch answers; its
+        // step and observation carry the query.
+        let steps = &h.trajectory().steps;
+        let kinds: Vec<StepKind> = steps.iter().map(|s| s.kind.clone()).collect();
+        let first_batch_obs = kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| **k == StepKind::Observation)
+            .nth(1)
+            .map(|(i, _)| i)
+            .unwrap();
+        assert_eq!(
+            &kinds[first_batch_obs - 2..first_batch_obs],
+            &[StepKind::Read, StepKind::Search],
+            "{kinds:?}"
+        );
+        let searches: Vec<(&str, &str)> = steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Search)
+            .map(|s| (s.content.as_str(), s.command.as_str()))
+            .collect();
+        assert_eq!(
+            searches,
+            [
+                ("rust read_to_string", "rust read_to_string"),
+                ("nothing here", "nothing here"),
+                ("rust fs", "rust fs"),
+            ]
+        );
+        assert_eq!(kinds.iter().filter(|k| **k == StepKind::Search).count(), 3);
+        let search_obs: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Observation && s.command == "web_search tool")
+            .map(|s| s.content.as_str())
+            .collect();
+        assert_eq!(search_obs.len(), 3, "{search_obs:?}");
+        assert!(
+            search_obs[1].starts_with("no results for"),
+            "{}",
+            search_obs[1]
+        );
+        // Only the bad arguments make an error step; an empty answer is a
+        // plain observation.
+        assert_eq!(
+            kinds.iter().filter(|k| **k == StepKind::Error).count(),
+            1,
+            "{kinds:?}"
+        );
+        assert_eq!(kinds[kinds.len() - 3], StepKind::Error, "{kinds:?}");
+    }
+
+    #[test]
+    fn web_search_names_engine_failures_and_is_denied_by_rule() {
+        use crate::search::test_support::{http, serve};
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let (base, _seen) = serve(vec![http("503 Service Unavailable", "text/plain", "later")]);
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("s1", "web_search", json!({"query": "rust"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(
+            reply.starts_with("<returncode>1</returncode>")
+                && reply.contains("web_search: HTTP 503 from duckduckgo: later"),
+            "{reply}"
+        );
+        let kinds: Vec<String> = h.steps.iter().map(|s| s.kind.to_string()).collect();
+        assert_eq!(
+            kinds,
+            vec!["assistant", "search", "observation", "assistant", "exit"],
+            "{kinds:?}"
+        );
+
+        // A deny rule on the tool withdraws it; one on a query refuses that
+        // query alone.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("s1", "web_search", json!({"query": "rust"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        h.set_permissions(rules(&[(false, "web_search")]));
+        assert!(!h.tools().iter().any(|t| t.name == WEB_SEARCH_TOOL));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(
+            reply.contains("refused by permission rule `deny web_search`"),
+            "{reply}"
+        );
+
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "s1",
+                "web_search",
+                json!({"query": "company secrets"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        h.set_permissions(rules(&[(false, "web_search(company secrets)")]));
+        assert!(h.tools().iter().any(|t| t.name == WEB_SEARCH_TOOL));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(
+            reply.contains("refused by permission rule `deny web_search(company secrets)`"),
+            "{reply}"
+        );
+    }
+
+    #[test]
+    fn web_search_stays_in_read_only_runs_and_is_unknown_when_off() {
+        use crate::search::test_support::{ddg_page, http, serve};
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let (base, _seen) = serve(vec![http(
+            "200 OK",
+            "text/html",
+            &ddg_page(
+                &[("Rust", "https://www.rust-lang.org/", "A language.")],
+                false,
+            ),
+        )]);
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("s1", "web_search", json!({"query": "rust"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.cfg.read_only = true;
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        assert!(
+            h.offers_web_search(),
+            "reading the web changes nothing here"
+        );
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(
+            reply.contains("1 result for \"rust\" from duckduckgo:\n\n1. Rust\n   https://www.rust-lang.org/\n   A language."),
+            "{reply}"
+        );
+
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("s1", "web_search", json!({"query": "rust"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        assert!(!h.offers_web_search());
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("unknown tool web_search"), "{reply}");
+
+        // A subagent searches through its parent's engine.
+        let (base, seen) = serve(vec![http(
+            "200 OK",
+            "text/html",
+            &ddg_page(
+                &[("Rust", "https://www.rust-lang.org/", "A language.")],
+                false,
+            ),
+        )]);
+        let mut cfg = base_config();
+        cfg.subagents = true;
+        cfg.max_steps = 12;
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "sub",
+                SUBAGENT_TOOL,
+                json!({"task": "find the rust site", "max_steps": 5}),
+            )])),
+            resp(calls(&[("s1", "web_search", json!({"query": "rust"}))])),
+            resp(msg("SUMMARY: found it")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            cfg,
+            Vec::new(),
+        );
+        h.set_web_search(WebSearch::duckduckgo(&format!("{base}/html/")));
+        h.run().unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1, "the child searched");
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("found it"), "{reply}");
     }
 
     #[test]

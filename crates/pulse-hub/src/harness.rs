@@ -893,6 +893,7 @@ impl Handler {
                 "harness.hooks",
                 "harness.subagents",
                 "harness.memory",
+                "harness.web_search",
                 "harness.fetch_allow",
                 "harness.allow_tools",
                 "harness.deny_tools",

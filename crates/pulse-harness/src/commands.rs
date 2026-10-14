@@ -5,6 +5,7 @@ use crate::hooks::load_hooks;
 use crate::localenv::LocalEnv;
 use crate::memory::{self, Memory};
 use crate::permissions::{Rule, Rules};
+use crate::search::WebSearch;
 use crate::skills::{Skill, load_skills};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, table, write_json};
@@ -166,6 +167,12 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         false,
         "do not read ~/.pulse/memory into the prompt or offer the memory tool",
     );
+    fs.bool_var(
+        "web-search",
+        false,
+        "offer the web_search tool (DuckDuckGo, or Brave with BRAVE_SEARCH_API_KEY) whatever harness.web_search says",
+    );
+    fs.bool_var("no-web-search", false, "do not offer the web_search tool");
     fs.string_var(
         "fetch-allow",
         "",
@@ -666,6 +673,27 @@ pub(crate) fn prepare_agent(
     if !fetch_policy.is_empty() {
         agent.note_at_start(format!("fetch tool on for {}", fetch_policy.describe()));
         agent.set_fetch_policy(fetch_policy);
+    }
+    // Conversations search the web by default, since the owner sits by
+    // them; jobs do so when the setting says `on`.
+    let web_search_on = !fs.get_bool("no-web-search")
+        && (fs.get_bool("web-search")
+            || match st
+                .as_ref()
+                .map_or_else(
+                    || "chat".to_string(),
+                    |s| s.setting("harness.web_search", "chat"),
+                )
+                .as_str()
+            {
+                "on" => true,
+                "off" => false,
+                _ => interactive,
+            });
+    if web_search_on {
+        let search = WebSearch::from_env(&c.home);
+        agent.note_at_start(format!("web_search tool on through {}", search.describe()));
+        agent.set_web_search(search);
     }
     let permissions = permission_rules(fs, st.as_ref())?;
     if !permissions.is_empty() {
@@ -2071,6 +2099,7 @@ impl Sink for ProgressSink {
             | StepKind::Fetch
             | StepKind::Process
             | StepKind::Memory
+            | StepKind::Search
             | StepKind::Hook => {
                 let _ = writeln!(
                     self.w,
@@ -2413,7 +2442,7 @@ pub fn write_harness_transcript(
             "exit" => writeln!(w, "[{}] exit: {}\n", tag, s.content)?,
             "plan" => writeln!(w, "[{}] {}\n", tag, s.content)?,
             "read" | "grep" | "glob" | "edit" | "write" | "mcp" | "skill" | "fetch" | "process"
-            | "memory" | "subagent" | "hook" => {
+            | "memory" | "search" | "subagent" | "hook" => {
                 writeln!(w, "[{}] {} {}\n", tag, s.kind, head_tail(&s.content, 20))?
             }
             _ => {}
@@ -2706,6 +2735,9 @@ mod tests {
             "GEMINI_API_KEY",
             "GOOGLE_API_KEY",
             "GEMINI_BASE_URL",
+            "BRAVE_SEARCH_API_KEY",
+            "BRAVE_API_KEY",
+            "PULSE_WEB_SEARCH_URL",
         ];
         let guards = vars.iter().map(|v| pulse_testutil::unsetenv(v)).collect();
         (guard, guards)
@@ -4686,5 +4718,128 @@ hello
             "the chat prompt carries the project memory: {system}"
         );
         assert!(!Path::new(&s.home).join("memory/user.md").exists());
+    }
+
+    #[test]
+    fn harness_chat_searches_the_web_by_default_and_runs_only_when_told() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = queries.clone();
+        let page = crate::search::test_support::ddg_page(
+            &[("Rust", "https://www.rust-lang.org/", "A language.")],
+            false,
+        );
+        let server = Server::new(move |req| {
+            seen.lock().unwrap().push(req.uri.clone());
+            TestResponse::text(200, page.clone()).header("Content-Type", "text/html")
+        });
+        let _endpoint =
+            pulse_testutil::setenv("PULSE_WEB_SEARCH_URL", format!("{}/html/", server.url()));
+
+        // The chat offers the tool and the model's search answers.
+        let p = CommandFakeProvider::scripted(vec![
+            call("web_search", json!({"query": "rust lang", "count": 3})),
+            say("found it"),
+        ]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("/env\nwhere is rust\n/exit\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "found it\n");
+        assert!(err.contains("web search: duckduckgo\n"), "{err}");
+        assert!(
+            err.contains("web_search tool on through duckduckgo"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert!(reqs[0].tools.iter().any(|t| t.name == "web_search"));
+        let reply = &reqs[1].messages.last().unwrap().content;
+        assert!(
+            reply.contains("1 result for \"rust lang\" from duckduckgo:\n\n1. Rust\n   https://www.rust-lang.org/\n   A language."),
+            "{reply}"
+        );
+        assert_eq!(
+            queries.lock().unwrap().as_slice(),
+            ["/html/?q=rust+lang"],
+            "the count is DuckDuckGo's own"
+        );
+
+        // A run leaves it out unless told; --web-search or the setting
+        // bring it in; --no-web-search wins over both.
+        let run = |session: &str, extra: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = [
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                cwd,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                session,
+                "--quiet",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| (*s).to_string()));
+            v
+        };
+        let offered = |session: &str, extra: &[&str]| -> bool {
+            let p = CommandFakeProvider::scripted(vec![say("SUMMARY: ok")]);
+            set_fake_provider(p.clone());
+            let args = run(session, extra);
+            let (out, err, code) = invoke(
+                &s.home,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+            p.requests()[0].tools.iter().any(|t| t.name == "web_search")
+        };
+        assert!(!offered("ws-1", &[]), "jobs search only when told");
+        assert!(offered("ws-2", &["--web-search"]));
+        assert!(!offered("ws-3", &["--web-search", "--no-web-search"]));
+        let (_h, steps) = s.harness_session("ws-2").unwrap();
+        assert!(
+            steps.iter().any(
+                |st| st.kind == "note" && st.content == "web_search tool on through duckduckgo"
+            ),
+            "{:?}",
+            steps
+                .iter()
+                .filter(|st| st.kind == "note")
+                .map(|st| st.content.clone())
+                .collect::<Vec<_>>()
+        );
+        s.set_setting("human", "harness.web_search", "on").unwrap();
+        assert!(offered("ws-4", &[]));
+        s.set_setting("human", "harness.web_search", "off").unwrap();
+        assert!(!offered("ws-5", &[]));
+        assert!(offered("ws-6", &["--web-search"]), "the flag beats off");
+
+        // With the setting off the chat stays quiet too; Brave's key picks
+        // its engine.
+        let p = CommandFakeProvider::scripted(vec![say("hi")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("hello\n/exit\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(!p.requests()[0].tools.iter().any(|t| t.name == "web_search"));
+        s.set_setting("human", "harness.web_search", "chat")
+            .unwrap();
+        let _key = pulse_testutil::setenv("BRAVE_SEARCH_API_KEY", "BSA-test");
+        let p = CommandFakeProvider::scripted(vec![say("hi")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("/env\n/exit\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(err.contains("web search: brave\n"), "{err}");
     }
 }

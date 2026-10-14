@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the tool switches and
 // the transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -463,6 +463,12 @@ function ChoiceSelect({ s, onSave, labels }: { s: Setting; onSave: (name: string
   );
 }
 
+const WEB_SEARCH_LABELS: Record<string, string> = {
+  chat: "Conversations only",
+  on: "Conversations and jobs",
+  off: "Nowhere",
+};
+
 const REASONING_LABELS: Record<string, string> = {
   default: "Model default (send nothing)",
   minimal: "Minimal",
@@ -663,6 +669,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window", "harness.compact_at"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const toggles = ["harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const fetchAllow = setting(rows, "harness.fetch_allow");
+  const webSearch = setting(rows, "harness.web_search");
   const allowTools = setting(rows, "harness.allow_tools");
   const denyTools = setting(rows, "harness.deny_tools");
   const reasoning = setting(rows, "harness.reasoning");
@@ -804,6 +811,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                 </div>
               ) : null}
               {fetchAllow ? <TextInput s={fetchAllow} placeholder="docs.rs, *.rust-lang.org" /> : null}
+              {webSearch ? <ChoiceSelect s={webSearch} onSave={saveChoice} labels={WEB_SEARCH_LABELS} /> : null}
               {denyTools ? <TextInput s={denyTools} placeholder="bash(rm -rf *), read(.env*), write(*.lock)" /> : null}
               {allowTools ? <TextInput s={allowTools} placeholder="bash(git *), bash(cargo *), edit(src/*)" /> : null}
               {reasoning ? <ChoiceSelect s={reasoning} onSave={saveChoice} labels={REASONING_LABELS} /> : null}

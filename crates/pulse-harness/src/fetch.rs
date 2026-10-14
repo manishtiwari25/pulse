@@ -382,7 +382,7 @@ pub fn html_to_text(html: &str) -> String {
     }
 }
 
-fn decode_entities(s: &str) -> String {
+pub(crate) fn decode_entities(s: &str) -> String {
     ENTITY
         .replace_all(s, |caps: &regex::Captures| {
             let e = &caps[1];

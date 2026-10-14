@@ -230,6 +230,18 @@
       "secret": false
     },
     {
+      "name": "harness.web_search",
+      "value": "chat",
+      "default": "chat",
+      "kind": "choice",
+      "min": null,
+      "choices": ["chat", "on", "off"],
+      "description": "chat: pulse harness chat offers the web_search tool and jobs do not; on: jobs too; off: nowhere",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
       "name": "harness.subagents",
       "value": "on",
       "default": "on",

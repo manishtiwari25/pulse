@@ -32,6 +32,7 @@ import {
   PlugIcon,
   ScrollTextIcon,
   SearchIcon,
+  TelescopeIcon,
   TerminalIcon,
   TimerOffIcon,
   TriangleAlertIcon,
@@ -436,9 +437,9 @@ const STEP_LABEL: Record<string, string> = {
 };
 
 // The typed tools of the harness (read, grep, glob, edit, write, mcp, skill,
-// fetch, process, memory, hook) show their request the way a command shows its
-// line; the reply follows as an observation like any command's output.
-const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "process", "memory", "hook"];
+// fetch, search, process, memory, hook) show their request the way a command
+// shows its line; the reply follows as an observation like any command's output.
+const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "search", "process", "memory", "hook"];
 
 const STEP_ICON: Record<string, typeof InfoIcon> = {
   assistant: BotIcon,
@@ -455,6 +456,7 @@ const STEP_ICON: Record<string, typeof InfoIcon> = {
   fetch: GlobeIcon,
   process: ActivityIcon,
   memory: BrainIcon,
+  search: TelescopeIcon,
   subagent: GitForkIcon,
   hook: WebhookIcon,
   error: TriangleAlertIcon,

@@ -148,6 +148,7 @@ const LABELS: Record<string, string> = {
   "harness.skills": "Offer repository and registry skills as a tool",
   "harness.hooks": "Run the owner's hooks around the run and its tools",
   "harness.memory": "Read what earlier runs remembered and let the model remember more",
+  "harness.web_search": "Where the model may search the web",
   "harness.subagents": "Let a run start a bounded helper on a sub-task",
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
   "harness.deny_tools": "Tool calls a run refuses outright",
@@ -264,6 +265,8 @@ const HELP: Record<string, string> = {
     "On: your hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json run around the run: run_start output joins the prompt, a pre_tool hook can block a call (exit 2), post_tool output is appended to the result, run_end hears the outcome. Off: no hooks run.",
   "harness.memory":
     "On: a run reads what earlier runs and chats remembered - ~/.pulse/memory/<project>.md for the project, ~/.pulse/memory/user.md for you - into its prompt, and the model can remember, forget and list facts for later; a read-only run reads but cannot write. Off: nothing is read or offered.",
+  "harness.web_search":
+    "Chat: conversations offer the web_search tool (DuckDuckGo without a key, Brave Search when BRAVE_SEARCH_API_KEY is set on the machine) and jobs do not. On: jobs too. Off: nowhere. The query goes to the engine; result pages are read with fetch where its hosts allow.",
   "harness.subagents":
     "On: a run can hand a self-contained sub-task to a helper that works in the same clone with the same budget and returns a report; its steps show indented in the session. Off: the tool is not offered.",
   "harness.fetch_allow":

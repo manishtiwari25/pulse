@@ -1230,6 +1230,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
 | `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
 | `harness.memory` | `on` | A native-harness run reads `~/.pulse/memory/<project>.md` and `~/.pulse/memory/user.md` into its system prompt and offers the `memory` tool (**Memory** under [The harness](#the-harness)). `--no-memory` for one run. |
+| `harness.web_search` | `chat` | Where the model may search the web with the `web_search` tool (**Web search** under [The harness](#the-harness)): `chat` offers it in `pulse harness chat` and not to jobs, `on` to jobs too, `off` nowhere. `--web-search` / `--no-web-search` for one run. |
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
 | `harness.deny_tools` | empty | Permission rules every run refuses outright, comma-separated: `bash(rm *)`, `read(.env*)`, `write(*.lock)`, `subagent`; a tool denied whole is not offered. Jobs get it as `--deny-tool`. |
 | `harness.allow_tools` | empty | Permission rules `pulse harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
@@ -1311,6 +1312,7 @@ and subject to the same deny rules and output cap as a shell command:
 | `memory` | what is kept for later runs: `remember` a fact for the project or the user, `forget` one, `list` them (**Memory**, below) |
 | `skill` | one skill's `SKILL.md` by name, or one file of it (**Skills as tools**, below) |
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
+| `web_search` | a web search, numbered results with title, address and snippet (**Web search**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
 
 A reply may carry **several calls**, and every one gets its own
@@ -1489,6 +1491,29 @@ listed, or that redirects off the list, is refused with the list named
 `error` step. The deny rules for credentials do not apply to a page the
 model reads, but a page's text is observation, never instruction - the
 system prompt says so. Each fetch is a `fetch` step with the URL.
+
+**Web search.** The `web_search` tool answers a query with up to twenty
+numbered results - title, address, snippet - the way a person opens a
+search tab before reading a page: `8 results for "tokio select
+cancellation" from duckduckgo:` then `1. … / https://… / …`, or `no
+results for … ; try other words`. Without a key it asks DuckDuckGo's HTML
+endpoint; with `BRAVE_SEARCH_API_KEY` in the environment, or a key saved
+in `~/.pulse/private/providers/brave.json` as `{"api_key": "…"}`, it asks
+Brave Search instead (the key never goes into settings - PULSE refuses
+secret-shaped values there). `harness.web_search` says where it is
+offered: `chat` (the default) in `pulse harness chat`, where the owner is
+there to read along, and not to jobs; `on` to jobs too; `off` nowhere -
+and `--web-search` / `--no-web-search` decide for one run. Searching
+changes nothing, so a read-only run keeps the tool, and a helper searches
+through its parent's engine. The query is what a permission rule sees:
+`--deny-tool 'web_search'` withdraws the tool, `--deny-tool
+'web_search(* internal *)'` refuses only such queries. Results are
+observation like a fetched page, searches run in parallel beside reads
+and fetches, each is a `search` step with the query, and `/env` names the
+engine (`web search: duckduckgo`, `brave` or `off`). To read a result the
+model needs `fetch`, so its host has to be in `harness.fetch_allow`;
+`PULSE_WEB_SEARCH_URL` points the engine at another endpoint (tests and
+proxies).
 
 **Read-only runs.** The jobs that look but do not touch - `answer` and
 `ballot` - run with `--read-only`, and `pulse harness run --read-only`
@@ -1878,7 +1903,7 @@ rules change nothing in a job, which asks nobody.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents / --no-memory leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
