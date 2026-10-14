@@ -181,6 +181,11 @@ impl Handler {
             } else {
                 "<the clone's AGENTS.md, CLAUDE.md, GEMINI.md and .github/copilot-instructions.md, when it has them>".to_string()
             },
+            memory: if store.setting("harness.memory", "on") == "off" {
+                String::new()
+            } else {
+                "<what earlier runs remembered in ~/.pulse/memory/<project>.md and ~/.pulse/memory/user.md, when there is any>".to_string()
+            },
         };
         let rendered = pulse_harness::render_prompt(&render_template, data);
         let mut out = JsonMap::new();
@@ -887,6 +892,7 @@ impl Handler {
                 "harness.skills",
                 "harness.hooks",
                 "harness.subagents",
+                "harness.memory",
                 "harness.fetch_allow",
                 "harness.allow_tools",
                 "harness.deny_tools",
@@ -1719,8 +1725,14 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("<the clone's AGENTS.md"), "{rendered}");
+        assert!(
+            rendered.contains("What you remembered in earlier runs")
+                && rendered.ends_with("<what earlier runs remembered in ~/.pulse/memory/<project>.md and ~/.pulse/memory/user.md, when there is any>"),
+            "memory stands in after the instructions: {rendered}"
+        );
         s.set_setting("human", "harness.instructions", "off")
             .unwrap();
+        s.set_setting("human", "harness.memory", "off").unwrap();
         let (status, result, raw) = crate::test_helpers_http::request(
             crate::test_helpers_http::handler(&s),
             "GET",

@@ -218,6 +218,18 @@
       "secret": false
     },
     {
+      "name": "harness.memory",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run reads ~/.pulse/memory into its system prompt and offers the memory tool; off: nothing is read or offered",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
       "name": "harness.subagents",
       "value": "on",
       "default": "on",

@@ -1229,6 +1229,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
 | `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
 | `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
+| `harness.memory` | `on` | A native-harness run reads `~/.pulse/memory/<project>.md` and `~/.pulse/memory/user.md` into its system prompt and offers the `memory` tool (**Memory** under [The harness](#the-harness)). `--no-memory` for one run. |
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
 | `harness.deny_tools` | empty | Permission rules every run refuses outright, comma-separated: `bash(rm *)`, `read(.env*)`, `write(*.lock)`, `subagent`; a tool denied whole is not offered. Jobs get it as `--deny-tool`. |
 | `harness.allow_tools` | empty | Permission rules `pulse harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
@@ -1307,6 +1308,7 @@ and subject to the same deny rules and output cap as a shell command:
 | `write` | a whole new file, parents created; refuses an existing file unless `overwrite` is true |
 | `plan` | the task's checklist (todo / doing / done), shown in the transcript and echoed back |
 | `process` | the background processes of the run: `output` reads what one has printed since the last look, `wait` gives it up to `seconds` to end, `stop` ends it, `list` names them |
+| `memory` | what is kept for later runs: `remember` a fact for the project or the user, `forget` one, `list` them (**Memory**, below) |
 | `skill` | one skill's `SKILL.md` by name, or one file of it (**Skills as tools**, below) |
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
@@ -1347,6 +1349,32 @@ and plan mode do not offer it, since a process that outlives a command
 cannot be covered by the snapshot they restore. In a session `/procs`
 lists them, `/procs ID [LINES]` shows the tail of one, `/procs stop ID|all`
 ends them (**Conversations**, below).
+
+**Memory.** What a run learns the hard way - the test command that
+actually works, where the API lives, that the owner wants short replies -
+is gone when it ends, so the `memory` tool keeps it: `remember` with a
+`text` (one line, 600 characters at most) appends a dated bullet to the
+project's file, `~/.pulse/memory/<project>.md`, or with `scope: user` to
+`~/.pulse/memory/user.md`, which every project reads; `forget` with enough
+of a bullet's text to match exactly one takes it out (several matches are
+listed instead); `list` shows both files. The project is the fleet's
+project slug when the run is a job or the directory belongs to a
+registered project, else the `origin` remote as `github.com-owner-repo`,
+else the path - so a chat in a project's checkout and the jobs on that
+project share one file. The next run in the same project reads both files
+into its system prompt after the repository instructions, each bullet
+dated, 16 KB in all (`memory list` shows the rest), with a note in the
+session saying which files it read; the files are plain Markdown, edited
+by hand as well, and lines that are not bullets stay where they are.
+Writing a memory needs no approval - it changes nothing in the clone -
+but it shows as a `memory:` step and permission rules reach it by scope:
+`--deny-tool 'memory(user)'`. A read-only run (an answer job, plan mode)
+reads memory but is not offered the tool; a helper shares the parent's.
+`harness.memory` (`on`) turns it off, `--no-memory` for one run, and
+`--bare` leaves it out with the rest. In a session `/memory` lists both
+files, `/memory add [user] TEXT` and `/memory forget TEXT` edit them
+without a model turn, `/memory clear project|user` empties one
+(**Conversations**, below).
 
 **Repository instructions.** A run reads the clone's `AGENTS.md`,
 `CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` - each once
@@ -1796,7 +1824,10 @@ session's (see below); `/procs` lists the background processes the model
 started with `bash background:true` (state, pid, command), `/procs ID
 [LINES]` shows the last lines one printed (20 by default) and `/procs stop
 ID|all` ends them - everything still running is stopped when the session
-ends; `/diff` shows `git status` and
+ends; `/memory` shows what is remembered for the project and for you,
+`/memory add [user] TEXT` remembers one more, `/memory forget TEXT` drops
+the one that matches, `/memory clear project|user` empties a file (the
+model sees the change from the next session on; **Memory** above); `/diff` shows `git status` and
 the diff stat of the clone; `/export [PATH]` writes the conversation as
 Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
 has in hand - model, context window, budgets, mode, tools, instruction
@@ -1847,8 +1878,8 @@ rules change nothing in a job, which asks nobody.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /diff /export /env /init /delegate /new /sessions /help inside
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents / --no-memory leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

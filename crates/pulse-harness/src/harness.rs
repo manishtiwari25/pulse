@@ -13,6 +13,7 @@ use crate::hooks::{
     HOOK_BLOCK_EXIT, HOOK_OUTPUT_LIMIT, Hook, HookEvent, HookSet, cut_bytes, hook_command,
     run_payload, tool_payload,
 };
+use crate::memory::{MEMORY_TOOL, Memory, MemoryAction, memory_paragraph, memory_tool};
 use crate::permissions::{self, Rule, Rules};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
@@ -290,6 +291,10 @@ pub struct Config {
     /// [`load_instructions`]) rendered into the system prompt; empty when
     /// the clone has none or the owner turned them off.
     pub instructions: String,
+    /// What earlier runs remembered (see [`crate::memory`]), rendered into
+    /// the system prompt where the template's `{{.Memory}}` key stands;
+    /// empty when nothing is remembered or memory is off.
+    pub memory: String,
     /// Whether the run offers the `subagent` tool.
     pub subagents: bool,
     /// How many parents this run has: 0 for a run the owner started, 1 for
@@ -334,6 +339,8 @@ pub enum StepKind {
     /// A `process` tool call (output, wait, stop, list of a background
     /// process).
     Process,
+    /// A `memory` tool call (remember, forget, list).
+    Memory,
     Observation,
     Note,
     FormatRetry,
@@ -388,6 +395,7 @@ impl std::fmt::Display for StepKind {
             Self::Subagent => "subagent",
             Self::Hook => "hook",
             Self::Process => "process",
+            Self::Memory => "memory",
             Self::Observation => "observation",
             Self::Note => "note",
             Self::FormatRetry => "format_retry",
@@ -577,6 +585,8 @@ pub struct Agent {
     skills: Vec<Skill>,
     /// The owner's and the clone's hooks.
     hooks: HookSet,
+    /// Memory across runs, when the owner keeps it on (`memory` tool).
+    memory: Option<Memory>,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
     /// The background processes the model started and has not stopped.
@@ -962,6 +972,7 @@ pub fn new_shared(
         start_notes: Vec::new(),
         skills: Vec::new(),
         hooks: HookSet::default(),
+        memory: None,
         fetch: FetchPolicy::default(),
         procs: Procs::default(),
         permissions: Rules::new(),
@@ -997,6 +1008,23 @@ impl Agent {
     }
 
     /// Runs these hooks around the run and its tool calls; call before `run`.
+    /// Gives the run its memory files: the `memory` tool is offered (not
+    /// in a read-only run) and `/memory` in a session reads them.
+    pub fn set_memory(&mut self, memory: Memory) {
+        self.memory = Some(memory);
+    }
+
+    /// The run's memory files, if the owner keeps memory on.
+    pub fn memory(&self) -> Option<&Memory> {
+        self.memory.as_ref()
+    }
+
+    /// Whether the `memory` tool is offered: memory is on and the run may
+    /// leave something behind (a read-only run may not).
+    pub fn offers_memory(&self) -> bool {
+        self.memory.is_some() && !self.cfg.read_only
+    }
+
     pub fn set_hooks(&mut self, hooks: HookSet) {
         self.hooks = hooks;
     }
@@ -1122,6 +1150,10 @@ impl Agent {
                     .join(", ")
             )
         });
+        out.push(match &self.memory {
+            Some(m) => m.describe(),
+            None => "memory: off".to_string(),
+        });
         out.push(if self.hooks.is_empty() {
             "hooks: none".to_string()
         } else {
@@ -1198,6 +1230,9 @@ impl Agent {
         if self.offers_background() {
             out.push(process_tool());
         }
+        if self.offers_memory() {
+            out.push(memory_tool());
+        }
         if !self.skills.is_empty() {
             out.push(skill_tool(&self.skills));
         }
@@ -1224,6 +1259,9 @@ impl Agent {
         let mut out: Vec<String> = native.iter().map(|s| (*s).to_string()).collect();
         if self.offers_background() {
             out.push(PROCESS_TOOL.to_string());
+        }
+        if self.offers_memory() {
+            out.push(MEMORY_TOOL.to_string());
         }
         if !self.skills.is_empty() {
             out.push(SKILL_TOOL.to_string());
@@ -2066,6 +2104,7 @@ impl Agent {
                     Err(e) => self.tool_error(format!("{name}: {e}")),
                 }
             }
+            MEMORY_TOOL if self.offers_memory() => self.run_memory_tool(&call.arguments),
             SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
             FETCH_TOOL if !self.fetch.is_empty() => self.run_fetch_tool(&call.arguments),
             SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
@@ -2236,6 +2275,56 @@ impl Agent {
     }
 
     /// The `skill` tool: the instructions of one skill, or one of its files.
+    /// The `memory` tool: remember, forget or list what this project (or
+    /// the user) keeps across runs.
+    fn run_memory_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let action = match MemoryAction::parse(arguments) {
+            Ok(a) => a,
+            Err(e) => return self.tool_error(format!("memory: {e}")),
+        };
+        let Some(memory) = self.memory.clone() else {
+            return self.tool_error("memory is off".to_string());
+        };
+        self.result.steps += 1;
+        let spec = action.spec();
+        self.emit(Step {
+            kind: StepKind::Memory,
+            content: spec.clone(),
+            command: spec,
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let outcome = match &action {
+            MemoryAction::Remember { scope, text } => memory.remember(*scope, text).map(|c| {
+                format!(
+                    "remembered for the {} ({} in {}); it reaches the prompt of later runs here",
+                    c.scope.as_str(),
+                    plural(c.count, "memory", "memories"),
+                    memory.shown_path(c.scope)
+                )
+            }),
+            MemoryAction::Forget { scope, text } => memory.forget(*scope, text).map(|c| {
+                format!(
+                    "forgotten from the {} ({} left in {})",
+                    c.scope.as_str(),
+                    plural(c.count, "memory", "memories"),
+                    memory.shown_path(c.scope)
+                )
+            }),
+            MemoryAction::List => Ok(memory.list()),
+        };
+        let obs = match outcome {
+            Ok(text) => Observation {
+                output: text,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            Err(text) => action_error(text, start, 1),
+        };
+        self.emit_observation("memory tool", &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
     fn run_skill_tool(&mut self, arguments: &str) -> ToolOutcome {
         let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
         let name = args
@@ -2412,6 +2501,7 @@ impl Agent {
         let mut child = new_shared(self.p.clone(), env, cfg, Vec::new());
         child.skills = self.skills.clone();
         child.hooks = self.hooks.clone();
+        child.memory = self.memory.clone();
         child.fetch = self.fetch.clone();
         child.ui = self.ui.clone();
         child.next_n = self.next_n;
@@ -4022,7 +4112,7 @@ pub use write_trajectory as WriteTrajectory;
 pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.\n",
     "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the owner sees.\n",
-    "Some runs also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report) and mcp__ tools; use them when they are offered.\n",
+    "Some runs also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report), memory (remembers a short fact about this project for later runs: a convention the files do not state, a gotcha, where things live; not secrets, not what the files already say) and mcp__ tools; use them when they are offered.\n",
     "Call tools with JSON arguments. Independent calls go in one reply, each with its own result: read, grep and glob calls of one reply run at the same time, the rest in order; a call that needs an earlier result waits for your next reply.\n",
     "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
     "If you cannot call tools, write exactly one fenced block per message; exactly one fenced block is executed.\n",
@@ -4058,6 +4148,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "A message with neither a command nor a report wastes a call after one corrective retry.\n",
     "You have at most {{.MaxSteps}} model calls.\n",
     "{{.Instructions}}",
+    "{{.Memory}}",
     "The task follows in the next message and its rules apply in full."
 );
 
@@ -4069,7 +4160,7 @@ pub use DEFAULT_PROMPT_TEMPLATE as DefaultPromptTemplate;
 pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
     "You are a software engineering agent working with the user in their checkout at {{.Info.cwd}} on {{.Info.os}}, in an interactive session: they write, you work and answer, they write again.\n",
     "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the user sees; question asks the user one thing and waits for the answer.\n",
-    "Some sessions also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report) and mcp__ tools; use them when they are offered.\n",
+    "Some sessions also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report), memory (remembers a short fact about this project or the user's preferences for later sessions: a convention the files do not state, a gotcha, how they like things done; not secrets, not what the files already say; remember when the user says to, or when you learned something the next session would need) and mcp__ tools; use them when they are offered.\n",
     "Call tools with JSON arguments. Independent calls go in one reply, each with its own result: read, grep and glob calls of one reply run at the same time, the rest in order; a call that needs an earlier result waits for your next reply.\n",
     "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
     "A reply with no tool call ends your turn and is shown to the user; they answer in the next message. Reply in plain prose, short: what you did, what you found, what is next. There is no report format.\n",
@@ -4092,6 +4183,7 @@ pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
     "Never bypass a policy refusal or approval boundary, weaken a check, or report unfinished work as done.\n",
     "Each turn has at most {{.MaxSteps}} model calls; a budget notice arrives when few remain, and then you wrap up and tell the user where things stand.\n",
     "{{.Instructions}}",
+    "{{.Memory}}",
     "The user's first message follows."
 );
 
@@ -4123,6 +4215,14 @@ pub struct PromptData {
     /// template's `{{.Instructions}}` renders them as a paragraph, and a
     /// template without the key gets the paragraph appended.
     pub instructions: String,
+    /// What earlier runs remembered ([`Memory::prompt_section`]); the
+    /// template's `{{.Memory}}` renders it as a paragraph after the
+    /// instructions, and a template without the key gets it appended.
+    pub memory: String,
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// The system-prompt paragraph that carries repository instructions.
@@ -4138,12 +4238,14 @@ pub fn instructions_paragraph(instructions: &str) -> String {
 
 pub fn render_prompt(tmpl: &str, data: PromptData) -> anyhow::Result<String> {
     let data = normalize_prompt_data(data);
-    let paragraph = instructions_paragraph(&data.instructions);
+    let instructions = instructions_paragraph(&data.instructions);
+    let memory = memory_paragraph(&data.memory);
     let has_instructions_key = tmpl.contains("{{.Instructions}}");
-    // The instructions are substituted last and never scanned for keys:
-    // a repository's AGENTS.md may well document `{{.Something}}` itself.
-    let mut rendered = Vec::new();
-    for part in tmpl.split("{{.Instructions}}") {
+    let has_memory_key = tmpl.contains("{{.Memory}}");
+    // The instructions and the memory are substituted last and never
+    // scanned for keys: a repository's AGENTS.md may well document
+    // `{{.Something}}` itself.
+    let render_part = |part: &str| -> anyhow::Result<String> {
         let mut out = part.to_string();
         let replacements = [
             ("{{.Cwd}}", data.cwd.as_str()),
@@ -4167,14 +4269,27 @@ pub fn render_prompt(tmpl: &str, data: PromptData) -> anyhow::Result<String> {
                 &tail[..end]
             ));
         }
-        rendered.push(out);
-    }
-    let mut out = rendered.join(&paragraph);
-    if !has_instructions_key && !paragraph.is_empty() {
-        if !out.ends_with('\n') {
-            out.push('\n');
+        Ok(out)
+    };
+    let mut rendered = Vec::new();
+    for part in tmpl.split("{{.Instructions}}") {
+        let mut pieces = Vec::new();
+        for piece in part.split("{{.Memory}}") {
+            pieces.push(render_part(piece)?);
         }
-        out.push_str(paragraph.trim_end());
+        rendered.push(pieces.join(&memory));
+    }
+    let mut out = rendered.join(&instructions);
+    for (has_key, paragraph) in [
+        (has_instructions_key, &instructions),
+        (has_memory_key, &memory),
+    ] {
+        if !has_key && !paragraph.is_empty() {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(paragraph.trim_end());
+        }
     }
     Ok(out)
 }
@@ -4275,6 +4390,7 @@ pub fn prompt_data(info: &BTreeMap<String, String>, cfg: &Config) -> PromptData 
         max_steps: cfg.max_steps,
         info: cp,
         instructions: cfg.instructions,
+        memory: cfg.memory,
     })
 }
 
@@ -5028,6 +5144,11 @@ fn subjects_of(tool: &str, arguments: &str, cwd: &str) -> Vec<String> {
         }
         FETCH_TOOL => vec![url_host(&str_of("url"))],
         SKILL_TOOL => vec![str_of("name")],
+        MEMORY_TOOL => vec![
+            MemoryAction::parse(arguments)
+                .map(|a| a.subject())
+                .unwrap_or_default(),
+        ],
         name if name.starts_with(MCP_TOOL_PREFIX) => {
             vec![if args.is_object() {
                 compact_json(&args, 2000)
@@ -7086,6 +7207,7 @@ mod tests {
             max_steps: 3,
             info: BTreeMap::new(),
             instructions: instructions.into(),
+            memory: String::new(),
         };
         // The default template carries the key: the paragraph lands there.
         let out = render_prompt(
@@ -7121,6 +7243,54 @@ mod tests {
         );
         // An unknown key in the template itself is still an error.
         assert!(render_prompt("Hello {{.Nope}}", data("x")).is_err());
+    }
+
+    #[test]
+    fn render_prompt_places_memory_after_instructions_and_appends_it_when_the_key_is_missing() {
+        let data = |instructions: &str, memory: &str| PromptData {
+            cwd: "/c".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            step_timeout: "5s".into(),
+            output_limit: 10,
+            max_steps: 3,
+            info: BTreeMap::new(),
+            instructions: instructions.into(),
+            memory: memory.into(),
+        };
+        let out = render_prompt(
+            DEFAULT_PROMPT_TEMPLATE,
+            data(
+                "--- AGENTS.md ---\nrules\n",
+                "--- project memory (~/.pulse/memory/x.md) ---\n- [2026-01-02] use {{.Keys}} freely\n",
+            ),
+        )
+        .unwrap();
+        let instructions_at = out.find("Repository instructions follow").unwrap();
+        let memory_at = out.find("What you remembered in earlier runs").unwrap();
+        let task_at = out.find("The task follows").unwrap();
+        assert!(instructions_at < memory_at && memory_at < task_at, "{out}");
+        assert!(out.contains("use {{.Keys}} freely"), "{out}");
+        assert!(!out.contains("{{.Memory}}"));
+        // No memory: the key leaves no trace.
+        let out = render_prompt(DEFAULT_PROMPT_TEMPLATE, data("", "")).unwrap();
+        assert!(!out.contains("remembered"), "{out}");
+        assert!(!out.contains("\n\n\n"), "{out:?}");
+        // A custom template without either key gets both appended, in order.
+        let out = render_prompt("Hello {{.Cwd}}", data("be nice", "- [2026-01-02] tabs")).unwrap();
+        assert!(
+            out.starts_with("Hello /c\nRepository instructions follow"),
+            "{out}"
+        );
+        assert!(
+            out.contains("be nice\nWhat you remembered in earlier runs"),
+            "{out}"
+        );
+        assert!(out.ends_with("- [2026-01-02] tabs"), "{out:?}");
+        assert_eq!(
+            render_prompt("Hello {{.Cwd}}", data("", "")).unwrap(),
+            "Hello /c"
+        );
     }
 
     #[test]
@@ -9384,6 +9554,177 @@ mod tests {
             replies[1].1
         );
         assert!(env.lock().unwrap().commands.is_empty());
+    }
+
+    #[test]
+    fn memory_tool_remembers_forgets_and_lists_in_the_home_files() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "memory",
+                json!({"action": "remember", "text": "tests need cargo test -p app"}),
+            )])),
+            resp(calls(&[(
+                "c2",
+                "memory",
+                json!({"action": "remember", "text": "prefers tabs"}),
+            )])),
+            resp(calls(&[("c3", "memory", json!({"action": "list"}))])),
+            resp(calls(&[(
+                "c4",
+                "memory",
+                json!({"action": "forget", "text": "tabs"}),
+            )])),
+            resp(calls(&[(
+                "c5",
+                "memory",
+                json!({"action": "forget", "text": "nothing like this"}),
+            )])),
+            resp(calls(&[("c6", "memory", json!({"action": "dance"}))])),
+            // A rule can refuse one scope.
+            resp(calls(&[(
+                "c7",
+                "memory",
+                json!({"action": "remember", "scope": "user", "text": "secret"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        h.set_memory(Memory::new(home.path().to_str().unwrap(), "acme-app"));
+        h.set_permissions(rules(&[(false, "memory(user)")]));
+        assert!(h.offers_memory());
+        assert!(h.tools().iter().any(|t| t.name == MEMORY_TOOL));
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l.starts_with("memory: 0 for the project"))
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        let replies = tool_replies(&h);
+        let by_id = |id: &str| -> String {
+            replies
+                .iter()
+                .find(|(i, _)| i == id)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| panic!("no reply {id}: {replies:?}"))
+        };
+        assert!(
+            by_id("c1").contains("remembered for the project (1 memory in /"),
+            "{}",
+            by_id("c1")
+        );
+        assert!(
+            by_id("c1").contains("/memory/acme-app.md)"),
+            "{}",
+            by_id("c1")
+        );
+        assert!(
+            by_id("c2").contains("remembered for the project (2 memories in"),
+            "{}",
+            by_id("c2")
+        );
+        let list = by_id("c3");
+        assert!(
+            list.contains("project memory (") && list.contains("2 memories"),
+            "{list}"
+        );
+        assert!(list.contains("] tests need cargo test -p app"), "{list}");
+        assert!(list.contains("] prefers tabs"), "{list}");
+        assert!(
+            list.contains("user memory (") && list.contains("nothing yet"),
+            "{list}"
+        );
+        assert!(
+            by_id("c4").contains("forgotten from the project (1 memory left"),
+            "{}",
+            by_id("c4")
+        );
+        assert!(
+            by_id("c5").contains("nothing remembered contains"),
+            "{}",
+            by_id("c5")
+        );
+        assert!(by_id("c6").contains("unknown action"), "{}", by_id("c6"));
+        assert!(
+            by_id("c7").contains("refused by permission rule `deny memory(user)`"),
+            "{}",
+            by_id("c7")
+        );
+        let project = fs::read_to_string(home.path().join("memory/acme-app.md")).unwrap();
+        assert!(project.starts_with("# Memory for acme-app\n"), "{project}");
+        assert!(
+            project.contains("] tests need cargo test -p app\n"),
+            "{project}"
+        );
+        assert!(!project.contains("tabs"), "{project}");
+        assert!(
+            !home.path().join("memory/user.md").exists(),
+            "the denied call wrote nothing"
+        );
+        let steps = h.trajectory().steps;
+        assert_eq!(
+            steps.iter().filter(|s| s.kind == StepKind::Memory).count(),
+            5,
+            "a memory step per run action; the denied one and the bad one leave none"
+        );
+        assert!(
+            steps.iter().any(
+                |s| s.kind == StepKind::Memory && s.command == "remember project: prefers tabs"
+            )
+        );
+        assert_eq!(
+            h.memory()
+                .unwrap()
+                .entries(crate::memory::Scope::Project)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn memory_is_withheld_from_read_only_runs_and_agents_without_one() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "memory",
+                json!({"action": "remember", "text": "x"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_memory(Memory::new(home.path().to_str().unwrap(), "acme-app"));
+        h.cfg.read_only = true;
+        assert!(!h.offers_memory());
+        assert!(!h.tools().iter().any(|t| t.name == MEMORY_TOOL));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("unknown tool memory"), "{reply}");
+        assert!(!home.path().join("memory").exists());
+        // /memory still works on the side: the files are the session's.
+        assert!(h.memory().is_some());
+
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("c1", "memory", json!({"action": "list"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        assert!(!h.offers_memory());
+        assert!(h.environment().iter().any(|l| l == "memory: off"));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("unknown tool memory"), "{reply}");
     }
 
     #[test]

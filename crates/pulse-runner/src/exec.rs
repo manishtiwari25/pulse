@@ -1024,6 +1024,7 @@ pub(crate) fn worker_command(
         ("harness.skills", "--no-skills"),
         ("harness.hooks", "--no-hooks"),
         ("harness.subagents", "--no-subagents"),
+        ("harness.memory", "--no-memory"),
     ] {
         if s.setting(setting, "on") == "off" {
             cmd.push(flag.into());
@@ -1745,6 +1746,7 @@ mod tests {
             "--no-skills",
             "--no-hooks",
             "--no-subagents",
+            "--no-memory",
             "--fetch-allow",
             "--compact-at",
             "--reasoning",
@@ -1756,6 +1758,7 @@ mod tests {
         set_setting(&s, "harness.skills", "off");
         set_setting(&s, "harness.hooks", "off");
         set_setting(&s, "harness.subagents", "off");
+        set_setting(&s, "harness.memory", "off");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
         set_setting(&s, "harness.reasoning", "high");
@@ -1770,7 +1773,7 @@ mod tests {
             cmd.windows(2).any(|w| w == ["--reasoning", "high"]),
             "{cmd:?}"
         );
-        for flag in ["--no-skills", "--no-hooks", "--no-subagents"] {
+        for flag in ["--no-skills", "--no-hooks", "--no-subagents", "--no-memory"] {
             assert!(cmd.contains(&flag.to_string()), "{cmd:?}");
         }
         assert!(
@@ -1782,7 +1785,12 @@ mod tests {
             cmd.windows(2).any(|w| w == ["--compact-at", "0"]),
             "{cmd:?}"
         );
-        for key in ["harness.skills", "harness.hooks", "harness.subagents"] {
+        for key in [
+            "harness.skills",
+            "harness.hooks",
+            "harness.subagents",
+            "harness.memory",
+        ] {
             set_setting(&s, key, "on");
         }
         set_setting(&s, "harness.fetch_allow", "");

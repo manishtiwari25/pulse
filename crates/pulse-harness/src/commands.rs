@@ -3,6 +3,7 @@ use crate::fetch::FetchPolicy;
 use crate::harness::*;
 use crate::hooks::load_hooks;
 use crate::localenv::LocalEnv;
+use crate::memory::{self, Memory};
 use crate::permissions::{Rule, Rules};
 use crate::skills::{Skill, load_skills};
 use anyhow::Result;
@@ -160,6 +161,11 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         false,
         "do not offer the subagent tool (a bounded helper run on a sub-task)",
     );
+    fs.bool_var(
+        "no-memory",
+        false,
+        "do not read ~/.pulse/memory into the prompt or offer the memory tool",
+    );
     fs.string_var(
         "fetch-allow",
         "",
@@ -176,7 +182,7 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "bare",
         false,
-        "a plain agent: no instruction files, skills, hooks or MCP servers (the same as --no-instructions --no-skills --no-hooks --no-mcp)",
+        "a plain agent: no instruction files, memory, skills, hooks or MCP servers (the same as --no-instructions --no-memory --no-skills --no-hooks --no-mcp)",
     );
     fs.int_var(
         "compact-at",
@@ -487,6 +493,29 @@ pub(crate) fn prepare_agent(
     } else {
         (String::new(), Vec::new())
     };
+    let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
+    let memory_on = !bare
+        && !fs.get_bool("no-memory")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.memory", "on") != "off");
+    let memory = memory_on.then(|| {
+        // A chat in a registered project's checkout shares the file with
+        // the fleet's jobs on that project.
+        let key = if project.is_empty() {
+            st.as_ref()
+                .and_then(|s| s.project_for_dir(&abs_cwd).ok().flatten())
+                .map(|p| p.slug)
+                .unwrap_or_default()
+        } else {
+            project.clone()
+        };
+        Memory::new(&c.home, &memory::project_key(&abs_cwd, &key))
+    });
+    let (memory_text, memory_files) = memory
+        .as_ref()
+        .map(Memory::prompt_section)
+        .unwrap_or_default();
     let subagents = !fs.get_bool("no-subagents")
         && st
             .as_ref()
@@ -546,6 +575,7 @@ pub(crate) fn prepare_agent(
         system_prompt_template,
         cancel_file,
         instructions,
+        memory: memory_text,
         subagents,
         compact_at,
         read_only,
@@ -588,12 +618,21 @@ pub(crate) fn prepare_agent(
             agent.cfg.instructions.len()
         ));
     }
+    if let Some(m) = memory {
+        if !memory_files.is_empty() {
+            agent.note_at_start(format!(
+                "read memory from {} ({} bytes) into the system prompt",
+                memory_files.join(", "),
+                agent.cfg.memory.len()
+            ));
+        }
+        agent.set_memory(m);
+    }
     let mcp_on = !bare
         && !fs.get_bool("no-mcp")
         && st
             .as_ref()
             .is_some_and(|s| s.setting("harness.mcp_tools", "on") != "off");
-    let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
     if mcp_on && let Some(s) = &st {
         for note in attach_mcp_servers(&mut agent, s, &project, &c.home) {
             agent.note_at_start(note);
@@ -2031,6 +2070,7 @@ impl Sink for ProgressSink {
             | StepKind::Skill
             | StepKind::Fetch
             | StepKind::Process
+            | StepKind::Memory
             | StepKind::Hook => {
                 let _ = writeln!(
                     self.w,
@@ -2373,7 +2413,7 @@ pub fn write_harness_transcript(
             "exit" => writeln!(w, "[{}] exit: {}\n", tag, s.content)?,
             "plan" => writeln!(w, "[{}] {}\n", tag, s.content)?,
             "read" | "grep" | "glob" | "edit" | "write" | "mcp" | "skill" | "fetch" | "process"
-            | "subagent" | "hook" => {
+            | "memory" | "subagent" | "hook" => {
                 writeln!(w, "[{}] {} {}\n", tag, s.kind, head_tail(&s.content, 20))?
             }
             _ => {}
@@ -4467,5 +4507,184 @@ bye
             brief.starts_with("The test in tests/login.rs flakes"),
             "{brief}"
         );
+    }
+
+    #[test]
+    fn harness_run_and_chat_keep_memory_across_sessions() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let run = |session: &str, extra: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = [
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                cwd,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                session,
+                "--quiet",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| (*s).to_string()));
+            v
+        };
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "memory",
+                json!({"action": "remember", "text": "tests need cargo test -p app"}),
+            ),
+            say("SUMMARY: noted"),
+        ]);
+        set_fake_provider(p.clone());
+        let args = run("mem-1", &[]);
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let reqs = p.requests();
+        assert!(
+            reqs[0].tools.iter().any(|t| t.name == "memory"),
+            "a run offers the memory tool"
+        );
+        assert!(
+            !reqs[0].messages[0].content.contains("What you remembered"),
+            "nothing remembered yet, nothing in the prompt"
+        );
+        let reply = &reqs[1].messages.last().unwrap().content;
+        assert!(
+            reply.contains("remembered for the project (1 memory in"),
+            "{reply}"
+        );
+        let (_h, steps) = s.harness_session("mem-1").unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "memory"
+                && st.command == "remember project: tests need cargo test -p app"),
+            "{:?}",
+            steps
+                .iter()
+                .map(|st| (st.kind.clone(), st.command.clone()))
+                .collect::<Vec<_>>()
+        );
+        let files: Vec<PathBuf> = fs::read_dir(Path::new(&s.home).join("memory"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        let file = &files[0];
+        assert_ne!(file.file_name().unwrap(), "user.md");
+        let text = fs::read_to_string(file).unwrap();
+        assert!(text.contains("] tests need cargo test -p app\n"), "{text}");
+
+        // The next run in the same directory reads it into its prompt.
+        let p = CommandFakeProvider::scripted(vec![say("SUMMARY: ok")]);
+        set_fake_provider(p.clone());
+        let args = run("mem-2", &[]);
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let system = &p.requests()[0].messages[0].content;
+        assert!(
+            system.contains("What you remembered in earlier runs")
+                && system.contains("tests need cargo test -p app"),
+            "{system}"
+        );
+        let (_h, steps) = s.harness_session("mem-2").unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content.starts_with("read memory from ")
+                && st.content.contains("into the system prompt")),
+            "{:?}",
+            steps
+                .iter()
+                .filter(|st| st.kind == "note")
+                .map(|st| st.content.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // --no-memory and the setting switch it off.
+        for extra in [vec!["--no-memory"], vec!["--bare"], vec![]] {
+            if extra.is_empty() {
+                s.set_setting("human", "harness.memory", "off").unwrap();
+            }
+            let p = CommandFakeProvider::scripted(vec![say("SUMMARY: ok")]);
+            set_fake_provider(p.clone());
+            let args = run("mem-3", &extra);
+            let (out, err, code) = invoke(
+                &s.home,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+            let reqs = p.requests();
+            assert!(
+                !reqs[0].messages[0].content.contains("What you remembered"),
+                "{extra:?}"
+            );
+            assert!(
+                !reqs[0].tools.iter().any(|t| t.name == "memory"),
+                "{extra:?}"
+            );
+        }
+        s.set_setting("human", "harness.memory", "on").unwrap();
+
+        // The chat sees the same file and edits it by hand.
+        let p = CommandFakeProvider::scripted(vec![say("hi")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some(
+            "/memory
+/memory add user prefers tabs
+/memory add
+/memory add   project the API lives in crates/api
+/memory forget api
+/memory forget nothing like this
+/memory clear
+/memory clear user
+/memory dance
+hello
+/memory
+/exit
+",
+        ));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "hi\n");
+        assert!(
+            err.contains("project memory (") && err.contains("): 1 memory\n  - ["),
+            "{err}"
+        );
+        assert!(err.contains("remembered for the user (1 in"), "{err}");
+        assert!(err.contains("usage: /memory add [user] TEXT"), "{err}");
+        assert!(err.contains("remembered for the project (2 in"), "{err}");
+        assert!(
+            err.contains("forgotten from the project (1 left in"),
+            "{err}"
+        );
+        assert!(
+            err.contains("nothing remembered contains \"nothing like this\""),
+            "{err}"
+        );
+        assert!(err.contains("usage: /memory clear project|user"), "{err}");
+        assert!(err.contains("cleared 1 from the user memory ("), "{err}");
+        assert!(err.contains("unknown /memory dance"), "{err}");
+        assert!(
+            err.contains("user memory (") && err.contains("): nothing yet"),
+            "{err}"
+        );
+        let system = &p.requests()[0].messages[0].content;
+        assert!(
+            system.contains("tests need cargo test -p app"),
+            "the chat prompt carries the project memory: {system}"
+        );
+        assert!(!Path::new(&s.home).join("memory/user.md").exists());
     }
 }

@@ -1012,6 +1012,7 @@ export type HarnessStepKind =
   | "skill"
   | "fetch"
   | "process"
+  | "memory"
   | "subagent"
   | "hook"
   | "observation"

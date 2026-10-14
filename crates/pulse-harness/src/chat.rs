@@ -11,6 +11,7 @@ use crate::commands::{
     exit_code_for, first_set, model_context_window, prepare_agent,
 };
 use crate::harness::*;
+use crate::memory::Scope;
 use anyhow::Result;
 use pulse_cli::{Context, FlagSet, errorf, write_json};
 use pulse_provider::{CancelToken, Message, Provider, Role};
@@ -85,6 +86,11 @@ const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
         "procs",
         "[ID [LINES] | stop ID|all]",
         "the background processes the model started; ID shows the tail of one's output, stop ends one or all",
+    ),
+    (
+        "memory",
+        "[add [user] TEXT | forget TEXT | clear project|user]",
+        "what is remembered for this project and for you across sessions; add one, forget one, or clear a file",
     ),
     (
         "diff",
@@ -799,6 +805,7 @@ impl Sink for ChatSink {
             | StepKind::Skill
             | StepKind::Fetch
             | StepKind::Process
+            | StepKind::Memory
             | StepKind::Hook => {
                 format!("{indent}{}: {}", step.kind, one_line(&step.command, 160))
             }
@@ -1321,6 +1328,72 @@ impl Session<'_> {
     /// `/procs`: the background processes; `ID [LINES]` shows the tail of
     /// one's output so far (the model's unread output stays unread);
     /// `stop ID|all` ends them.
+    /// `/memory`: the memory files, `add [user] TEXT`, `forget TEXT`,
+    /// `clear project|user`.
+    fn memory(&self, arg: &str) -> String {
+        let agent = self.agent.lock().expect("agent poisoned");
+        let Some(memory) = agent.memory() else {
+            return "memory is off for this session (--no-memory, --bare or harness.memory off)"
+                .to_string();
+        };
+        let (verb, rest) = match arg.split_once(char::is_whitespace) {
+            Some((v, r)) => (v.trim(), r.trim()),
+            None => (arg.trim(), ""),
+        };
+        match verb {
+            "" => memory.list(),
+            "add" | "remember" => {
+                let (scope, text) = match rest.split_once(char::is_whitespace) {
+                    Some(("user", more)) => (Scope::User, more.trim()),
+                    Some(("project", more)) => (Scope::Project, more.trim()),
+                    _ => (Scope::Project, rest),
+                };
+                if text.is_empty() {
+                    return "usage: /memory add [user] TEXT".to_string();
+                }
+                match memory.remember(scope, text) {
+                    Ok(c) => format!(
+                        "remembered for the {} ({} in {}); later sessions read it, this one goes on as it is",
+                        c.scope.as_str(),
+                        c.count,
+                        memory.shown_path(c.scope)
+                    ),
+                    Err(e) => e,
+                }
+            }
+            "forget" | "remove" => {
+                if rest.is_empty() {
+                    return "usage: /memory forget TEXT (enough of the memory to match one)"
+                        .to_string();
+                }
+                match memory.forget(None, rest) {
+                    Ok(c) => format!(
+                        "forgotten from the {} ({} left in {})",
+                        c.scope.as_str(),
+                        c.count,
+                        memory.shown_path(c.scope)
+                    ),
+                    Err(e) => e,
+                }
+            }
+            "clear" => match Scope::parse(rest) {
+                Ok(scope) if !rest.is_empty() => match memory.clear(scope) {
+                    Ok(n) => format!(
+                        "cleared {} from the {} memory ({})",
+                        n,
+                        scope.as_str(),
+                        memory.shown_path(scope)
+                    ),
+                    Err(e) => e,
+                },
+                _ => "usage: /memory clear project|user".to_string(),
+            },
+            other => format!(
+                "unknown /memory {other}; /memory lists, /memory add [user] TEXT, /memory forget TEXT, /memory clear project|user"
+            ),
+        }
+    }
+
     fn procs(&self, arg: &str) -> String {
         let mut agent = self.agent.lock().expect("agent poisoned");
         // Plan mode withdraws the tool but not what already runs: the list
@@ -1571,6 +1644,7 @@ impl Session<'_> {
             }
             "permissions" => self.permissions(&arg),
             "procs" => self.procs(&arg),
+            "memory" => self.memory(&arg),
             "diff" => git_changes(self.cwd),
             "export" => {
                 let path = if arg.is_empty() {

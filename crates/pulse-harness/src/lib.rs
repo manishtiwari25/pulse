@@ -9,6 +9,7 @@ pub mod harness;
 pub mod history;
 pub mod hooks;
 pub mod localenv;
+pub mod memory;
 pub mod permissions;
 pub mod readonly;
 pub mod skills;
