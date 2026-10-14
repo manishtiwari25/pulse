@@ -495,6 +495,21 @@ fn request_json_omits_empty_content_and_sets_tool_choice() {
     let got = serde_json::to_value(req).unwrap();
     assert!(got["messages"][0].get("content").is_none());
     assert_eq!(got["tool_choice"], "auto");
+    assert!(
+        got.get("reasoning_effort").is_none(),
+        "no effort asked, none sent: {got}"
+    );
+}
+
+#[test]
+fn request_json_carries_reasoning_effort_only_when_asked() {
+    let req = open_ai_request(Request {
+        model: "o4-mini".to_string(),
+        reasoning: "high".to_string(),
+        ..Request::default()
+    });
+    let got = serde_json::to_value(req).unwrap();
+    assert_eq!(got["reasoning_effort"], "high");
 }
 
 #[test]

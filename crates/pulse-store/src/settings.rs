@@ -76,6 +76,10 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
 });
 
 pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"];
+/// The job kinds whose runs look but do not touch: the harness runs them
+/// read-only (no edit or write tool, commands that would change the clone
+/// refused, a change that slips through put back).
+pub const READ_ONLY_JOB_KINDS: &[&str] = &["answer", "ballot"];
 pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> =
     LazyLock::new(|| map! {"light_model"=>"","ask.model"=>"",});
 pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
@@ -86,7 +90,7 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.fetch_allow"=>"","harness.compact_at"=>"70",
+    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.fetch_allow"=>"","harness.compact_at"=>"70","harness.reasoning"=>"default",
     // One endpoint per API-key provider (the registry name is the middle
     // segment); azure-openai has no default because the resource is the owner's.
     "provider.openai.base_url"=>"https://api.openai.com/v1","provider.anthropic.base_url"=>"https://api.anthropic.com","provider.gemini.base_url"=>"https://generativelanguage.googleapis.com","provider.azure-openai.base_url"=>"","provider.openrouter.base_url"=>"https://openrouter.ai/api/v1","provider.groq.base_url"=>"https://api.groq.com/openai/v1","provider.mistral.base_url"=>"https://api.mistral.ai/v1","provider.deepseek.base_url"=>"https://api.deepseek.com/v1","provider.xai.base_url"=>"https://api.x.ai/v1","provider.together.base_url"=>"https://api.together.xyz/v1","provider.fireworks.base_url"=>"https://api.fireworks.ai/inference/v1","provider.cerebras.base_url"=>"https://api.cerebras.ai/v1","provider.github-models.base_url"=>"https://models.github.ai/inference","provider.ollama.base_url"=>"http://127.0.0.1:11434/v1","provider.lmstudio.base_url"=>"http://127.0.0.1:1234/v1","provider.vllm.base_url"=>"http://127.0.0.1:8000/v1",
@@ -132,6 +136,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "harness.subagents"=>("choice",None,["on","off"],None,"on: a native-harness run offers the subagent tool: a bounded helper run on a self-contained sub-task in the same clone, with the same provider, budget, skills and hooks, whose report comes back as the tool result; it keeps at least 4 of the run's model calls and 60 s of its minutes for the main agent and cannot start helpers of its own; its steps show one level deeper in the session; off: the tool is not offered"),
         "harness.fetch_allow"=>("text",None,[],None,"hosts a native-harness run's fetch tool may read web pages from, comma- or space-separated, with *.example.com for a domain's subdomains and * for any host; the page comes back as text (2 MB, 30 s, 5 redirects within the allowed hosts; HTML becomes Markdown-like text with its links); empty turns the tool off"),
         "harness.compact_at"=>("count",Some(0),[],Some(95.0),"percent of harness.context_window (or the model's reported window) at which a native-harness run asks the model to summarise the older part of the conversation and replaces it with that summary, keeping the system prompt, the task and the last 6 messages; the summary call does not count against harness.max_steps and runs at most once every 3 calls; 0 turns compaction off and leaves only the observation collapsing"),
+        "harness.reasoning"=>("choice",None,["default","minimal","low","medium","high","xhigh"],None,"the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers (openai, azure-openai, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, github-models, ollama, lmstudio, vllm) and to copilot for the models that take it; default sends nothing and leaves the model's own setting; a model that does not take the field rejects the call, so set this per project with its model in mind"),
     }
 });
 pub const COMPUTE_PROVIDERS: &[&str] = &["azure", "aws", "gcp", "multipass"];

@@ -1037,6 +1037,15 @@ pub(crate) fn worker_command(
     if compact_at != "70" {
         cmd.extend(["--compact-at".into(), compact_at]);
     }
+    let reasoning = s.setting("harness.reasoning", "default");
+    if !reasoning.is_empty() && reasoning != "default" {
+        cmd.extend(["--reasoning".into(), reasoning]);
+    }
+    // The jobs that look but do not touch run read-only: no edit or write
+    // tool, commands that would change the clone refused.
+    if pulse_store::settings::READ_ONLY_JOB_KINDS.contains(&kind) {
+        cmd.push("--read-only".into());
+    }
     let model = s.run_model(kind);
     if !model.is_empty() {
         cmd.extend(["--model".into(), model]);
@@ -1701,6 +1710,19 @@ mod tests {
                 && cmd[2] == "run"
         );
         assert!(!cmd.contains(&"--context-window".to_string()));
+        assert!(
+            !cmd.contains(&"--read-only".to_string()),
+            "a lead run may change the clone: {cmd:?}"
+        );
+        // The jobs that only look run read-only.
+        for kind in pulse_store::settings::READ_ONLY_JOB_KINDS {
+            let (cmd, _) = worker_command(&s, kind, "brief text", "/tmp/clone", "", true);
+            assert!(cmd.contains(&"--read-only".to_string()), "{kind}: {cmd:?}");
+        }
+        for kind in pulse_store::settings::IMPLEMENTATION_JOB_KINDS {
+            let (cmd, _) = worker_command(&s, kind, "brief text", "/tmp/clone", "", true);
+            assert!(!cmd.contains(&"--read-only".to_string()), "{kind}: {cmd:?}");
+        }
         // A context window override rides along once set.
         set_setting(&s, "harness.context_window", "1000000");
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
@@ -1716,6 +1738,7 @@ mod tests {
             "--no-subagents",
             "--fetch-allow",
             "--compact-at",
+            "--reasoning",
         ] {
             assert!(!cmd.contains(&flag.to_string()), "{cmd:?}");
         }
@@ -1724,7 +1747,12 @@ mod tests {
         set_setting(&s, "harness.subagents", "off");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
+        set_setting(&s, "harness.reasoning", "high");
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
+        assert!(
+            cmd.windows(2).any(|w| w == ["--reasoning", "high"]),
+            "{cmd:?}"
+        );
         for flag in ["--no-skills", "--no-hooks", "--no-subagents"] {
             assert!(cmd.contains(&flag.to_string()), "{cmd:?}");
         }
@@ -1742,6 +1770,7 @@ mod tests {
         }
         set_setting(&s, "harness.fetch_allow", "");
         set_setting(&s, "harness.compact_at", "70");
+        set_setting(&s, "harness.reasoning", "default");
         // Back at the defaults a remote hand gets the same argv behind `pulse`.
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
         let mut remote = want.clone();

@@ -126,18 +126,32 @@ pub fn plan_tool() -> Tool {
 
 /// The tools every run offers, in the order the model sees them.
 pub fn native_tools() -> Vec<Tool> {
-    vec![
-        bash_tool(),
-        read_tool(),
-        grep_tool(),
-        glob_tool(),
-        edit_tool(),
-        write_tool(),
-        plan_tool(),
-    ]
+    native_tools_for(false)
+}
+
+/// The native tools a run offers; a read-only run leaves out `edit` and
+/// `write`, which it would only refuse.
+pub fn native_tools_for(read_only: bool) -> Vec<Tool> {
+    let mut out = vec![bash_tool(), read_tool(), grep_tool(), glob_tool()];
+    if !read_only {
+        out.push(edit_tool());
+        out.push(write_tool());
+    }
+    out.push(plan_tool());
+    out
 }
 
 pub const NATIVE_TOOL_NAMES: &[&str] = &["bash", "read", "grep", "glob", "edit", "write", "plan"];
+
+/// The native tools a read-only run offers.
+pub const READ_ONLY_TOOL_NAMES: &[&str] = &["bash", "read", "grep", "glob", "plan"];
+
+/// The native tools whose calls neither change the clone nor depend on
+/// each other, so a reply that makes several runs them at the same time.
+pub const PARALLEL_TOOL_NAMES: &[&str] = &["read", "grep", "glob"];
+
+/// How many parallel-safe tool calls of one reply run at once.
+pub const PARALLEL_TOOL_LIMIT: usize = 8;
 
 /// The name of the tool that runs a helper agent on a sub-task.
 pub const SUBAGENT_TOOL: &str = "subagent";
@@ -249,6 +263,15 @@ pub struct Config {
     /// Percent of the context window the prompt may use before the older
     /// part of the conversation is compacted into a summary; 0 is off.
     pub compact_at: i32,
+    /// A run that may look but not touch: `edit` and `write` are not
+    /// offered, commands that would change the clone are refused, and a
+    /// command that changes it anyway is reverted. Set for `answer` and
+    /// `ballot` jobs, whose findings are the whole deliverable.
+    pub read_only: bool,
+    /// Reasoning effort to ask the model for (`minimal`..`xhigh`, see
+    /// [`pulse_provider::REASONING_EFFORTS`]); empty leaves the vendor's
+    /// default in place. Providers without the knob ignore it.
+    pub reasoning: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,7 +824,7 @@ impl Agent {
 
     /// The tools the next model call offers.
     pub fn tools(&self) -> Vec<Tool> {
-        let mut out = native_tools();
+        let mut out = native_tools_for(self.cfg.read_only);
         if !self.skills.is_empty() {
             out.push(skill_tool(&self.skills));
         }
@@ -816,7 +839,12 @@ impl Agent {
     }
 
     fn tool_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = NATIVE_TOOL_NAMES.iter().map(|s| (*s).to_string()).collect();
+        let native = if self.cfg.read_only {
+            READ_ONLY_TOOL_NAMES
+        } else {
+            NATIVE_TOOL_NAMES
+        };
+        let mut out: Vec<String> = native.iter().map(|s| (*s).to_string()).collect();
         if !self.skills.is_empty() {
             out.push(SKILL_TOOL.to_string());
         }
@@ -854,6 +882,12 @@ impl Agent {
                 &self.cfg.system_prompt_template
             };
             self.cfg.system_prompt = render_prompt(tmpl, prompt_data(&self.env.info(), &self.cfg))?;
+        }
+        if self.cfg.read_only {
+            // Appended after rendering so an owner's own template gets it too.
+            self.cfg.system_prompt.push_str("\n\n");
+            self.cfg.system_prompt.push_str(READ_ONLY_PROMPT);
+            self.start_notes.insert(0, READ_ONLY_START_NOTE.to_string());
         }
         self.compile_deny()?;
         for note in std::mem::take(&mut self.start_notes) {
@@ -953,6 +987,7 @@ impl Agent {
                 messages: clone_messages(&self.msgs),
                 tools: self.tools(),
                 initiator: initiator.clone(),
+                reasoning: self.cfg.reasoning.clone(),
                 ..Request::default()
             };
             let resp = self.p.chat(cancel, req);
@@ -1121,8 +1156,13 @@ impl Agent {
         if remaining > reserve {
             return None;
         }
+        let close = if self.cfg.read_only {
+            "Stop exploring. Reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work."
+        } else {
+            "Stop exploring. If you changed files, run the targeted check and commit finished work now, then reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work."
+        };
         Some(format!(
-            "Budget notice: {remaining} model calls remain of {}. Stop exploring. If you changed files, run the targeted check and commit finished work now, then reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work.",
+            "Budget notice: {remaining} model calls remain of {}. {close}",
             self.cfg.max_steps
         ))
     }
@@ -1154,21 +1194,7 @@ impl Agent {
         free_format_retry: bool,
     ) -> (bool, bool, String, bool) {
         if !msg.tool_calls.is_empty() {
-            let mut all_clean = true;
-            for call in msg.tool_calls {
-                let outcome = self.dispatch_tool_call(cancel, &call);
-                self.msgs.push(tool_message(&call, &outcome.text));
-                if !outcome.clean {
-                    all_clean = false;
-                }
-                if outcome.submitted {
-                    return (true, true, outcome.submission, false);
-                }
-                if self.fatal.is_some() {
-                    break;
-                }
-            }
-            return (all_clean, false, String::new(), false);
+            return self.handle_tool_calls(cancel, msg.tool_calls);
         }
         let actions = action_blocks(&msg.content);
         if actions.len() == 1 {
@@ -1250,6 +1276,156 @@ impl Agent {
             ..Step::default()
         });
         (false, false, String::new(), true)
+    }
+
+    /// Runs the typed tool calls of one reply. Calls that only read (read,
+    /// grep, glob, fetch) run at the same time when there are at least two
+    /// of them; the rest run one after another, in order. The tool results
+    /// go back in the order the model made the calls.
+    fn handle_tool_calls(
+        &mut self,
+        cancel: &CancelToken,
+        calls: Vec<ToolCall>,
+    ) -> (bool, bool, String, bool) {
+        let mut batch: Vec<Option<ParallelCall>> =
+            calls.iter().map(|c| self.parallel_call(c)).collect();
+        if batch.iter().flatten().count() < 2 {
+            batch.iter_mut().for_each(|b| *b = None);
+        }
+        // Hooks and the call steps first, one by one and in order; a call a
+        // hook blocks leaves the batch with its refusal as the result.
+        let mut blocked: Vec<Option<String>> = vec![None; calls.len()];
+        for (i, call) in calls.iter().enumerate() {
+            if batch[i].is_none() {
+                continue;
+            }
+            if let Some(text) = self.pre_tool_hooks(cancel, &call.name, &call.arguments) {
+                blocked[i] = Some(text);
+                batch[i] = None;
+                continue;
+            }
+            let p = batch[i].as_ref().expect("parallel call");
+            self.result.steps += 1;
+            self.emit(Step {
+                kind: p.step_kind(),
+                content: p.spec(),
+                command: p.spec(),
+                ..Step::default()
+            });
+        }
+        let mut observations = self.run_parallel(&batch);
+        let mut outcomes: Vec<Option<ToolOutcome>> = (0..calls.len()).map(|_| None).collect();
+        for (i, call) in calls.iter().enumerate() {
+            if let Some(text) = blocked[i].take() {
+                outcomes[i] = Some(ToolOutcome::clean(text));
+                continue;
+            }
+            let (Some(p), Some(obs)) = (&batch[i], observations[i].take()) else {
+                continue;
+            };
+            if let Some(err) = p.error_step(&obs) {
+                self.emit(Step {
+                    kind: StepKind::Error,
+                    content: err,
+                    command: p.spec(),
+                    ..Step::default()
+                });
+            }
+            self.emit_observation(&p.observation_command(), &obs);
+            let text = format_observation(&obs, self.cfg.output_limit);
+            let text = self.with_post_tool_hooks(cancel, &call.name, &call.arguments, text);
+            outcomes[i] = Some(ToolOutcome::clean(text));
+        }
+        let mut all_clean = true;
+        for (i, call) in calls.iter().enumerate() {
+            let outcome = match outcomes[i].take() {
+                Some(o) => o,
+                None => self.dispatch_tool_call(cancel, call),
+            };
+            self.msgs.push(tool_message(call, &outcome.text));
+            if !outcome.clean {
+                all_clean = false;
+            }
+            if outcome.submitted {
+                return (true, true, outcome.submission, false);
+            }
+            if self.fatal.is_some() {
+                break;
+            }
+        }
+        (all_clean, false, String::new(), false)
+    }
+
+    /// The call as something that can run beside the other calls of its
+    /// reply, or None when it must run in order (bash, edit, write, plan,
+    /// skill, subagent, MCP, or a call whose arguments do not parse).
+    fn parallel_call(&self, call: &ToolCall) -> Option<ParallelCall> {
+        match call.name.as_str() {
+            name if PARALLEL_TOOL_NAMES.contains(&name) => {
+                NativeCall::from_args(name, &call.arguments)
+                    .ok()
+                    .filter(NativeCall::parallel_safe)
+                    .map(ParallelCall::Native)
+            }
+            FETCH_TOOL if !self.fetch.is_empty() => {
+                let args: Value = serde_json::from_str(&call.arguments).ok()?;
+                let url = args.get("url")?.as_str()?.trim();
+                (!url.is_empty()).then(|| ParallelCall::Fetch(url.to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Runs the batch's calls on separate threads, at most
+    /// [`PARALLEL_TOOL_LIMIT`] at a time; the result sits at the index of
+    /// its call.
+    fn run_parallel(&self, batch: &[Option<ParallelCall>]) -> Vec<Option<Observation>> {
+        let fs = self.fs();
+        let policy = &self.fetch;
+        let mut out: Vec<Option<Observation>> = (0..batch.len()).map(|_| None).collect();
+        let pending: Vec<(usize, &ParallelCall)> = batch
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().map(|p| (i, p)))
+            .collect();
+        for chunk in pending.chunks(PARALLEL_TOOL_LIMIT) {
+            let results: Vec<(usize, Observation)> = std::thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(i, p)| {
+                        let i = *i;
+                        scope.spawn(move || (i, p.execute(fs, policy)))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join().unwrap_or_else(|_| {
+                            (
+                                usize::MAX,
+                                action_error("tool thread panicked".into(), Instant::now(), 1),
+                            )
+                        })
+                    })
+                    .collect()
+            });
+            for (i, obs) in results {
+                if i != usize::MAX {
+                    out[i] = Some(obs);
+                }
+            }
+        }
+        // A call whose thread panicked still gets an answer.
+        for (i, p) in &pending {
+            if out[*i].is_none() {
+                out[*i] = Some(action_error(
+                    format!("{}: the tool failed unexpectedly", p.name()),
+                    Instant::now(),
+                    1,
+                ));
+            }
+        }
+        out
     }
 
     /// Runs one typed tool call, with the owner's hooks around it, and
@@ -1926,12 +2102,64 @@ impl Agent {
                 String::new(),
             );
         }
+        if self.cfg.read_only
+            && let Some(reason) = crate::readonly::read_only_refusal(command)
+        {
+            let obs = Observation {
+                output: format!(
+                    "refused: this is a read-only run and {reason}. {READ_ONLY_REMINDER}"
+                ),
+                exit_code: 126,
+                ..Observation::default()
+            };
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: command.to_string(),
+                ..Step::default()
+            });
+            self.emit_observation(command, &obs);
+            return (
+                format_observation(&obs, self.cfg.output_limit),
+                obs,
+                false,
+                String::new(),
+            );
+        }
         let gate = self.verify_gate_for(command);
         let timeout = match &gate {
             Some(_) => self.commit_deadline(),
             None => self.cfg.step_timeout,
         };
-        let obs = self.env.execute(cancel, command, timeout);
+        let snapshot = if self.cfg.read_only {
+            crate::readonly::TreeSnapshot::take(Path::new(if self.cfg.cwd.is_empty() {
+                "."
+            } else {
+                &self.cfg.cwd
+            }))
+        } else {
+            None
+        };
+        let mut obs = self.env.execute(cancel, command, timeout);
+        if let Some(snapshot) = snapshot {
+            let reverted = snapshot.restore();
+            if !reverted.is_empty() {
+                let note = format!(
+                    "[read-only run: the command changed the clone ({}); the change was put back. {READ_ONLY_REMINDER}]",
+                    reverted.join(", ")
+                );
+                if !obs.output.is_empty() && !obs.output.ends_with('\n') {
+                    obs.output.push('\n');
+                }
+                obs.output.push_str(&note);
+                self.emit(Step {
+                    kind: StepKind::Error,
+                    content: note,
+                    command: command.to_string(),
+                    ..Step::default()
+                });
+            }
+        }
         self.emit_observation(command, &obs);
         if obs.exit_code == 127 && self.sandbox_lost() {
             let msg = format!(
@@ -1984,7 +2212,7 @@ impl Agent {
         });
         let start = Instant::now();
         let obs = match NativeCall::from_fenced(action, spec) {
-            Ok(call) => self.execute_native(&call),
+            Ok(call) => self.execute_native(&call, spec),
             Err(e) => action_error(e, start, 1),
         };
         let command = format!("{} action", action.name());
@@ -2000,34 +2228,43 @@ impl Agent {
         self.emit(Step {
             kind: call.step_kind(),
             content: spec.clone(),
-            command: spec,
+            command: spec.clone(),
             ..Step::default()
         });
-        let obs = self.execute_native(call);
+        let obs = self.execute_native(call, &spec);
         let command = format!("{} tool", call.name());
         self.emit_observation(&command, &obs);
         format_observation(&obs, self.cfg.output_limit)
     }
 
-    fn execute_native(&self, call: &NativeCall) -> Observation {
-        match call {
-            NativeCall::Read(targets) => self.native_read(targets),
-            NativeCall::Grep { pattern, scope } => self.native_grep(pattern, scope),
-            NativeCall::Glob { pattern, scope } => self.native_glob(pattern, scope),
-            NativeCall::Edit { path, blocks } => self.native_edit(path, blocks),
-            NativeCall::Write {
-                path,
-                content,
-                overwrite,
-            } => self.native_write(path, content, *overwrite),
-            NativeCall::Plan(items) => {
-                let start = Instant::now();
-                Observation {
-                    output: render_plan(items),
-                    duration: start.elapsed(),
-                    ..Observation::default()
-                }
-            }
+    /// Runs a parsed native call; in a read-only run `edit` and `write`
+    /// are refused instead.
+    fn execute_native(&mut self, call: &NativeCall, spec: &str) -> Observation {
+        if self.cfg.read_only && call.writes() {
+            let obs = Observation {
+                output: format!(
+                    "{}: refused: this is a read-only run; {READ_ONLY_REMINDER}",
+                    call.name()
+                ),
+                exit_code: 126,
+                ..Observation::default()
+            };
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: spec.to_string(),
+                ..Step::default()
+            });
+            return obs;
+        }
+        self.fs().execute(call)
+    }
+
+    /// The file side of the native tools, borrowed from the agent.
+    fn fs(&self) -> NativeFs<'_> {
+        NativeFs {
+            cwd: &self.cfg.cwd,
+            deny: &self.deny,
         }
     }
 
@@ -2060,6 +2297,157 @@ impl Agent {
             d = d.min(left.max(self.cfg.step_timeout));
         }
         d
+    }
+
+    fn emit_observation(&mut self, command: &str, obs: &Observation) {
+        self.emit(Step {
+            kind: StepKind::Observation,
+            content: stored_observation(&obs.output, self.cfg.output_limit),
+            command: command.to_string(),
+            exit_code: Some(obs.exit_code),
+            duration_ms: obs.duration.as_millis() as i64,
+            ..Step::default()
+        });
+    }
+
+    fn finish(&mut self, status: &str, submission: &str, err_text: &str) -> ResultSummary {
+        self.result.exit_status = status.to_string();
+        self.result.submission = submission.to_string();
+        self.result.error = err_text.to_string();
+        // A fresh token: the end hooks run even when the run was cancelled.
+        self.run_end_hooks(&CancelToken::new(), status, submission);
+        let stragglers = self.env.close();
+        if !stragglers.is_empty() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "killed {} process(es) the run left under its clone: {}",
+                    stragglers.len(),
+                    pulse_cli::procs::describe_killed(&stragglers)
+                ),
+                ..Step::default()
+            });
+        }
+        self.result.elapsed = self.started.elapsed();
+        self.emit(Step {
+            kind: StepKind::Exit,
+            content: status.to_string(),
+            ..Step::default()
+        });
+        self.result.clone()
+    }
+
+    pub(crate) fn emit(&mut self, mut s: Step) {
+        s.n = self.next_n;
+        self.next_n += 1;
+        s.at = now_rfc3339();
+        s.depth = self.cfg.depth;
+        self.steps.push(s.clone());
+        for sink in &mut self.sinks {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sink.step(s.clone());
+            }));
+        }
+    }
+}
+
+/// One call of a reply that can run beside the others: a native read-side
+/// call or a fetch. It carries everything its thread needs.
+enum ParallelCall {
+    Native(NativeCall),
+    Fetch(String),
+}
+
+impl ParallelCall {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Native(c) => c.name(),
+            Self::Fetch(_) => FETCH_TOOL,
+        }
+    }
+
+    fn step_kind(&self) -> StepKind {
+        match self {
+            Self::Native(c) => c.step_kind(),
+            Self::Fetch(_) => StepKind::Fetch,
+        }
+    }
+
+    fn spec(&self) -> String {
+        match self {
+            Self::Native(c) => c.spec(),
+            Self::Fetch(url) => url.clone(),
+        }
+    }
+
+    /// The `command` of the Observation step, as the sequential path
+    /// records it.
+    fn observation_command(&self) -> String {
+        format!("{} tool", self.name())
+    }
+
+    /// The Error step the sequential path would emit for this result, if
+    /// any (a fetch the policy refused).
+    fn error_step(&self, obs: &Observation) -> Option<String> {
+        match self {
+            Self::Fetch(_) if obs.exit_code == crate::fetch::FETCH_REFUSED_EXIT => {
+                Some(obs.output.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn execute(&self, fs: NativeFs<'_>, policy: &FetchPolicy) -> Observation {
+        match self {
+            Self::Native(c) => fs.execute(c),
+            Self::Fetch(url) => {
+                let start = Instant::now();
+                let r = fetch(url, policy, FETCH_BYTE_LIMIT, FETCH_TIMEOUT);
+                Observation {
+                    output: r.output,
+                    exit_code: r.exit_code,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+        }
+    }
+}
+
+/// The file side of the native tools: the clone root and the deny rules,
+/// and nothing of the agent's mutable state, so several calls of one reply
+/// can run on separate threads at once.
+#[derive(Clone, Copy)]
+struct NativeFs<'a> {
+    cwd: &'a str,
+    deny: &'a [DenyRule],
+}
+
+impl NativeFs<'_> {
+    fn execute(&self, call: &NativeCall) -> Observation {
+        match call {
+            NativeCall::Read(targets) => self.native_read(targets),
+            NativeCall::Grep { pattern, scope } => self.native_grep(pattern, scope),
+            NativeCall::Glob { pattern, scope } => self.native_glob(pattern, scope),
+            NativeCall::Edit { path, blocks } => self.native_edit(path, blocks),
+            NativeCall::Write {
+                path,
+                content,
+                overwrite,
+            } => self.native_write(path, content, *overwrite),
+            NativeCall::Plan(items) => {
+                let start = Instant::now();
+                Observation {
+                    output: render_plan(items),
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+        }
+    }
+
+    fn denied(&self, text: &str) -> Option<&DenyRule> {
+        self.deny.iter().find(|r| r.re.is_match(text))
     }
 
     fn native_read(&self, targets: &[ReadTarget]) -> Observation {
@@ -2252,7 +2640,7 @@ impl Agent {
         if blocks.is_empty() {
             return action_error("edit: missing SEARCH/REPLACE block".into(), start, 1);
         }
-        let create = !Path::new(&self.cfg.cwd).join(path).exists()
+        let create = !Path::new(self.cwd).join(path).exists()
             && blocks.len() == 1
             && blocks[0].search.is_empty();
         let resolved = match self.resolve_action_path(path, create) {
@@ -2379,12 +2767,8 @@ impl Agent {
                 rule.description
             ));
         }
-        let root = fs::canonicalize(if self.cfg.cwd.is_empty() {
-            "."
-        } else {
-            &self.cfg.cwd
-        })
-        .map_err(|e| format!("canonicalize clone root: {e}"))?;
+        let root = fs::canonicalize(if self.cwd.is_empty() { "." } else { self.cwd })
+            .map_err(|e| format!("canonicalize clone root: {e}"))?;
         let path = root.join(rel_path);
         // A path to create is confined through its nearest existing
         // ancestor, so a new file in a new directory still resolves.
@@ -2409,57 +2793,6 @@ impl Agent {
             rel: rel.to_string(),
             path,
         })
-    }
-
-    fn emit_observation(&mut self, command: &str, obs: &Observation) {
-        self.emit(Step {
-            kind: StepKind::Observation,
-            content: stored_observation(&obs.output, self.cfg.output_limit),
-            command: command.to_string(),
-            exit_code: Some(obs.exit_code),
-            duration_ms: obs.duration.as_millis() as i64,
-            ..Step::default()
-        });
-    }
-
-    fn finish(&mut self, status: &str, submission: &str, err_text: &str) -> ResultSummary {
-        self.result.exit_status = status.to_string();
-        self.result.submission = submission.to_string();
-        self.result.error = err_text.to_string();
-        // A fresh token: the end hooks run even when the run was cancelled.
-        self.run_end_hooks(&CancelToken::new(), status, submission);
-        let stragglers = self.env.close();
-        if !stragglers.is_empty() {
-            self.emit(Step {
-                kind: StepKind::Note,
-                content: format!(
-                    "killed {} process(es) the run left under its clone: {}",
-                    stragglers.len(),
-                    pulse_cli::procs::describe_killed(&stragglers)
-                ),
-                ..Step::default()
-            });
-        }
-        self.result.elapsed = self.started.elapsed();
-        self.emit(Step {
-            kind: StepKind::Exit,
-            content: status.to_string(),
-            ..Step::default()
-        });
-        self.result.clone()
-    }
-
-    pub(crate) fn emit(&mut self, mut s: Step) {
-        s.n = self.next_n;
-        self.next_n += 1;
-        s.at = now_rfc3339();
-        s.depth = self.cfg.depth;
-        self.steps.push(s.clone());
-        for sink in &mut self.sinks {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                sink.step(s.clone());
-            }));
-        }
     }
 }
 
@@ -2604,7 +2937,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "You are an autonomous software engineering agent working in {{.Info.cwd}} on {{.Info.os}}.\n",
     "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the owner sees.\n",
     "Some runs also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report) and mcp__ tools; use them when they are offered.\n",
-    "Call tools with JSON arguments. Independent calls go in one reply and run in order, each with its own result; a call that needs an earlier result waits for your next reply.\n",
+    "Call tools with JSON arguments. Independent calls go in one reply, each with its own result: read, grep and glob calls of one reply run at the same time, the rest in order; a call that needs an earlier result waits for your next reply.\n",
     "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
     "If you cannot call tools, write exactly one fenced block per message; exactly one fenced block is executed.\n",
     "The working directory is already the clone root ({{.Info.cwd}}), so `cd <root> &&` is unnecessary.\n",
@@ -2643,6 +2976,21 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
 );
 
 pub use DEFAULT_PROMPT_TEMPLATE as DefaultPromptTemplate;
+
+/// Appended to the system prompt of a read-only run, after the template
+/// renders, so an owner's own template gets it too.
+pub const READ_ONLY_PROMPT: &str = concat!(
+    "This is a read-only run: your findings are the whole deliverable. Look, test and report; change nothing in the clone and commit nothing.\n",
+    "The edit and write tools are not offered. Commands that would change the clone (git commit, checkout, stash, formatters that rewrite files, `> file`, sed -i, npm install <pkg>, and the like) are refused, and a command that changes it anyway is put back and reported.\n",
+    "Scratch files go under /tmp. Running the project's checks is fine. Describe a change you would make as a FINDING: or SUGGESTION: line instead of making it."
+);
+
+/// The Note step a read-only run starts with.
+pub const READ_ONLY_START_NOTE: &str = "read-only run: edit and write are off, commands that would change the clone are refused, and a change that slips through is put back";
+
+/// The closing clause of every read-only refusal.
+const READ_ONLY_REMINDER: &str =
+    "Look, test and report; change nothing and commit nothing. Scratch files go under /tmp.";
 
 #[derive(Clone, Debug, Default)]
 pub struct PromptData {
@@ -2966,6 +3314,17 @@ impl NativeCall {
             Self::Write { .. } => StepKind::Write,
             Self::Plan(_) => StepKind::Plan,
         }
+    }
+
+    /// Whether the call changes the clone.
+    fn writes(&self) -> bool {
+        matches!(self, Self::Edit { .. } | Self::Write { .. })
+    }
+
+    /// Whether the call can run beside the other calls of its reply: it
+    /// only reads, and reads nothing another call of the reply writes.
+    fn parallel_safe(&self) -> bool {
+        matches!(self, Self::Read(_) | Self::Grep { .. } | Self::Glob { .. })
     }
 
     /// The call as a fenced-block spec: what the step records and the
@@ -5520,7 +5879,8 @@ mod tests {
         h.compile_deny().unwrap();
         assert!(h.denied("cat .pulse/private/token").is_some());
         assert!(
-            h.resolve_action_path(".pulse/private/token", false)
+            h.fs()
+                .resolve_action_path(".pulse/private/token", false)
                 .is_err()
         );
     }
@@ -6987,5 +7347,258 @@ mod tests {
         let (_, got) = run_agent(p.clone(), env, off).unwrap();
         assert_eq!(got.compactions, 0, "compact_at 0 is off");
         assert_eq!(p.requests().len(), 5);
+    }
+
+    /// A temp directory that is a git repo with one commit, for the
+    /// read-only tree guard.
+    fn git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "git init -q -b main && echo one > a.txt && git add . && git -c user.name=t -c user.email=t@example.com commit -q -m init",
+            ])
+            .current_dir(dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        dir
+    }
+
+    #[test]
+    fn read_only_run_offers_no_edit_or_write_and_refuses_changes() {
+        let _serial = crate::test_helpers::serial();
+        let dir = git_repo();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("r1", "read", json!({"path":"a.txt"})),
+                (
+                    "e1",
+                    "edit",
+                    json!({"path":"a.txt","search":"one","replace":"two"}),
+                ),
+                ("w1", "write", json!({"path":"b.txt","content":"x"})),
+            ])),
+            resp(calls(&[(
+                "b1",
+                "bash",
+                json!({"command":"git add . && git commit -m x"}),
+            )])),
+            resp(calls(&[(
+                "b2",
+                "bash",
+                json!({"command":"python3 -c \"open('made.txt','w').write('x'); open('a.txt','w').write('changed')\" && echo ran"}),
+            )])),
+            resp(calls(&[(
+                "b3",
+                "bash",
+                json!({"command":"cat a.txt && touch /tmp/pulse-ro-ok"}),
+            )])),
+            resp(msg("SUMMARY: looked, nothing changed")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        h.cfg.read_only = true;
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+
+        let requests = p.requests();
+        let offered: Vec<&str> = requests[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(offered, READ_ONLY_TOOL_NAMES.to_vec());
+        assert!(
+            requests[0].messages[0]
+                .content
+                .contains("This is a read-only run"),
+            "the system prompt says so"
+        );
+        let steps = h.trajectory().steps;
+        assert_eq!(steps[0].kind, StepKind::Note);
+        assert!(steps[0].content.starts_with("read-only run:"), "{steps:?}");
+
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(replies["r1"].contains("one"), "{}", replies["r1"]);
+        for id in ["e1", "w1"] {
+            assert!(
+                replies[id].contains("refused: this is a read-only run")
+                    && replies[id].contains("<returncode>126</returncode>"),
+                "{id}: {}",
+                replies[id]
+            );
+        }
+        assert!(
+            replies["b1"].contains("refused: this is a read-only run and `git add`")
+                && replies["b1"].contains("<returncode>126</returncode>"),
+            "{}",
+            replies["b1"]
+        );
+        // The python one-liner slipped past the checker: the guard put the
+        // clone back and told the model.
+        assert!(replies["b2"].contains("ran"), "{}", replies["b2"]);
+        assert!(
+            replies["b2"].contains("[read-only run: the command changed the clone (")
+                && replies["b2"].contains("made.txt (new, removed)")
+                && replies["b2"].contains("a.txt"),
+            "{}",
+            replies["b2"]
+        );
+        assert!(!dir.path().join("made.txt").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert!(replies["b3"].contains("one"), "{}", replies["b3"]);
+        assert!(
+            !replies["b3"].contains("read-only run:"),
+            "a scratch write under /tmp is fine: {}",
+            replies["b3"]
+        );
+        let _ = fs::remove_file("/tmp/pulse-ro-ok");
+        let errors = steps.iter().filter(|s| s.kind == StepKind::Error).count();
+        assert_eq!(
+            errors, 4,
+            "edit, write, git commit, slipped change: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn read_only_subagents_inherit_the_mode() {
+        let _serial = crate::test_helpers::serial();
+        let dir = git_repo();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "s1",
+                SUBAGENT_TOOL,
+                json!({"task":"look around"}),
+            )])),
+            // The child's one reply: it tries to write.
+            resp(calls(&[(
+                "c1",
+                "write",
+                json!({"path":"c.txt","content":"x"}),
+            )])),
+            resp(msg("SUMMARY: child saw a refusal")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        h.cfg.read_only = true;
+        h.cfg.subagents = true;
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let requests = p.requests();
+        let child_tools: Vec<&str> = requests[1].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !child_tools.contains(&"write") && !child_tools.contains(&"edit"),
+            "{child_tools:?}"
+        );
+        assert!(!dir.path().join("c.txt").exists());
+    }
+
+    #[test]
+    fn parallel_read_calls_answer_in_call_order_around_a_sequential_one() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        fs::write(dir.path().join("c.txt"), "gamma\n").unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("r1", "read", json!({"path":"a.txt"})),
+                ("r2", "read", json!({"path":"b.txt"})),
+                ("b1", "bash", json!({"command":"echo from-bash"})),
+                ("g1", "grep", json!({"pattern":"gamma"})),
+                ("r3", "read", json!({"path":"missing.txt"})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.steps, 5);
+        let replies = tool_replies(&h);
+        let ids: Vec<&str> = replies.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["r1", "r2", "b1", "g1", "r3"],
+            "results keep call order"
+        );
+        let by_id: BTreeMap<String, String> = replies.into_iter().collect();
+        assert!(by_id["r1"].contains("alpha"), "{}", by_id["r1"]);
+        assert!(by_id["r2"].contains("beta"), "{}", by_id["r2"]);
+        assert!(by_id["b1"].contains("from-bash"), "{}", by_id["b1"]);
+        assert!(by_id["g1"].contains("c.txt:1:"), "{}", by_id["g1"]);
+        assert!(
+            by_id["r3"].contains("cannot be resolved inside the clone"),
+            "a failed read in the batch still answers: {}",
+            by_id["r3"]
+        );
+        // Every batched call is announced before any of them answers; the
+        // bash call runs after the batch, in its own turn.
+        let kinds: Vec<StepKind> = h
+            .trajectory()
+            .steps
+            .iter()
+            .map(|s| s.kind.clone())
+            .collect();
+        let first_obs = kinds
+            .iter()
+            .position(|k| *k == StepKind::Observation)
+            .unwrap();
+        assert_eq!(
+            &kinds[1..first_obs],
+            &[
+                StepKind::Read,
+                StepKind::Read,
+                StepKind::Grep,
+                StepKind::Read
+            ],
+            "{kinds:?}"
+        );
+        let bash_at = kinds.iter().position(|k| *k == StepKind::Command).unwrap();
+        assert!(bash_at > first_obs, "{kinds:?}");
+        let obs_commands: Vec<String> = h
+            .trajectory()
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Observation)
+            .map(|s| s.command.clone())
+            .collect();
+        assert_eq!(
+            obs_commands,
+            [
+                "read tool",
+                "read tool",
+                "grep tool",
+                "read tool",
+                "echo from-bash"
+            ],
+            "{obs_commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_lone_read_beside_a_bash_call_runs_in_order() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("b1", "bash", json!({"command":"echo made > a.txt"})),
+                ("r1", "read", json!({"path":"a.txt"})),
+            ])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let by_id: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            by_id["r1"].contains("made"),
+            "one read-side call is no batch, so it sees the bash call's file: {}",
+            by_id["r1"]
+        );
     }
 }

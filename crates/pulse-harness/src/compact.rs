@@ -140,6 +140,7 @@ pub fn summary_request(model: &str, task: &str, transcript: &str) -> Request {
         max_tokens: COMPACT_SUMMARY_TOKENS,
         temperature: None,
         initiator: "agent".to_string(),
+        reasoning: String::new(),
     }
 }
 

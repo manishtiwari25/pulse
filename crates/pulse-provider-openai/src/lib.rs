@@ -1213,6 +1213,14 @@ struct OpenAIChatRequest {
     max_tokens: i32,
     #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    /// Only when the run asks for it: a model without the knob would
+    /// refuse the parameter.
+    #[serde(
+        rename = "reasoning_effort",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    reasoning_effort: String,
     #[serde(rename = "stream")]
     stream: bool,
 }
@@ -1225,6 +1233,7 @@ fn open_ai_request(req: Request) -> OpenAIChatRequest {
         tool_choice: String::new(),
         max_tokens: req.max_tokens,
         temperature: req.temperature,
+        reasoning_effort: req.reasoning,
         stream: false,
     };
     for m in req.messages {

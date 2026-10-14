@@ -242,7 +242,19 @@ pub struct Request {
     pub temperature: Option<f64>,
     #[serde(rename = "Initiator")]
     pub initiator: String,
+    /// How hard a reasoning model should think: one of [`REASONING_EFFORTS`]
+    /// or empty for the vendor's default. OpenAI-compatible providers send
+    /// it as `reasoning_effort`; providers without the knob ignore it.
+    #[serde(
+        rename = "Reasoning",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub reasoning: String,
 }
+
+/// The reasoning efforts a [`Request`] may ask for, lowest first.
+pub const REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
 
 /// Usage is what one call cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1075,10 +1087,27 @@ mod tests {
             max_tokens: 42,
             temperature: Some(0.2),
             initiator: "user".to_string(),
+            reasoning: String::new(),
         };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             json!({"Model":"gpt","Messages":[msg],"Tools":[tool],"MaxTokens":42,"Temperature":0.2,"Initiator":"user"})
+        );
+        let thinking = Request {
+            reasoning: "high".to_string(),
+            ..request.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&thinking).unwrap()["Reasoning"],
+            "high"
+        );
+        let back: Request = serde_json::from_value(
+            json!({"Model":"gpt","Messages":[],"Tools":[],"MaxTokens":0,"Temperature":null,"Initiator":""}),
+        )
+        .unwrap();
+        assert_eq!(
+            back.reasoning, "",
+            "an older encoder's request still decodes"
         );
 
         let mut usage = Usage {

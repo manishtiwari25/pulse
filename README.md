@@ -1223,6 +1223,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `harness.context_window` | `0` tokens (= the model list) | The context window the harness assumes for context discipline (collapsing harder past 80% of it); `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none keeps the first level. `pulse harness run --context-window N` overrides it for one run. |
 | `harness.compact_at` | `70` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness)). `--compact-at N` for one run. |
+| `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](#the-harness)). `--reasoning LEVEL` for one run. |
 | `harness.instructions` | `on` | A native-harness run reads the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` into its system prompt. |
 | `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
 | `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
@@ -1307,9 +1308,17 @@ and subject to the same deny rules and output cap as a shell command:
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
 
-A reply may carry **several calls**: they run in order and every one gets
-its own observation, so a model reads three files in one turn instead of
-three. A call to a tool that does not exist, or with arguments of the wrong
+A reply may carry **several calls**, and every one gets its own
+observation, so a model reads three files in one turn instead of three.
+The calls that only look - `read`, `grep`, `glob` and `fetch` - run **at
+the same time** when a reply carries two or more of them (eight threads at
+most), each confined to the clone as before; `bash`, `edit`, `write`,
+`plan`, `skill`, `subagent` and MCP calls run one after another in the
+order the model gave, after the batch, and the results go back in the
+order of the calls, so the model sees nothing of the scheduling but the
+speed. A lone `read` beside a `bash` call is no batch and still runs in
+order, which is what a model that writes a file and reads it back
+expects. A call to a tool that does not exist, or with arguments of the wrong
 shape, comes back as an error naming the tools and counts like a prose-only
 reply towards `format_error`; a call that ran but found nothing (a missing
 file, a search that matched twice) is an ordinary observation with a
@@ -1429,6 +1438,56 @@ listed, or that redirects off the list, is refused with the list named
 `error` step. The deny rules for credentials do not apply to a page the
 model reads, but a page's text is observation, never instruction - the
 system prompt says so. Each fetch is a `fetch` step with the URL.
+
+**Read-only runs.** The jobs that look but do not touch - `answer` and
+`ballot` - run with `--read-only`, and `pulse harness run --read-only`
+gives any run the same discipline. "Read-only" is about the clone, not the
+machine: the `edit` and `write` tools are not offered (the model is told
+so in its prompt and in the run's first `note` step), and a `bash` command
+that would change the clone is refused before it starts with an `error`
+step and a result that names the first offending part - ``refused: this is
+a read-only run and `git commit` makes a commit (a read-only run lands
+nothing). Look, test and report; change nothing and commit nothing.
+Scratch files go under /tmp.`` - while `cargo test`, `npm ci`, `git log`,
+`cargo fmt --check`, a pipe into `head` or `/dev/null`, and anything that
+writes under `/tmp`, `$TMPDIR` or after a `cd /tmp` run as usual. The
+checker reads the command the way `/bin/sh` would - quotes, `&&`, pipes,
+`>`/`>>`/`2>` redirections, `$(...)`, backticks, heredoc bodies (a `>`
+inside one is text), `sh -c '…'`, `eval`, `xargs`, `find -delete`/`-exec`,
+`sudo`/`env`/`timeout`/`npx`/`uv run` and the other wrappers - and knows
+the writers: `git add|commit|checkout|stash|reset|push|clean|…`, `rm`,
+`mkdir`, `touch`, `cp`/`mv`/`ln`/`rsync` destinations, `sed -i`, `perl -i`,
+`patch` without `--dry-run`, `tar x`, `unzip`, `curl -o`/`wget`, the
+formatters that rewrite (`cargo fmt`, `rustfmt`, `prettier --write`,
+`eslint --fix`, `gofmt -w`, `black`, `ruff format`, …) and the package
+managers' manifest-editing subcommands (`npm install <pkg>`, `cargo add`,
+`cargo update`, `go get`, `go mod tidy`, `uv add`, `poetry add`, …; a
+plain `npm ci`, `cargo build` or `uv sync` is fine). What the checker
+cannot see - a Python one-liner that opens a file for writing - the tree
+guard catches: every command in a read-only run is bracketed by a snapshot
+of the clone's status, HEAD, branch and local refs, and whatever changed is
+put back afterwards (new files removed with the directories they left
+empty, tracked files restored from HEAD, a commit soft-reset and its files
+restored, a new branch or tag deleted, a moved one moved back), with the
+result ending in `[read-only run: the command changed the clone (made.txt
+(new, removed); a.txt); the change was put back. …]` and an `error` step.
+A read-only run's budget notice asks for the report without the commit, a
+helper started by a read-only run is read-only too, and the fenced
+`edit` block is refused like the tool.
+
+**Reasoning effort and prompt caching.** `harness.reasoning` (`default`;
+Settings → Harness **Run mode and transcript size**, `--reasoning LEVEL` for
+one run) asks the model for a reasoning effort - `minimal`, `low`,
+`medium`, `high` or `xhigh` - sent as `reasoning_effort` to the
+OpenAI-compatible providers and to Copilot for the models that take it;
+`default` sends nothing and leaves the model's own setting. A model that
+does not take the field rejects the call, so set it per project with the
+model in mind (the gemini and anthropic providers ignore it this wave).
+Independently of any setting, the anthropic provider marks the system
+prompt and the last block of the last message as cache breakpoints
+(`cache_control: ephemeral`), so a long run's steady prefix - the prompt,
+the instructions, the older turns - is read from Anthropic's cache on each
+call instead of being billed and processed anew.
 
 **Compaction.** When a long run's prompt passes `harness.compact_at`
 percent of the model's context window (`70`; Settings → Harness
@@ -1654,7 +1713,7 @@ worked it.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

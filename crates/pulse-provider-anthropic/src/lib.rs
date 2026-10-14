@@ -417,8 +417,8 @@ struct MessagesRequest {
     max_tokens: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    system: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    system: Vec<Block>,
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ApiTool>,
@@ -430,21 +430,54 @@ struct ApiMessage {
     content: Vec<Block>,
 }
 
+/// A prompt-cache breakpoint: the prefix up to this block is cached for a
+/// few minutes and read back at a tenth of the price on the next call.
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum CacheControl {
+    Ephemeral,
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Block {
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
+}
+
+impl Block {
+    fn text(text: String) -> Self {
+        Self::Text {
+            text,
+            cache_control: None,
+        }
+    }
+
+    fn mark_cached(&mut self) {
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::ToolUse { cache_control, .. }
+            | Self::ToolResult { cache_control, .. } => {
+                *cache_control = Some(CacheControl::Ephemeral);
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -455,6 +488,12 @@ struct ApiTool {
 }
 
 /// Translates the harness request into the Messages API body.
+///
+/// Two cache breakpoints go in: one after the system prompt, which with
+/// the tools before it is the stable prefix of every call of a run, and
+/// one on the last block of the conversation, so each call reads the
+/// previous call's prefix from the cache and extends it. Prompts under
+/// the vendor's minimum are simply not cached.
 fn messages_request(req: &Request) -> MessagesRequest {
     let mut system: Vec<&str> = Vec::new();
     let mut messages: Vec<ApiMessage> = Vec::new();
@@ -470,25 +509,19 @@ fn messages_request(req: &Request) -> MessagesRequest {
                 if m.content.is_empty() {
                     continue;
                 }
-                (
-                    "user",
-                    vec![Block::Text {
-                        text: m.content.clone(),
-                    }],
-                )
+                ("user", vec![Block::text(m.content.clone())])
             }
             Role::Assistant => {
                 let mut blocks = Vec::with_capacity(m.tool_calls.len() + 1);
                 if !m.content.is_empty() {
-                    blocks.push(Block::Text {
-                        text: m.content.clone(),
-                    });
+                    blocks.push(Block::text(m.content.clone()));
                 }
                 for tc in &m.tool_calls {
                     blocks.push(Block::ToolUse {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         input: tool_input(&tc.arguments),
+                        cache_control: None,
                     });
                 }
                 if blocks.is_empty() {
@@ -501,6 +534,7 @@ fn messages_request(req: &Request) -> MessagesRequest {
                 vec![Block::ToolResult {
                     tool_use_id: m.tool_call_id.clone(),
                     content: m.content.clone(),
+                    cache_control: None,
                 }],
             ),
         };
@@ -512,6 +546,16 @@ fn messages_request(req: &Request) -> MessagesRequest {
             }),
         }
     }
+    if let Some(last) = messages.last_mut().and_then(|m| m.content.last_mut()) {
+        last.mark_cached();
+    }
+    let system = if system.is_empty() {
+        Vec::new()
+    } else {
+        let mut block = Block::text(system.join("\n\n"));
+        block.mark_cached();
+        vec![block]
+    };
     MessagesRequest {
         model: req.model.clone(),
         max_tokens: if req.max_tokens > 0 {
@@ -520,7 +564,7 @@ fn messages_request(req: &Request) -> MessagesRequest {
             DEFAULT_MAX_TOKENS
         },
         temperature: req.temperature,
-        system: system.join("\n\n"),
+        system,
         messages,
         tools: req
             .tools
@@ -965,6 +1009,7 @@ mod tests {
                     max_tokens: 0,
                     temperature: Some(0.2),
                     initiator: "test".to_string(),
+                    reasoning: String::new(),
                 },
             )
             .unwrap();
@@ -982,7 +1027,9 @@ mod tests {
                 "model": "claude-sonnet-4-5",
                 "max_tokens": 8192,
                 "temperature": 0.2,
-                "system": "You are terse.\n\nAnswer in English.",
+                "system": [
+                    {"type": "text", "text": "You are terse.\n\nAnswer in English.", "cache_control": {"type": "ephemeral"}}
+                ],
                 "messages": [
                     {"role": "user", "content": [
                         {"type": "text", "text": "Weather in Paris and Rome?"}
@@ -994,7 +1041,7 @@ mod tests {
                     ]},
                     {"role": "user", "content": [
                         {"type": "tool_result", "tool_use_id": "toolu_1", "content": "18C"},
-                        {"type": "tool_result", "tool_use_id": "toolu_2", "content": "21C"}
+                        {"type": "tool_result", "tool_use_id": "toolu_2", "content": "21C", "cache_control": {"type": "ephemeral"}}
                     ]}
                 ],
                 "tools": [
@@ -1104,9 +1151,55 @@ mod tests {
                     {"type": "tool_use", "id": "t2", "name": "g", "input": {"k": true}}
                 ]},
                 {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": ""}
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "", "cache_control": {"type": "ephemeral"}}
                 ]}
             ])
+        );
+    }
+
+    #[test]
+    fn request_translation_puts_cache_breakpoints_on_system_and_last_block() {
+        let req = Request {
+            model: "m".to_string(),
+            messages: vec![
+                message(Role::System, "rules"),
+                message(Role::User, "task"),
+                assistant("thinking", Vec::new()),
+                message(Role::User, "go on"),
+            ],
+            ..Request::default()
+        };
+        let got = serde_json::to_value(messages_request(&req)).unwrap();
+        assert_eq!(
+            got["system"],
+            json!([{"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}}])
+        );
+        let msgs = got["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(
+            msgs[0]["content"][0].get("cache_control").is_none(),
+            "only the last block carries the moving breakpoint: {got}"
+        );
+        assert!(msgs[1]["content"][0].get("cache_control").is_none());
+        assert_eq!(
+            msgs[2]["content"][0],
+            json!({"type": "text", "text": "go on", "cache_control": {"type": "ephemeral"}})
+        );
+        // An assistant turn that ends the conversation gets the breakpoint
+        // on its tool_use block, the last block there is.
+        let req = Request {
+            model: "m".to_string(),
+            messages: vec![
+                message(Role::User, "task"),
+                assistant("", vec![call("t1", "f", "{}")]),
+            ],
+            ..Request::default()
+        };
+        let got = serde_json::to_value(messages_request(&req)).unwrap();
+        assert!(got.get("system").is_none());
+        assert_eq!(
+            got["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
         );
     }
 

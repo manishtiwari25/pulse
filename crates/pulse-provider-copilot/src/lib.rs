@@ -1160,6 +1160,14 @@ struct OpenAIChatRequest {
     max_tokens: i32,
     #[serde(rename = "temperature", skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
+    /// Only when the run asks for it: a model without the knob would
+    /// refuse the parameter.
+    #[serde(
+        rename = "reasoning_effort",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    reasoning_effort: String,
     #[serde(rename = "stream")]
     stream: bool,
 }
@@ -1176,6 +1184,7 @@ fn open_ai_request(req: &Request) -> OpenAIChatRequest {
         tool_choice: String::new(),
         max_tokens: req.max_tokens,
         temperature: req.temperature,
+        reasoning_effort: req.reasoning.clone(),
         stream: false,
     };
     for m in &req.messages {
@@ -1882,6 +1891,10 @@ mod tests {
         assert_eq!(guard.1["stream"], false);
         assert_eq!(guard.1["max_tokens"], 42);
         assert_eq!(guard.1["tools"][0]["type"], "function");
+        assert!(
+            guard.1.get("reasoning_effort").is_none(),
+            "no effort asked, none sent"
+        );
         let call = &guard.1["messages"][1]["tool_calls"][0];
         assert_eq!(call["id"], "call-1");
         assert_eq!(call["function"]["name"], "lookup");
@@ -1899,6 +1912,23 @@ mod tests {
         assert_eq!(resp.usage.prompt_tokens, 11);
         assert_eq!(resp.usage.completion_tokens, 7);
         drop(srv);
+    }
+
+    #[test]
+    fn request_json_carries_reasoning_effort_only_when_asked() {
+        let quiet = open_ai_request(&Request {
+            model: "gpt-4.1".to_string(),
+            ..Request::default()
+        });
+        let got = serde_json::to_value(quiet).unwrap();
+        assert!(got.get("reasoning_effort").is_none(), "{got}");
+        let thinking = open_ai_request(&Request {
+            model: "o4-mini".to_string(),
+            reasoning: "medium".to_string(),
+            ..Request::default()
+        });
+        let got = serde_json::to_value(thinking).unwrap();
+        assert_eq!(got["reasoning_effort"], "medium");
     }
 
     #[test]

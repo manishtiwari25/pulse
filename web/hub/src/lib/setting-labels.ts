@@ -150,6 +150,7 @@ const LABELS: Record<string, string> = {
   "harness.subagents": "Let a run start a bounded helper on a sub-task",
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
   "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
+  "harness.reasoning": "Reasoning effort asked of the model",
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
   "harness.output_limit": "Output kept per command (characters)",
@@ -264,6 +265,8 @@ const HELP: Record<string, string> = {
     "The hosts a run may read web pages from, comma-separated - docs.rs, *.rust-lang.org, or * for any. Pages come back as text (2 MB, 30 s). Empty turns the fetch tool off.",
   "harness.compact_at":
     "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. The summary call is free of the step cap. 0 turns compaction off.",
+  "harness.reasoning":
+    "How hard the model thinks before it answers, sent as reasoning_effort to the OpenAI-compatible providers and to Copilot for the models that take it. Model default sends nothing. A model that does not take the field rejects the call, so choose with your model in mind.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
   "harness.commit_timeout":
     "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",

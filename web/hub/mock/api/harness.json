@@ -254,6 +254,18 @@
       "secret": false
     },
     {
+      "name": "harness.reasoning",
+      "value": "default",
+      "default": "default",
+      "kind": "choice",
+      "min": null,
+      "choices": ["default", "minimal", "low", "medium", "high", "xhigh"],
+      "description": "the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers and to copilot for the models that take it; default sends nothing",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
       "name": "worker_model",
       "value": "claude-sonnet-4.5",
       "default": "",

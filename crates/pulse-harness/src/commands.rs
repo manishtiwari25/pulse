@@ -171,6 +171,16 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         -1,
         "percent of the context window at which the conversation is summarised and compacted; 0 turns it off; overrides harness.compact_at",
     );
+    fs.bool_var(
+        "read-only",
+        false,
+        "a run that looks but does not touch: edit and write are not offered, commands that would change the clone are refused, and a change that slips through is put back (the runner sets this for answer and ballot jobs)",
+    );
+    fs.string_var(
+        "reasoning",
+        "",
+        "reasoning effort asked of the model (minimal, low, medium, high, xhigh) where the provider takes one; empty leaves the model's default; overrides harness.reasoning",
+    );
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
     apply_raw_globals(c, &fs);
@@ -407,6 +417,33 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             s.setting_int("harness.compact_at") as i32
         }),
     };
+    let read_only = fs.get_bool("read-only");
+    let reasoning = {
+        let flag = fs.get_string("reasoning").trim().to_lowercase();
+        let v = if flag.is_empty() {
+            st.as_ref()
+                .map(|s| s.setting("harness.reasoning", "default"))
+                .unwrap_or_default()
+        } else {
+            flag
+        };
+        if v.is_empty() || v == "default" {
+            String::new()
+        } else if pulse_provider::REASONING_EFFORTS.contains(&v.as_str()) {
+            v
+        } else {
+            return Err(errorf(
+                2,
+                &format!("pulse harness run: --reasoning {v:?} is not a reasoning effort"),
+                "",
+                &format!(
+                    "use one of default, {}",
+                    pulse_provider::REASONING_EFFORTS.join(", ")
+                ),
+            )
+            .into());
+        }
+    };
     let mut cfg = Config {
         model: model_name.clone(),
         task,
@@ -427,6 +464,8 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         instructions,
         subagents,
         compact_at,
+        read_only,
+        reasoning,
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {

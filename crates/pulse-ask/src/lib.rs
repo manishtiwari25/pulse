@@ -261,6 +261,7 @@ fn request(model: &str, cx: &Context, history: &[Turn], question: &str) -> Reque
         max_tokens: MAX_TOKENS,
         temperature: Some(0.2),
         initiator: "ask".into(),
+        reasoning: String::new(),
     }
 }
 

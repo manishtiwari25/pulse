@@ -889,6 +889,7 @@ impl Handler {
                 "harness.subagents",
                 "harness.fetch_allow",
                 "harness.compact_at",
+                "harness.reasoning",
                 "harness.step_timeout",
                 "harness.commit_timeout",
                 "harness.output_limit",
