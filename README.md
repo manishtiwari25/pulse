@@ -1299,13 +1299,14 @@ and subject to the same deny rules and output cap as a shell command:
 
 | tool | what it does |
 |------|--------------|
-| `bash` | one non-interactive `/bin/sh -c` command, a fresh process each time |
+| `bash` | one non-interactive `/bin/sh -c` command, a fresh process each time; `background: true` starts it as a **background process** instead (below) |
 | `read` | one file, every line numbered; `start`/`end` read a range, a binary file reports its size |
 | `grep` | a Rust regex over the clone, a directory, a file or a glob; `path:line: text` lines back |
 | `glob` | the files whose path matches a glob (`*` crosses `/`), at most 500, `.git` left out |
 | `edit` | exact search/replace in one file, each search matching once; `edits` applies several in order; an empty search creates the file |
 | `write` | a whole new file, parents created; refuses an existing file unless `overwrite` is true |
 | `plan` | the task's checklist (todo / doing / done), shown in the transcript and echoed back |
+| `process` | the background processes of the run: `output` reads what one has printed since the last look, `wait` gives it up to `seconds` to end, `stop` ends it, `list` names them |
 | `skill` | one skill's `SKILL.md` by name, or one file of it (**Skills as tools**, below) |
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
@@ -1326,6 +1327,26 @@ reply towards `format_error`; a call that ran but found nothing (a missing
 file, a search that matched twice) is an ordinary observation with a
 non-zero return code. The fenced blocks below are still accepted for models
 without tool calling - the typed tools are the same operations.
+
+**Background processes.** A command runs to completion and whatever it
+left behind - a `cmd &`, a forgotten watcher - is ended with it, so a
+server or a watch-mode build goes through `bash` with `background: true`:
+the command starts in its own process group, the call comes back after
+`wait` seconds (2 by default, up to 600) with what was printed so far and
+an id - `[bg-1 is running in the background (pid 4242) after 2.0s]` - or,
+if it already ended within the wait, with its output and exit code as if
+it had run in the foreground. From then on the `process` tool manages it:
+`output` returns the new lines since the last read (the buffer keeps the
+last 2 MiB and says how much it dropped), `wait` with `seconds` blocks
+until it ends or the time is up and returns the output either way, `stop`
+ends the whole group, `list` shows each one with its state. Eight may run
+at once; every one still running is stopped when the run or session ends,
+and a note in the trajectory says which. Jobs get the same tool, so an
+`npm run dev` under a job's test step is no longer a hang; read-only runs
+and plan mode do not offer it, since a process that outlives a command
+cannot be covered by the snapshot they restore. In a session `/procs`
+lists them, `/procs ID [LINES]` shows the tail of one, `/procs stop ID|all`
+ends them (**Conversations**, below).
 
 **Repository instructions.** A run reads the clone's `AGENTS.md`,
 `CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` - each once
@@ -1771,11 +1792,16 @@ older conversation now; `/usage` shows calls, tokens, cost and time;
 `/approve` toggles approving everything; `/permissions` lists the
 permission rules in force, `/permissions allow PATTERN` or `/permissions
 deny PATTERN` adds one for the session and `/permissions clear` drops the
-session's (see below); `/diff` shows `git status` and
+session's (see below); `/procs` lists the background processes the model
+started with `bash background:true` (state, pid, command), `/procs ID
+[LINES]` shows the last lines one printed (20 by default) and `/procs stop
+ID|all` ends them - everything still running is stopped when the session
+ends; `/diff` shows `git status` and
 the diff stat of the clone; `/export [PATH]` writes the conversation as
 Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
 has in hand - model, context window, budgets, mode, tools, instruction
-files, skills, hooks, MCP servers, deny rules, permission rules; `/init` asks the model to
+files, skills, hooks, MCP servers, deny rules, permission rules,
+background processes; `/init` asks the model to
 write or improve the project's `AGENTS.md` from what it finds; `/delegate
 [TITLE]` has the model turn the conversation so far into a brief and puts
 it on the board as a task for the fleet (the directory must be a
@@ -1822,7 +1848,7 @@ pulse harness login                     # device flow: open the URL, type the co
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /diff /export /env /init /delegate /new /sessions /help inside
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

@@ -2030,6 +2030,7 @@ impl Sink for ProgressSink {
             | StepKind::Mcp
             | StepKind::Skill
             | StepKind::Fetch
+            | StepKind::Process
             | StepKind::Hook => {
                 let _ = writeln!(
                     self.w,
@@ -2371,7 +2372,7 @@ pub fn write_harness_transcript(
             "error" => writeln!(w, "[{}] error: {}\n", tag, s.content)?,
             "exit" => writeln!(w, "[{}] exit: {}\n", tag, s.content)?,
             "plan" => writeln!(w, "[{}] {}\n", tag, s.content)?,
-            "read" | "grep" | "glob" | "edit" | "write" | "mcp" | "skill" | "fetch"
+            "read" | "grep" | "glob" | "edit" | "write" | "mcp" | "skill" | "fetch" | "process"
             | "subagent" | "hook" => {
                 writeln!(w, "[{}] {} {}\n", tag, s.kind, head_tail(&s.content, 20))?
             }
@@ -4187,6 +4188,134 @@ mod tests {
                 .map(|t| t.name.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn harness_run_and_chat_manage_background_processes() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "bash",
+                json!({"command": "echo serving; sleep 300", "background": true, "wait": 1}),
+            ),
+            call("process", json!({"action": "output", "id": "bg-1"})),
+            call("process", json!({"action": "stop", "id": "bg-1"})),
+            say("SUMMARY: served"),
+        ]);
+        set_fake_provider(p.clone());
+        let (out, err, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "serve it",
+                "-C",
+                cwd,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "bg-run",
+                "--quiet",
+            ],
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let reqs = p.requests();
+        assert!(
+            reqs[0].tools.iter().any(|t| t.name == "process"),
+            "a run offers the process tool"
+        );
+        let started = &reqs[1].messages.last().unwrap().content;
+        assert!(
+            started.contains("serving") && started.contains("[bg-1 is running in the background"),
+            "{started}"
+        );
+        let stopped = &reqs[3].messages.last().unwrap().content;
+        assert!(stopped.contains("stopped after"), "{stopped}");
+        let (_h, steps) = s.harness_session("bg-run").unwrap();
+        let kinds: Vec<(String, String)> = steps
+            .iter()
+            .map(|st| (st.kind.clone(), st.command.clone()))
+            .collect();
+        assert!(
+            kinds.contains(&(
+                "command".to_string(),
+                "echo serving; sleep 300 &".to_string()
+            )),
+            "{kinds:?}"
+        );
+        assert!(
+            kinds.contains(&("process".to_string(), "output bg-1".to_string()))
+                && kinds.contains(&("process".to_string(), "stop bg-1".to_string())),
+            "{kinds:?}"
+        );
+
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "bash",
+                json!({"command": "echo one; echo two; sleep 300", "background": true}),
+            ),
+            say("started"),
+            say("bye"),
+        ]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some(
+            "/procs
+start it
+/procs
+/procs bg-1 1
+/procs bg-7
+/procs stop
+/procs stop bg-1
+/procs stop all
+again
+/exit
+",
+        ));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(
+            out,
+            "started
+bye
+"
+        );
+        assert!(
+            err.contains(
+                "no background processes (the model starts one with bash background:true)"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "1 background process:
+  bg-1 running for"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "echo one; echo two; sleep 300
+  two
+"
+            ),
+            "/procs ID N tails the output: {err}"
+        );
+        assert!(
+            err.contains("no background process bg-7; /procs lists them"),
+            "{err}"
+        );
+        assert!(err.contains("usage: /procs stop ID|all"), "{err}");
+        assert!(err.contains("stopped bg-1 ended with exit "), "{err}");
+        assert!(
+            err.contains("nothing was running; the list is cleared"),
+            "{err}"
+        );
+        assert_eq!(p.requests().len(), 3, "tool call, reply, second turn");
     }
 
     #[test]

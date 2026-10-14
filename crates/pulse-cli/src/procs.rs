@@ -324,7 +324,21 @@ pub fn kill_tree_under(dir: &Path) -> Vec<KilledProc> {
 }
 
 pub fn kill_tree_under_with_grace(dir: &Path, grace: Duration) -> Vec<KilledProc> {
-    let found = processes_under(dir);
+    kill_tree_under_sparing(dir, grace, |_| false)
+}
+
+/// [`kill_tree_under_with_grace`] that leaves alone every process `spare`
+/// says yes to: the harness's own managed background processes work under
+/// the clone too and must survive the sweep after each command.
+pub fn kill_tree_under_sparing(
+    dir: &Path,
+    grace: Duration,
+    spare: impl Fn(&ProcInfo) -> bool,
+) -> Vec<KilledProc> {
+    let found: Vec<ProcInfo> = processes_under(dir)
+        .into_iter()
+        .filter(|p| !spare(p))
+        .collect();
     if found.is_empty() {
         return Vec::new();
     }

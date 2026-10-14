@@ -21,6 +21,16 @@ pub struct Reply {
     pub command: String,
     #[serde(rename = "report", default, skip_serializing_if = "String::is_empty")]
     pub report: String,
+    /// A call to any tool by name, with `args` as its arguments; `command`
+    /// is the shorthand for a `bash` call.
+    #[serde(rename = "tool", default, skip_serializing_if = "String::is_empty")]
+    pub tool: String,
+    #[serde(
+        rename = "args",
+        default,
+        skip_serializing_if = "serde_json::Value::is_null"
+    )]
+    pub args: serde_json::Value,
     #[serde(rename = "usage", default, skip_serializing_if = "is_usage_zero")]
     pub usage: Usage,
     #[serde(skip)]
@@ -141,14 +151,26 @@ impl Provider for FakeProvider {
 
         let mut msg = Message::new(Role::Assistant);
         let mut finish = "stop".to_string();
-        if !reply.command.is_empty() {
-            let args = pulse_store::gojson::to_string(&CommandArgs {
-                command: reply.command.clone(),
-            })?;
+        if !reply.command.is_empty() || !reply.tool.is_empty() {
+            let (name, args) = if reply.tool.is_empty() {
+                (
+                    "bash".to_string(),
+                    pulse_store::gojson::to_string(&CommandArgs {
+                        command: reply.command.clone(),
+                    })?,
+                )
+            } else {
+                let args = if reply.args.is_null() {
+                    serde_json::Value::Object(Default::default())
+                } else {
+                    reply.args.clone()
+                };
+                (reply.tool.clone(), serde_json::to_string(&args)?)
+            };
             msg.content = reply.content.clone();
             msg.tool_calls = vec![ToolCall {
                 id: format!("call-{request_count}"),
-                name: "bash".to_string(),
+                name,
                 arguments: args,
             }];
             finish = "tool_calls".to_string();
@@ -350,6 +372,25 @@ mod tests {
         let resp = p.chat(&cancel, req).unwrap();
         assert_eq!(resp.message.unwrap().content, "SUMMARY: script exhausted");
         assert_eq!(p.requests().len(), 4);
+    }
+
+    #[test]
+    fn a_scripted_tool_call_names_any_tool() {
+        let script: Script = serde_json::from_str(
+            r#"{"replies":[{"tool":"process","args":{"action":"stop","id":"bg-1"}},{"tool":"plan"}]}"#,
+        )
+        .unwrap();
+        let p = new(script);
+        let cancel = CancelToken::new();
+        let msg = p.chat(&cancel, user_request()).unwrap().message.unwrap();
+        assert_eq!(msg.tool_calls[0].name, "process");
+        assert_eq!(
+            msg.tool_calls[0].arguments,
+            r#"{"action":"stop","id":"bg-1"}"#
+        );
+        let msg = p.chat(&cancel, user_request()).unwrap().message.unwrap();
+        assert_eq!(msg.tool_calls[0].name, "plan");
+        assert_eq!(msg.tool_calls[0].arguments, "{}");
     }
 
     #[test]

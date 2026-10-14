@@ -1,16 +1,18 @@
+use crate::background::{OUTPUT_BUFFER_LIMIT, Process};
 use crate::harness::{Environment, Observation};
 use pulse_provider::CancelToken;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub use pulse_cli::procs::{
-    DEFAULT_KILL_GRACE, KilledProc, ProcessGroup, kill_tree_under, kill_tree_under_with_grace,
-    processes_under,
+    DEFAULT_KILL_GRACE, KilledProc, ProcessGroup, kill_tree_under, kill_tree_under_sparing,
+    kill_tree_under_with_grace, processes_under,
 };
 
 /// How long the output readers may lag behind once every writer we know of
@@ -31,6 +33,11 @@ pub struct LocalEnv {
     env: Vec<String>,
     kill_grace: Duration,
     sweep_dir: Option<PathBuf>,
+    /// Process groups of the background processes started through
+    /// [`Environment::spawn`] and still alive: the sweep after each command
+    /// leaves them be. Shared with the forks a subagent gets, whose sweeps
+    /// must not take the parent's processes either.
+    spared: Arc<Mutex<HashSet<i32>>>,
 }
 
 pub fn new_local_env(cwd: impl Into<String>, env: Option<Vec<String>>) -> LocalEnv {
@@ -42,6 +49,7 @@ pub fn new_local_env(cwd: impl Into<String>, env: Option<Vec<String>>) -> LocalE
         env,
         kill_grace: DEFAULT_KILL_GRACE,
         sweep_dir,
+        spared: Arc::new(Mutex::new(HashSet::new())),
     }
 }
 
@@ -100,9 +108,208 @@ impl LocalEnv {
 
     fn sweep(&self) -> Vec<KilledProc> {
         match &self.sweep_dir {
-            Some(dir) => kill_tree_under_with_grace(dir, self.kill_grace),
+            Some(dir) => {
+                let spared = self
+                    .spared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                kill_tree_under_sparing(dir, self.kill_grace, |p| spared.contains(&p.pgid))
+            }
             None => Vec::new(),
         }
+    }
+
+    /// The command as a child process: a fresh `/bin/sh -c` in the working
+    /// directory with the environment's variables, leading its own process
+    /// group, stdin closed, stdout and stderr piped.
+    fn command(&self, command: &str) -> Command {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear();
+        for kv in &self.env {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k, v);
+            }
+        }
+        pulse_cli::procs::own_process_group(&mut cmd);
+        cmd
+    }
+}
+
+/// A background process of a [`LocalEnv`]: its own process group, both
+/// pipes drained into one bounded buffer by their threads, the exit
+/// collected by a parked waiter.
+pub struct LocalProcess {
+    pid: i32,
+    group: ProcessGroup,
+    buf: Arc<Mutex<OutputBuffer>>,
+    exit_rx: Receiver<std::io::Result<ExitStatus>>,
+    /// One message per pipe pump when it reaches EOF; `pumps` counts those
+    /// still to report.
+    eof_rx: Receiver<()>,
+    pumps: usize,
+    exit: Option<i32>,
+    spared: Arc<Mutex<HashSet<i32>>>,
+}
+
+/// The output of a background process, bounded: once over the limit the
+/// oldest bytes go and are counted, so a chatty server cannot take the
+/// memory of the run.
+#[derive(Default)]
+struct OutputBuffer {
+    data: Vec<u8>,
+    dropped: usize,
+}
+
+impl OutputBuffer {
+    fn push(&mut self, chunk: &[u8]) {
+        self.data.extend_from_slice(chunk);
+        if self.data.len() > OUTPUT_BUFFER_LIMIT {
+            let excess = self.data.len() - OUTPUT_BUFFER_LIMIT;
+            self.data.drain(..excess);
+            self.dropped += excess;
+        }
+    }
+
+    fn take(&mut self) -> (Vec<u8>, usize) {
+        (
+            std::mem::take(&mut self.data),
+            std::mem::take(&mut self.dropped),
+        )
+    }
+}
+
+fn pump(
+    reader: Option<impl Read + Send + 'static>,
+    buf: Arc<Mutex<OutputBuffer>>,
+    eof: std::sync::mpsc::Sender<()>,
+) {
+    thread::spawn(move || {
+        if let Some(mut r) = reader {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match r.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(&chunk[..n]),
+                }
+            }
+        }
+        let _ = eof.send(());
+    });
+}
+
+impl LocalProcess {
+    fn forget(&self) {
+        self.spared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.pid);
+    }
+
+    fn note_exit(&mut self, status: std::io::Result<ExitStatus>) {
+        self.exit = Some(match status {
+            Ok(s) => exit_code(s),
+            Err(_) => 127,
+        });
+        self.forget();
+        self.drain_pumps();
+    }
+
+    /// The exit can land before the last bytes are read off the pipes; wait
+    /// for the pumps to see EOF, briefly, since a grandchild that kept the
+    /// pipe may never close it.
+    fn drain_pumps(&mut self) {
+        let deadline = Instant::now() + OUTPUT_DRAIN;
+        while self.pumps > 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match self.eof_rx.recv_timeout(deadline - now) {
+                Ok(()) => self.pumps -= 1,
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl Process for LocalProcess {
+    fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    fn exit_code(&mut self) -> Option<i32> {
+        if self.exit.is_none()
+            && let Ok(status) = self.exit_rx.try_recv()
+        {
+            self.note_exit(status);
+        }
+        self.exit
+    }
+
+    fn take_output(&mut self) -> (String, usize) {
+        let (data, dropped) = self.buf.lock().unwrap_or_else(|e| e.into_inner()).take();
+        (String::from_utf8_lossy(&data).to_string(), dropped)
+    }
+
+    fn peek_output(&self) -> String {
+        String::from_utf8_lossy(&self.buf.lock().unwrap_or_else(|e| e.into_inner()).data)
+            .to_string()
+    }
+
+    fn wait(&mut self, cancel: &CancelToken, timeout: Duration) -> bool {
+        if self.exit_code().is_some() {
+            return true;
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            match self.exit_rx.recv_timeout(WAIT_TICK.min(deadline - now)) {
+                Ok(status) => {
+                    self.note_exit(status);
+                    return true;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+    }
+
+    fn stop(&mut self) -> bool {
+        if self.exit_code().is_some() {
+            return false;
+        }
+        self.group.terminate();
+        // The waiter reaps the child; give it a moment to report.
+        if let Ok(status) = self.exit_rx.recv_timeout(OUTPUT_DRAIN) {
+            self.note_exit(status);
+        } else {
+            self.exit = Some(137);
+            self.forget();
+        }
+        true
+    }
+}
+
+impl Drop for LocalProcess {
+    fn drop(&mut self) {
+        // An armed group ends on drop; the spared entry must not outlive it.
+        self.forget();
     }
 }
 
@@ -152,7 +359,7 @@ pub fn stragglers_note(killed: &[KilledProc]) -> String {
         })
         .collect();
     format!(
-        "[harness] killed {} background process(es) this command left running: {}. Background processes do not outlive a command; start, probe and stop a server within one command.",
+        "[harness] killed {} background process(es) this command left running: {}. Background processes do not outlive a command; to keep one running, call bash with background:true and manage it with the process tool.",
         killed.len(),
         names.join(", ")
     )
@@ -161,20 +368,7 @@ pub fn stragglers_note(killed: &[KilledProc]) -> String {
 impl Environment for LocalEnv {
     fn execute(&mut self, cancel: &CancelToken, command: &str, timeout: Duration) -> Observation {
         let start = Instant::now();
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(&self.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_clear();
-        for kv in &self.env {
-            if let Some((k, v)) = kv.split_once('=') {
-                cmd.env(k, v);
-            }
-        }
-        pulse_cli::procs::own_process_group(&mut cmd);
+        let mut cmd = self.command(command);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -264,6 +458,38 @@ impl Environment for LocalEnv {
 
     fn fork(&self) -> Option<Box<dyn Environment>> {
         Some(Box::new(self.clone()))
+    }
+
+    fn offers_background(&self) -> bool {
+        true
+    }
+
+    fn spawn(&mut self, command: &str) -> Result<Box<dyn Process>, String> {
+        let mut cmd = self.command(command);
+        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+        let pid = child.id() as i32;
+        self.spared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pid);
+        let buf = Arc::new(Mutex::new(OutputBuffer::default()));
+        let (eof_tx, eof_rx) = std::sync::mpsc::channel();
+        pump(child.stdout.take(), buf.clone(), eof_tx.clone());
+        pump(child.stderr.take(), buf.clone(), eof_tx);
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = exit_tx.send(child.wait());
+        });
+        Ok(Box::new(LocalProcess {
+            pid,
+            group: ProcessGroup::with_grace(pid, self.kill_grace),
+            buf,
+            exit_rx,
+            eof_rx,
+            pumps: 2,
+            exit: None,
+            spared: self.spared.clone(),
+        }))
     }
 
     fn info(&self) -> BTreeMap<String, String> {
@@ -479,6 +705,94 @@ mod tests {
                 .sweep_dir(),
             None
         );
+    }
+
+    #[test]
+    fn a_spawned_process_outlives_commands_and_the_sweep_until_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path()).with_sweep_dir(Some(dir.path().to_path_buf()));
+        assert!(env.offers_background());
+        let mut p = env
+            .spawn("echo started; i=0; while [ $i -lt 300 ]; do sleep 1; i=$((i+1)); echo tick $i; done")
+            .unwrap();
+        let pid = p.pid();
+        assert!(alive(pid));
+        assert!(!p.wait(&CancelToken::new(), Duration::from_millis(1200)));
+        let (out, dropped) = p.take_output();
+        assert!(out.starts_with("started\n"), "{out}");
+        assert_eq!(dropped, 0);
+        assert!(p.exit_code().is_none());
+        // Another command runs and sweeps the directory: the managed
+        // process is spared, a stray one is not.
+        let obs = env.execute(
+            &CancelToken::new(),
+            "sleep 300 & echo $! > stray.pid; echo ran",
+            Duration::from_secs(10),
+        );
+        assert_eq!(obs.exit_code, 0, "{}", obs.output);
+        assert!(
+            obs.output.contains("killed 1 background process"),
+            "{}",
+            obs.output
+        );
+        assert!(obs.output.contains("background:true"), "{}", obs.output);
+        assert!(alive(pid), "the managed process was swept");
+        // Output keeps coming; peek leaves it, take consumes it.
+        wait_until(|| !p.peek_output().is_empty(), "a tick to arrive");
+        let peeked = p.peek_output();
+        let (taken, _) = p.take_output();
+        assert!(taken.starts_with(&peeked), "{taken:?} vs {peeked:?}");
+        assert!(taken.contains("tick"), "{taken}");
+        assert!(p.peek_output().is_empty());
+        assert!(p.stop());
+        assert!(!p.stop());
+        assert_eq!(p.exit_code(), Some(143), "SIGTERM ends the shell");
+        wait_until(|| !alive(pid), "the stopped process to go");
+        assert!(env.spared.lock().unwrap().is_empty());
+        // The run's close sweeps what is left under the directory.
+        assert!(env.close().is_empty());
+    }
+
+    #[test]
+    fn a_spawned_process_that_ends_reports_its_exit_and_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        let mut p = env.spawn("echo out; echo err >&2; exit 3").unwrap();
+        assert!(p.wait(&CancelToken::new(), Duration::from_secs(10)));
+        assert_eq!(p.exit_code(), Some(3));
+        let (out, dropped) = p.take_output();
+        assert_eq!(dropped, 0);
+        assert!(out.contains("out\n") && out.contains("err\n"), "{out}");
+        assert!(!p.stop());
+        let mut failed = env.spawn("exec nonexistent-binary-xyz").unwrap();
+        assert!(failed.wait(&CancelToken::new(), Duration::from_secs(10)));
+        assert_eq!(failed.exit_code(), Some(127));
+    }
+
+    #[test]
+    fn the_output_buffer_drops_the_oldest_bytes_and_counts_them() {
+        let mut buf = OutputBuffer::default();
+        buf.push(&vec![b'a'; OUTPUT_BUFFER_LIMIT]);
+        assert_eq!(buf.dropped, 0);
+        buf.push(b"bcd");
+        assert_eq!(buf.dropped, 3);
+        assert_eq!(buf.data.len(), OUTPUT_BUFFER_LIMIT);
+        assert!(buf.data.ends_with(b"bcd"));
+        let (data, dropped) = buf.take();
+        assert_eq!((data.len(), dropped), (OUTPUT_BUFFER_LIMIT, 3));
+        assert_eq!(buf.take(), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn dropping_a_running_process_ends_its_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path());
+        let p = env.spawn("sleep 300").unwrap();
+        let pid = p.pid();
+        assert!(alive(pid));
+        drop(p);
+        wait_until(|| !alive(pid), "the dropped process to die");
+        assert!(env.spared.lock().unwrap().is_empty());
     }
 
     #[test]

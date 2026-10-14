@@ -1011,6 +1011,7 @@ export type HarnessStepKind =
   | "mcp"
   | "skill"
   | "fetch"
+  | "process"
   | "subagent"
   | "hook"
   | "observation"

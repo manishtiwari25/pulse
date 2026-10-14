@@ -1,3 +1,7 @@
+use crate::background::{
+    BACKGROUND_LIMIT, BACKGROUND_WAIT_DEFAULT, BACKGROUND_WAIT_LIMIT, PROCESS_TOOL,
+    PROCESS_WAIT_DEFAULT, Process, ProcessAction, Procs, dropped_marker, fmt_dur, process_tool,
+};
 use crate::compact::{
     COMPACT_KEEP_RECENT, COMPACT_MIN_GAP_CALLS, apply_compaction, compaction_cut,
     render_transcript, should_compact, summary_request,
@@ -46,10 +50,27 @@ pub use DEFAULT_OUTPUT_LIMIT as DefaultOutputLimit;
 pub use DEFAULT_STEP_TIMEOUT as DefaultStepTimeout;
 
 pub fn bash_tool() -> Tool {
+    bash_tool_for(false)
+}
+
+/// The `bash` tool; with `background` it also takes `background: true`
+/// (the command keeps running after the call returns and the `process`
+/// tool manages it) and `wait`.
+pub fn bash_tool_for(background: bool) -> Tool {
+    let mut properties = json!({"command":{"type":"string","description":"The shell command to run with /bin/sh -c."}});
+    let mut description = "Run one non-interactive /bin/sh command in the working directory. Each call is a fresh process; chain setup and use with &&.".to_string();
+    if background {
+        description.push_str(&format!(
+            " With background:true the command keeps running after this call returns with its id (bg-1) and first output; use it for servers, watchers and long checks, then read, wait for or stop it with the process tool. wait is how many seconds to give it first (default {}): a command that ends within them returns its whole result like a foreground one.",
+            BACKGROUND_WAIT_DEFAULT.as_secs()
+        ));
+        properties["background"] = json!({"type":"boolean","description":"Start the command in the background and return at once (default false)."});
+        properties["wait"] = json!({"type":"integer","description":"With background: seconds to wait for the command to end before leaving it running."});
+    }
     Tool {
         name: "bash".to_string(),
-        description: "Run one non-interactive /bin/sh command in the working directory. Each call is a fresh process; chain setup and use with &&.".to_string(),
-        parameters: json!({"type":"object","properties":{"command":{"type":"string","description":"The shell command to run with /bin/sh -c."}},"required":["command"]}),
+        description,
+        parameters: json!({"type":"object","properties":properties,"required":["command"]}),
     }
 }
 
@@ -135,7 +156,18 @@ pub fn native_tools() -> Vec<Tool> {
 /// The native tools a run offers; a read-only run leaves out `edit` and
 /// `write`, which it would only refuse.
 pub fn native_tools_for(read_only: bool) -> Vec<Tool> {
-    let mut out = vec![bash_tool(), read_tool(), grep_tool(), glob_tool()];
+    native_tools_with(read_only, false)
+}
+
+/// [`native_tools_for`] with the `bash` tool's background option when the
+/// environment can keep a process running (`background`).
+pub fn native_tools_with(read_only: bool, background: bool) -> Vec<Tool> {
+    let mut out = vec![
+        bash_tool_for(background),
+        read_tool(),
+        grep_tool(),
+        glob_tool(),
+    ];
     if !read_only {
         out.push(edit_tool());
         out.push(write_tool());
@@ -299,6 +331,9 @@ pub enum StepKind {
     Fetch,
     Subagent,
     Hook,
+    /// A `process` tool call (output, wait, stop, list of a background
+    /// process).
+    Process,
     Observation,
     Note,
     FormatRetry,
@@ -352,6 +387,7 @@ impl std::fmt::Display for StepKind {
             Self::Fetch => "fetch",
             Self::Subagent => "subagent",
             Self::Hook => "hook",
+            Self::Process => "process",
             Self::Observation => "observation",
             Self::Note => "note",
             Self::FormatRetry => "format_retry",
@@ -502,6 +538,17 @@ pub trait Environment: Send {
     fn fork(&self) -> Option<Box<dyn Environment>> {
         None
     }
+    /// Whether [`Environment::spawn`] works: `bash` then offers
+    /// `background: true` and the `process` tool is on.
+    fn offers_background(&self) -> bool {
+        false
+    }
+    /// Starts a command that outlives the call; the harness reads, waits
+    /// for and stops it through the returned [`Process`].
+    fn spawn(&mut self, command: &str) -> std::result::Result<Box<dyn Process>, String> {
+        let _ = command;
+        Err("this environment cannot keep a process running".to_string())
+    }
 }
 
 pub struct Agent {
@@ -532,6 +579,8 @@ pub struct Agent {
     hooks: HookSet,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
+    /// The background processes the model started and has not stopped.
+    procs: Procs,
     /// The permission rules in force: what runs without asking, what is
     /// refused outright.
     permissions: Rules,
@@ -914,6 +963,7 @@ pub fn new_shared(
         skills: Vec::new(),
         hooks: HookSet::default(),
         fetch: FetchPolicy::default(),
+        procs: Procs::default(),
         permissions: Rules::new(),
         current_subjects: Vec::new(),
         ui: None,
@@ -1109,6 +1159,15 @@ impl Agent {
         } else {
             format!("permissions: {}", self.permissions.describe().join("; "))
         });
+        if self.offers_background() {
+            let running = self.procs.unfinished();
+            out.push(match (running, self.procs.len()) {
+                (_, 0) => {
+                    "background processes: none (bash background:true starts one)".to_string()
+                }
+                (r, n) => format!("background processes: {r} running, {n} listed (/procs)"),
+            });
+        }
         out
     }
 
@@ -1120,9 +1179,25 @@ impl Agent {
         self.ui.is_some() && self.cfg.depth == 0
     }
 
+    /// Whether `bash` takes `background: true` and `process` is offered:
+    /// the environment must be able to keep a process running, and a
+    /// read-only run runs its commands to completion only (a change a
+    /// background process made later could not be put back).
+    pub fn offers_background(&self) -> bool {
+        self.env.offers_background() && !self.cfg.read_only
+    }
+
+    /// The background processes of this run (`/procs` in a session).
+    pub fn procs(&mut self) -> &mut Procs {
+        &mut self.procs
+    }
+
     /// The tools the next model call offers.
     pub fn tools(&self) -> Vec<Tool> {
-        let mut out = native_tools_for(self.cfg.read_only);
+        let mut out = native_tools_with(self.cfg.read_only, self.offers_background());
+        if self.offers_background() {
+            out.push(process_tool());
+        }
         if !self.skills.is_empty() {
             out.push(skill_tool(&self.skills));
         }
@@ -1147,6 +1222,9 @@ impl Agent {
             NATIVE_TOOL_NAMES
         };
         let mut out: Vec<String> = native.iter().map(|s| (*s).to_string()).collect();
+        if self.offers_background() {
+            out.push(PROCESS_TOOL.to_string());
+        }
         if !self.skills.is_empty() {
             out.push(SKILL_TOOL.to_string());
         }
@@ -1959,13 +2037,28 @@ impl Agent {
                         "tool arguments must be a JSON object with a string command".to_string(),
                     );
                 };
-                let (text, _obs, submitted, submission) = self.run_command(cancel, &command);
+                let background = match parse_background(&call.arguments) {
+                    Ok(b) => b,
+                    Err(e) => return self.tool_error(format!("bash: {e}")),
+                };
+                if background.is_some() && !self.offers_background() {
+                    return self.tool_error(if self.cfg.read_only {
+                        "bash: a read-only run runs its commands to completion; background is not offered".to_string()
+                    } else {
+                        "bash: background is not offered in this environment".to_string()
+                    });
+                }
+                let (text, _obs, submitted, submission) =
+                    self.run_command_opts(cancel, &command, background);
                 ToolOutcome {
                     text,
                     clean: true,
                     submitted,
                     submission,
                 }
+            }
+            PROCESS_TOOL if self.offers_background() => {
+                self.run_process_tool(cancel, &call.arguments)
             }
             name if NATIVE_TOOL_NAMES.contains(&name) => {
                 match NativeCall::from_args(name, &call.arguments) {
@@ -2759,11 +2852,27 @@ impl Agent {
         cancel: &CancelToken,
         command: &str,
     ) -> (String, Observation, bool, String) {
+        self.run_command_opts(cancel, command, None)
+    }
+
+    /// Runs a shell command through the policy, read-only and approval
+    /// gates; `background` (the initial wait) starts it as a background
+    /// process instead of waiting for it.
+    fn run_command_opts(
+        &mut self,
+        cancel: &CancelToken,
+        command: &str,
+        background: Option<Duration>,
+    ) -> (String, Observation, bool, String) {
         self.result.steps += 1;
+        let shown = match background {
+            Some(_) => format!("{command} &"),
+            None => command.to_string(),
+        };
         self.emit(Step {
             kind: StepKind::Command,
-            content: command.to_string(),
-            command: command.to_string(),
+            content: shown.clone(),
+            command: shown,
             ..Step::default()
         });
         if let Some(rule) = self.denied(command) {
@@ -2848,6 +2957,16 @@ impl Agent {
                 String::new(),
             );
         }
+        if let Some(wait) = background {
+            let obs = self.start_background(cancel, command, wait);
+            self.emit_observation(&format!("{command} &"), &obs);
+            return (
+                format_observation(&obs, self.cfg.output_limit),
+                obs,
+                false,
+                String::new(),
+            );
+        }
         let gate = self.verify_gate_for(command);
         let timeout = match &gate {
             Some(_) => self.commit_deadline(),
@@ -2910,6 +3029,227 @@ impl Agent {
             return (formatted, obs, true, sub);
         }
         (formatted, obs, false, String::new())
+    }
+
+    /// Starts `command` in the background and gives it `wait` to end on
+    /// its own: a command that does comes back whole, like a foreground
+    /// one; the rest stays running under an id the `process` tool takes.
+    fn start_background(
+        &mut self,
+        cancel: &CancelToken,
+        command: &str,
+        wait: Duration,
+    ) -> Observation {
+        let start = Instant::now();
+        let running = self.procs.running();
+        if running >= BACKGROUND_LIMIT {
+            let ids = self.procs.ids().join(", ");
+            return Observation {
+                output: format!(
+                    "{running} background processes are running already ({ids}); stop one with the process tool before starting another."
+                ),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            };
+        }
+        let proc = match self.env.spawn(command) {
+            Ok(p) => p,
+            Err(e) => {
+                return Observation {
+                    output: format!("could not start the command: {e}"),
+                    exit_code: 127,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                };
+            }
+        };
+        let id = self.procs.add(command, proc);
+        let wait = wait.min(self.step_cap());
+        let m = self.procs.get(&id).expect("just added");
+        let ended = m.wait(cancel, wait);
+        let pid = m.pid();
+        let (mut output, dropped) = m.take_output();
+        if dropped > 0 {
+            output = format!("{}\n{output}", dropped_marker(dropped));
+        }
+        if ended {
+            let code = m.exit().unwrap_or(-1);
+            let elapsed = m.elapsed();
+            self.procs.remove(&id);
+            let line = format!(
+                "[{id} ended on its own with exit {code} after {}; nothing is left running]",
+                fmt_dur(elapsed)
+            );
+            return Observation {
+                output: join_lines(&output, &line),
+                exit_code: code,
+                duration: start.elapsed(),
+                ..Observation::default()
+            };
+        }
+        let line = format!(
+            "[{id} is running in the background (pid {pid}) after {}. process {{\"action\":\"output\",\"id\":\"{id}\"}} reads what it writes next, \"wait\" waits for it to end, \"stop\" ends it. Stop it when you are done with it.]",
+            fmt_dur(wait)
+        );
+        Observation {
+            output: join_lines(&line, &output),
+            exit_code: 0,
+            duration: start.elapsed(),
+            ..Observation::default()
+        }
+    }
+
+    /// The most a background wait may block: the step timeout, or
+    /// [`BACKGROUND_WAIT_LIMIT`] when the run has none.
+    fn step_cap(&self) -> Duration {
+        if self.cfg.step_timeout.is_zero() {
+            BACKGROUND_WAIT_LIMIT
+        } else {
+            self.cfg.step_timeout.min(BACKGROUND_WAIT_LIMIT)
+        }
+    }
+
+    /// The `process` tool: output, wait, stop or list of the background
+    /// processes.
+    fn run_process_tool(&mut self, cancel: &CancelToken, arguments: &str) -> ToolOutcome {
+        let action = match ProcessAction::parse(arguments) {
+            Ok(a) => a,
+            Err(e) => return self.tool_error(format!("{PROCESS_TOOL}: {e}")),
+        };
+        self.result.steps += 1;
+        let spec = action.spec();
+        self.emit(Step {
+            kind: StepKind::Process,
+            content: spec.clone(),
+            command: spec,
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let obs = self.process_action(cancel, &action, start);
+        self.emit_observation(&format!("{PROCESS_TOOL} tool"), &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    fn process_action(
+        &mut self,
+        cancel: &CancelToken,
+        action: &ProcessAction,
+        start: Instant,
+    ) -> Observation {
+        let unknown = |procs: &mut Procs, id: &str, start: Instant| Observation {
+            output: if procs.is_empty() {
+                format!(
+                    "{id}: no such background process; none is running (bash background:true starts one)"
+                )
+            } else {
+                format!(
+                    "{id}: no such background process; the list has {}",
+                    procs.ids().join(", ")
+                )
+            },
+            exit_code: 1,
+            duration: start.elapsed(),
+            ..Observation::default()
+        };
+        match action {
+            ProcessAction::List => {
+                let lines = self.procs.describe();
+                Observation {
+                    output: if lines.is_empty() {
+                        "no background processes".to_string()
+                    } else {
+                        lines.join("\n")
+                    },
+                    exit_code: 0,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+            ProcessAction::Output { id } | ProcessAction::Wait { id, .. } => {
+                let timeout = match action {
+                    ProcessAction::Wait { timeout, .. } => {
+                        Some(timeout.unwrap_or(PROCESS_WAIT_DEFAULT).min(self.step_cap()))
+                    }
+                    _ => None,
+                };
+                let Some(m) = self.procs.get(id) else {
+                    return unknown(&mut self.procs, id, start);
+                };
+                let mut waited = String::new();
+                if let Some(t) = timeout
+                    && !m.wait(cancel, t)
+                {
+                    waited = if cancel.is_cancelled() {
+                        " (the wait was interrupted)".to_string()
+                    } else {
+                        format!(" (still running after waiting {})", fmt_dur(t))
+                    };
+                }
+                let state = m.state();
+                let (output, dropped) = m.take_output();
+                let code = m.exit();
+                let head = format!(
+                    "[{id} `{}`: {state}{waited}; {}]",
+                    one_line(&m.command, 100),
+                    if output.is_empty() {
+                        "no new output".to_string()
+                    } else {
+                        format!("{} new bytes", output.len())
+                    }
+                );
+                let mut text = head;
+                if dropped > 0 {
+                    text = join_lines(&text, &dropped_marker(dropped));
+                }
+                Observation {
+                    output: join_lines(&text, &output),
+                    exit_code: code.unwrap_or(0),
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+            ProcessAction::Stop { id } => {
+                let Some(m) = self.procs.get(id) else {
+                    return unknown(&mut self.procs, id, start);
+                };
+                let was_running = m.stop();
+                let (output, dropped) = m.take_output();
+                let code = m.exit().unwrap_or(-1);
+                let elapsed = fmt_dur(m.elapsed());
+                let command = one_line(&m.command, 100);
+                self.procs.remove(id);
+                let head = if was_running {
+                    format!(
+                        "[{id} `{command}`: stopped after {elapsed} (exit {code}); {}]",
+                        if output.is_empty() {
+                            "no unread output"
+                        } else {
+                            "its last output follows"
+                        }
+                    )
+                } else {
+                    format!(
+                        "[{id} `{command}`: had already ended with exit {code} after {elapsed}; removed from the list{}]",
+                        if output.is_empty() {
+                            ""
+                        } else {
+                            "; its last output follows"
+                        }
+                    )
+                };
+                let mut text = head;
+                if dropped > 0 {
+                    text = join_lines(&text, &dropped_marker(dropped));
+                }
+                Observation {
+                    output: join_lines(&text, &output),
+                    exit_code: 0,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                }
+            }
+        }
     }
 
     fn denied(&self, command: &str) -> Option<&DenyRule> {
@@ -3046,6 +3386,18 @@ impl Agent {
         self.result.error = err_text.to_string();
         // A fresh token: the end hooks run even when the run was cancelled.
         self.run_end_hooks(&CancelToken::new(), status, submission);
+        let stopped = self.procs.stop_all();
+        if !stopped.is_empty() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "stopped {} background process(es) still running: {}",
+                    stopped.len(),
+                    stopped.join("; ")
+                ),
+                ..Step::default()
+            });
+        }
         let stragglers = self.env.close();
         if !stragglers.is_empty() {
             self.emit(Step {
@@ -3685,13 +4037,13 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "```edit\nsrc/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n",
     "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
-    "Background processes a command starts (cmd &, nohup, servers) are killed when the command ends; to smoke-test a server, start it, probe it, and stop it within one command.\n",
+    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
     "Output over {{.OutputLimit}} characters is cut in the middle.\n",
     "Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.\n",
-    "Never run interactive programs: editors, pagers, watch modes, or foreground servers.\n",
+    "Never run interactive programs: editors, pagers, or anything that waits for a keyboard; a server or a watch mode goes in the background.\n",
     "To edit files, prefer the edit tool (or ```edit blocks); shell heredocs, sed -i, or python3 -c are still available when needed.\n",
     "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
     "Verify your work by running the project's own checks.\n",
@@ -3726,13 +4078,13 @@ pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
     "The working directory is {{.Info.cwd}}; it may have uncommitted work of the user's in it. Leave what you did not touch as it was, and never discard changes you did not make.\n",
     "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
-    "Background processes a command starts (cmd &, nohup, servers) are killed when the command ends; to smoke-test a server, start it, probe it, and stop it within one command.\n",
+    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
     "Output over {{.OutputLimit}} characters is cut in the middle.\n",
     "Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.\n",
-    "Never run interactive programs: editors, pagers, watch modes, or foreground servers.\n",
+    "Never run interactive programs: editors, pagers, or anything that waits for a keyboard; a server or a watch mode goes in the background.\n",
     "To edit files, prefer the edit tool; shell heredocs, sed -i, or python3 -c are still available when needed.\n",
     "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
     "Verify your work by running the project's own checks.\n",
@@ -3747,7 +4099,7 @@ pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
 /// renders, so an owner's own template gets it too.
 pub const READ_ONLY_PROMPT: &str = concat!(
     "This is a read-only run: your findings are the whole deliverable. Look, test and report; change nothing in the clone and commit nothing.\n",
-    "The edit and write tools are not offered. Commands that would change the clone (git commit, checkout, stash, formatters that rewrite files, `> file`, sed -i, npm install <pkg>, and the like) are refused, and a command that changes it anyway is put back and reported.\n",
+    "The edit and write tools are not offered. Commands that would change the clone (git commit, checkout, stash, formatters that rewrite files, `> file`, sed -i, npm install <pkg>, and the like) are refused, and a command that changes it anyway is put back and reported. Commands run to completion only: bash background:true and the process tool are not offered.\n",
     "Scratch files go under /tmp. Running the project's checks is fine. Describe a change you would make as a FINDING: or SUGGESTION: line instead of making it."
 );
 
@@ -3967,6 +4319,39 @@ fn parse_command(args: &str) -> Option<String> {
         None
     } else {
         Some(obj.command)
+    }
+}
+
+/// The `background`/`wait` of a `bash` call: Some(initial wait) when the
+/// command is to run in the background.
+fn parse_background(args: &str) -> std::result::Result<Option<Duration>, String> {
+    let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+    let background = match v.get("background") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => matches!(s.trim(), "true" | "yes" | "1"),
+        Some(_) => return Err("background must be true or false".to_string()),
+    };
+    if !background {
+        return Ok(None);
+    }
+    let wait = match v.get("wait") {
+        None | Some(Value::Null) => BACKGROUND_WAIT_DEFAULT,
+        Some(w) => match w.as_f64() {
+            Some(secs) if secs >= 0.0 => Duration::from_secs_f64(secs),
+            _ => return Err("wait must be a non-negative number of seconds".to_string()),
+        },
+    };
+    Ok(Some(wait.min(BACKGROUND_WAIT_LIMIT)))
+}
+
+/// `a` and `b` on separate lines, skipping an empty one.
+fn join_lines(a: &str, b: &str) -> String {
+    let a = a.trim_end_matches('\n');
+    match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.to_string(),
+        (_, true) => a.to_string(),
+        _ => format!("{a}\n{b}"),
     }
 }
 
@@ -6215,8 +6600,8 @@ mod tests {
                 .tools
                 .iter()
                 .map(|t| t.name.as_str())
-                .eq(NATIVE_TOOL_NAMES.iter().copied()),
-            "every run offers the native tool set"
+                .eq(NATIVE_TOOL_NAMES.iter().copied().chain([PROCESS_TOOL])),
+            "every run offers the native tool set, plus process where background runs"
         );
     }
 
@@ -6417,6 +6802,7 @@ mod tests {
             [
                 NATIVE_TOOL_NAMES.to_vec(),
                 vec![
+                    PROCESS_TOOL,
                     "mcp__github__broken",
                     "mcp__github__list_issues",
                     "mcp__github__odd_name"
@@ -6474,8 +6860,8 @@ mod tests {
         );
         assert_eq!(
             p.requests()[0].tools.len(),
-            NATIVE_TOOL_NAMES.len() + 3,
-            "the model saw the MCP tools"
+            NATIVE_TOOL_NAMES.len() + 1 + 3,
+            "the model saw the process tool and the MCP tools"
         );
     }
 
@@ -6512,7 +6898,11 @@ mod tests {
         let offered: Vec<String> = h.tools().into_iter().map(|t| t.name).collect();
         assert_eq!(
             offered,
-            [NATIVE_TOOL_NAMES.to_vec(), vec![MCP_SEARCH_TOOL]].concat(),
+            [
+                NATIVE_TOOL_NAMES.to_vec(),
+                vec![PROCESS_TOOL, MCP_SEARCH_TOOL]
+            ]
+            .concat(),
             "past the limit only the search tool is offered"
         );
         let search = h
@@ -8802,6 +9192,198 @@ mod tests {
             out.push(Rule::parse(*allow, spec, permissions::Source::Flag).unwrap());
         }
         out
+    }
+
+    #[test]
+    fn background_commands_run_on_under_the_process_tool_and_end_with_the_run() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let server =
+            "echo ready; i=0; while [ $i -lt 300 ]; do sleep 1; i=$((i+1)); echo tick $i; done";
+        let p = Arc::new(FakeProvider::new(vec![
+            // Quick enough to end within the wait: comes back whole.
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": "echo fast; exit 4", "background": true, "wait": 10}),
+            )])),
+            // A server: stays in the background.
+            resp(calls(&[(
+                "c2",
+                "bash",
+                json!({"command": server, "background": true, "wait": 1}),
+            )])),
+            // A plain command runs beside it; the sweep leaves it alone.
+            resp(calls(&[("c3", "bash", json!({"command": "echo beside"}))])),
+            resp(calls(&[("c4", "process", json!({"action": "list"}))])),
+            resp(calls(&[(
+                "c5",
+                "process",
+                json!({"action": "wait", "id": "bg-2", "seconds": 2}),
+            )])),
+            resp(calls(&[(
+                "c6",
+                "process",
+                json!({"action": "output", "id": "bg-2"}),
+            )])),
+            resp(calls(&[(
+                "c7",
+                "process",
+                json!({"action": "output", "id": "bg-9"}),
+            )])),
+            resp(calls(&[("c8", "process", json!({"action": "dance"}))])),
+            // One more left running when the run ends.
+            resp(calls(&[(
+                "c9",
+                "bash",
+                json!({"command": "sleep 300", "background": true, "wait": 0}),
+            )])),
+            resp(calls(&[(
+                "c10",
+                "process",
+                json!({"action": "stop", "id": "bg-2"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        assert!(h.offers_background());
+        let tools = h.tools();
+        let bash = tools.iter().find(|t| t.name == "bash").unwrap();
+        assert!(bash.parameters["properties"]["background"].is_object());
+        assert!(bash.description.contains("background:true"));
+        assert!(tools.iter().any(|t| t.name == PROCESS_TOOL));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        let replies = tool_replies(&h);
+        let by_id = |id: &str| -> String {
+            replies
+                .iter()
+                .find(|(i, _)| i == id)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| panic!("no reply {id}: {replies:?}"))
+        };
+        let fast = by_id("c1");
+        assert!(fast.contains("<returncode>4</returncode>"), "{fast}");
+        assert!(
+            fast.contains("fast\n[bg-1 ended on its own with exit 4 after"),
+            "{fast}"
+        );
+        let started = by_id("c2");
+        assert!(
+            started.contains("[bg-2 is running in the background (pid "),
+            "{started}"
+        );
+        assert!(started.contains("ready"), "{started}");
+        assert!(by_id("c3").contains("beside"), "{}", by_id("c3"));
+        let list = by_id("c4");
+        assert!(list.contains("bg-2 running for"), "{list}");
+        assert!(!list.contains("bg-1"), "{list}");
+        let waited = by_id("c5");
+        assert!(
+            waited.contains("still running after waiting 2s"),
+            "{waited}"
+        );
+        assert!(waited.contains("tick"), "{waited}");
+        let output = by_id("c6");
+        assert!(output.contains("[bg-2 `echo ready;"), "{output}");
+        assert!(output.contains("running for"), "{output}");
+        let unknown = by_id("c7");
+        assert!(
+            unknown.contains("bg-9: no such background process; the list has bg-2"),
+            "{unknown}"
+        );
+        assert!(
+            by_id("c8").contains("unknown action dance"),
+            "{}",
+            by_id("c8")
+        );
+        let stopped = by_id("c10");
+        assert!(stopped.contains("[bg-2 `echo ready;"), "{stopped}");
+        assert!(stopped.contains("stopped after"), "{stopped}");
+        let steps = h.trajectory().steps;
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.kind == StepKind::Command && s.command == format!("{server} &")),
+            "the background start is a command step marked &"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.kind == StepKind::Process && s.command == "wait bg-2 2s")
+        );
+        let note = steps
+            .iter()
+            .find(|s| {
+                s.kind == StepKind::Note && s.content.starts_with("stopped 1 background process")
+            })
+            .expect("the run end stops what is left");
+        assert!(note.content.contains("bg-3 pid"), "{}", note.content);
+        assert!(note.content.contains("sleep 300"), "{}", note.content);
+        assert!(h.procs().is_empty());
+    }
+
+    #[test]
+    fn background_is_withheld_from_read_only_runs_and_fake_environments() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": "sleep 5", "background": true}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.cfg.read_only = true;
+        assert!(!h.offers_background());
+        assert!(!h.tools().iter().any(|t| t.name == PROCESS_TOOL));
+        assert!(
+            h.tools()
+                .iter()
+                .find(|t| t.name == "bash")
+                .unwrap()
+                .parameters["properties"]["background"]
+                .is_null()
+        );
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(
+            reply.contains("read-only run runs its commands to completion"),
+            "{reply}"
+        );
+
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": "sleep 5", "background": true}),
+            )])),
+            resp(calls(&[("c2", "process", json!({"action": "list"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(env.clone()),
+            base_config(),
+            Vec::new(),
+        );
+        assert!(!h.offers_background());
+        h.run().unwrap();
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.contains("background is not offered"),
+            "{}",
+            replies[0].1
+        );
+        assert!(
+            replies[1].1.contains("unknown tool process"),
+            "{}",
+            replies[1].1
+        );
+        assert!(env.lock().unwrap().commands.is_empty());
     }
 
     #[test]

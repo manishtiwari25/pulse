@@ -82,6 +82,11 @@ const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
         "the permission rules in force; add one (bash(git *), edit(src/*), write) or drop the session's",
     ),
     (
+        "procs",
+        "[ID [LINES] | stop ID|all]",
+        "the background processes the model started; ID shows the tail of one's output, stop ends one or all",
+    ),
+    (
         "diff",
         "",
         "what changed in the working tree (git status and diff --stat)",
@@ -793,6 +798,7 @@ impl Sink for ChatSink {
             | StepKind::Mcp
             | StepKind::Skill
             | StepKind::Fetch
+            | StepKind::Process
             | StepKind::Hook => {
                 format!("{indent}{}: {}", step.kind, one_line(&step.command, 160))
             }
@@ -1312,6 +1318,81 @@ impl Session<'_> {
         }
     }
 
+    /// `/procs`: the background processes; `ID [LINES]` shows the tail of
+    /// one's output so far (the model's unread output stays unread);
+    /// `stop ID|all` ends them.
+    fn procs(&self, arg: &str) -> String {
+        let mut agent = self.agent.lock().expect("agent poisoned");
+        // Plan mode withdraws the tool but not what already runs: the list
+        // stays readable and stoppable.
+        if !agent.offers_background() && agent.procs().is_empty() {
+            return "background processes are not offered in this session".to_string();
+        }
+        let (verb, rest) = match arg.split_once(char::is_whitespace) {
+            Some((v, r)) => (v.trim(), r.trim()),
+            None => (arg.trim(), ""),
+        };
+        let procs = agent.procs();
+        match verb {
+            "" => {
+                let lines = procs.describe();
+                if lines.is_empty() {
+                    return "no background processes (the model starts one with bash background:true)".to_string();
+                }
+                let mut out = vec![format!(
+                    "{} background process{}:",
+                    lines.len(),
+                    if lines.len() == 1 { "" } else { "es" }
+                )];
+                out.extend(lines.into_iter().map(|l| format!("  {l}")));
+                out.join("\n")
+            }
+            "stop" if rest == "all" => {
+                let stopped = procs.stop_all();
+                if stopped.is_empty() {
+                    "nothing was running; the list is cleared".to_string()
+                } else {
+                    format!("stopped {}: {}", stopped.len(), stopped.join("; "))
+                }
+            }
+            "stop" if rest.is_empty() => "usage: /procs stop ID|all".to_string(),
+            "stop" => match procs.get(rest) {
+                Some(m) => {
+                    let was_running = m.stop();
+                    let line = if was_running {
+                        format!("stopped {}", m.describe())
+                    } else {
+                        format!("{} had already ended: {}", rest, m.state())
+                    };
+                    procs.remove(rest);
+                    line
+                }
+                None => format!("no background process {rest}; /procs lists them"),
+            },
+            id => match procs.get(id) {
+                Some(m) => {
+                    let n: usize = rest.parse().unwrap_or(20).clamp(1, 500);
+                    let head = m.describe();
+                    let tail = m.peek_tail(n);
+                    if tail.is_empty() {
+                        format!("{head}\n  (no output yet)")
+                    } else {
+                        format!(
+                            "{head}\n{}",
+                            tail.lines()
+                                .map(|l| format!("  {l}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    }
+                }
+                None => format!(
+                    "no background process {id}; /procs lists them, /procs stop ID|all ends them"
+                ),
+            },
+        }
+    }
+
     fn usage_line(&self) -> String {
         let agent = self.agent.lock().expect("agent poisoned");
         let r = agent.result();
@@ -1489,6 +1570,7 @@ impl Session<'_> {
                 }
             }
             "permissions" => self.permissions(&arg),
+            "procs" => self.procs(&arg),
             "diff" => git_changes(self.cwd),
             "export" => {
                 let path = if arg.is_empty() {

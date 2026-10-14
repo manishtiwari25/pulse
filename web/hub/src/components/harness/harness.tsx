@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  ActivityIcon,
   ArrowLeftIcon,
   BanIcon,
   BookOpenIcon,
@@ -434,9 +435,9 @@ const STEP_LABEL: Record<string, string> = {
 };
 
 // The typed tools of the harness (read, grep, glob, edit, write, mcp, skill,
-// fetch, hook) show their request the way a command shows its line; the
+// fetch, process, hook) show their request the way a command shows its line; the
 // reply follows as an observation like any command's output.
-const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "hook"];
+const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "process", "hook"];
 
 const STEP_ICON: Record<string, typeof InfoIcon> = {
   assistant: BotIcon,
@@ -451,6 +452,7 @@ const STEP_ICON: Record<string, typeof InfoIcon> = {
   mcp: PlugIcon,
   skill: BookOpenIcon,
   fetch: GlobeIcon,
+  process: ActivityIcon,
   subagent: GitForkIcon,
   hook: WebhookIcon,
   error: TriangleAlertIcon,
