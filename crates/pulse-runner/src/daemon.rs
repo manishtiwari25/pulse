@@ -151,10 +151,13 @@ fn meta_upsert_result(
     key: &str,
     value: &serde_json::Value,
 ) -> Result<(), String> {
+    // A value that cannot be serialized is an error the caller logs, never an
+    // empty string stored where the console expects a JSON document.
+    let encoded = pulse_store::gojson::to_string(value).map_err(|e| e.to_string())?;
     let conn = s.conn().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [key.to_string(), pulse_store::gojson::to_string(value).unwrap_or_default()],
+        [key.to_string(), encoded],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
