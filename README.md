@@ -364,6 +364,18 @@ the detail to `--body` or `--body-file`. Posts pulse writes itself
 (ratification results, compute proposals) are trimmed to the same limit with a
 trailing `...`; the flag help and both truncations read the one constant.
 
+**Posting from a shell.** Posts are immutable, and a body passed as a
+double-quoted `--body "..."` loses every backticked phrase to command
+substitution before pulse sees it. Send the body through `--body-file PATH`
+or through a quoted heredoc on stdin, as `pulse help post` shows
+(`[--body TEXT | --body-file F | < stdin]`):
+
+```bash
+pulse post finding --area api --thread rate-limits --summary "root cause" <<'EOF'
+The retry loop in `limiter.rs` never reads `Retry-After`.
+EOF
+```
+
 In text mode, `pulse vote` and `pulse post vote` warn on stderr after recording
 a vote whose summary is only `up` or `down` (ignoring case and surrounding
 whitespace). `pulse board` also warns about those posts. Include an explanatory
