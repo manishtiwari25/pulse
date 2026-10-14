@@ -1852,7 +1852,10 @@ ID|all` ends them - everything still running is stopped when the session
 ends; `/memory` shows what is remembered for the project and for you,
 `/memory add [user] TEXT` remembers one more, `/memory forget TEXT` drops
 the one that matches, `/memory clear project|user` empties a file (the
-model sees the change from the next session on; **Memory** above); `/diff` shows `git status` and
+model sees the change from the next session on; **Memory** above);
+`/rewind` lists the turns so far and `/rewind N` puts the files the model
+edited and the conversation back to before turn N (**Rewind** below);
+`/diff` shows `git status` and
 the diff stat of the clone; `/export [PATH]` writes the conversation as
 Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
 has in hand - model, context window, budgets, mode, tools, instruction
@@ -1874,6 +1877,28 @@ the newest session that ran in this directory. Sessions use the built-in
 chat prompt, not `harness.system_prompt`; `--prompt-file PATH` overrides
 it. `--bare` starts a plain agent - no instruction files, skills, hooks or
 MCP servers (`--no-instructions --no-skills --no-hooks --no-mcp` in one).
+
+**Rewind.** A turn that went the wrong way can be taken back. Before an
+`edit` or `write` runs, the session keeps a copy of the file as it was
+(the first copy per turn wins, a file the turn creates is remembered as
+absent), and `/rewind` lists the turns with what each changed: `2. make
+the test pass - 2 files: src/lib.rs, tests/it.rs`. `/rewind N` puts those
+files back to how they were before turn N - a file a turn created is
+removed, a directory left empty with it - and drops turns N onward from
+the conversation, so the next message continues from the answer to turn
+N-1 as if the rest had not been said; `/rewind N files` puts only the
+files back and tells the model with your next message, so the
+conversation goes on; `/rewind N conversation` drops only the messages.
+What a shell command changed is not recorded - `git` is the rewind for
+that. A rewound turn's copies are forgotten; after `/rewind N files` the
+turn stays in the list as `no file changes`, so the numbers do not shift.
+The copies live beside the trajectory in
+`~/.pulse/harness/ID.rewind/` and follow a session through `--resume`
+(`resumed session ID: 6 messages carried over; 2 turns can still be
+rewound`). After compaction the messages of the turns folded into the
+summary cannot be dropped; their files can (`/rewind 1 files`). The
+rewind is a `note` step in the trajectory, so a later reader sees it
+happened.
 
 **Permission rules** say what runs without asking and what may not run at
 all, in the `tool` / `tool(filter)` grammar Claude Code and Copilot CLI
@@ -1904,7 +1929,7 @@ pulse harness login                     # device flow: open the URL, type the co
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /diff /export /env /init /delegate /new /sessions /help inside
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

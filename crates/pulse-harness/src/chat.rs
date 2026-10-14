@@ -93,6 +93,11 @@ const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
         "what is remembered for this project and for you across sessions; add one, forget one, or clear a file",
     ),
     (
+        "rewind",
+        "[N [files|conversation]]",
+        "list the turns, or put the files the model edited and the conversation back to before turn N (files or conversation alone on request)",
+    ),
+    (
         "diff",
         "",
         "what changed in the working tree (git status and diff --stat)",
@@ -1063,6 +1068,11 @@ fn load_resume(home: &str, id: &str) -> Result<(String, Trajectory)> {
     Ok((label, traj))
 }
 
+/// Where session `id` keeps what `/rewind` needs, beside its trajectory.
+fn rewind_dir(home: &str, id: &str) -> PathBuf {
+    Path::new(home).join("harness").join(format!("{id}.rewind"))
+}
+
 fn read_trajectory(path: &Path) -> Result<Trajectory> {
     let data = std::fs::read(path)?;
     Ok(serde_json::from_slice(&data)?)
@@ -1260,6 +1270,9 @@ struct Session<'a> {
     /// output the user saw, a plan-mode change.
     context: Vec<String>,
     mode_note: Option<&'static str>,
+    /// A `/rewind` dropped messages since the trajectory was last
+    /// written; a closed terminal must not bring them back.
+    rewound: bool,
 }
 
 impl Session<'_> {
@@ -1331,6 +1344,59 @@ impl Session<'_> {
     /// `stop ID|all` ends them.
     /// `/memory`: the memory files, `add [user] TEXT`, `forget TEXT`,
     /// `clear project|user`.
+    /// `/rewind`: the turns so far; `/rewind N [files|conversation]` puts
+    /// the checkout and the conversation (or one of them) back to before
+    /// turn N.
+    fn rewind(&mut self, arg: &str) -> String {
+        use crate::rewind::What;
+        let mut agent = self.agent.lock().expect("agent poisoned");
+        let (number, what) = match arg.split_once(char::is_whitespace) {
+            Some((n, w)) => (n.trim(), w.trim()),
+            None => (arg.trim(), ""),
+        };
+        if number.is_empty() {
+            let turns = agent.rewind_turns();
+            if turns.is_empty() {
+                return "no turns yet to rewind".to_string();
+            }
+            let mut out = vec![format!(
+                "{} turn{} (/rewind N puts the files the model edited and the conversation back to before turn N; add `files` or `conversation` for one of them; what shell commands changed is not recorded):",
+                turns.len(),
+                if turns.len() == 1 { "" } else { "s" }
+            )];
+            out.extend(turns.into_iter().map(|l| format!("  {l}")));
+            return out.join("\n");
+        }
+        let Ok(n) = number.parse::<usize>() else {
+            return "usage: /rewind [N [files|conversation]]".to_string();
+        };
+        let Some(what) = What::parse(what) else {
+            return format!("unknown /rewind {what}; usage: /rewind [N [files|conversation]]");
+        };
+        // The agent's note step already says what was put back and
+        // dropped; only what the note cannot know is added here.
+        match agent.rewind(n, what) {
+            Ok(report) => {
+                self.rewound |= report.truncate_to.is_some();
+                if what == What::Files
+                    && (!report.restored.is_empty() || !report.removed.is_empty())
+                {
+                    // The conversation goes on, so the model hears what
+                    // the checkout lost with the next message.
+                    let mut changed: Vec<String> = report.restored.clone();
+                    changed.extend(report.removed.iter().map(|p| format!("{p} (removed)")));
+                    self.context.push(format!(
+                        "Note: the user put these files back to how they were before turn {n}: {}. Read a file again before relying on what you changed in it.",
+                        changed.join(", ")
+                    ));
+                    return "the model is told with your next message".to_string();
+                }
+                String::new()
+            }
+            Err(e) => e,
+        }
+    }
+
     fn memory(&self, arg: &str) -> String {
         let agent = self.agent.lock().expect("agent poisoned");
         let Some(memory) = agent.memory() else {
@@ -1646,6 +1712,13 @@ impl Session<'_> {
             "permissions" => self.permissions(&arg),
             "procs" => self.procs(&arg),
             "memory" => self.memory(&arg),
+            "rewind" => {
+                let line = self.rewind(&arg);
+                if line.is_empty() {
+                    return Slash::Done;
+                }
+                line
+            }
             "diff" => git_changes(self.cwd),
             "export" => {
                 let path = if arg.is_empty() {
@@ -1982,6 +2055,10 @@ fn run_session(
     live.sessions += 1;
     let mut e = live.err.clone();
 
+    agent
+        .lock()
+        .expect("agent poisoned")
+        .set_rewind_dir(rewind_dir(&c.home, &prepared.session_id));
     if let Some(resume) = resume {
         let (label, traj) = *resume;
         let n = traj
@@ -1989,12 +2066,31 @@ fn run_session(
             .iter()
             .filter(|m| !matches!(m.role, Role::System))
             .count();
-        agent
-            .lock()
-            .expect("agent poisoned")
-            .resume_messages(traj.messages)?;
+        let mut a = agent.lock().expect("agent poisoned");
+        a.resume_messages(traj.messages)?;
+        let rewindable = match a.load_rewind(&rewind_dir(&c.home, &label)) {
+            Ok(n) => n,
+            Err(err) => {
+                if !quiet {
+                    writeln!(e, "rewind records of {label} not read: {err}")?;
+                }
+                0
+            }
+        };
+        drop(a);
         if !quiet {
-            writeln!(e, "resumed session {label}: {n} messages carried over")?;
+            writeln!(
+                e,
+                "resumed session {label}: {n} messages carried over{}",
+                if rewindable > 0 {
+                    format!(
+                        "; {rewindable} turn{} can still be rewound",
+                        if rewindable == 1 { "" } else { "s" }
+                    )
+                } else {
+                    String::new()
+                }
+            )?;
         }
     }
     {
@@ -2056,6 +2152,7 @@ fn run_session(
         turns: 0,
         context: Vec::new(),
         mode_note: None,
+        rewound: false,
     };
     let mut pending = live.first.take();
     let mut idle_interrupts = 0;
@@ -2107,7 +2204,12 @@ fn run_session(
         }
         let (message, then) = if let Some(command) = text.strip_prefix('/') {
             match session.slash(command) {
-                Slash::Done => continue,
+                Slash::Done => {
+                    if std::mem::take(&mut session.rewound) {
+                        prepared.write_trajectory(c)?;
+                    }
+                    continue;
+                }
                 Slash::Exit => break,
                 Slash::Restart(next) => {
                     restart = Some(next);

@@ -3983,6 +3983,153 @@ mod tests {
     }
 
     #[test]
+    fn harness_chat_rewind_puts_edits_back_and_reaches_a_resumed_session() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "old line\n").unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "edit",
+                json!({"path":"a.txt","search":"old line","replace":"new line"}),
+            ),
+            say("edited"),
+            call("write", json!({"path":"b.txt","content":"b\n"})),
+            say("wrote"),
+            say("noted"),
+        ]);
+        set_fake_provider(p.clone());
+        let traj = Path::new(&s.home).join("harness/rw-a.json");
+        let roles = format!("!grep -c '\"role\":' {}", traj.display());
+        set_stdin_for_tests(Some(&format!(
+            "/rewind\nchange a\nadd b\n/rewind\n{roles}\n/rewind 2 files\nok\n/rewind 1\n{roles}\n/rewind\n/rewind x\n/rewind 1 everything\n"
+        )));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes", "--session", "rw-a"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "edited\nwrote\nnoted\n");
+        assert!(err.contains("no turns yet to rewind"), "{err}");
+        assert!(
+            err.contains(
+                "2 turns (/rewind N puts the files the model edited and the conversation back to before turn N; add `files` or `conversation` for one of them; what shell commands changed is not recorded):\n  1. change a - 1 file: a.txt\n  2. add b - 1 file: b.txt\n"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "note: rewound to before turn 2: put 1 file back (b.txt (removed))\nthe model is told with your next message\nyou> "
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("note: rewound to before turn 1: put 1 file back (a.txt); dropped "),
+            "{err}"
+        );
+        assert!(
+            err.contains(" of 3 turns from the conversation\nyou> "),
+            "{err}"
+        );
+        assert_eq!(
+            err.matches("rewound to before turn 1").count(),
+            1,
+            "said once: {err}"
+        );
+        // The trajectory on disk follows the conversation at once, so a
+        // closed terminal cannot bring the dropped messages back.
+        let counts: Vec<&str> = err
+            .lines()
+            .skip_while(|l| !l.starts_with("you> !grep"))
+            .filter(|l| l.trim().parse::<usize>().is_ok())
+            .collect();
+        assert_eq!(counts.len(), 2, "{err}");
+        assert!(counts[0].trim().parse::<usize>().unwrap() > 1, "{err}");
+        assert_eq!(counts[1].trim(), "1", "{err}");
+        assert!(
+            err.contains("usage: /rewind [N [files|conversation]]\n"),
+            "{err}"
+        );
+        assert!(
+            err.contains("unknown /rewind everything; usage: /rewind [N [files|conversation]]"),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old line\n"
+        );
+        assert!(!dir.path().join("b.txt").exists());
+        // The files-only rewind told the model with the next message.
+        let reqs = p.requests();
+        let last = reqs.last().unwrap().messages.last().unwrap();
+        assert!(
+            last.content.ends_with(
+                "Note: the user put these files back to how they were before turn 2: b.txt (removed). Read a file again before relying on what you changed in it.\n\nok"
+            ),
+            "{}",
+            last.content
+        );
+        let index = Path::new(&s.home).join("harness/rw-a.rewind/index.json");
+        let index: Value = serde_json::from_slice(&fs::read(&index).unwrap()).unwrap();
+        assert_eq!(index, json!({"turns": []}));
+
+        // A resumed session can still rewind what the earlier one changed.
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "edit",
+                json!({"path":"a.txt","search":"old line","replace":"new line"}),
+            ),
+            say("edited again"),
+        ]);
+        set_fake_provider(p);
+        set_stdin_for_tests(Some("change a\n"));
+        let (_, err, code) = invoke(&s.home, &chat_args(cwd, &["--yes", "--session", "rw-b"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "new line\n"
+        );
+        let p = CommandFakeProvider::scripted(vec![say("back")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("/rewind\n/rewind 1\nthanks\n"));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(cwd, &["--yes", "--resume", "rw-b", "--session", "rw-c"]),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(
+            err.contains(
+                "resumed session rw-b: 4 messages carried over; 1 turn can still be rewound\n"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("\n  1. change a - 1 file: a.txt\n"), "{err}");
+        assert!(
+            err.contains("note: rewound to before turn 1: put 1 file back (a.txt); dropped 4 messages of 1 turn from the conversation\nyou> "),
+            "{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old line\n"
+        );
+        assert_eq!(out, "back\n");
+        assert!(
+            !err.contains("resumed an earlier session"),
+            "nothing is carried over once the only turn is rewound: {err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs[0].messages.len(), 2, "{:?}", reqs[0].messages);
+        assert_eq!(reqs[0].messages[1].content, "thanks");
+        assert!(
+            Path::new(&s.home)
+                .join("harness/rw-c.rewind/index.json")
+                .exists()
+        );
+    }
+
+    #[test]
     fn harness_chat_first_message_flag_and_json_lines() {
         let _serial = crate::test_helpers::serial();
         let (_env, _guards) = command_env();

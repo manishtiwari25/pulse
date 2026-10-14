@@ -3,7 +3,7 @@ use crate::background::{
     PROCESS_WAIT_DEFAULT, Process, ProcessAction, Procs, dropped_marker, fmt_dur, process_tool,
 };
 use crate::compact::{
-    COMPACT_KEEP_RECENT, COMPACT_MIN_GAP_CALLS, apply_compaction, compaction_cut,
+    COMPACT_KEEP_RECENT, COMPACT_MARKER, COMPACT_MIN_GAP_CALLS, apply_compaction, compaction_cut,
     render_transcript, should_compact, summary_request,
 };
 use crate::fetch::{
@@ -15,6 +15,7 @@ use crate::hooks::{
 };
 use crate::memory::{MEMORY_TOOL, Memory, MemoryAction, memory_paragraph, memory_tool};
 use crate::permissions::{self, Rule, Rules};
+use crate::rewind::{self, Rewind};
 use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
@@ -591,6 +592,8 @@ pub struct Agent {
     hooks: HookSet,
     /// Memory across runs, when the owner keeps it on (`memory` tool).
     memory: Option<Memory>,
+    /// What each turn of a session changed, for `/rewind`.
+    rewind: Rewind,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
     web_search: WebSearch,
@@ -959,6 +962,7 @@ pub fn new_shared(
     cfg: Config,
     sinks: Vec<Box<dyn Sink>>,
 ) -> Agent {
+    let rewind = Rewind::new(&cfg.cwd);
     Agent {
         p,
         env,
@@ -978,6 +982,7 @@ pub fn new_shared(
         skills: Vec::new(),
         hooks: HookSet::default(),
         memory: None,
+        rewind,
         fetch: FetchPolicy::default(),
         web_search: WebSearch::default(),
         procs: Procs::default(),
@@ -1029,6 +1034,65 @@ impl Agent {
     /// leave something behind (a read-only run may not).
     pub fn offers_memory(&self) -> bool {
         self.memory.is_some() && !self.cfg.read_only
+    }
+
+    /// Where a session keeps its rewind records (`<home>/harness/<id>.rewind`);
+    /// without one they live in memory only. Call before the first turn.
+    pub fn set_rewind_dir(&mut self, dir: PathBuf) {
+        self.rewind.set_dir(dir);
+    }
+
+    /// Adds the rewind records an earlier session saved under `dir`, so
+    /// its turns can still be rewound after `resume_messages`; the count
+    /// loaded. Call after `resume_messages` and before the first turn.
+    pub fn load_rewind(&mut self, dir: &Path) -> std::io::Result<usize> {
+        let n = self.rewind.load(dir)?;
+        // Before `start` the carried-over messages sit at msgs[i]; the
+        // system prompt will push them to i + 1.
+        let starts: Vec<(usize, String)> = self
+            .msgs
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| is_turn_start(m))
+            .map(|(i, m)| (i + 1, m.content.clone()))
+            .collect();
+        self.rewind.match_messages(&starts);
+        Ok(n)
+    }
+
+    /// The session's turns as `/rewind` lists them.
+    pub fn rewind_turns(&self) -> Vec<String> {
+        self.rewind.describe()
+    }
+
+    /// `/rewind N`: puts the files the turns from `to` (1-based) on
+    /// changed back to how they were, drops those turns' messages, or
+    /// both; the turn's records go with them. Not during a turn.
+    pub fn rewind(
+        &mut self,
+        to: usize,
+        what: rewind::What,
+    ) -> std::result::Result<rewind::Report, String> {
+        if to == 0 {
+            return Err("turns count from 1; /rewind lists them".to_string());
+        }
+        // Before `start` the system prompt is not in place yet, so
+        // carried-over messages sit one below where the records say.
+        let offset = usize::from(!self.ran);
+        let report = self.rewind.rewind(to - 1, what, self.msgs.len() + offset)?;
+        if let Some(index) = report.truncate_to {
+            self.msgs.truncate(index.saturating_sub(offset));
+            // The compaction and pruning bookkeeping speaks of a
+            // conversation that is gone.
+            self.state.last_prompt_tokens = 0;
+        }
+        // The step is the record of it; a chat shows the step.
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: report.describe(to, what),
+            ..Step::default()
+        });
+        Ok(report)
     }
 
     pub fn set_hooks(&mut self, hooks: HookSet) {
@@ -1353,8 +1417,17 @@ impl Agent {
         self.state.initiator = "user".to_string();
         self.state.counted_format_errors = 0;
         self.state.used_format_retries = 0;
+        self.rewind.begin_turn(text, self.msgs.len());
         self.push_user(text.to_string());
-        Ok(match self.drive(cancel) {
+        let drove = self.drive(cancel);
+        if let Err(e) = self.rewind.end_turn() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!("rewind records not saved: {e}"),
+                ..Step::default()
+            });
+        }
+        Ok(match drove {
             Drive::Answered(reply) => Turn::Reply(reply),
             Drive::Stopped { status, error } if status == EXIT_SANDBOX_LOST => {
                 Turn::Ended(self.finish(status, "", &error))
@@ -2915,6 +2988,7 @@ impl Agent {
         let before = self.msgs.len();
         let replaced = cut - 2;
         self.msgs = apply_compaction(&self.msgs, cut, &summary);
+        self.rewind.on_compaction(cut);
         self.result.compactions += 1;
         self.emit(Step {
             kind: StepKind::Note,
@@ -3471,6 +3545,12 @@ impl Agent {
             && let Some(obs) = self.approval(call.name(), &summary, &detail, &reason)
         {
             return obs;
+        }
+        if call.writes()
+            && let Some(path) = call.path()
+            && let Ok(resolved) = self.fs().resolve_action_path(path, true)
+        {
+            self.rewind.capture(&resolved.rel);
         }
         self.fs().execute(call)
     }
@@ -4658,6 +4738,14 @@ impl NativeCall {
         matches!(self, Self::Edit { .. } | Self::Write { .. })
     }
 
+    /// The one path an `edit` or `write` changes.
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::Edit { path, .. } | Self::Write { path, .. } => Some(path.trim()),
+            _ => None,
+        }
+    }
+
     /// What a permission rule's filter is matched against: the paths read
     /// or changed, the directory searched (`.` for the whole checkout).
     fn subjects(&self) -> Vec<String> {
@@ -5515,6 +5603,15 @@ pub fn prune_history(msgs: &[Message], keep: usize, level: i32) -> (Vec<Message>
         }
     }
     (out, changed)
+}
+
+/// A user message that begins a turn: not an observation, a compaction
+/// summary or a note the harness wrote.
+pub fn is_turn_start(msg: &Message) -> bool {
+    msg.role == Role::User
+        && !msg.content.starts_with(RETURN_CODE_PREFIX)
+        && !msg.content.starts_with(COMPACT_MARKER)
+        && !msg.content.starts_with("Note: resumed an earlier session")
 }
 
 pub fn is_observation_message(index: usize, msg: &Message) -> bool {
@@ -9277,6 +9374,233 @@ mod tests {
         assert_eq!(kinds.last(), Some(&StepKind::Exit), "{kinds:?}");
         // Ending twice is harmless.
         assert_eq!(h.end(EXIT_ENDED).exit_status, EXIT_ENDED);
+    }
+
+    #[test]
+    fn chat_rewind_puts_files_and_conversation_back_to_before_a_turn() {
+        use crate::rewind::What;
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let home = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            // Turn 1: edits a.txt and writes a new file under a new directory.
+            resp(calls(&[
+                (
+                    "e1",
+                    "edit",
+                    json!({"path":"a.txt","search":"old line","replace":"new line"}),
+                ),
+                (
+                    "w1",
+                    "write",
+                    json!({"path":"src/new.rs","content":"fn main() {}\n"}),
+                ),
+            ])),
+            resp(msg("Edited a and made src/new.rs.")),
+            // Turn 2: edits a.txt again, reads it, and one edit fails.
+            resp(calls(&[(
+                "e2",
+                "edit",
+                json!({"path":"a.txt","search":"new line","replace":"newer line"}),
+            )])),
+            resp(calls(&[
+                ("r1", "read", json!({"path":"a.txt"})),
+                (
+                    "e3",
+                    "edit",
+                    json!({"path":"b.txt","search":"nothing","replace":"x"}),
+                ),
+            ])),
+            resp(msg("Changed a again.")),
+            // Turn 3 after the rewind: the conversation starts over from turn 2.
+            resp(msg("Fresh start.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        let rewind_dir = home.path().join("harness/hs-1.rewind");
+        h.set_rewind_dir(rewind_dir.clone());
+        assert!(h.rewind_turns().is_empty());
+        assert_eq!(
+            h.rewind(1, What::Both).unwrap_err(),
+            "there are 0 turns to rewind; /rewind lists them"
+        );
+        assert_eq!(
+            h.rewind(0, What::Both).unwrap_err(),
+            "turns count from 1; /rewind lists them"
+        );
+        let cancel = CancelToken::new();
+        h.turn(&cancel, "change a and add new.rs").unwrap();
+        h.turn(&cancel, "--- the user ran `ls` in the shell; its output ---\na.txt\n--- end of output ---\n\nchange a again\nplease").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "newer line\n"
+        );
+        assert!(dir.path().join("src/new.rs").exists());
+        assert_eq!(
+            h.rewind_turns(),
+            [
+                "1. change a and add new.rs - 2 files: a.txt, src/new.rs",
+                "2. change a again - 1 file: a.txt",
+            ],
+            "a failed edit and a read record nothing"
+        );
+        let index: Value =
+            serde_json::from_slice(&fs::read(rewind_dir.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            fs::read_to_string(rewind_dir.join("2/0")).unwrap(),
+            "new line\n",
+            "turn 2's pre-image of a.txt is what turn 1 left"
+        );
+        let messages_before = h.messages().len();
+
+        // Back to before turn 2: a.txt as turn 1 left it, the conversation
+        // ends with turn 1's answer.
+        let report = h.rewind(2, What::Both).unwrap();
+        assert_eq!(report.restored, ["a.txt"]);
+        assert!(report.removed.is_empty());
+        assert_eq!(report.turns, 1);
+        assert!(
+            report.dropped_messages > 0
+                && messages_before - report.dropped_messages == h.messages().len()
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "new line\n"
+        );
+        let msgs = h.messages();
+        assert_eq!(
+            msgs.last().unwrap().content,
+            "Edited a and made src/new.rs."
+        );
+        assert_eq!(msgs.iter().filter(|m| is_turn_start(m)).count(), 1);
+        assert_eq!(
+            h.rewind_turns(),
+            ["1. change a and add new.rs - 2 files: a.txt, src/new.rs"]
+        );
+        let note = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|s| s.kind == StepKind::Note)
+            .map(|s| s.content.clone())
+            .unwrap();
+        assert_eq!(
+            note,
+            "rewound to before turn 2: put 1 file back (a.txt); dropped 7 messages of 1 turn from the conversation"
+        );
+
+        // The next turn continues from there: the model sees turn 1 and
+        // the new message, nothing of turn 2.
+        let third = h.turn(&cancel, "start over").unwrap();
+        assert!(
+            matches!(&third, Turn::Reply(t) if t == "Fresh start."),
+            "{third:?}"
+        );
+        let reqs = p.requests();
+        let last = &reqs.last().unwrap().messages;
+        assert!(
+            !last.iter().any(|m| m.content.contains("change a again")),
+            "{last:?}"
+        );
+        assert_eq!(last.last().unwrap().content, "start over");
+        assert_eq!(h.rewind_turns().len(), 2);
+
+        // Files only: the checkout goes back to the start, the conversation
+        // keeps both turns (with nothing left to put back).
+        let report = h.rewind(1, What::Files).unwrap();
+        assert_eq!(report.restored, ["a.txt"]);
+        assert_eq!(report.removed, ["src/new.rs"]);
+        assert_eq!(report.truncate_to, None);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old line\n"
+        );
+        assert!(
+            !dir.path().join("src").exists(),
+            "the directory the write made goes too"
+        );
+        assert_eq!(h.messages().last().unwrap().content, "Fresh start.");
+        assert_eq!(
+            h.rewind_turns(),
+            [
+                "1. change a and add new.rs - no file changes",
+                "2. start over - no file changes",
+            ]
+        );
+        // Conversation only, to the very start: just the system prompt is
+        // left and the records are gone.
+        let report = h.rewind(1, What::Conversation).unwrap();
+        assert_eq!(report.truncate_to, Some(1));
+        assert_eq!(h.messages().len(), 1);
+        assert!(h.rewind_turns().is_empty());
+        let index: Value =
+            serde_json::from_slice(&fs::read(rewind_dir.join("index.json")).unwrap()).unwrap();
+        assert_eq!(index["turns"].as_array().unwrap().len(), 0);
+        assert_eq!(h.end(EXIT_ENDED).exit_status, EXIT_ENDED);
+    }
+
+    #[test]
+    fn chat_rewind_reaches_the_turns_of_a_resumed_session() {
+        use crate::rewind::What;
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let home = tempfile::tempdir().unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "e1",
+                "edit",
+                json!({"path":"a.txt","search":"old line","replace":"new line"}),
+            )])),
+            resp(msg("Edited a.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p, None, steps.clone());
+        h.set_rewind_dir(home.path().join("harness/hs-1.rewind"));
+        let cancel = CancelToken::new();
+        h.turn(&cancel, "change a").unwrap();
+        let carried = h.messages();
+        h.end(EXIT_ENDED);
+
+        // Resumed: the earlier turn is listed and rewinds; the note the
+        // resume writes is not a turn.
+        let p = Arc::new(FakeProvider::new(vec![resp(msg("Hello again."))]));
+        let mut later = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        later.set_rewind_dir(home.path().join("harness/hs-2.rewind"));
+        later.resume_messages(carried).unwrap();
+        assert_eq!(
+            later
+                .load_rewind(&home.path().join("harness/hs-1.rewind"))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            later
+                .load_rewind(&home.path().join("harness/none.rewind"))
+                .unwrap(),
+            0
+        );
+        later.turn(&cancel, "hello").unwrap();
+        assert_eq!(
+            later.rewind_turns(),
+            ["1. change a - 1 file: a.txt", "2. hello - no file changes"]
+        );
+        let reqs = p.requests();
+        let last = &reqs[0].messages;
+        assert!(
+            last.iter()
+                .any(|m| m.content.starts_with("Note: resumed an earlier session"))
+        );
+        let report = later.rewind(1, What::Both).unwrap();
+        assert_eq!(report.restored, ["a.txt"]);
+        assert_eq!(report.turns, 2);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old line\n"
+        );
+        assert_eq!(later.messages().len(), 1, "only the system prompt is left");
+        assert!(later.rewind_turns().is_empty());
     }
 
     #[test]
