@@ -3297,14 +3297,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         ] {
             let s = crate::test_helpers::new_store();
             assert_eq!(
-                crate::util::setting_int(&s, "daemon.min_free_mb"),
-                10240,
+                pulse_store::DAEMON_SETTINGS
+                    .get("daemon.min_free_mb")
+                    .map(String::as_str),
+                Some("10240"),
                 "daemon.min_free_mb default = want 10240"
             );
-            if !setting.is_empty() {
-                s.set_setting(crate::util::HUMAN_AGENT, "daemon.min_free_mb", setting)
-                    .unwrap();
-            }
+            // new_store turns the floor off so unrelated tests never read the
+            // host's real free space; this test exercises the default itself.
+            let setting = if setting.is_empty() { "10240" } else { setting };
+            s.set_setting(crate::util::HUMAN_AGENT, "daemon.min_free_mb", setting)
+                .unwrap();
             crate::executor::add_executor(
                 &s,
                 crate::test_helpers::TEST_NOW,
