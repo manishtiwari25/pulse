@@ -952,6 +952,122 @@ impl Agent {
         self.stream = Some(f);
     }
 
+    /// Switches the session between looking and acting (`/plan` in a
+    /// session): read-only offers no `edit` or `write` and refuses the
+    /// commands that change things, from the next model call.
+    pub fn set_read_only(&mut self, on: bool) {
+        self.cfg.read_only = on;
+    }
+
+    /// What the session runs with, one line per item (`/env` in a
+    /// session): model, window, budgets, tools, skills, hooks, MCP
+    /// servers, fetch hosts and deny rules.
+    pub fn environment(&self) -> Vec<String> {
+        let cfg = &self.cfg;
+        let mut out = vec![
+            format!("model: {} ({})", cfg.model, cfg.provider),
+            format!(
+                "context window: {}; compact at {}%; keep {} observations",
+                if cfg.context_window > 0 {
+                    cfg.context_window.to_string()
+                } else {
+                    "unknown".to_string()
+                },
+                cfg.compact_at,
+                cfg.keep_observations
+            ),
+            format!(
+                "budgets: {} model calls and {} min per turn, {} s per step, cost cap {}",
+                cfg.max_steps,
+                cfg.wall_time.as_secs() / 60,
+                cfg.step_timeout.as_secs(),
+                if cfg.max_cost > 0.0 {
+                    format!("{:.2}", cfg.max_cost)
+                } else {
+                    "none".to_string()
+                }
+            ),
+            format!("working directory: {}", cfg.cwd),
+            format!(
+                "mode: {}{}",
+                if cfg.read_only {
+                    "read-only (plan)"
+                } else {
+                    "read and write"
+                },
+                if cfg.reasoning.is_empty() {
+                    String::new()
+                } else {
+                    format!("; reasoning {}", cfg.reasoning)
+                }
+            ),
+            format!("tools: {}", self.tool_names().join(", ")),
+        ];
+        out.push(if cfg.instructions.trim().is_empty() {
+            "instructions: none loaded".to_string()
+        } else {
+            let files: Vec<&str> = cfg
+                .instructions
+                .lines()
+                .filter_map(|l| l.strip_prefix("--- ").and_then(|l| l.strip_suffix(" ---")))
+                .collect();
+            format!(
+                "instructions: {} bytes from {}",
+                cfg.instructions.len(),
+                if files.is_empty() {
+                    "the brief".to_string()
+                } else {
+                    files.join(", ")
+                }
+            )
+        });
+        out.push(if self.skills.is_empty() {
+            "skills: none".to_string()
+        } else {
+            format!(
+                "skills: {}",
+                self.skills
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+        out.push(if self.hooks.is_empty() {
+            "hooks: none".to_string()
+        } else {
+            format!(
+                "hooks: {} from {}",
+                self.hooks.hooks.len(),
+                self.hooks.files.join(", ")
+            )
+        });
+        out.push(if self.mcp.servers.is_empty() {
+            "mcp servers: none".to_string()
+        } else {
+            format!(
+                "mcp servers: {}",
+                self.mcp
+                    .servers
+                    .iter()
+                    .map(|s| format!("{} ({} tools)", s.server, s.tools.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+        out.push(if self.fetch.is_empty() {
+            "fetch: off".to_string()
+        } else {
+            format!("fetch: {}", self.fetch.patterns.join(", "))
+        });
+        out.push(format!(
+            "deny rules: {}; subagents: {}",
+            cfg.deny.len(),
+            if self.offers_subagents() { "on" } else { "off" }
+        ));
+        out
+    }
+
     fn offers_subagents(&self) -> bool {
         self.cfg.subagents && self.cfg.depth == 0
     }

@@ -3880,4 +3880,213 @@ mod tests {
         assert_eq!(code, 2);
         assert!(err.contains("one of --resume ID and --continue"), "{err}");
     }
+
+    #[test]
+    fn harness_chat_shell_mentions_plan_init_env_export_and_diff() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p =
+            CommandFakeProvider::scripted(vec![say("I see the notes."), say("Wrote AGENTS.md.")]);
+        set_fake_provider(p.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        fs::write(dir.path().join("notes.txt"), "remember the pelican\n").unwrap();
+        let export = dir.path().join("out").join("chat.md");
+        set_stdin_for_tests(Some(&format!(
+            "!echo shell-says-hi\n/plan\nlook at @notes.txt please\n/plan off\n/init\n/env\n/export {}\n/diff\n/exit\n",
+            export.display()
+        )));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--session", "chat-x"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "I see the notes.\nWrote AGENTS.md.\n");
+        assert!(
+            err.contains("shell-says-hi"),
+            "!cmd shows its output: {err}"
+        );
+        assert!(err.contains("plan mode: on"), "{err}");
+        assert!(err.contains("attached: notes.txt"), "{err}");
+        assert!(err.contains("plan mode: off"), "{err}");
+        assert!(
+            err.contains("mode: read and write"),
+            "/env after plan off: {err}"
+        );
+        assert!(err.contains("tools: "), "/env lists tools: {err}");
+        assert!(err.contains("approvals: changes are shown first"), "{err}");
+        assert!(err.contains("wrote 4 messages to"), "/export: {err}");
+        assert!(
+            err.contains("is not a git repository"),
+            "/diff outside git: {err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        let first = reqs[0].messages.last().unwrap();
+        assert!(
+            first
+                .content
+                .contains("the user ran `echo shell-says-hi` in the shell")
+                && first.content.contains("shell-says-hi\n"),
+            "shell output rides with the next message: {}",
+            first.content
+        );
+        assert!(
+            first.content.contains("[Plan mode is on"),
+            "plan note: {}",
+            first.content
+        );
+        assert!(
+            first
+                .content
+                .contains("look at @notes.txt please\n\n--- @notes.txt ---\nremember the pelican"),
+            "mention attached: {}",
+            first.content
+        );
+        assert!(
+            !reqs[0]
+                .tools
+                .iter()
+                .any(|t| t.name == "edit" || t.name == "write"),
+            "plan mode offers no edit or write: {:?}",
+            reqs[0]
+                .tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        let second = reqs[1].messages.last().unwrap();
+        assert!(
+            second.content.contains("[Plan mode is off"),
+            "{}",
+            second.content
+        );
+        assert!(
+            second.content.contains("AGENTS.md"),
+            "/init asks for AGENTS.md: {}",
+            second.content
+        );
+        assert!(
+            reqs[1].tools.iter().any(|t| t.name == "edit"),
+            "edit is back after /plan off"
+        );
+        let md = fs::read_to_string(&export).unwrap();
+        assert!(md.starts_with("# pulse harness chat chat-x"), "{md}");
+        assert!(
+            md.contains("## You\n\n") && md.contains("look at @notes.txt please"),
+            "{md}"
+        );
+        assert!(md.contains("## Assistant\n\nI see the notes."), "{md}");
+    }
+
+    #[test]
+    fn harness_chat_new_starts_a_fresh_session_and_sessions_lists_the_old() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p = CommandFakeProvider::scripted(vec![say("one"), say("two")]);
+        set_fake_provider(p.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        set_stdin_for_tests(Some(
+            "/sessions\nfirst thing\n/new\n/sessions\nsecond thing\n/exit\n",
+        ));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--session", "chat-n1"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "one\ntwo\n");
+        assert!(err.contains("no earlier sessions ran in"), "{err}");
+        assert!(err.contains("new session "), "{err}");
+        assert!(
+            err.contains("earlier sessions in")
+                && err.contains("chat-n1")
+                && err.contains("first thing"),
+            "/sessions lists the ended one: {err}"
+        );
+        assert!(
+            err.contains("pick the session up again with: pulse harness chat --resume chat-n1"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        assert!(
+            !reqs[1]
+                .messages
+                .iter()
+                .any(|m| m.content.contains("first thing")),
+            "the new session starts clean: {:?}",
+            reqs[1].messages
+        );
+        let (h, _) = s.harness_session("chat-n1").unwrap();
+        let h = h.unwrap();
+        assert_eq!(h.status, EXIT_ENDED);
+        assert_eq!(h.calls, 1);
+        let sessions: i64 = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM harness_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sessions, 2, "two sessions were recorded");
+    }
+
+    #[test]
+    fn harness_chat_delegate_puts_the_brief_on_the_board() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let cwd = cwd.to_str().unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)",
+                [cwd, s.now().as_str()],
+            )
+            .unwrap();
+        let p = CommandFakeProvider::scripted(vec![
+            say("I looked at the test."),
+            say(
+                "Title: Fix the flaky login test\n\nThe test in tests/login.rs flakes under load.\n\n1. Reproduce.\n2. Fix the wait.",
+            ),
+        ]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some(
+            "/delegate\nthe login test is flaky\n/delegate\n/exit\n",
+        ));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &[]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(err.contains("nothing to delegate yet"), "{err}");
+        assert!(
+            err.contains("task TASK-")
+                && err.contains("is on the board for demo: Fix the flaky login test"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert!(
+            reqs[1]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("Write the brief"),
+            "{:?}",
+            reqs[1].messages.last()
+        );
+        let (title, author, brief): (String, String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT t.title, t.created_by, r.brief FROM tasks t JOIN task_revisions r ON r.task_id = t.id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Fix the flaky login test");
+        assert_eq!(author, "tester");
+        assert!(
+            brief.starts_with("The test in tests/login.rs flakes"),
+            "{brief}"
+        );
+    }
 }

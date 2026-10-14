@@ -68,6 +68,8 @@ rand = "0.10"
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process", "fs", "user", "hostname", "term"] }
 signal-hook = "0.4"
+# line editing and history for `pulse harness chat`
+rustyline = { version = "18.0", default-features = false, features = ["with-file-history"] }
 which = "8.0"
 walkdir = "2.5"
 home = "0.5"

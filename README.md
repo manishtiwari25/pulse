@@ -1742,29 +1742,54 @@ harness chat -C .` - every line is a turn, changes are declined unless
 carries only the model's replies, so the output is scriptable; `--json`
 prints one JSON object per turn and one for the session.
 
-Inside the session: `/help`, `/exit` (also Ctrl-D, or Ctrl-C twice while
-idle; Ctrl-C during a turn stops that turn), `/model NAME` switches the
-model for the next turns, `/compact` summarises the older conversation now,
-`/usage` shows calls, tokens, cost and time, `/session` the session id. A
-line ending in `\` continues on the next. `-p TEXT` sends a first message
-before reading the rest. Every session is a store session like a run
-(`pulse harness sessions`, the Harness page, `pulse harness cancel ID`
-stops its current turn) with status `ended` when you leave, and its
-trajectory under `~/.pulse/harness/ID.json` is rewritten after every turn
-with the full conversation, so a session survives a closed terminal: `pulse
-harness chat --resume ID` carries the conversation into a new session (the
-model is told time has passed and files may have changed) and `--continue`
-picks the newest session that ran in this directory. Sessions use the
-built-in chat prompt, not `harness.system_prompt`; `--prompt-file PATH`
-overrides it. Line editing is the terminal's (no history yet; `rlwrap pulse
-harness chat` adds it).
+In a terminal the prompt is a **line editor**: arrow keys and Emacs keys
+edit the line, Up/Down and Ctrl-R walk the input history (kept across
+sessions in `~/.pulse/harness/chat_history`), Tab completes `/commands` at
+the start of a line and file paths after `@`, and a line ending in `\`
+continues on the next (the editor keeps asking until the backslash goes).
+Text typed while a turn runs is kept for the next prompt. **`@PATH`**
+anywhere in a message attaches that file after your words (a directory
+attaches its listing; files over 48 KiB are cut, binary ones named but not
+attached), so `explain @src/main.rs` needs no read step. **`!CMD`** runs a
+shell command yourself, shows its output, and hands the same output to the
+model with your next message - `!cargo test` then `fix the failing one`.
+
+Commands: `/help`; `/exit` (also Ctrl-D, or Ctrl-C twice while idle;
+Ctrl-C during a turn stops that turn); `/new` ends this session and starts
+a fresh one in the same terminal; `/sessions` lists earlier sessions from
+this directory and `/resume ID` carries one on in a new session; `/plan`
+(or `/plan on|off`) toggles **plan mode** - read-only: `edit` and `write`
+are withdrawn and commands that would change the clone are refused, so the
+model can explore and propose before `/plan off` lets it act; `/model
+NAME` switches the model for the next turns; `/compact` summarises the
+older conversation now; `/usage` shows calls, tokens, cost and time;
+`/approve` toggles approving everything; `/diff` shows `git status` and
+the diff stat of the clone; `/export [PATH]` writes the conversation as
+Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
+has in hand - model, context window, budgets, mode, tools, instruction
+files, skills, hooks, MCP servers, deny rules; `/init` asks the model to
+write or improve the project's `AGENTS.md` from what it finds; `/delegate
+[TITLE]` has the model turn the conversation so far into a brief and puts
+it on the board as a task for the fleet (the directory must be a
+registered project), so a chat that found the work hands it off; `/session`
+shows the session id. `-p TEXT` sends a first message before reading the
+rest. Every session is a store session like a run (`pulse harness
+sessions`, the Harness page, `pulse harness cancel ID` stops its current
+turn) with status `ended` when you leave, and its trajectory under
+`~/.pulse/harness/ID.json` is rewritten after every turn with the full
+conversation, so a session survives a closed terminal: `pulse harness chat
+--resume ID` carries the conversation into a new session (the model is
+told time has passed and files may have changed) and `--continue` picks
+the newest session that ran in this directory. Sessions use the built-in
+chat prompt, not `harness.system_prompt`; `--prompt-file PATH` overrides
+it.
 
 ```bash
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all), replies stream; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message, /help inside
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one
