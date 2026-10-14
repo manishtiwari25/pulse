@@ -1862,7 +1862,9 @@ is a pipe rather than a terminal - `echo 'what does this build?' | pulse
 harness chat -C .` - every line is a turn, changes are declined unless
 `--yes`, questions go unanswered (the model is told to decide), and stdout
 carries only the model's replies, so the output is scriptable; `--json`
-prints one JSON object per turn and one for the session.
+prints one JSON object per turn and one for the session, and `--steps-file
+-` adds every step as it happens to the same stream, so a program that
+drives the chat sees the reads, commands and edits as well as the replies.
 
 In a terminal the prompt is a **line editor**: arrow keys and Emacs keys
 edit the line, Up/Down and Ctrl-R walk the input history (kept across
