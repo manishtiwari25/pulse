@@ -1695,7 +1695,7 @@ impl Session<'_> {
                 });
                 match out {
                     Some(true) => "compacted the older conversation into a summary".to_string(),
-                    Some(false) => "the model gave no summary; nothing compacted".to_string(),
+                    Some(false) => "nothing compacted; the note above says why".to_string(),
                     None => "nothing to compact yet".to_string(),
                 }
             }
@@ -2255,6 +2255,21 @@ fn run_session(
                         Err(why) => format!("/delegate: {why}"),
                     };
                     writeln!(e, "{line}")?;
+                }
+            }
+            Ok(Turn::Blocked(reason)) => {
+                if json {
+                    write_json(
+                        &mut c.out,
+                        &json!({
+                            "session": session_id,
+                            "turn": session.turns,
+                            "blocked": reason,
+                        }),
+                    )?;
+                } else if c.quiet {
+                    // Otherwise the sink has shown the note already.
+                    writeln!(e, "{reason}")?;
                 }
             }
             Ok(Turn::Stopped { status, error }) => {

@@ -11,8 +11,8 @@ use crate::fetch::{
     FETCH_BYTE_LIMIT, FETCH_TIMEOUT, FETCH_TOOL, FetchPolicy, fetch, fetch_tool, url_host,
 };
 use crate::hooks::{
-    HOOK_BLOCK_EXIT, HOOK_OUTPUT_LIMIT, Hook, HookEvent, HookSet, cut_bytes, hook_command,
-    run_payload, tool_payload,
+    HOOK_BLOCK_EXIT, HOOK_OUTPUT_LIMIT, HOOK_PAYLOAD_LIMIT, Hook, HookEvent, HookSet, cut_bytes,
+    hook_command, run_payload, tool_payload,
 };
 use crate::memory::{MEMORY_TOOL, Memory, MemoryAction, memory_paragraph, memory_tool};
 use crate::permissions::{self, Rule, Rules};
@@ -663,6 +663,9 @@ enum Drive {
 pub enum Turn {
     /// The model's answer to the user; the turn is over.
     Reply(String),
+    /// A `user_prompt` hook kept the message from being sent (exit 2);
+    /// the reason is what it printed. Nothing reached the model.
+    Blocked(String),
     /// The turn stopped short (a budget, an interruption, a provider error):
     /// the session goes on and the user may say continue.
     Stopped { status: String, error: String },
@@ -1497,14 +1500,18 @@ impl Agent {
             }
             self.start(cancel)?;
         }
+        let text = match self.user_prompt_hooks(cancel, text) {
+            Ok(text) => text,
+            Err(reason) => return Ok(Turn::Blocked(reason)),
+        };
         self.state.turn_calls_start = self.result.calls;
         self.state.turn_started = Some(Instant::now());
         self.state.budget_notice_sent = false;
         self.state.initiator = "user".to_string();
         self.state.counted_format_errors = 0;
         self.state.used_format_retries = 0;
-        self.rewind.begin_turn(text, self.msgs.len());
-        self.push_user(text.to_string());
+        self.rewind.begin_turn(&text, self.msgs.len());
+        self.push_user(text);
         let drove = self.drive(cancel);
         if let Err(e) = self.rewind.end_turn() {
             self.emit(Step {
@@ -1591,7 +1598,7 @@ impl Agent {
     /// when it was summarised, Some(false) when the model gave no summary,
     /// None when it is too short to compact.
     pub fn compact_now(&mut self, cancel: &CancelToken) -> Option<bool> {
-        let out = self.compact(cancel);
+        let out = self.compact(cancel, "manual");
         if out == Some(true) {
             self.state.calls_at_compaction = self.result.calls;
             self.state.last_prompt_tokens = 0;
@@ -1713,7 +1720,7 @@ impl Agent {
                     self.state.last_prompt_tokens,
                 )
                 && self.result.calls - self.state.calls_at_compaction >= COMPACT_MIN_GAP_CALLS
-                && let Some(changed) = self.compact(cancel)
+                && let Some(changed) = self.compact(cancel, "auto")
             {
                 self.state.calls_at_compaction = self.result.calls;
                 if changed {
@@ -3068,6 +3075,148 @@ impl Agent {
         }
     }
 
+    /// Runs the `user_prompt` hooks on a session message before the model
+    /// sees it. Ok(text) is the message to send, with what the hooks
+    /// printed carried along; Err(reason) when one exited
+    /// [`HOOK_BLOCK_EXIT`] and the message must not go.
+    fn user_prompt_hooks(
+        &mut self,
+        cancel: &CancelToken,
+        text: &str,
+    ) -> std::result::Result<String, String> {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::UserPrompt, "")
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return Ok(text.to_string());
+        }
+        let payload = run_payload(
+            HookEvent::UserPrompt,
+            &self.cfg.cwd,
+            json!({
+                "model": self.cfg.model,
+                "prompt": cut_bytes(text, HOOK_PAYLOAD_LIMIT),
+                "turn": self.rewind.turns().len() + 1,
+                "messages": self.msgs.len(),
+            }),
+        );
+        let mut said: Vec<String> = Vec::new();
+        for hook in hooks {
+            let obs = self.run_hook(cancel, &hook, "", &payload);
+            let out = obs.output.trim();
+            if obs.exit_code == HOOK_BLOCK_EXIT {
+                let reason = format!(
+                    "user_prompt hook `{}` kept the message back{}",
+                    hook.command,
+                    if out.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", cut_bytes(out, HOOK_OUTPUT_LIMIT))
+                    }
+                );
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: reason.clone(),
+                    ..Step::default()
+                });
+                return Err(reason);
+            }
+            if obs.exit_code == 0 {
+                if !out.is_empty() {
+                    said.push(format!(
+                        "--- user_prompt hook `{}` ---\n{}\n--- end of hook output ---",
+                        hook.command,
+                        cut_bytes(out, HOOK_OUTPUT_LIMIT)
+                    ));
+                }
+            } else {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: format!(
+                        "user_prompt hook `{}` failed (exit {}): {}",
+                        hook.command,
+                        obs.exit_code,
+                        one_line(&obs.output, 300)
+                    ),
+                    ..Step::default()
+                });
+            }
+        }
+        if said.is_empty() {
+            Ok(text.to_string())
+        } else {
+            Ok(format!("{text}\n\n{}", said.join("\n\n")))
+        }
+    }
+
+    /// Runs the `pre_compact` hooks. Ok(asks) is what they want the
+    /// summary to keep (empty for nothing); Err(reason) when one exited
+    /// [`HOOK_BLOCK_EXIT`] and the compaction is declined.
+    fn pre_compact_hooks(
+        &mut self,
+        cancel: &CancelToken,
+        trigger: &str,
+        compacting: usize,
+    ) -> std::result::Result<String, String> {
+        let hooks: Vec<Hook> = self
+            .hooks
+            .matching(HookEvent::PreCompact, "")
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return Ok(String::new());
+        }
+        let payload = run_payload(
+            HookEvent::PreCompact,
+            &self.cfg.cwd,
+            json!({
+                "model": self.cfg.model,
+                "trigger": trigger,
+                "messages": self.msgs.len(),
+                "compacting": compacting,
+                "prompt_tokens": self.state.last_prompt_tokens,
+                "context_window": self.cfg.context_window,
+            }),
+        );
+        let mut asks: Vec<String> = Vec::new();
+        for hook in hooks {
+            let obs = self.run_hook(cancel, &hook, "", &payload);
+            let out = obs.output.trim();
+            if obs.exit_code == HOOK_BLOCK_EXIT {
+                return Err(format!(
+                    "pre_compact hook `{}` declined the compaction{}",
+                    hook.command,
+                    if out.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", one_line(out, 300))
+                    }
+                ));
+            }
+            if obs.exit_code == 0 {
+                if !out.is_empty() {
+                    asks.push(cut_bytes(out, HOOK_OUTPUT_LIMIT));
+                }
+            } else {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: format!(
+                        "pre_compact hook `{}` failed (exit {}): {}",
+                        hook.command,
+                        obs.exit_code,
+                        one_line(&obs.output, 300)
+                    ),
+                    ..Step::default()
+                });
+            }
+        }
+        Ok(asks.join("\n"))
+    }
+
     /// Runs one hook in the run's environment and records it as a step.
     fn run_hook(
         &mut self,
@@ -3095,10 +3244,21 @@ impl Agent {
     /// Replaces the older part of the conversation with a summary the
     /// model writes. None when the conversation is too short to compact;
     /// Some(true) when it changed.
-    fn compact(&mut self, cancel: &CancelToken) -> Option<bool> {
+    fn compact(&mut self, cancel: &CancelToken, trigger: &str) -> Option<bool> {
         let cut = compaction_cut(&self.msgs, COMPACT_KEEP_RECENT)?;
+        let asks = match self.pre_compact_hooks(cancel, trigger, cut - 2) {
+            Ok(asks) => asks,
+            Err(reason) => {
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: reason,
+                    ..Step::default()
+                });
+                return Some(false);
+            }
+        };
         let transcript = render_transcript(&self.msgs, cut);
-        let req = summary_request(&self.cfg.model, &self.cfg.task, &transcript);
+        let req = summary_request(&self.cfg.model, &self.cfg.task, &transcript, &asks);
         let start = Instant::now();
         let resp = match self.p.chat(cancel, req) {
             Ok(r) => r,
@@ -7054,6 +7214,106 @@ mod tests {
         assert_eq!(
             replies["c2"],
             "subagent: there is no custom agent \"nobody\"; the agents are reviewer"
+        );
+    }
+
+    #[test]
+    fn user_prompt_and_pre_compact_hooks_speak_before_the_model_and_the_summary() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg("hi")),
+            resp(tool("echo 1")),
+            resp(msg("one done")),
+            resp(tool("echo 2")),
+            resp(msg("two done")),
+            resp(msg("Summary: ran echo 1 and 2.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps);
+        h.set_hooks(HookSet {
+            hooks: vec![
+                hook(HookEvent::UserPrompt, &[], "cat"),
+                hook(
+                    HookEvent::UserPrompt,
+                    &[],
+                    "if grep -q nope; then echo no nope please; exit 2; fi",
+                ),
+            ],
+            ..HookSet::default()
+        });
+        let cancel = CancelToken::new();
+        let first = h.turn(&cancel, "hello").unwrap();
+        assert!(matches!(&first, Turn::Reply(t) if t == "hi"), "{first:?}");
+        let reqs = p.requests();
+        let sent = &reqs[0].messages.last().unwrap().content;
+        assert!(
+            sent.starts_with("hello\n\n--- user_prompt hook `cat` ---\n{")
+                && sent.contains("\"event\":\"user_prompt\"")
+                && sent.contains("\"prompt\":\"hello\"")
+                && sent.contains("\"turn\":1")
+                && sent.ends_with("}\n--- end of hook output ---"),
+            "{sent}"
+        );
+        let before = h.messages().len();
+        let blocked = h.turn(&cancel, "say nope").unwrap();
+        assert!(
+            matches!(&blocked, Turn::Blocked(r) if r == "user_prompt hook `if grep -q nope; then echo no nope please; exit 2; fi` kept the message back: no nope please"),
+            "{blocked:?}"
+        );
+        assert_eq!(h.messages().len(), before, "nothing was sent");
+        assert_eq!(p.requests().len(), 1);
+        assert_eq!(h.rewind_turns().len(), 1, "a kept-back message is no turn");
+
+        h.set_hooks(HookSet::default());
+        h.turn(&cancel, "one").unwrap();
+        h.turn(&cancel, "two").unwrap();
+        assert_eq!(h.messages().len(), 11);
+        h.set_hooks(HookSet {
+            hooks: vec![hook(HookEvent::PreCompact, &[], "echo not now; exit 2")],
+            ..HookSet::default()
+        });
+        assert_eq!(h.compact_now(&cancel), Some(false));
+        assert_eq!(p.requests().len(), 5, "no summary was asked for");
+        assert!(
+            h.steps.iter().any(|s| s.kind == StepKind::Note
+                && s.content
+                    == "pre_compact hook `echo not now; exit 2` declined the compaction: not now"),
+            "{:?}",
+            h.steps.iter().map(|s| &s.content).collect::<Vec<_>>()
+        );
+        h.set_hooks(HookSet {
+            hooks: vec![hook(HookEvent::PreCompact, &[], "cat")],
+            ..HookSet::default()
+        });
+        assert_eq!(h.compact_now(&cancel), Some(true));
+        assert_eq!(h.result().compactions, 1);
+        let reqs = p.requests();
+        let ask = &reqs[5].messages[1].content;
+        assert!(
+            ask.contains("The owner's pre_compact hook asks this of the summary; honour it:\n{")
+                && ask.contains("\"trigger\":\"manual\"")
+                && ask.contains("\"compacting\":2")
+                && ask.contains("\"event\":\"pre_compact\""),
+            "{ask}"
+        );
+        let hook_steps: Vec<String> = h
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Hook)
+            .map(|s| s.command.clone())
+            .collect();
+        assert_eq!(
+            hook_steps,
+            [
+                "user_prompt",
+                "user_prompt",
+                "user_prompt",
+                "user_prompt",
+                "pre_compact",
+                "pre_compact"
+            ],
+            "{hook_steps:?}"
         );
     }
 

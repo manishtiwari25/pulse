@@ -129,7 +129,7 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.string_var(
         "steps-file",
         "",
-        "append newline-delimited harness events to PATH",
+        "append newline-delimited harness events to PATH; - streams them to stdout as JSON lines (and implies --json)",
     );
     fs.string_var("cancel-file", "", "stop when PATH exists");
     fs.string_var(
@@ -231,6 +231,14 @@ pub(crate) struct Prepared {
 }
 
 impl Prepared {
+    /// True when `--steps-file -` streams events to stdout, so the command's
+    /// own JSON has to stay one object per line too.
+    pub(crate) fn streams_stdout(&self) -> bool {
+        self.step_log
+            .as_ref()
+            .is_some_and(|l| l.lock().unwrap().out.is_some())
+    }
+
     /// Writes the trajectory, if one is kept; a failure is a warning.
     pub(crate) fn write_trajectory(&self, c: &mut Context) -> Result<()> {
         if self.trajectory_path.is_empty() {
@@ -363,7 +371,10 @@ pub(crate) fn prepare_agent(
                 }
                 if !interactive {
                     if c.json {
-                        write_json(&mut c.out, &run_json(&session_id, &result, ""))?;
+                        let jsonl = step_log
+                            .as_ref()
+                            .is_some_and(|l| l.lock().unwrap().out.is_some());
+                        write_result_json(&mut c.out, jsonl, &run_json(&session_id, &result, ""))?;
                     } else {
                         write_run_text(&mut c.out, &[], &result)?;
                     }
@@ -855,8 +866,9 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     let trajectory_path = prepared.trajectory_path.clone();
     if c.json {
         if !c.quiet {
-            return write_json(
+            return write_result_json(
                 &mut c.out,
+                prepared.streams_stdout(),
                 &run_json(&session_id, &result, &trajectory_path),
             );
         }
@@ -1934,8 +1946,24 @@ impl StoreSink {
     }
 }
 
+/// The command's JSON result: pretty-printed, or one line when it joins the
+/// event stream on stdout.
+fn write_result_json(w: &mut dyn Write, jsonl: bool, v: &impl Serialize) -> Result<()> {
+    if !jsonl {
+        return write_json(w, v);
+    }
+    let mut buf = pulse_store::gojson::to_vec_no_html(v)?;
+    buf.push(b'\n');
+    w.write_all(&buf)?;
+    w.flush()?;
+    Ok(())
+}
+
 pub(crate) struct StepsFileSink {
     path: String,
+    /// Where the lines go when the path is `-`: the command's stdout,
+    /// shared with the command's own JSON output.
+    out: Option<SharedWriter>,
     session: String,
     provider: String,
     model: String,
@@ -1945,9 +1973,16 @@ pub(crate) struct StepsFileSink {
 }
 
 impl StepsFileSink {
-    fn new(_c: &Context, path: &str, session: &str) -> Self {
+    fn new(c: &mut Context, path: &str, session: &str) -> Self {
+        let out = (path == "-").then(|| {
+            let shared = SharedWriter::new(std::mem::replace(&mut c.out, Box::new(io::sink())));
+            c.out = Box::new(shared.clone());
+            c.json = true;
+            shared
+        });
         Self {
             path: path.into(),
+            out,
             session: session.into(),
             provider: String::new(),
             model: String::new(),
@@ -1971,7 +2006,8 @@ impl StepsFileSink {
         if self.warned || self.path.is_empty() {
             return;
         }
-        if let Some(parent) = Path::new(&self.path).parent()
+        if self.out.is_none()
+            && let Some(parent) = Path::new(&self.path).parent()
             && let Err(e) = fs::create_dir_all(parent)
         {
             self.warned = true;
@@ -1987,6 +2023,13 @@ impl StepsFileSink {
             }
         };
         data.push(b'\n');
+        if let Some(out) = &mut self.out {
+            if let Err(e) = out.write_all(&data).and_then(|()| out.flush()) {
+                self.warned = true;
+                self.warning = Some(e.to_string());
+            }
+            return;
+        }
         let mut f = match fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -3744,6 +3787,102 @@ mod tests {
                 && !finish["steps"].is_null()
                 && !finish["at"].as_str().unwrap_or("").is_empty(),
             "bad finish: {finish:#?}"
+        );
+    }
+
+    #[test]
+    fn harness_run_steps_file_dash_streams_json_lines_to_stdout() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        let dir = tempfile::tempdir().unwrap();
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-stream",
+                "--steps-file",
+                "-",
+                "--trajectory",
+                "none",
+            ],
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {stderr:?}");
+        let lines: Vec<Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l:?}")))
+            .collect();
+        assert!(lines.len() >= 4, "{out}");
+        assert_eq!(lines[0]["event"], "begin");
+        assert_eq!(lines[0]["session"], "hs-stream");
+        assert_eq!(lines[1]["event"], "step");
+        let finish = lines.iter().position(|l| l["event"] == "finish").unwrap();
+        assert!(
+            lines[finish]["submission"]
+                .as_str()
+                .unwrap()
+                .contains("SUMMARY: fake complete")
+        );
+        let result = lines.last().unwrap();
+        assert!(
+            result.get("event").is_none() && result["exit_status"] == EXIT_SUBMITTED,
+            "--steps-file - implies --json for the result: {result}"
+        );
+        assert!(finish < lines.len() - 1, "the run's result comes last");
+    }
+
+    #[test]
+    fn harness_chat_user_prompt_hook_can_keep_a_message_back() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".pulse")).unwrap();
+        fs::write(
+            dir.path().join(".pulse/hooks.json"),
+            r#"[{"event":"user_prompt","command":"if grep -q password; then echo keep secrets out of the chat; exit 2; fi; echo today is a weekday"}]"#,
+        )
+        .unwrap();
+        let p = CommandFakeProvider::scripted(vec![say("fine")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("my password is hunter2\nhello\n/exit\n"));
+        let (out, err, code) = invoke(
+            &s.home,
+            &[
+                "chat",
+                "-C",
+                dir.path().to_str().unwrap(),
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--no-skills",
+                "--no-mcp",
+                "--no-instructions",
+                "--session",
+                "hooked",
+            ],
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "fine\n");
+        assert!(
+            err.contains("kept the message back: keep secrets out of the chat"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 1, "the first message never went");
+        let sent = &reqs[0].messages.last().unwrap().content;
+        assert!(
+            sent.starts_with("hello\n\n--- user_prompt hook `")
+                && sent.contains("today is a weekday"),
+            "{sent}"
         );
     }
 

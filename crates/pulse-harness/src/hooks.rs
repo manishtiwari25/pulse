@@ -3,8 +3,12 @@
 //! and around the run. A `pre_tool` hook that exits 2 blocks the call and
 //! its output goes to the model; a `post_tool` hook's output is appended to
 //! the tool's result; `run_start` output joins the system prompt; `run_end`
-//! output is noted. Hooks are the owner's code, not the model's: the deny
-//! rules do not apply to them.
+//! output is noted. In a session, a `user_prompt` hook sees each message
+//! before the model does (exit 2 keeps it from being sent; its output
+//! travels with the message) and a `pre_compact` hook speaks before the
+//! conversation is summarised (exit 2 declines the compaction; its output
+//! tells the summary what to keep). Hooks are the owner's code, not the
+//! model's: the deny rules do not apply to them.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -41,6 +45,8 @@ pub enum HookEvent {
     RunEnd,
     PreTool,
     PostTool,
+    UserPrompt,
+    PreCompact,
 }
 
 impl fmt::Display for HookEvent {
@@ -50,6 +56,8 @@ impl fmt::Display for HookEvent {
             Self::RunEnd => "run_end",
             Self::PreTool => "pre_tool",
             Self::PostTool => "post_tool",
+            Self::UserPrompt => "user_prompt",
+            Self::PreCompact => "pre_compact",
         })
     }
 }
@@ -265,9 +273,13 @@ mod tests {
         assert_eq!(hooks[0].timeout, Duration::from_secs(30));
         assert_eq!(hooks[1].tools, Vec::<String>::new());
         assert_eq!(hooks[1].timeout, DEFAULT_HOOK_TIMEOUT);
-        let bare = r#"[{"event":"post_tool","command":"cargo fmt","timeout":100000}]"#;
+        let bare = r#"[{"event":"post_tool","command":"cargo fmt","timeout":100000},{"event":"user_prompt","command":"git branch --show-current"},{"event":"pre_compact","command":"echo keep the file list"}]"#;
         let hooks = parse_hooks(bare, "x").unwrap();
         assert_eq!(hooks[0].timeout, MAX_HOOK_TIMEOUT);
+        assert_eq!(hooks[1].event, HookEvent::UserPrompt);
+        assert_eq!(hooks[2].event, HookEvent::PreCompact);
+        assert_eq!(hooks[1].event.to_string(), "user_prompt");
+        assert_eq!(hooks[2].event.to_string(), "pre_compact");
         let err =
             parse_hooks(r#"{"hooks":[{"event":"pre_tool","command":" "}]}"#, "x").unwrap_err();
         assert_eq!(err, "hook 1 (pre_tool) has no command");

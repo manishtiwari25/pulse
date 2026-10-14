@@ -1454,9 +1454,9 @@ hundred tokens, not forty documents. `harness.skills` (`on`) turns it off,
 chose, exactly as before. Each load is a `skill` step.
 
 **Hooks.** The clone's `.pulse/hooks.json` and the owner's
-`~/.pulse/hooks.json` name commands the harness runs at four moments of a
-run - `run_start`, `pre_tool`, `post_tool`, `run_end` - and the clone's
-hooks run first:
+`~/.pulse/hooks.json` name commands the harness runs at six moments of a
+run - `run_start`, `user_prompt`, `pre_tool`, `post_tool`, `pre_compact`,
+`run_end` - and the clone's hooks run first:
 
 ```json
 {"hooks": [
@@ -1479,9 +1479,20 @@ appended to the observation under ``[hook `cmd`]``, so a linter that runs
 after every edit speaks to the model in the same turn. What a `run_start`
 hook prints is appended to the system prompt (a build number, the branch
 policy, today's date); `run_end` runs once, before the clone is released,
-whatever the exit status. Hooks run as the owner within their own
-`timeout`, and never count as model calls or tool steps; each is a `hook`
-step in the transcript with the event and the tool it answered.
+whatever the exit status. Two moments belong to sessions: a `user_prompt`
+hook runs on every message you send in `pulse harness chat` (payload
+`prompt`, `turn`, `messages`, `model`) before the model sees it - what it
+prints travels with the message under ``--- user_prompt hook `cmd` ---``
+(the current branch, the ticket the folder belongs to, a reminder), and exit
+`2` **keeps the message back**: the reply is the hook's words, nothing is
+sent and the turn does not count; a `pre_compact` hook runs before the
+conversation is summarised, by `/compact` or on its own (payload `trigger`
+`manual`/`auto`, `compacting`, `prompt_tokens`, `context_window`) - its
+output is handed to the summariser as the owner's asks ("keep the list of
+files touched"), and exit `2` declines the compaction, which `/compact`
+reports and an automatic one retries later. Hooks run as the owner within
+their own `timeout`, and never count as model calls or tool steps; each is
+a `hook` step in the transcript with the event and the tool it answered.
 `harness.hooks` (`on`) turns them off, `--no-hooks` for one run. These are
 the model's in-run hooks; the daemon's own `harness.step` and job events
 on the bus are a different thing.
@@ -1792,7 +1803,9 @@ keyed by the run id, streamed step by step while it runs - the console's
 **Harness** page and `pulse harness sessions` / `pulse harness show ID` read
 them. A run on a remote hand streams the same way: the harness there appends
 begin, step and finish JSONL events to a steps file (`--steps-file PATH`, or
-`PULSE_HARNESS_STEPS`, which the runner sets for remote jobs), the hands
+`PULSE_HARNESS_STEPS`, which the runner sets for remote jobs; `--steps-file -`
+streams them to stdout one object per line, with the command's own `--json`
+result as the last line, for a program that drives a run or a chat), the hands
 serve it by offset (`steps JOB SESSION OFFSET`, next to the heartbeat
 snapshot), and the daemon mirrors the lines into the brain's store as they
 arrive, tagged with the executor's name - so the Harness page shows every
@@ -1959,7 +1972,7 @@ rules change nothing in a job, which asks nobody.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)

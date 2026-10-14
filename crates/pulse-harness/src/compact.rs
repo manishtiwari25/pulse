@@ -116,10 +116,19 @@ pub fn render_transcript(msgs: &[Message], cut: usize) -> String {
     out
 }
 
-/// The request that asks `model` for the summary.
-pub fn summary_request(model: &str, task: &str, transcript: &str) -> Request {
+/// The request that asks `model` for the summary; `asks` is what the
+/// owner's `pre_compact` hooks want kept, if anything.
+pub fn summary_request(model: &str, task: &str, transcript: &str, asks: &str) -> Request {
+    let asks = if asks.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nThe owner's pre_compact hook asks this of the summary; honour it:\n{}",
+            asks.trim()
+        )
+    };
     let user = format!(
-        "The task the agent is working on:\n\n{}\n\nThe part of the conversation to compact, oldest first:\n\n{transcript}\n\nWrite the summary now.",
+        "The task the agent is working on:\n\n{}\n\nThe part of the conversation to compact, oldest first:\n\n{transcript}{asks}\n\nWrite the summary now.",
         middle_cut(task.trim(), 12_000)
     );
     Request {
@@ -353,7 +362,7 @@ mod tests {
 
     #[test]
     fn the_summary_request_has_no_tools_and_carries_the_task() {
-        let req = summary_request("m-1", "Fix the bug", "## assistant\nhi\n");
+        let req = summary_request("m-1", "Fix the bug", "## assistant\nhi\n", "");
         assert_eq!(req.model, "m-1");
         assert!(req.tools.is_empty());
         assert_eq!(req.initiator, "agent");
