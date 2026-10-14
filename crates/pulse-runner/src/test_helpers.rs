@@ -179,9 +179,12 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_factor", "1");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
-    // The disk admission reads this machine's real free space; tests that
-    // want it turn it on themselves.
+    // The disk admission, the executor probe and the verify disk prelude read
+    // this machine's real free space; a host under the 10 GiB default floor
+    // would otherwise fail or stall unrelated tests. Tests that want the
+    // checks turn them on themselves.
     let _ = s.set_setting(util::HUMAN_AGENT, "daemon.setup_mb", "0");
+    let _ = s.set_setting(util::HUMAN_AGENT, "daemon.min_free_mb", "0");
     TestStore {
         store: s,
         _dir: std::sync::Arc::new(dir),
