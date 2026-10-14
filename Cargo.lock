@@ -1350,6 +1350,7 @@ dependencies = [
  "chrono",
  "pulse-bus",
  "pulse-cli",
+ "pulse-gitenv",
  "pulse-store",
  "pulse-testutil",
  "regex",

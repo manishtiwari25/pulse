@@ -11,6 +11,7 @@ description = "PULSE: shared project goals"
 [dependencies]
 pulse-bus.workspace = true
 pulse-cli.workspace = true
+pulse-gitenv.workspace = true
 pulse-store.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

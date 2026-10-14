@@ -1,5 +1,7 @@
 //! PULSE: shared project goals.
 
+pub mod history;
+
 use anyhow::{Result, anyhow};
 use chrono::DateTime;
 use regex::Regex;
@@ -237,7 +239,7 @@ pub fn get(s: &pulse_store::Store, slug: &str) -> Result<Goal> {
         )
         .optional()?;
     let Some((value, updated_at, updated_by)) = row else {
-        return Ok(generated(&p));
+        return Ok(generated_for(s, &p));
     };
     let saved: StoredGoal = serde_json::from_str(&value)
         .map_err(|_| anyhow!("stored project goal is not valid JSON"))?;
@@ -261,9 +263,10 @@ pub fn get(s: &pulse_store::Store, slug: &str) -> Result<Goal> {
     }
     // A generated row is a cache of the default direction, not a decision:
     // its text follows the project's current facts (name, README purpose,
-    // verification command) while the row keeps the time it was first written.
+    // commit history, verification command) while the row keeps the time it
+    // was first written.
     let text = if saved.source == GENERATED {
-        refreshed_generated(s, &p)
+        generated_for(s, &p).text
     } else {
         saved.text
     };
@@ -275,13 +278,24 @@ pub fn get(s: &pulse_store::Store, slug: &str) -> Result<Goal> {
     })
 }
 
-fn refreshed_generated(s: &pulse_store::Store, p: &pulse_store::Project) -> String {
-    let fresh = generated(p);
-    if public_references(s, &fresh.text).is_ok() {
-        fresh.text
-    } else {
-        generated_with(p, None).text
+/// The generated goal as the store may share it: with the README purpose
+/// and the commit history when they pass the store's own privacy rules,
+/// without whichever of them does not.
+fn generated_for(s: &pulse_store::Store, p: &pulse_store::Project) -> Goal {
+    let purpose = purpose_from_readme(&p.path);
+    let past = history::history(&p.path);
+    let candidates = [
+        (purpose.as_deref(), past.as_ref()),
+        (purpose.as_deref(), None),
+        (None, past.as_ref()),
+    ];
+    for (purpose, past) in candidates {
+        let goal = generated_with(p, purpose, past);
+        if public_references(s, &goal.text).is_ok() {
+            return goal;
+        }
     }
+    generated_with(p, None, None)
 }
 
 /// Longest a README purpose line may run inside the generated goal.
@@ -476,11 +490,20 @@ fn clip_purpose(text: &str) -> String {
     clipped
 }
 
+#[cfg(test)]
 fn generated(p: &pulse_store::Project) -> Goal {
-    generated_with(p, purpose_from_readme(&p.path).as_deref())
+    generated_with(
+        p,
+        purpose_from_readme(&p.path).as_deref(),
+        history::history(&p.path).as_ref(),
+    )
 }
 
-fn generated_with(p: &pulse_store::Project, purpose: Option<&str>) -> Goal {
+fn generated_with(
+    p: &pulse_store::Project,
+    purpose: Option<&str>,
+    past: Option<&history::History>,
+) -> Goal {
     let mut name = "this project".to_string();
     for candidate in [&p.name, &p.slug] {
         let label = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -508,6 +531,14 @@ fn generated_with(p: &pulse_store::Project, purpose: Option<&str>) -> Goal {
         };
         text.push_str(&quoted);
         text.push_str(" Every change should serve that purpose for the people it names.");
+    }
+    // The history sentence is bounded, but a tree of long area names could
+    // still push the goal past the limit; then the path goes unsaid.
+    if let Some(sentence) = past.and_then(history::History::sentence)
+        && text.chars().count() + 1 + sentence.chars().count() + 400 <= MAX_LENGTH
+    {
+        text.push(' ');
+        text.push_str(&sentence);
     }
     text.push_str(
         " Prioritize real product defects, correctness, reliability and user experience over repeated operating-layer churn. ",
@@ -584,7 +615,7 @@ fn save(
     };
     let mut action = "project.goal.set";
     if reset {
-        goal.text = generated(&p).text;
+        goal.text = generated_for(s, &p).text;
         goal.source = GENERATED.to_string();
         action = "project.goal.reset";
     }
@@ -1294,6 +1325,169 @@ mod tests {
             goal.text
                 .contains("Brain describes itself as: \"An agent-first control plane")
         );
+    }
+
+    fn git_in(repo: &Path, date: &str, args: &[&str]) {
+        let mut cmd = std::process::Command::new(pulse_gitenv::git_program());
+        cmd.arg("-C").arg(repo).args(args).env_clear();
+        for kv in pulse_gitenv::env() {
+            if let Some((k, v)) = kv.split_once('=') {
+                cmd.env(k, v);
+            }
+        }
+        let out = cmd
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .env("GIT_AUTHOR_DATE", format!("{date}T12:00:00Z"))
+            .env("GIT_COMMITTER_DATE", format!("{date}T12:00:00Z"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn commit_file(repo: &Path, date: &str, file: &str, subject: &str) {
+        let path = repo.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{subject}\n")).unwrap();
+        git_in(repo, date, &["add", "-A"]);
+        git_in(
+            repo,
+            date,
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", subject],
+        );
+    }
+
+    #[test]
+    fn generated_goal_reads_the_path_from_the_commit_history() {
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = goal_store();
+        let repo = tempfile::tempdir().unwrap();
+        let repo = repo.path().canonicalize().unwrap();
+        git_in(&repo, "2026-09-01", &["init", "-q", "-b", "main"]);
+        commit_file(&repo, "2026-09-01", "README.md", "first words");
+        commit_file(
+            &repo,
+            "2026-09-02",
+            "crates/alpha/src/lib.rs",
+            "alpha: the parser learns about dates",
+        );
+        commit_file(
+            &repo,
+            "2026-09-03",
+            "crates/alpha/src/parse.rs",
+            "alpha: fix the parser on empty input",
+        );
+        commit_file(
+            &repo,
+            "2026-09-04",
+            "web/hub/src/page.tsx",
+            "hub: the overview shows the goal",
+        );
+        commit_file(
+            &repo,
+            "2026-09-05",
+            "crates/alpha/src/lib.rs",
+            "alpha: notes from /Users/me/private/notes.md",
+        );
+        goal_project_at(&s, "alpha", "Alpha", false, &repo);
+        let goal = must_goal(&s, "alpha");
+        assert_eq!(goal.source, GENERATED);
+        let want = "Its commit history shows the path: 5 commits since 2026-09-01, most of them in \
+             crates/alpha (60%), README.md (20%) and web/hub (20%), 1 of them a fix; the \
+             recurring headings are alpha and hub; the latest: \"hub: the overview shows the \
+             goal\" and \"alpha: fix the parser on empty input\". Favor work that carries this path \
+             forward - finishing, hardening and documenting what the recent commits began - over \
+             unrelated fronts. Prioritize real product defects";
+        assert!(goal.text.contains(want), "{}", goal.text);
+        assert!(
+            goal.text.starts_with("Make Alpha more useful to its users within its existing product scope. Its commit history"),
+            "{}",
+            goal.text
+        );
+        assert!(!goal.text.contains("private"), "{}", goal.text);
+        assert_eq!(normalize(&goal.text).unwrap(), goal.text);
+        assert_eq!(
+            must_goal(&s, "alpha"),
+            goal,
+            "the same commit, the same goal"
+        );
+
+        commit_file(
+            &repo,
+            "2026-09-06",
+            "crates/alpha/src/lib.rs",
+            "alpha: the parser reads commit history too",
+        );
+        let moved = must_goal(&s, "alpha");
+        assert!(
+            moved.text.contains(
+                "6 commits since 2026-09-01, most of them in crates/alpha (67%), README.md (17%) \
+                 and web/hub (17%), 1 of them a fix; the recurring headings are alpha and hub; \
+                 the latest: \"alpha: the parser reads commit history too\" and \"hub: the \
+                 overview shows the goal\"."
+            ),
+            "a new commit moves the generated goal: {}",
+            moved.text
+        );
+
+        // A project registered at a subtree reads that subtree's history only.
+        goal_project_at(&s, "hub", "Hub", false, &repo.join("web/hub"));
+        let hub = must_goal(&s, "hub");
+        assert!(
+            !hub.text.contains("commit history"),
+            "one commit is no path: {}",
+            hub.text
+        );
+        commit_file(
+            &repo,
+            "2026-09-07",
+            "web/hub/src/goal.tsx",
+            "hub: edit the goal in place",
+        );
+        commit_file(
+            &repo,
+            "2026-09-08",
+            "web/hub/src/api.ts",
+            "hub: fix the goal reload",
+        );
+        let hub = must_goal(&s, "hub");
+        assert!(
+            hub.text.contains(
+                "Its commit history shows the path: 3 commits since 2026-09-04, all of them in src, \
+                 1 of them a fix; the latest: \"hub: fix the goal reload\" and \"hub: edit the goal in place\"."
+            ),
+            "{}",
+            hub.text
+        );
+
+        // The owner's goal does not move with the history; a reset reads it again.
+        let owner = set(
+            &s,
+            "alpha",
+            "Ship the parser to the first three teams.",
+            "human",
+        )
+        .unwrap();
+        commit_file(
+            &repo,
+            "2026-09-09",
+            "crates/alpha/src/lib.rs",
+            "alpha: one more",
+        );
+        assert_eq!(must_goal(&s, "alpha"), owner);
+        let reset_goal = reset(&s, "alpha", "human").unwrap();
+        assert!(
+            reset_goal.text.contains("9 commits since 2026-09-01"),
+            "{}",
+            reset_goal.text
+        );
+        assert_eq!(must_goal(&s, "alpha").text, reset_goal.text);
     }
 
     #[test]

@@ -755,11 +755,35 @@ first descriptive paragraph of its README (headings, badges, images, HTML,
 code, lists, tables and quotes are skipped; Markdown is stripped; the paragraph
 is clipped to 280 characters at a sentence or word boundary and must pass the
 same checks as an owner's goal, so a private path or secret-shaped word
-disqualifies it), followed by the standing direction toward real product
-defects, correctness and user experience. The default is a cache, not a
-decision: it follows the README, the project name and the verification command
-as they change, while an owner's goal never moves. The console labels **Owner
-set** and **Project default** separately. Set up to 4,000 characters in
+disqualifies it), then the path its own commit history shows, then the
+standing direction toward real product defects, correctness and user
+experience.
+
+The commit-history sentence is what keeps the default from being generic text.
+Pulse reads the checkout's recent non-merge commits with `git log` (up to 400,
+the last 180 days behind the newest commit or at least 20, only the project's
+own subtree when it is registered inside a larger repository) and distils them
+deterministically: how many commits since when, the areas of the tree most of
+them landed in (`crates/pulse-runner (29%)`, `web/hub (12%)` - each commit
+counts once, toward the area most of its files fall in), how many called
+themselves fixes, the headings their subjects recur under (`harness:`,
+`fix(api):`) and the two latest subjects, quoted - for example *"Its commit
+history shows the path: 400 commits since 2026-09-13, most of them in
+crates/pulse-runner (29%), web/hub (12%) and internal/runner (10%), 20 of them
+fixes; the recurring headings are runner, daemon and hub; the latest: ... Favor
+work that carries this path forward - finishing, hardening and documenting what
+the recent commits began - over unrelated fronts."* A subject that would fail
+the goal's own checks (a private path, a secret-shaped word) is skipped, and
+so is the whole sentence if it would; fewer than three commits say nothing
+about a path, and so does a directory that is not a git checkout. The history
+is read once per commit (cached by `HEAD`, `git log` bounded to ten seconds and
+8 MB) and is a pure function of the log, so every reader sees the same sentence
+at the same commit. Still no model call.
+
+The default is a cache, not a decision: it follows the README, the commit
+history, the project name and the verification command as they change, while
+an owner's goal never moves. The console labels **Owner set** and **Project
+default** separately. Set up to 4,000 characters in
 **Project → Overview → Edit goal**, or confirm **Use project default** to
 restore the generated direction. Goals are shared with agents, so do not
 include credentials or private data.

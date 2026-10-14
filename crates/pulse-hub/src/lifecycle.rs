@@ -345,8 +345,8 @@ pub(crate) struct GoalSummary {
 
 /// Classifies `slug`'s goal from the stored `project.goal.<slug>` setting
 /// alone. `pulse_goals::get` composes the generated text from the checkout's
-/// README on every call, which a row built per project per request must not
-/// pay. No row is the generated default (projects registered before goals
+/// README and commit history on every call, which a row built per project per
+/// request must not pay. No row is the generated default (projects registered before goals
 /// existed); a row says `owner` or `generated` itself, and one that does not
 /// parse falls back to who wrote it.
 pub(crate) fn goal_summary(s: &pulse_store::Store, slug: &str) -> GoalSummary {
