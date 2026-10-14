@@ -272,6 +272,12 @@ pub struct Config {
     /// [`pulse_provider::REASONING_EFFORTS`]); empty leaves the vendor's
     /// default in place. Providers without the knob ignore it.
     pub reasoning: String,
+    /// An interactive session (`pulse harness chat`) rather than a job: the
+    /// conversation goes on turn by turn through [`Agent::turn`], a reply
+    /// without a tool call is the answer to the user instead of a report,
+    /// the step and time budgets apply per turn, and the prompt is
+    /// [`CHAT_PROMPT_TEMPLATE`].
+    pub interactive: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,6 +474,9 @@ fn is_zero_i32(v: &i32) -> bool {
 
 pub type Result = ResultSummary;
 
+/// Where streamed reply text goes; see [`Agent::set_stream`].
+pub type StreamSink = Box<dyn FnMut(&str) + Send>;
+
 #[derive(Clone, Debug, Default)]
 pub struct Observation {
     pub output: String,
@@ -520,6 +529,114 @@ pub struct Agent {
     hooks: HookSet,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
+    /// The person at the keyboard of an interactive session: approves the
+    /// calls that change things and answers the `question` tool. None in
+    /// a job.
+    ui: Option<Arc<Mutex<dyn Ui>>>,
+    /// Where the text of a reply goes as it streams in, when the provider
+    /// streams; the Assistant step still carries the whole text.
+    stream: Option<StreamSink>,
+    /// The loop's state, kept across the turns of an interactive session.
+    state: LoopState,
+    /// Set once [`Agent::finish`] ran: the end hooks are done and the
+    /// environment is closed.
+    ended: bool,
+}
+
+/// What the loop carries from one model call to the next; a field of the
+/// agent so an interactive session keeps it between turns.
+#[derive(Debug, Default)]
+struct LoopState {
+    initiator: String,
+    counted_format_errors: i32,
+    used_format_retries: i32,
+    keep_observations: usize,
+    last_prompt_tokens: i32,
+    last_prune_level: i32,
+    budget_notice_sent: bool,
+    emitted_prune_notes: BTreeSet<String>,
+    calls_at_compaction: i32,
+    /// `result.calls` when the current turn began; the step budget of an
+    /// interactive session counts from here.
+    turn_calls_start: i32,
+    /// When the current turn began; the time budget of an interactive
+    /// session counts from here.
+    turn_started: Option<Instant>,
+}
+
+/// How a pass of the loop ended.
+enum Drive {
+    /// The model replied without a tool call: a job's report, a turn's
+    /// answer.
+    Answered(String),
+    /// A budget, a cancellation, a provider error or a lost working
+    /// directory stopped it.
+    Stopped { status: &'static str, error: String },
+}
+
+/// The outcome of one [`Agent::turn`].
+#[derive(Clone, Debug)]
+pub enum Turn {
+    /// The model's answer to the user; the turn is over.
+    Reply(String),
+    /// The turn stopped short (a budget, an interruption, a provider error):
+    /// the session goes on and the user may say continue.
+    Stopped { status: String, error: String },
+    /// The session cannot go on (the working directory is gone); it has
+    /// been ended.
+    Ended(ResultSummary),
+}
+
+/// The person at the keyboard of an interactive session.
+pub trait Ui: Send {
+    /// Whether a call that changes things may run. `Approval::Deny` carries
+    /// the user's reason, which the model is told.
+    fn approve(&mut self, req: &ApprovalRequest) -> Approval;
+    /// The user's answer to the model's question, None when nobody can
+    /// answer (stdin closed).
+    fn ask(&mut self, question: &str, choices: &[String]) -> Option<String>;
+}
+
+/// A call the model wants to make that changes the checkout or leaves the
+/// machine, shown to the user before it runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApprovalRequest {
+    /// The tool: `bash`, `edit`, `write`, or an MCP tool's name.
+    pub tool: String,
+    /// The command, the path, or the MCP call in one line.
+    pub summary: String,
+    /// What it would do: the edit blocks, the file's head, the arguments.
+    pub detail: String,
+    /// Why it needs a look: what the command changes, or the policy it
+    /// crosses.
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Approval {
+    Allow,
+    Deny(String),
+}
+
+/// The name of the tool an interactive session offers for asking the user.
+pub const QUESTION_TOOL: &str = "question";
+
+/// The status an interactive session ends with.
+pub const EXIT_ENDED: &str = "ended";
+
+pub fn question_tool() -> Tool {
+    Tool {
+        name: QUESTION_TOOL.into(),
+        description: "Ask the user one question and wait for the answer. Use it when a decision is theirs: which of several approaches, whether to go further, a detail the request leaves out. Give short choices when they exist; the user may also answer freely.".into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "the question, one or two sentences"},
+                "choices": {"type": "array", "items": {"type": "string"}, "description": "short answers to pick from, if any"}
+            },
+            "required": ["question"]
+        }),
+    }
 }
 
 /// One call to an MCP tool, from the harness's side: the client behind
@@ -782,6 +899,10 @@ pub fn new_shared(
         skills: Vec::new(),
         hooks: HookSet::default(),
         fetch: FetchPolicy::default(),
+        ui: None,
+        stream: None,
+        state: LoopState::default(),
+        ended: false,
     }
 }
 
@@ -818,8 +939,25 @@ impl Agent {
         self.fetch = policy;
     }
 
+    /// Puts a person at the keyboard: the calls that change things are
+    /// shown to `ui` before they run and the `question` tool is offered.
+    /// Call before the first turn.
+    pub fn set_ui(&mut self, ui: Arc<Mutex<dyn Ui>>) {
+        self.ui = Some(ui);
+    }
+
+    /// Sends the text of each reply to `f` as it streams in from a
+    /// provider that streams; the Assistant step still carries it whole.
+    pub fn set_stream(&mut self, f: StreamSink) {
+        self.stream = Some(f);
+    }
+
     fn offers_subagents(&self) -> bool {
         self.cfg.subagents && self.cfg.depth == 0
+    }
+
+    fn offers_question(&self) -> bool {
+        self.ui.is_some() && self.cfg.depth == 0
     }
 
     /// The tools the next model call offers.
@@ -833,6 +971,9 @@ impl Agent {
         }
         if self.offers_subagents() {
             out.push(subagent_tool());
+        }
+        if self.offers_question() {
+            out.push(question_tool());
         }
         out.extend(self.mcp.advertised());
         out
@@ -854,6 +995,9 @@ impl Agent {
         if self.offers_subagents() {
             out.push(SUBAGENT_TOOL.to_string());
         }
+        if self.offers_question() {
+            out.push(QUESTION_TOOL.to_string());
+        }
         if self.mcp.deferred() {
             out.push(MCP_SEARCH_TOOL.to_string());
         } else {
@@ -866,20 +1010,185 @@ impl Agent {
         if self.ran {
             return Err(anyhow!("harness agent can only run once"));
         }
+        if self.cfg.task.trim().is_empty() {
+            return Err(anyhow!("harness task is empty"));
+        }
+        self.start(cancel)?;
+        let task = self.cfg.task.clone();
+        self.push_user(task);
+        Ok(match self.drive(cancel) {
+            Drive::Answered(submission) => self.finish(EXIT_SUBMITTED, &submission, ""),
+            Drive::Stopped { status, error } => self.finish(status, "", &error),
+        })
+    }
+
+    /// One turn of an interactive session: `text` is the user's message.
+    /// The loop runs until the model replies without a tool call (the
+    /// answer), a budget or the user stops it, or the working directory
+    /// is gone. The first turn sets the session up (prompt, hooks, notes).
+    pub fn turn(&mut self, cancel: &CancelToken, text: &str) -> anyhow::Result<Turn> {
+        if !self.cfg.interactive {
+            return Err(anyhow!(
+                "turn needs an interactive agent (Config.interactive)"
+            ));
+        }
+        if self.ended {
+            return Err(anyhow!("the session has ended"));
+        }
+        if text.trim().is_empty() {
+            return Err(anyhow!("turn text is empty"));
+        }
+        if !self.ran {
+            if self.cfg.task.trim().is_empty() {
+                // Compaction summarises against the task; the first message
+                // is the nearest thing a session has.
+                self.cfg.task = text.to_string();
+            }
+            self.start(cancel)?;
+        }
+        self.state.turn_calls_start = self.result.calls;
+        self.state.turn_started = Some(Instant::now());
+        self.state.budget_notice_sent = false;
+        self.state.initiator = "user".to_string();
+        self.state.counted_format_errors = 0;
+        self.state.used_format_retries = 0;
+        self.push_user(text.to_string());
+        Ok(match self.drive(cancel) {
+            Drive::Answered(reply) => Turn::Reply(reply),
+            Drive::Stopped { status, error } if status == EXIT_SANDBOX_LOST => {
+                Turn::Ended(self.finish(status, "", &error))
+            }
+            Drive::Stopped { status, error } => {
+                let content = if error.is_empty() {
+                    format!("turn stopped: {status}")
+                } else {
+                    format!("turn stopped: {status}: {error}")
+                };
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content,
+                    ..Step::default()
+                });
+                Turn::Stopped {
+                    status: status.to_string(),
+                    error,
+                }
+            }
+        })
+    }
+
+    /// Ends an interactive session: the end hooks run, the environment
+    /// closes and the `exit` step is emitted with `status`
+    /// ([`EXIT_ENDED`] when the user left). A session that never started
+    /// (no turn) ends without hooks.
+    pub fn end(&mut self, status: &str) -> ResultSummary {
+        if self.ended {
+            return self.result.clone();
+        }
+        if !self.ran {
+            self.ended = true;
+            self.result.exit_status = status.to_string();
+            return self.result.clone();
+        }
+        self.finish(status, "", "")
+    }
+
+    /// Whether a turn is still possible.
+    pub fn is_ended(&self) -> bool {
+        self.ended
+    }
+
+    /// Adds the whole conversation of an earlier session before the first
+    /// turn: everything after its system prompt, which is rendered anew.
+    /// A second call appends.
+    pub fn resume_messages(&mut self, msgs: Vec<Message>) -> anyhow::Result<()> {
+        if self.ran {
+            return Err(anyhow!("resume_messages must come before the first turn"));
+        }
+        let first_user = msgs
+            .iter()
+            .find(|m| matches!(m.role, Role::User))
+            .map(|m| m.content.clone());
+        if self.cfg.task.trim().is_empty()
+            && let Some(task) = first_user
+        {
+            self.cfg.task = task;
+        }
+        self.msgs
+            .extend(msgs.into_iter().filter(|m| !matches!(m.role, Role::System)));
+        Ok(())
+    }
+
+    /// Replaces the model for the next calls (`/model` in a session).
+    pub fn set_model(&mut self, model: &str, context_window: i32) {
+        self.cfg.model = model.to_string();
+        if context_window > 0 {
+            self.cfg.context_window = context_window;
+        }
+    }
+
+    /// Compacts the conversation now (`/compact` in a session): Some(true)
+    /// when it was summarised, Some(false) when the model gave no summary,
+    /// None when it is too short to compact.
+    pub fn compact_now(&mut self, cancel: &CancelToken) -> Option<bool> {
+        let out = self.compact(cancel);
+        if out == Some(true) {
+            self.state.calls_at_compaction = self.result.calls;
+            self.state.last_prompt_tokens = 0;
+        }
+        out
+    }
+
+    /// The run so far: calls, steps, usage.
+    pub fn result(&self) -> ResultSummary {
+        self.result.clone()
+    }
+
+    fn push_user(&mut self, content: String) {
+        self.msgs.push(Message {
+            role: Role::User,
+            content,
+            tool_calls: Vec::new(),
+            tool_call_id: String::new(),
+            name: String::new(),
+        });
+    }
+
+    /// Model calls made in the current turn (the whole run of a job).
+    fn calls_this_turn(&self) -> i32 {
+        self.result.calls - self.state.turn_calls_start
+    }
+
+    /// Model calls left before the step budget of this turn (or job).
+    fn calls_remaining(&self) -> i32 {
+        self.cfg.max_steps - self.calls_this_turn()
+    }
+
+    /// Time spent against the wall-time budget: the turn's in an
+    /// interactive session, the run's otherwise.
+    fn clock_elapsed(&self) -> Duration {
+        match self.state.turn_started {
+            Some(t) if self.cfg.interactive => t.elapsed(),
+            _ => self.started.elapsed(),
+        }
+    }
+
+    /// Sets the run up once: defaults, the system prompt, the deny rules,
+    /// the start notes and hooks, and the system message.
+    fn start(&mut self, cancel: &CancelToken) -> anyhow::Result<()> {
         self.ran = true;
         self.cfg = apply_defaults(self.cfg.clone());
         if self.cfg.model.trim().is_empty() {
             return Err(anyhow!("harness model is empty"));
         }
-        if self.cfg.task.trim().is_empty() {
-            return Err(anyhow!("harness task is empty"));
-        }
         self.started = Instant::now();
         if self.cfg.system_prompt.is_empty() {
-            let tmpl = if self.cfg.system_prompt_template.is_empty() {
-                DEFAULT_PROMPT_TEMPLATE
-            } else {
+            let tmpl = if !self.cfg.system_prompt_template.is_empty() {
                 &self.cfg.system_prompt_template
+            } else if self.cfg.interactive {
+                CHAT_PROMPT_TEMPLATE
+            } else {
+                DEFAULT_PROMPT_TEMPLATE
             };
             self.cfg.system_prompt = render_prompt(tmpl, prompt_data(&self.env.info(), &self.cfg))?;
         }
@@ -898,107 +1207,120 @@ impl Agent {
             });
         }
         self.run_start_hooks(cancel);
-        self.msgs = vec![
-            Message {
-                role: Role::System,
-                content: self.cfg.system_prompt.clone(),
-                tool_calls: Vec::new(),
-                tool_call_id: String::new(),
-                name: String::new(),
-            },
-            Message {
-                role: Role::User,
-                content: self.cfg.task.clone(),
-                tool_calls: Vec::new(),
-                tool_call_id: String::new(),
-                name: String::new(),
-            },
-        ];
-        let mut initiator = "user".to_string();
-        let mut counted_format_errors = 0;
-        let mut used_format_retries = 0;
-        let mut keep_observations = self.cfg.keep_observations;
-        let mut last_prompt_tokens = 0;
-        let mut last_prune_level = 0;
-        let mut budget_notice_sent = false;
-        let mut emitted_prune_notes = BTreeSet::new();
-        let mut calls_at_compaction = 0;
+        let resumed = std::mem::take(&mut self.msgs);
+        self.msgs = vec![Message {
+            role: Role::System,
+            content: self.cfg.system_prompt.clone(),
+            tool_calls: Vec::new(),
+            tool_call_id: String::new(),
+            name: String::new(),
+        }];
+        if !resumed.is_empty() {
+            let note = format!(
+                "resumed an earlier session: {} messages carried over",
+                resumed.len()
+            );
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: note.clone(),
+                ..Step::default()
+            });
+            self.msgs.extend(resumed);
+            // The model hears it too: files may have changed in between.
+            self.push_user(format!(
+                "Note: {note}. Time has passed since; the checkout may have changed, so read a file again before relying on what you saw of it earlier."
+            ));
+        }
+        self.state = LoopState {
+            initiator: "user".to_string(),
+            keep_observations: self.cfg.keep_observations,
+            ..LoopState::default()
+        };
+        Ok(())
+    }
+
+    /// The loop: model call, tool calls, until an answer or a stop.
+    fn drive(&mut self, cancel: &CancelToken) -> Drive {
         loop {
             if let Some(status) = self.limit_status(cancel) {
-                let msg = self.limit_error(&status);
-                return Ok(self.finish(&status, "", &msg));
+                let msg = self.limit_error(status);
+                return Drive::Stopped { status, error: msg };
             }
             if self.result.calls > 0
                 && should_compact(
                     self.cfg.compact_at,
                     self.cfg.context_window,
-                    last_prompt_tokens,
+                    self.state.last_prompt_tokens,
                 )
-                && self.result.calls - calls_at_compaction >= COMPACT_MIN_GAP_CALLS
+                && self.result.calls - self.state.calls_at_compaction >= COMPACT_MIN_GAP_CALLS
                 && let Some(changed) = self.compact(cancel)
             {
-                calls_at_compaction = self.result.calls;
+                self.state.calls_at_compaction = self.result.calls;
                 if changed {
-                    last_prompt_tokens = 0;
+                    self.state.last_prompt_tokens = 0;
                 }
             }
             if self.result.calls > 0 {
                 let mut level = 1;
                 if self.cfg.context_window > 0
-                    && last_prompt_tokens > (0.8 * f64::from(self.cfg.context_window)) as i32
+                    && self.state.last_prompt_tokens
+                        > (0.8 * f64::from(self.cfg.context_window)) as i32
                 {
                     level = 2;
-                    if last_prune_level == 2 && keep_observations > 1 {
-                        keep_observations = 1.max(keep_observations / 2);
+                    if self.state.last_prune_level == 2 && self.state.keep_observations > 1 {
+                        self.state.keep_observations = 1.max(self.state.keep_observations / 2);
                     }
                 }
-                let (next, changed) = prune_history(&self.msgs, keep_observations, level);
+                let (next, changed) =
+                    prune_history(&self.msgs, self.state.keep_observations, level);
                 self.msgs = next;
-                let key = format!("{level}/{keep_observations}");
-                if changed > 0 && !emitted_prune_notes.contains(&key) {
+                let key = format!("{level}/{}", self.state.keep_observations);
+                if changed > 0 && !self.state.emitted_prune_notes.contains(&key) {
                     self.emit(Step {
                         kind: StepKind::Note,
                         content: format!(
-                            "collapsed {changed} older observations to fit the context window (level {level}, keep {keep_observations})"
+                            "collapsed {changed} older observations to fit the context window (level {level}, keep {})",
+                            self.state.keep_observations
                         ),
                         ..Step::default()
                     });
-                    emitted_prune_notes.insert(key);
+                    self.state.emitted_prune_notes.insert(key);
                 }
-                last_prune_level = level;
+                self.state.last_prune_level = level;
             }
-            if !budget_notice_sent && let Some(notice) = self.budget_notice() {
-                self.msgs.push(Message {
-                    role: Role::User,
-                    content: notice.clone(),
-                    tool_calls: Vec::new(),
-                    tool_call_id: String::new(),
-                    name: String::new(),
-                });
+            if !self.state.budget_notice_sent
+                && let Some(notice) = self.budget_notice()
+            {
+                self.push_user(notice.clone());
                 self.emit(Step {
                     kind: StepKind::Note,
                     content: notice,
                     ..Step::default()
                 });
-                budget_notice_sent = true;
+                self.state.budget_notice_sent = true;
             }
             let req = Request {
                 model: self.cfg.model.clone(),
                 messages: clone_messages(&self.msgs),
                 tools: self.tools(),
-                initiator: initiator.clone(),
+                initiator: self.state.initiator.clone(),
                 reasoning: self.cfg.reasoning.clone(),
                 ..Request::default()
             };
-            let resp = self.p.chat(cancel, req);
+            let resp = match self.stream.as_mut() {
+                Some(f) => self.p.chat_stream(cancel, req, &mut |text| f(text)),
+                None => self.p.chat(cancel, req),
+            };
             self.result.calls += 1;
             let resp = match resp {
                 Ok(r) => r,
                 Err(err) => {
-                    if !self.cfg.wall_time.is_zero() && self.started.elapsed() >= self.cfg.wall_time
-                    {
+                    if !self.cfg.wall_time.is_zero() && self.clock_elapsed() >= self.cfg.wall_time {
                         let msg = self.limit_error(EXIT_TIME_LIMIT);
-                        return Ok(self.finish(EXIT_TIME_LIMIT, "", &msg));
+                        return Drive::Stopped {
+                            status: EXIT_TIME_LIMIT,
+                            error: msg,
+                        };
                     }
                     if cancel.is_cancelled() {
                         self.cancel_reason = if self.cfg.cancel_reason.is_empty() {
@@ -1012,7 +1334,10 @@ impl Agent {
                             content: msg.clone(),
                             ..Step::default()
                         });
-                        return Ok(self.finish(EXIT_CANCELLED, "", &msg));
+                        return Drive::Stopped {
+                            status: EXIT_CANCELLED,
+                            error: msg,
+                        };
                     }
                     let status = if pulse_provider::is_not_logged_in(&err) {
                         EXIT_NOT_LOGGED_IN
@@ -1025,12 +1350,12 @@ impl Agent {
                         content: msg.clone(),
                         ..Step::default()
                     });
-                    return Ok(self.finish(status, "", &msg));
+                    return Drive::Stopped { status, error: msg };
                 }
             };
-            initiator = "agent".to_string();
+            self.state.initiator = "agent".to_string();
             self.result.usage.add(resp.usage);
-            last_prompt_tokens = resp.usage.prompt_tokens;
+            self.state.last_prompt_tokens = resp.usage.prompt_tokens;
             let mut msg = resp
                 .message
                 .unwrap_or_else(|| Message::new(Role::Assistant));
@@ -1050,28 +1375,31 @@ impl Agent {
                 choices: (resp.choices > 0).then_some(i64::from(resp.choices)),
                 ..Step::default()
             });
-            let free_format_retry = used_format_retries < self.cfg.format_retries.max(0);
+            let free_format_retry = self.state.used_format_retries < self.cfg.format_retries.max(0);
             let (clean, submitted, submission, prose_only) =
                 self.handle_assistant(cancel, msg, free_format_retry);
             if let Some((status, msg)) = self.fatal.take() {
-                return Ok(self.finish(status, "", &msg));
+                return Drive::Stopped { status, error: msg };
             }
             if submitted {
-                return Ok(self.finish(EXIT_SUBMITTED, &submission, ""));
+                return Drive::Answered(submission);
             }
             if clean {
-                counted_format_errors = 0;
-                used_format_retries = 0;
+                self.state.counted_format_errors = 0;
+                self.state.used_format_retries = 0;
             } else {
                 self.result.format_errors += 1;
                 if prose_only && free_format_retry {
-                    used_format_retries += 1;
+                    self.state.used_format_retries += 1;
                     self.result.calls = self.result.calls.saturating_sub(1);
                     continue;
                 }
-                counted_format_errors += 1;
-                if counted_format_errors >= self.cfg.max_format_errors {
-                    return Ok(self.finish(EXIT_FORMAT_ERROR, "", ""));
+                self.state.counted_format_errors += 1;
+                if self.state.counted_format_errors >= self.cfg.max_format_errors {
+                    return Drive::Stopped {
+                        status: EXIT_FORMAT_ERROR,
+                        error: String::new(),
+                    };
                 }
             }
         }
@@ -1099,6 +1427,7 @@ impl Agent {
                     max_steps: self.cfg.max_steps,
                     step_timeout_seconds: self.cfg.step_timeout.as_secs() as i64,
                     cwd: self.cfg.cwd.clone(),
+                    interactive: self.cfg.interactive,
                 },
             },
             messages: self.messages(),
@@ -1120,10 +1449,10 @@ impl Agent {
         Ok(())
     }
 
-    fn limit_status(&mut self, cancel: &CancelToken) -> Option<String> {
+    fn limit_status(&mut self, cancel: &CancelToken) -> Option<&'static str> {
         if !self.cfg.cancel_file.is_empty() && Path::new(&self.cfg.cancel_file).exists() {
             self.cancel_reason = ERR_OWNER_CANCELLED.to_string();
-            return Some(EXIT_CANCELLED.to_string());
+            return Some(EXIT_CANCELLED);
         }
         if cancel.is_cancelled() {
             self.cancel_reason = if self.cfg.cancel_reason.is_empty() {
@@ -1131,16 +1460,16 @@ impl Agent {
             } else {
                 self.cfg.cancel_reason.clone()
             };
-            return Some(EXIT_CANCELLED.to_string());
+            return Some(EXIT_CANCELLED);
         }
-        if self.result.calls >= self.cfg.max_steps {
-            return Some(EXIT_STEP_LIMIT.to_string());
+        if self.calls_this_turn() >= self.cfg.max_steps {
+            return Some(EXIT_STEP_LIMIT);
         }
-        if !self.cfg.wall_time.is_zero() && self.started.elapsed() >= self.cfg.wall_time {
-            return Some(EXIT_TIME_LIMIT.to_string());
+        if !self.cfg.wall_time.is_zero() && self.clock_elapsed() >= self.cfg.wall_time {
+            return Some(EXIT_TIME_LIMIT);
         }
         if self.cfg.max_cost > 0.0 && self.result.usage.cost >= self.cfg.max_cost {
-            return Some(EXIT_COST_LIMIT.to_string());
+            return Some(EXIT_COST_LIMIT);
         }
         None
     }
@@ -1150,11 +1479,17 @@ impl Agent {
             return None;
         }
         let reserve = 5.min(self.cfg.max_steps / 10);
-        let remaining = self.cfg.max_steps - self.result.calls;
+        let remaining = self.calls_remaining();
         // `<=`, not `==`: a subagent's calls can carry the count past the
         // exact mark in one step.
         if remaining > reserve {
             return None;
+        }
+        if self.cfg.interactive {
+            return Some(format!(
+                "Budget notice: {remaining} model calls remain for this turn of {}. Finish the step in hand if it is small, then reply to the user with where things stand and what is left; they can say continue. Do not start new work.",
+                self.cfg.max_steps
+            ));
         }
         let close = if self.cfg.read_only {
             "Stop exploring. Reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work."
@@ -1169,6 +1504,10 @@ impl Agent {
 
     fn limit_error(&self, status: &str) -> String {
         match status {
+            EXIT_STEP_LIMIT if self.cfg.interactive => format!(
+                "stopped at the step budget for this turn: {} model calls (say continue to go on)",
+                self.cfg.max_steps
+            ),
             EXIT_STEP_LIMIT => format!(
                 "stopped at the step budget: {} model calls",
                 self.cfg.max_steps
@@ -1258,7 +1597,15 @@ impl Agent {
         if is_report(&msg.content) {
             return (true, true, msg.content, false);
         }
-        let text = "Your message had no command and no report. Either call a tool (bash, read, grep, glob, edit, write, plan; or write one ```bash block) to keep working, or finish with your report: a `SUMMARY:` line plus any `FINDING:`/`SUGGESTION:`/`QUESTION:`/`VOTE:` lines.".to_string();
+        if self.cfg.interactive && !msg.content.trim().is_empty() {
+            // A reply without a tool call is the answer to the user.
+            return (true, true, msg.content, false);
+        }
+        let text = if self.cfg.interactive {
+            "Your reply was empty. Either call a tool to keep working, or reply to the user in plain text.".to_string()
+        } else {
+            "Your message had no command and no report. Either call a tool (bash, read, grep, glob, edit, write, plan; or write one ```bash block) to keep working, or finish with your report: a `SUMMARY:` line plus any `FINDING:`/`SUGGESTION:`/`QUESTION:`/`VOTE:` lines.".to_string()
+        };
         self.msgs.push(Message {
             role: Role::User,
             content: text.clone(),
@@ -1467,6 +1814,7 @@ impl Agent {
             SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
             FETCH_TOOL if !self.fetch.is_empty() => self.run_fetch_tool(&call.arguments),
             SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
+            QUESTION_TOOL if self.offers_question() => self.run_question_tool(&call.arguments),
             MCP_SEARCH_TOOL if self.mcp.deferred() => {
                 let query = serde_json::from_str::<Value>(&call.arguments)
                     .ok()
@@ -1494,6 +1842,116 @@ impl Agent {
                 "unknown tool {name}; available tools: {}",
                 self.tool_names().join(", ")
             )),
+        }
+    }
+
+    /// The `question` tool: the user's answer, read through the session's
+    /// [`Ui`].
+    fn run_question_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let question = args
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if question.is_empty() {
+            return self.tool_error(
+                "question: arguments must be a JSON object with a string question".to_string(),
+            );
+        }
+        let choices: Vec<String> = args
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.result.steps += 1;
+        let spec = if choices.is_empty() {
+            question.clone()
+        } else {
+            format!("{question}\n{}", choices.join(" | "))
+        };
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: format!("question: {spec}"),
+            command: QUESTION_TOOL.to_string(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let answer = self.ui.as_ref().and_then(|ui| {
+            ui.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ask(&question, &choices)
+        });
+        let obs = match answer {
+            Some(a) => Observation {
+                output: format!("The user answered: {a}"),
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            None => Observation {
+                output: "The user did not answer (input closed). Decide yourself and go on."
+                    .to_string(),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+        };
+        self.emit_observation(&format!("{QUESTION_TOOL} tool"), &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// Shows a call that changes things to the session's [`Ui`] when there
+    /// is one. Some(observation) is the declined call's result; the call
+    /// does not run.
+    fn approval(
+        &mut self,
+        tool: &str,
+        summary: &str,
+        detail: &str,
+        reason: &str,
+    ) -> Option<Observation> {
+        let ui = self.ui.clone()?;
+        let req = ApprovalRequest {
+            tool: tool.to_string(),
+            summary: summary.to_string(),
+            detail: detail.to_string(),
+            reason: reason.to_string(),
+        };
+        let start = Instant::now();
+        let decision = ui.lock().unwrap_or_else(|e| e.into_inner()).approve(&req);
+        match decision {
+            Approval::Allow => None,
+            Approval::Deny(why) => {
+                let why = why.trim();
+                let output = if why.is_empty() {
+                    format!(
+                        "{tool}: declined by the user. Do not do the same thing another way; ask them or move on."
+                    )
+                } else {
+                    format!(
+                        "{tool}: declined by the user: {why}. Follow that instead of doing the same thing another way."
+                    )
+                };
+                self.emit(Step {
+                    kind: StepKind::Note,
+                    content: output.clone(),
+                    command: summary.to_string(),
+                    ..Step::default()
+                });
+                Some(Observation {
+                    output,
+                    exit_code: 126,
+                    duration: start.elapsed(),
+                    ..Observation::default()
+                })
+            }
         }
     }
 
@@ -1613,12 +2071,12 @@ impl Agent {
             });
         self.result.steps += 1;
         let start = Instant::now();
-        let remaining = self.cfg.max_steps - self.result.calls;
+        let remaining = self.calls_remaining();
         let budget = requested.min(remaining - SUBAGENT_RESERVE);
         let time_left = (!self.cfg.wall_time.is_zero()).then(|| {
             self.cfg
                 .wall_time
-                .saturating_sub(self.started.elapsed())
+                .saturating_sub(self.clock_elapsed())
                 .saturating_sub(SUBAGENT_TIME_RESERVE)
         });
         let cost_left =
@@ -1675,6 +2133,7 @@ impl Agent {
         child.skills = self.skills.clone();
         child.hooks = self.hooks.clone();
         child.fetch = self.fetch.clone();
+        child.ui = self.ui.clone();
         child.next_n = self.next_n;
         // The child's steps go to this run's sinks, one level deeper, and
         // the sinks come back when it is done.
@@ -2049,6 +2508,17 @@ impl Agent {
             ..Step::default()
         });
         let start = Instant::now();
+        if self.ui.is_some()
+            && let Some(declined) = self.approval(
+                name,
+                name,
+                &compact_json(&args, 2000),
+                "an MCP tool may do anything its server allows",
+            )
+        {
+            self.emit_observation(name, &declined);
+            return ToolOutcome::clean(format_observation(&declined, self.cfg.output_limit));
+        }
         let obs = match self.mcp.call(name, args) {
             Ok(r) => Observation {
                 output: r.text,
@@ -2080,20 +2550,55 @@ impl Agent {
             ..Step::default()
         });
         if let Some(rule) = self.denied(command) {
-            let obs = Observation {
-                output: format!(
-                    "refused by policy: {}. Never push, never add remotes, never call gh, never touch credentials (job rule 3).",
-                    rule.description
-                ),
-                exit_code: 126,
-                ..Observation::default()
-            };
-            self.emit(Step {
-                kind: StepKind::Error,
-                content: obs.output.clone(),
-                command: command.to_string(),
-                ..Step::default()
-            });
+            let description = rule.description.clone();
+            if self.ui.is_none() {
+                let obs = Observation {
+                    output: format!(
+                        "refused by policy: {description}. Never push, never add remotes, never call gh, never touch credentials (job rule 3)."
+                    ),
+                    exit_code: 126,
+                    ..Observation::default()
+                };
+                self.emit(Step {
+                    kind: StepKind::Error,
+                    content: obs.output.clone(),
+                    command: command.to_string(),
+                    ..Step::default()
+                });
+                self.emit_observation(command, &obs);
+                return (
+                    format_observation(&obs, self.cfg.output_limit),
+                    obs,
+                    false,
+                    String::new(),
+                );
+            }
+            // With a person at the keyboard the policy line is theirs to
+            // cross: a push or a gh call they asked for goes through them.
+            if let Some(obs) = self.approval(
+                "bash",
+                command,
+                "",
+                &format!("crosses the job policy line: {description}"),
+            ) {
+                self.emit_observation(command, &obs);
+                return (
+                    format_observation(&obs, self.cfg.output_limit),
+                    obs,
+                    false,
+                    String::new(),
+                );
+            }
+        } else if self.ui.is_some()
+            && !self.cfg.read_only
+            && let Some(reason) = crate::readonly::read_only_refusal(command)
+            && let Some(obs) = self.approval(
+                "bash",
+                command,
+                "",
+                &reason.replace(" (a read-only run lands nothing)", ""),
+            )
+        {
             self.emit_observation(command, &obs);
             return (
                 format_observation(&obs, self.cfg.output_limit),
@@ -2238,7 +2743,7 @@ impl Agent {
     }
 
     /// Runs a parsed native call; in a read-only run `edit` and `write`
-    /// are refused instead.
+    /// are refused instead, and in a session the user sees them first.
     fn execute_native(&mut self, call: &NativeCall, spec: &str) -> Observation {
         if self.cfg.read_only && call.writes() {
             let obs = Observation {
@@ -2255,6 +2760,13 @@ impl Agent {
                 command: spec.to_string(),
                 ..Step::default()
             });
+            return obs;
+        }
+        if call.writes()
+            && self.ui.is_some()
+            && let Some((summary, detail, reason)) = call.approval_preview(&self.cfg.cwd)
+            && let Some(obs) = self.approval(call.name(), &summary, &detail, &reason)
+        {
             return obs;
         }
         self.fs().execute(call)
@@ -2292,7 +2804,7 @@ impl Agent {
             let left = self
                 .cfg
                 .wall_time
-                .saturating_sub(self.started.elapsed())
+                .saturating_sub(self.clock_elapsed())
                 .saturating_sub(Duration::from_secs(60));
             d = d.min(left.max(self.cfg.step_timeout));
         }
@@ -2311,6 +2823,7 @@ impl Agent {
     }
 
     fn finish(&mut self, status: &str, submission: &str, err_text: &str) -> ResultSummary {
+        self.ended = true;
         self.result.exit_status = status.to_string();
         self.result.submission = submission.to_string();
         self.result.error = err_text.to_string();
@@ -2915,6 +3428,10 @@ pub struct TrajectoryConfig {
     pub max_steps: i32,
     pub step_timeout_seconds: i64,
     pub cwd: String,
+    /// An interactive session (`pulse harness chat`), which `--continue`
+    /// picks up again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interactive: bool,
 }
 
 pub fn write_trajectory(path: &str, t: &Trajectory) -> anyhow::Result<()> {
@@ -2976,6 +3493,38 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
 );
 
 pub use DEFAULT_PROMPT_TEMPLATE as DefaultPromptTemplate;
+
+/// The system prompt of an interactive session (`pulse harness chat`): the
+/// same tools and shell rules as a job, with the user at the keyboard
+/// instead of a task brief and a report format.
+pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
+    "You are a software engineering agent working with the user in their checkout at {{.Info.cwd}} on {{.Info.os}}, in an interactive session: they write, you work and answer, they write again.\n",
+    "Your tools: bash runs one non-interactive shell command; read shows a file with line numbers (optionally a line range); grep searches file contents with a regex; glob lists files by pattern; edit replaces exact text in one file or creates it; write creates a file; plan keeps the checklist the user sees; question asks the user one thing and waits for the answer.\n",
+    "Some sessions also offer skill (loads a repository skill's instructions before work it covers), fetch (reads a web page as text, allowed hosts only), subagent (a bounded helper run on a self-contained sub-task that returns a report) and mcp__ tools; use them when they are offered.\n",
+    "Call tools with JSON arguments. Independent calls go in one reply, each with its own result: read, grep and glob calls of one reply run at the same time, the rest in order; a call that needs an earlier result waits for your next reply.\n",
+    "Prefer read, grep, glob and edit over shell for the same job: they cost less and their errors are precise.\n",
+    "A reply with no tool call ends your turn and is shown to the user; they answer in the next message. Reply in plain prose, short: what you did, what you found, what is next. There is no report format.\n",
+    "The user sees every edit, write, and command that changes the checkout or leaves the machine (git commit, git push, gh, package installs, formatters that rewrite files, rm, and the like) before it runs and may decline it; a declined call comes back as `declined by the user` with their reason. Follow the reason; never do the same thing another way.\n",
+    "Use question when a decision is the user's: which of several approaches, whether to go further than asked, a detail the request leaves out. Do not guess at scope; do not start work the user did not ask for; do not commit or push unless they ask.\n",
+    "The working directory is {{.Info.cwd}}; it may have uncommitted work of the user's in it. Leave what you did not touch as it was, and never discard changes you did not make.\n",
+    "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
+    "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
+    "Background processes a command starts (cmd &, nohup, servers) are killed when the command ends; to smoke-test a server, start it, probe it, and stop it within one command.\n",
+    "Chain setup and use with &&, or use absolute paths.\n",
+    "Commands time out after {{.StepTimeout}}.\n",
+    "Keep outputs small with head, tail, grep, and focused test selectors.\n",
+    "Output over {{.OutputLimit}} characters is cut in the middle.\n",
+    "Older command outputs are shortened to their first and last lines as the conversation grows; rerun a command if you need its full output again.\n",
+    "Never run interactive programs: editors, pagers, watch modes, or foreground servers.\n",
+    "To edit files, prefer the edit tool; shell heredocs, sed -i, or python3 -c are still available when needed.\n",
+    "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
+    "Verify your work by running the project's own checks.\n",
+    "On a command failure, inspect the cause, make a small safe correction and rerun the targeted check; do not repeat an unchanged failure.\n",
+    "Never bypass a policy refusal or approval boundary, weaken a check, or report unfinished work as done.\n",
+    "Each turn has at most {{.MaxSteps}} model calls; a budget notice arrives when few remain, and then you wrap up and tell the user where things stand.\n",
+    "{{.Instructions}}",
+    "The user's first message follows."
+);
 
 /// Appended to the system prompt of a read-only run, after the template
 /// renders, so an owner's own template gets it too.
@@ -3325,6 +3874,65 @@ impl NativeCall {
     /// only reads, and reads nothing another call of the reply writes.
     fn parallel_safe(&self) -> bool {
         matches!(self, Self::Read(_) | Self::Grep { .. } | Self::Glob { .. })
+    }
+
+    /// What the user sees before an edit or a write runs: the path, a
+    /// preview (the blocks as `-`/`+` lines, the head of a new file) and
+    /// why it is shown. None for a call that changes nothing.
+    fn approval_preview(&self, cwd: &str) -> Option<(String, String, String)> {
+        const PREVIEW_LINES: usize = 40;
+        match self {
+            Self::Edit { path, blocks } => {
+                let mut lines: Vec<String> = Vec::new();
+                for (i, b) in blocks.iter().enumerate() {
+                    if blocks.len() > 1 {
+                        lines.push(format!("block {} of {}", i + 1, blocks.len()));
+                    }
+                    lines.extend(b.search.lines().map(|l| format!("- {l}")));
+                    lines.extend(b.replace.lines().map(|l| format!("+ {l}")));
+                }
+                let cut = lines.len().saturating_sub(PREVIEW_LINES);
+                lines.truncate(PREVIEW_LINES);
+                if cut > 0 {
+                    lines.push(format!("… {cut} more lines"));
+                }
+                Some((
+                    path.clone(),
+                    lines.join("\n"),
+                    format!(
+                        "edits {} ({} block{})",
+                        path,
+                        blocks.len(),
+                        if blocks.len() == 1 { "" } else { "s" }
+                    ),
+                ))
+            }
+            Self::Write {
+                path,
+                content,
+                overwrite,
+            } => {
+                let exists = Path::new(cwd).join(path).exists();
+                let mut lines: Vec<String> = content
+                    .lines()
+                    .take(PREVIEW_LINES)
+                    .map(str::to_string)
+                    .collect();
+                let total = content.lines().count();
+                if total > PREVIEW_LINES {
+                    lines.push(format!("… {} more lines", total - PREVIEW_LINES));
+                }
+                let reason = if exists && *overwrite {
+                    format!("replaces the existing {path} ({} bytes)", content.len())
+                } else if exists {
+                    format!("writes {path}, which exists ({} bytes)", content.len())
+                } else {
+                    format!("creates {path} ({} bytes)", content.len())
+                };
+                Some((path.clone(), lines.join("\n"), reason))
+            }
+            _ => None,
+        }
     }
 
     /// The call as a fenced-block spec: what the step records and the
@@ -4352,6 +4960,7 @@ mod tests {
                         max_steps: 0,
                         step_timeout_seconds: 0,
                         cwd: String::new(),
+                        interactive: false,
                     },
                 },
                 messages: Vec::new(),
@@ -7599,6 +8208,463 @@ mod tests {
             by_id["r1"].contains("made"),
             "one read-side call is no batch, so it sees the bash call's file: {}",
             by_id["r1"]
+        );
+    }
+
+    // ---- interactive sessions (pulse harness chat) ----
+
+    /// A scripted [`Ui`]: answers approvals from a queue (`true` allows,
+    /// `false` declines with "not that") and questions from another.
+    #[derive(Default)]
+    struct ScriptUi {
+        approvals: Vec<bool>,
+        answers: Vec<Option<String>>,
+        seen: Vec<ApprovalRequest>,
+        asked: Vec<(String, Vec<String>)>,
+    }
+
+    impl Ui for Arc<Mutex<ScriptUi>> {
+        fn approve(&mut self, req: &ApprovalRequest) -> Approval {
+            let mut ui = self.lock().unwrap();
+            ui.seen.push(req.clone());
+            if ui.approvals.is_empty() || ui.approvals.remove(0) {
+                Approval::Allow
+            } else {
+                Approval::Deny("not that".into())
+            }
+        }
+        fn ask(&mut self, question: &str, choices: &[String]) -> Option<String> {
+            let mut ui = self.lock().unwrap();
+            ui.asked.push((question.to_string(), choices.to_vec()));
+            if ui.answers.is_empty() {
+                None
+            } else {
+                ui.answers.remove(0)
+            }
+        }
+    }
+
+    fn chat_agent(
+        dir: &Path,
+        p: Arc<FakeProvider>,
+        ui: Option<Arc<Mutex<ScriptUi>>>,
+        steps: Arc<Mutex<Vec<Step>>>,
+    ) -> Agent {
+        let mut cfg = base_config();
+        cfg.task = String::new();
+        cfg.system_prompt = String::new();
+        cfg.cwd = dir.display().to_string();
+        cfg.max_steps = 20;
+        cfg.interactive = true;
+        let sink_steps = steps.clone();
+        let mut h = new(
+            Box::new(SharedFakeProvider(p)),
+            Box::new(crate::localenv::new_local_env(
+                dir.display().to_string(),
+                None,
+            )),
+            cfg,
+            vec![Box::new(SinkFunc(move |s| {
+                sink_steps.lock().unwrap().push(s);
+            }))],
+        );
+        if let Some(ui) = ui {
+            h.set_ui(Arc::new(Mutex::new(ui)));
+        }
+        h
+    }
+
+    fn chat_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(dir.path().join("a.txt"), "old line\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn chat_turns_answer_in_plain_text_and_keep_the_conversation() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("r1", "read", json!({"path":"a.txt"}))])),
+            resp(msg("It says old line.")),
+            resp(msg("Yes, one line.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        let cancel = CancelToken::new();
+        let first = h.turn(&cancel, "what is in a.txt?").unwrap();
+        assert!(
+            matches!(&first, Turn::Reply(t) if t == "It says old line."),
+            "{first:?}"
+        );
+        let second = h.turn(&cancel, "just one line?").unwrap();
+        assert!(
+            matches!(&second, Turn::Reply(t) if t == "Yes, one line."),
+            "{second:?}"
+        );
+        assert!(!h.is_ended());
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 3);
+        let system = &reqs[0].messages[0];
+        assert_eq!(system.role, Role::System);
+        assert!(
+            system.content.contains("interactive session"),
+            "chat prompt is used: {}",
+            &system.content[..120]
+        );
+        assert!(
+            !system.content.contains("SUMMARY:"),
+            "no report format in the chat prompt"
+        );
+        assert!(
+            !reqs[0].tools.iter().any(|t| t.name == QUESTION_TOOL),
+            "no question tool without a ui"
+        );
+        // The second turn sees the whole first turn.
+        let last = &reqs[2].messages;
+        assert_eq!(last[1].content, "what is in a.txt?");
+        assert_eq!(last.last().unwrap().content, "just one line?");
+        assert!(last.iter().any(|m| m.role == Role::Tool));
+        let got = h.end(EXIT_ENDED);
+        assert_eq!(got.exit_status, EXIT_ENDED);
+        assert_eq!(got.calls, 3);
+        assert_eq!(got.steps, 1);
+        assert!(h.is_ended());
+        let kinds: Vec<StepKind> = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.kind.clone())
+            .collect();
+        assert_eq!(kinds.last(), Some(&StepKind::Exit), "{kinds:?}");
+        // Ending twice is harmless.
+        assert_eq!(h.end(EXIT_ENDED).exit_status, EXIT_ENDED);
+    }
+
+    #[test]
+    fn chat_step_budget_is_per_turn_and_a_stopped_turn_can_go_on() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let mut script: Vec<pulse_provider::Response> =
+            (0..8).map(|_| resp(tool("true"))).collect();
+        script.push(resp(msg("second turn done")));
+        script.extend((0..3).map(|_| resp(tool("true"))));
+        script.push(resp(msg("third turn done")));
+        let p = Arc::new(FakeProvider::new(script));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        h.cfg.max_steps = 8;
+        let cancel = CancelToken::new();
+        let first = h.turn(&cancel, "run true forever").unwrap();
+        assert!(
+            matches!(&first, Turn::Stopped { status, error }
+                if status == EXIT_STEP_LIMIT && error.contains("say continue")),
+            "{first:?}"
+        );
+        assert!(!h.is_ended(), "a budget stop does not end the session");
+        assert!(
+            steps
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.kind == StepKind::Note && s.content.starts_with("turn stopped: ")),
+        );
+        // The next turn gets a fresh budget of its own.
+        let second = h.turn(&cancel, "continue").unwrap();
+        assert!(
+            matches!(&second, Turn::Reply(t) if t == "second turn done"),
+            "{second:?}"
+        );
+        let third = h.turn(&cancel, "and again").unwrap();
+        assert!(
+            matches!(&third, Turn::Reply(t) if t == "third turn done"),
+            "{third:?}"
+        );
+        assert_eq!(p.requests().len(), 13);
+        let got = h.end(EXIT_ENDED);
+        assert_eq!(got.calls, 13);
+    }
+
+    #[test]
+    fn chat_shows_edits_writes_and_landing_commands_to_the_user() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "e1",
+                "edit",
+                json!({"path":"a.txt","search":"old line","replace":"new line"}),
+            )])),
+            resp(calls(&[(
+                "w1",
+                "write",
+                json!({"path":"b.txt","content":"made\n"}),
+            )])),
+            resp(tool("git add a.txt")),
+            resp(tool("git push origin main")),
+            resp(tool("cat a.txt")),
+            resp(msg("done")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi {
+            approvals: vec![false, true, true, false],
+            ..ScriptUi::default()
+        }));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), Some(ui.clone()), steps.clone());
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "change a.txt").unwrap();
+        assert!(matches!(&turn, Turn::Reply(t) if t == "done"), "{turn:?}");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["e1"].contains("edit: declined by the user: not that"),
+            "{}",
+            replies["e1"]
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "old line\n"
+        );
+        assert!(replies["w1"].contains("wrote b.txt"), "{}", replies["w1"]);
+        let seen = ui.lock().unwrap().seen.clone();
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert_eq!(seen[0].tool, "edit");
+        assert_eq!(seen[0].summary, "a.txt");
+        assert!(
+            seen[0].detail.contains("- old line\n+ new line"),
+            "{}",
+            seen[0].detail
+        );
+        assert_eq!(seen[1].tool, "write");
+        assert!(
+            seen[1].reason.starts_with("creates b.txt"),
+            "{}",
+            seen[1].reason
+        );
+        assert_eq!(seen[2].summary, "git add a.txt");
+        assert!(
+            seen[2].reason.contains("changes the index"),
+            "{}",
+            seen[2].reason
+        );
+        assert_eq!(seen[3].summary, "git push origin main");
+        assert!(
+            seen[3].reason.starts_with("crosses the job policy line"),
+            "{}",
+            seen[3].reason
+        );
+        let push_reply = h
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.content.clone())
+            .find(|c| c.contains("git push") || c.contains("declined by the user: not that"))
+            .unwrap_or_default();
+        assert!(push_reply.contains("declined by the user"), "{push_reply}");
+        // Plain reads go through without a word to the user.
+        assert!(seen.iter().all(|r| r.summary != "cat a.txt"));
+        assert!(
+            steps
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.kind == StepKind::Note && s.content.contains("declined by the user"))
+                .count()
+                == 2
+        );
+    }
+
+    #[test]
+    fn chat_without_a_ui_still_refuses_policy_commands() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("git push origin main")),
+            resp(msg("could not")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps);
+        let cancel = CancelToken::new();
+        h.turn(&cancel, "push it").unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("refused by policy"), "{reply}");
+    }
+
+    #[test]
+    fn chat_question_tool_asks_the_user_and_relays_the_answer() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "q1",
+                "question",
+                json!({"question":"tabs or spaces?","choices":["tabs","spaces"]}),
+            )])),
+            resp(calls(&[("q2", "question", json!({"question":"sure?"}))])),
+            resp(calls(&[("q3", "question", json!({"question":""}))])),
+            resp(msg("spaces then")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi {
+            answers: vec![Some("spaces".into()), None],
+            ..ScriptUi::default()
+        }));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), Some(ui.clone()), steps.clone());
+        assert!(h.tool_names().iter().any(|n| n == QUESTION_TOOL));
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "format the file").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "spaces then"),
+            "{turn:?}"
+        );
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["q1"].contains("The user answered: spaces"),
+            "{}",
+            replies["q1"]
+        );
+        assert!(
+            replies["q2"].contains("did not answer"),
+            "{}",
+            replies["q2"]
+        );
+        assert!(
+            replies["q3"].contains("string question"),
+            "{}",
+            replies["q3"]
+        );
+        let asked = ui.lock().unwrap().asked.clone();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].0, "tabs or spaces?");
+        assert_eq!(asked[0].1, vec!["tabs".to_string(), "spaces".to_string()]);
+        assert!(
+            steps
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.kind == StepKind::Note
+                    && s.content == "question: tabs or spaces?\ntabs | spaces"),
+        );
+        assert!(
+            p.requests()[0]
+                .tools
+                .iter()
+                .any(|t| t.name == QUESTION_TOOL),
+            "the question tool is offered when a ui is set"
+        );
+    }
+
+    #[test]
+    fn chat_resumes_an_earlier_conversation() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![resp(msg("still blue"))]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        let plain = |role: Role, content: &str| Message {
+            role,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: String::new(),
+            name: String::new(),
+        };
+        h.resume_messages(vec![
+            plain(Role::System, "an old prompt"),
+            plain(Role::User, "the sky is blue"),
+            plain(Role::Assistant, "noted"),
+        ])
+        .unwrap();
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "what colour was it?").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "still blue"),
+            "{turn:?}"
+        );
+        let req = p.requests().remove(0);
+        let roles: Vec<Role> = req.messages.iter().map(|m| m.role.clone()).collect();
+        assert_eq!(
+            roles,
+            vec![
+                Role::System,
+                Role::User,
+                Role::Assistant,
+                Role::User,
+                Role::User
+            ],
+            "{:?}",
+            req.messages
+        );
+        assert_ne!(
+            req.messages[0].content, "an old prompt",
+            "the prompt is rendered afresh"
+        );
+        assert_eq!(req.messages[1].content, "the sky is blue");
+        assert_eq!(req.messages[2].content, "noted");
+        assert!(
+            req.messages[3]
+                .content
+                .contains("resumed an earlier session: 2 messages"),
+            "{}",
+            req.messages[3].content
+        );
+        assert_eq!(req.messages[4].content, "what colour was it?");
+        assert_eq!(
+            h.cfg.task, "the sky is blue",
+            "compaction's task line comes from the first message"
+        );
+        assert!(
+            h.resume_messages(Vec::new()).is_err(),
+            "no resuming after the first turn"
+        );
+    }
+
+    #[test]
+    fn chat_turn_requires_interactive_and_text() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        let cancel = CancelToken::new();
+        assert!(h.turn(&cancel, "   ").is_err());
+        h.cfg.interactive = false;
+        assert!(h.turn(&cancel, "hi").is_err());
+        // Ending an unstarted session is quiet.
+        let got = h.end(EXIT_ENDED);
+        assert_eq!(got.exit_status, EXIT_ENDED);
+        assert_eq!(got.calls, 0);
+    }
+
+    #[test]
+    fn job_runs_are_unchanged_by_the_turn_machinery() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("true")),
+            resp(msg("no report here")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let (h, got) = run_agent(
+            p.clone(),
+            Arc::new(Mutex::new(FakeEnv {
+                default_output: "ok\n".into(),
+                ..FakeEnv::default()
+            })),
+            base_config(),
+        )
+        .unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.calls, 3);
+        assert_eq!(
+            got.format_errors, 1,
+            "a plain reply is still a format error in a job"
+        );
+        assert!(h.is_ended());
+        let cancel = CancelToken::new();
+        let mut h = h;
+        assert!(
+            h.turn(&cancel, "more").is_err(),
+            "a job agent takes no turns"
         );
     }
 }

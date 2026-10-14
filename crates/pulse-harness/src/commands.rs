@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const HARNESS_USAGE: &str = "pulse harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] ... | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt";
+const HARNESS_USAGE: &str = "pulse harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] ... | chat [-C DIR] [--model M] [--yes] [--resume ID | --continue] | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt";
 const LOGIN_FIX: &str =
     "sign in with GitHub in the console (Settings → Harness) or run pulse harness login";
 
@@ -46,7 +46,7 @@ pub fn register() {
         pulse_cli::register(Command {
             name: "harness".into(),
             group: "runner".into(),
-            summary: "the built-in agent harness: run a task through the model provider, sign in, list models and sessions".into(),
+            summary: "the built-in agent harness: run a task or chat through the model provider, sign in, list models and sessions".into(),
             usage: HARNESS_USAGE.into(),
             aliases: vec![],
             no_store: true,
@@ -67,6 +67,7 @@ pub fn run_harness_command(c: &mut Context, _fs: &FlagSet, args: &[String]) -> R
     };
     match verb.as_str() {
         "run" => harness_run(c, rest),
+        "chat" => crate::chat::harness_chat(c, rest),
         "login" => harness_login(c, rest),
         "status" => harness_status(c, rest),
         "models" => harness_models(c, rest),
@@ -89,16 +90,13 @@ pub fn unknown_harness_verb(verb: &str) -> pulse_cli::Error {
         2,
         &what,
         "",
-        "pulse harness run|login|status|models|logout|sessions|show|cancel|prompt",
+        "pulse harness run|chat|login|status|models|logout|sessions|show|cancel|prompt",
     )
 }
 
-fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
-    let mut fs = FlagSet::new("harness run");
-    fs.set_output(pulse_cli::flags::Output::Discard);
-    fs.string_var("p", "", "task text");
-    fs.string_var("task", "", "task text");
-    fs.string_var("task-file", "", "read task from file, or - for stdin");
+/// The flags `harness run` and `harness chat` share: everything that
+/// shapes the agent but the task.
+pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.string_var("C", ".", "working directory");
     fs.string_var("model", "", "model id");
     fs.string_var("provider", "", "provider name");
@@ -181,22 +179,80 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         "",
         "reasoning effort asked of the model (minimal, low, medium, high, xhigh) where the provider takes one; empty leaves the model's default; overrides harness.reasoning",
     );
-    bind_raw_globals(&mut fs);
-    fs.parse(args)?;
-    apply_raw_globals(c, &fs);
-    if fs.narg() != 0 {
-        return Err(errorf(
-            2,
-            &format!(
-                "pulse harness run: unrecognized arguments: {}",
-                fs.args().join(" ")
-            ),
-            "",
-            "",
-        )
-        .into());
+}
+
+/// An agent built from the flags, with everything around it that the
+/// command finishes with once the agent is done.
+pub(crate) struct Prepared {
+    pub(crate) shared: Arc<Mutex<Agent>>,
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) provider_name: String,
+    pub(crate) model_name: String,
+    pub(crate) session_id: String,
+    pub(crate) cwd: String,
+    pub(crate) trajectory_path: String,
+    pub(crate) st: Option<Store>,
+    pub(crate) step_log: Option<Arc<Mutex<StepsFileSink>>>,
+    pub(crate) rec_for_finish: Option<StoreSink>,
+    _close_store: StoreClose,
+}
+
+impl Prepared {
+    /// Writes the trajectory, if one is kept; a failure is a warning.
+    pub(crate) fn write_trajectory(&self, c: &mut Context) -> Result<()> {
+        if self.trajectory_path.is_empty() {
+            return Ok(());
+        }
+        let traj = self.shared.lock().unwrap().trajectory();
+        if let Err(e) = write_trajectory(&self.trajectory_path, &traj) {
+            writeln!(c.err, "pulse harness: trajectory warning: {e}")?;
+        }
+        Ok(())
     }
-    let task = read_task(&first_set(&fs, "p", "task"), &fs.get_string("task-file"))?;
+
+    /// Closes the store session and the steps file with the result.
+    pub(crate) fn finish(&mut self, c: &mut Context, result: &ResultSummary) -> Result<()> {
+        if let Some(mut rec) = self.rec_for_finish.take()
+            && let Err(e) = rec.finish(result, &self.trajectory_path)
+        {
+            writeln!(c.err, "pulse harness: store warning: {e}")?;
+        }
+        if let Some(log) = &self.step_log {
+            log.lock().expect("steps-file sink poisoned").finish(result);
+            if let Some(warning) = log
+                .lock()
+                .expect("steps-file sink poisoned")
+                .warning
+                .clone()
+            {
+                writeln!(c.err, "pulse harness: steps-file warning: {warning}")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancels `cancel` when the owner cancels the session in the store
+    /// (`pulse harness cancel ID`); the closure stops the watch.
+    pub(crate) fn watch_cancel(&self, cancel: &CancelToken) -> Option<impl FnOnce() + use<>> {
+        self.st
+            .as_ref()
+            .map(|s| watch_harness_cancel(s.clone(), self.session_id.clone(), cancel.clone()))
+    }
+}
+
+/// Builds the agent `harness run` and `harness chat` drive from the parsed
+/// flags: store, provider, model, budgets, prompt, instructions, tools and
+/// sinks. `extra_sinks` go first; the progress lines on stderr are added
+/// when `progress` is set and the command is not quiet.
+pub(crate) fn prepare_agent(
+    c: &mut Context,
+    fs: &FlagSet,
+    verb: &str,
+    task: String,
+    interactive: bool,
+    extra_sinks: Vec<Box<dyn Sink>>,
+    progress: bool,
+) -> Result<Prepared> {
     let abs_cwd = existing_dir(&fs.get_string("C"))?;
     let mut session_id = fs.get_string("session");
     if session_id.is_empty() {
@@ -225,7 +281,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         )))
     });
     let no_store = fs.get_bool("no-store");
-    let (st, _close_store) = open_harness_store(c, no_store)?;
+    let (st, close_store) = open_harness_store(c, no_store)?;
     if st.is_none() && !no_store && !c.quiet {
         writeln!(
             c.err,
@@ -244,11 +300,12 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         .map_err(|e| {
             errorf(
                 2,
-                &format!("pulse harness run: {e}"),
+                &format!("pulse harness {verb}: {e}"),
                 "",
                 "pass --provider P",
             )
         })?;
+    let p: Arc<dyn Provider> = Arc::from(p);
     let mut model_name = fs.get_string("model");
     if model_name.is_empty() {
         match default_run_model(&CancelToken::new(), st.as_ref(), p.as_ref()) {
@@ -271,10 +328,12 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
                         let _ = rec.finish(&result, "");
                     }
                 }
-                if c.json {
-                    write_json(&mut c.out, &run_json(&session_id, &result, ""))?;
-                } else {
-                    write_run_text(&mut c.out, &[], &result)?;
+                if !interactive {
+                    if c.json {
+                        write_json(&mut c.out, &run_json(&session_id, &result, ""))?;
+                    } else {
+                        write_run_text(&mut c.out, &[], &result)?;
+                    }
                 }
                 return Err(errorf(4, "", "", "").into());
             }
@@ -282,7 +341,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         }
     }
     let max_steps = setting_int_or(
-        &fs,
+        fs,
         "max-steps",
         st.as_ref(),
         "harness.max_steps",
@@ -295,28 +354,28 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             .map_or(0.0, |s| s.setting_float("harness.max_cost"))
     };
     let step_timeout = setting_int_or(
-        &fs,
+        fs,
         "step-timeout",
         st.as_ref(),
         "harness.step_timeout",
         DEFAULT_STEP_TIMEOUT.as_secs() as i32,
     );
     let commit_timeout = setting_int_or(
-        &fs,
+        fs,
         "commit-timeout",
         st.as_ref(),
         "harness.commit_timeout",
         DEFAULT_COMMIT_TIMEOUT.as_secs() as i32,
     );
     let output_limit = setting_int_or(
-        &fs,
+        fs,
         "output-limit",
         st.as_ref(),
         "harness.output_limit",
         DEFAULT_OUTPUT_LIMIT as i32,
     );
     let keep_observations = setting_int_or(
-        &fs,
+        fs,
         "keep-observations",
         st.as_ref(),
         "harness.keep_observations",
@@ -325,14 +384,19 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     let format_retries = st.as_ref().map_or(DEFAULT_FORMAT_RETRIES, |s| {
         s.setting_int("harness.format_retries") as i32
     });
-    let mut system_prompt_template = st
-        .as_ref()
-        .map_or_else(String::new, |s| s.setting("harness.system_prompt", ""));
+    // A session speaks to a person: it keeps the chat prompt unless a
+    // prompt file says otherwise; a job takes the owner's template.
+    let mut system_prompt_template = if interactive {
+        String::new()
+    } else {
+        st.as_ref()
+            .map_or_else(String::new, |s| s.setting("harness.system_prompt", ""))
+    };
     if !prompt_file.is_empty() {
         system_prompt_template = fs::read_to_string(&prompt_file).map_err(|e| {
             errorf(
                 2,
-                &format!("pulse harness run: read prompt file: {e}"),
+                &format!("pulse harness {verb}: read prompt file: {e}"),
                 "",
                 "pass --prompt-file PATH",
             )
@@ -341,7 +405,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     // The flag, then the setting, override the window the model list
     // reports; both are off at zero.
     let context_window = match setting_int_or(
-        &fs,
+        fs,
         "context-window",
         st.as_ref(),
         "harness.context_window",
@@ -369,8 +433,8 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     let progress_start = Instant::now();
     let shared_err = SharedWriter::new(std::mem::replace(&mut c.err, Box::new(io::sink())));
     c.err = Box::new(shared_err.clone());
-    let mut sinks: Vec<Box<dyn Sink>> = Vec::new();
-    if !c.quiet {
+    let mut sinks: Vec<Box<dyn Sink>> = extra_sinks;
+    if progress && !c.quiet {
         sinks.push(Box::new(ProgressSink::new(shared_err, progress_start)));
     }
     if let Some(log) = &step_log {
@@ -434,7 +498,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         } else {
             return Err(errorf(
                 2,
-                &format!("pulse harness run: --reasoning {v:?} is not a reasoning effort"),
+                &format!("pulse harness {verb}: --reasoning {v:?} is not a reasoning effort"),
                 "",
                 &format!(
                     "use one of default, {}",
@@ -450,7 +514,11 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         cwd: abs_cwd.clone(),
         env: env.clone(),
         provider: provider_name.clone(),
-        cancel_reason: ERR_OWNER_CANCELLED.into(),
+        cancel_reason: if interactive {
+            "interrupted by the user".into()
+        } else {
+            ERR_OWNER_CANCELLED.into()
+        },
         max_steps,
         step_timeout: Duration::from_secs(step_timeout as u64),
         commit_timeout: Duration::from_secs(commit_timeout as u64),
@@ -466,6 +534,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         compact_at,
         read_only,
         reasoning,
+        interactive,
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
@@ -482,7 +551,7 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
         .map_err(|e| {
             errorf(
                 2,
-                &format!("pulse harness run: harness.system_prompt render failed: {e}"),
+                &format!("pulse harness {verb}: harness.system_prompt render failed: {e}"),
                 "",
                 "fix harness.system_prompt or pass --prompt-file",
             )
@@ -490,7 +559,12 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
     }
     let trajectory_sink =
         (!trajectory_path.is_empty()).then(|| TrajectorySink::new(c, &trajectory_path));
-    let mut agent = new(p, Box::new(LocalEnv::new(abs_cwd, Some(env))), cfg, sinks);
+    let mut agent = new_shared(
+        p.clone(),
+        Box::new(LocalEnv::new(abs_cwd.clone(), Some(env))),
+        cfg,
+        sinks,
+    );
     if !instruction_files.is_empty() {
         agent.note_at_start(format!(
             "read repository instructions from {} ({} bytes) into the system prompt",
@@ -543,53 +617,63 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             .sinks
             .push(Box::new(ts.with_agent(shared.clone())));
     }
+    Ok(Prepared {
+        shared,
+        provider: p,
+        provider_name,
+        model_name,
+        session_id,
+        cwd: abs_cwd,
+        trajectory_path,
+        st,
+        step_log,
+        rec_for_finish,
+        _close_store: close_store,
+    })
+}
+
+fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
+    let mut fs = FlagSet::new("harness run");
+    fs.set_output(pulse_cli::flags::Output::Discard);
+    fs.string_var("p", "", "task text");
+    fs.string_var("task", "", "task text");
+    fs.string_var("task-file", "", "read task from file, or - for stdin");
+    add_agent_flags(&mut fs);
+    bind_raw_globals(&mut fs);
+    fs.parse(args)?;
+    apply_raw_globals(c, &fs);
+    if fs.narg() != 0 {
+        return Err(errorf(
+            2,
+            &format!(
+                "pulse harness run: unrecognized arguments: {}",
+                fs.args().join(" ")
+            ),
+            "",
+            "",
+        )
+        .into());
+    }
+    let task = read_task(&first_set(&fs, "p", "task"), &fs.get_string("task-file"))?;
+    let mut prepared = prepare_agent(c, &fs, "run", task, false, Vec::new(), true)?;
     let cancel = CancelToken::new();
-    let mut stop_watch = st
-        .as_ref()
-        .map(|s| watch_harness_cancel(s.clone(), session_id.clone(), cancel.clone()));
-    let result = match shared.lock().unwrap().run_with_cancel(&cancel) {
+    let mut stop_watch = prepared.watch_cancel(&cancel);
+    let result = match prepared.shared.lock().unwrap().run_with_cancel(&cancel) {
         Ok(result) => result,
         Err(err) => {
             if let Some(stop) = stop_watch.take() {
                 stop();
             }
-            if !trajectory_path.is_empty() {
-                let traj = shared.lock().unwrap().trajectory();
-                if let Err(e) = write_trajectory(&trajectory_path, &traj) {
-                    writeln!(c.err, "pulse harness: trajectory warning: {e}")?;
-                }
-            }
+            prepared.write_trajectory(c)?;
             return Err(err);
         }
     };
     if let Some(stop) = stop_watch.take() {
         stop();
     }
-    let trajectory_steps = shared.lock().unwrap().trajectory().steps;
-    if !trajectory_path.is_empty() {
-        let traj = shared.lock().unwrap().trajectory();
-        if let Err(e) = write_trajectory(&trajectory_path, &traj) {
-            writeln!(c.err, "pulse harness: trajectory warning: {e}")?;
-        }
-    }
-    if let Some(mut rec) = rec_for_finish
-        && let Err(e) = rec.finish(&result, &trajectory_path)
-    {
-        writeln!(c.err, "pulse harness: store warning: {e}")?;
-    }
-    if let Some(log) = &step_log {
-        log.lock()
-            .expect("steps-file sink poisoned")
-            .finish(&result);
-        if let Some(warning) = log
-            .lock()
-            .expect("steps-file sink poisoned")
-            .warning
-            .clone()
-        {
-            writeln!(c.err, "pulse harness: steps-file warning: {warning}")?;
-        }
-    }
+    let trajectory_steps = prepared.shared.lock().unwrap().trajectory().steps;
+    prepared.write_trajectory(c)?;
+    prepared.finish(c, &result)?;
     if result.exit_status == EXIT_NOT_LOGGED_IN {
         if result.error.trim() == "not logged in" || result.error.trim().is_empty() {
             writeln!(c.err, "not logged in: {LOGIN_FIX}")?;
@@ -597,6 +681,8 @@ fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
             writeln!(c.err, "not logged in: {} - {}", result.error, LOGIN_FIX)?;
         }
     }
+    let session_id = prepared.session_id.clone();
+    let trajectory_path = prepared.trajectory_path.clone();
     if c.json {
         if !c.quiet {
             return write_json(
@@ -1154,13 +1240,13 @@ fn harness_prompt(c: &mut Context, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn bind_raw_globals(fs: &mut FlagSet) {
+pub(crate) fn bind_raw_globals(fs: &mut FlagSet) {
     fs.bool_var("json", false, "machine-readable output");
     fs.bool_var("quiet", false, "print only what a script needs");
     fs.bool_var("no-color", false, "no colour");
 }
 
-fn apply_raw_globals(c: &mut Context, fs: &FlagSet) {
+pub(crate) fn apply_raw_globals(c: &mut Context, fs: &FlagSet) {
     if fs.get_bool("json") {
         c.json = true;
     }
@@ -1172,7 +1258,7 @@ fn apply_raw_globals(c: &mut Context, fs: &FlagSet) {
     }
 }
 
-fn first_set(fs: &FlagSet, a: &str, b: &str) -> String {
+pub(crate) fn first_set(fs: &FlagSet, a: &str, b: &str) -> String {
     if fs.is_set(b) {
         fs.get_string(b)
     } else {
@@ -1216,14 +1302,14 @@ pub fn read_task(text: &str, file: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-static STDIN_FOR_TESTS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub(crate) static STDIN_FOR_TESTS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
-fn set_stdin_for_tests(data: Option<&str>) {
+pub(crate) fn set_stdin_for_tests(data: Option<&str>) {
     *STDIN_FOR_TESTS.lock().expect("stdin test hook") = data.map(str::to_string);
 }
 
-fn read_stdin_to_string(dst: &mut String) -> std::io::Result<usize> {
+pub(crate) fn read_stdin_to_string(dst: &mut String) -> std::io::Result<usize> {
     #[cfg(test)]
     if let Some(data) = STDIN_FOR_TESTS.lock().expect("stdin test hook").clone() {
         dst.push_str(&data);
@@ -1517,7 +1603,7 @@ fn setting_int_or(fs: &FlagSet, flag: &str, st: Option<&Store>, setting: &str, d
 }
 
 #[derive(Clone)]
-struct StoreSink {
+pub(crate) struct StoreSink {
     agent: String,
     id: String,
     s: Store,
@@ -1657,7 +1743,7 @@ impl StoreSink {
     }
 }
 
-struct StepsFileSink {
+pub(crate) struct StepsFileSink {
     path: String,
     session: String,
     provider: String,
@@ -1799,6 +1885,7 @@ impl Sink for TrajectorySink {
                     max_steps: 0,
                     step_timeout_seconds: 0,
                     cwd: String::new(),
+                    interactive: false,
                 },
             },
             messages: Vec::new(),
@@ -1811,10 +1898,10 @@ impl Sink for TrajectorySink {
 }
 
 #[derive(Clone)]
-struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
+pub(crate) struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
 
 impl SharedWriter {
-    fn new(w: Box<dyn Write + Send>) -> Self {
+    pub(crate) fn new(w: Box<dyn Write + Send>) -> Self {
         Self(Arc::new(Mutex::new(w)))
     }
 }
@@ -2004,7 +2091,7 @@ pub fn write_run_text(w: &mut dyn Write, steps: &[Step], result: &ResultSummary)
 
 pub fn exit_code_for(status: &str) -> i32 {
     match status {
-        EXIT_SUBMITTED => 0,
+        EXIT_SUBMITTED | EXIT_ENDED => 0,
         EXIT_PROVIDER_ERROR => 3,
         EXIT_NOT_LOGGED_IN => 4,
         EXIT_CANCELLED => 5,
@@ -2257,21 +2344,25 @@ fn trim_float(f: f64) -> String {
 }
 
 fn watch_harness_cancel(st: Store, session_id: String, cancel: CancelToken) -> impl FnOnce() {
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop_thread = stop.clone();
+    // The stop closure drops the sender; the watch wakes at once instead
+    // of finishing its sleep (a chat turn ends when the model answers).
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let handle = thread::spawn(move || {
-        while !stop_thread.load(std::sync::atomic::Ordering::SeqCst) {
+        loop {
             if let Ok(Some(h)) = st.harness_session_head(&session_id)
                 && !h.cancel_requested_at.is_empty()
             {
                 cancel.cancel();
                 return;
             }
-            thread::sleep(Duration::from_secs(2));
+            match stop_rx.recv_timeout(Duration::from_secs(2)) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
         }
     });
     move || {
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(stop_tx);
         let _ = handle.join();
     }
 }
@@ -2290,6 +2381,27 @@ mod tests {
     static FAKE_CURRENT: Mutex<Option<CommandFakeProvider>> = Mutex::new(None);
     static TEMP_DIRS: OnceLock<Mutex<Vec<tempfile::TempDir>>> = OnceLock::new();
 
+    /// One scripted reply: plain text, or a tool call with JSON arguments.
+    #[derive(Clone)]
+    struct Scripted {
+        content: String,
+        tool: Option<(String, String)>,
+    }
+
+    fn say(content: &str) -> Scripted {
+        Scripted {
+            content: content.into(),
+            tool: None,
+        }
+    }
+
+    fn call(tool: &str, args: Value) -> Scripted {
+        Scripted {
+            content: String::new(),
+            tool: Some((tool.into(), args.to_string())),
+        }
+    }
+
     #[derive(Clone)]
     struct CommandFakeProvider {
         label: String,
@@ -2297,6 +2409,8 @@ mod tests {
         login: Login,
         err_not_logged_in: bool,
         requests: Arc<Mutex<Vec<Request>>>,
+        /// Replies handed out in order; the fixed report when it runs out.
+        script: Arc<Mutex<Vec<Scripted>>>,
     }
 
     impl Default for CommandFakeProvider {
@@ -2307,6 +2421,7 @@ mod tests {
                 login: Login::default(),
                 err_not_logged_in: false,
                 requests: Arc::new(Mutex::new(Vec::new())),
+                script: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -2314,6 +2429,13 @@ mod tests {
     impl CommandFakeProvider {
         fn requests(&self) -> Vec<Request> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn scripted(replies: Vec<Scripted>) -> Self {
+            Self {
+                script: Arc::new(Mutex::new(replies)),
+                ..Self::default()
+            }
         }
     }
 
@@ -2333,14 +2455,47 @@ mod tests {
             if self.err_not_logged_in {
                 return Err(pulse_provider::err_not_logged_in().into());
             }
+            let n = self.requests.lock().unwrap().len();
+            let next = {
+                let mut script = self.script.lock().unwrap();
+                if script.is_empty() {
+                    None
+                } else {
+                    Some(script.remove(0))
+                }
+            };
+            let (content, tool_calls, finish) = match next {
+                Some(Scripted {
+                    content,
+                    tool: Some((name, arguments)),
+                }) => (
+                    content,
+                    vec![pulse_provider::ToolCall {
+                        id: format!("call-{n}"),
+                        name,
+                        arguments,
+                    }],
+                    "tool_calls",
+                ),
+                Some(Scripted {
+                    content,
+                    tool: None,
+                }) => (content, Vec::new(), "stop"),
+                None => (
+                    "SUMMARY: fake complete\nFINDING: ok".to_string(),
+                    Vec::new(),
+                    "stop",
+                ),
+            };
             Ok(Response {
                 message: Some(pulse_provider::Message {
                     role: pulse_provider::Role::Assistant,
-                    content: "SUMMARY: fake complete\nFINDING: ok".into(),
-                    tool_calls: Vec::new(),
+                    content,
+                    tool_calls,
                     tool_call_id: String::new(),
                     name: String::new(),
                 }),
+                finish_reason: finish.into(),
                 usage: Usage {
                     prompt_tokens: 7,
                     completion_tokens: 11,
@@ -3449,5 +3604,280 @@ mod tests {
             "bad finish: {:#?}",
             events[1]
         );
+    }
+
+    // ---- pulse harness chat ----
+
+    fn chat_args<'a>(dir: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+        let mut args = vec![
+            "chat",
+            "-C",
+            dir,
+            "--provider",
+            FAKE_PROVIDER_NAME,
+            "--no-hooks",
+            "--no-skills",
+            "--no-mcp",
+        ];
+        args.extend_from_slice(extra);
+        args
+    }
+
+    #[test]
+    fn harness_chat_turns_slash_commands_and_resume_hint() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p = CommandFakeProvider::scripted(vec![
+            say("Hi there, how can I help?"),
+            say("Second answer."),
+        ]);
+        set_fake_provider(p.clone());
+        let dir = tempfile::tempdir().unwrap();
+        set_stdin_for_tests(Some(
+            "hello\n/usage\n/model\nsecond \\\nline\n/nope\n/exit\nnever sent\n",
+        ));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(dir.path().to_str().unwrap(), &["--session", "chat-1"]),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "Hi there, how can I help?\nSecond answer.\n");
+        assert!(err.contains("you> hello"), "echoes piped lines: {err}");
+        assert!(err.contains("1 turns, 1 model calls"), "/usage: {err}");
+        assert!(err.contains("model: fake-model"), "/model: {err}");
+        assert!(err.contains("unknown command /nope"), "{err}");
+        assert!(
+            err.contains("pick the session up again with: pulse harness chat --resume chat-1"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        let second = &reqs[1].messages;
+        assert!(
+            second.iter().any(|m| m.content == "second \nline"),
+            "a trailing backslash continues the line: {second:?}"
+        );
+        assert!(
+            reqs[0].tools.iter().any(|t| t.name == QUESTION_TOOL),
+            "a session offers the question tool"
+        );
+        assert!(
+            reqs[0].messages[0].content.contains("conversation"),
+            "the chat prompt is used: {}",
+            &reqs[0].messages[0].content[..200]
+        );
+        let (h, steps) = s.harness_session("chat-1").unwrap();
+        let h = h.unwrap();
+        assert_eq!(h.status, EXIT_ENDED);
+        assert_eq!(h.calls, 2);
+        assert_eq!(steps.last().unwrap().kind, StepKind::Exit.to_string());
+        let traj: Trajectory = serde_json::from_str(
+            &fs::read_to_string(Path::new(&s.home).join("harness").join("chat-1.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(traj.info.config.interactive);
+        assert_eq!(traj.info.exit_status, EXIT_ENDED);
+        assert!(traj.messages.iter().any(|m| m.content == "hello"));
+    }
+
+    #[test]
+    fn harness_chat_declines_changes_without_a_terminal_unless_yes() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let script = || {
+            vec![
+                call("write", json!({"path": "note.txt", "content": "written\n"})),
+                say("done"),
+            ]
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let p = CommandFakeProvider::scripted(script());
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("write the note\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(dir.path().to_str().unwrap(), &[]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(!dir.path().join("note.txt").exists(), "declined write ran");
+        assert!(
+            err.contains("declined (no terminal to ask): write"),
+            "{err}"
+        );
+        let reqs = p.requests();
+        let result = reqs[1].messages.last().unwrap();
+        assert!(
+            result.content.contains("declined by the user"),
+            "the model hears the refusal: {}",
+            result.content
+        );
+        assert_eq!(out, "done\n");
+
+        let p = CommandFakeProvider::scripted(script());
+        set_fake_provider(p);
+        set_stdin_for_tests(Some("write the note\n"));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(dir.path().to_str().unwrap(), &["--yes"]),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "written\n"
+        );
+        assert!(err.contains("allowed without asking: write"), "{err}");
+        assert!(err.contains("write: note.txt"), "the step shows: {err}");
+    }
+
+    #[test]
+    fn harness_chat_question_without_terminal_goes_unanswered() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                QUESTION_TOOL,
+                json!({"question": "Which one?", "choices": ["left", "right"]}),
+            ),
+            say("I picked left."),
+        ]);
+        set_fake_provider(p.clone());
+        let dir = tempfile::tempdir().unwrap();
+        set_stdin_for_tests(Some("choose\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(dir.path().to_str().unwrap(), &[]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(
+            err.contains("question: Which one?") && err.contains("1) left"),
+            "{err}"
+        );
+        assert!(err.contains("no terminal to answer"), "{err}");
+        let reqs = p.requests();
+        assert!(
+            reqs[1]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .contains("did not answer"),
+            "{:?}",
+            reqs[1].messages.last()
+        );
+        assert_eq!(out, "I picked left.\n");
+    }
+
+    #[test]
+    fn harness_chat_continue_and_resume_carry_the_conversation() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        set_fake_provider(CommandFakeProvider::scripted(vec![say("first reply")]));
+        set_stdin_for_tests(Some("remember the word pelican\n"));
+        let (_, err, code) = invoke(&s.home, &chat_args(cwd, &["--session", "chat-a"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "{err}");
+
+        // --continue finds the newest session that ran here.
+        let p = CommandFakeProvider::scripted(vec![say("pelican")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("what was the word?\n"));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(cwd, &["--continue", "--session", "chat-b"]),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(
+            err.contains("resumed session chat-a: 2 messages carried over"),
+            "{err}"
+        );
+        let msgs = &p.requests()[0].messages;
+        assert!(
+            msgs.iter()
+                .any(|m| m.content == "remember the word pelican"),
+            "{msgs:?}"
+        );
+        assert!(msgs.iter().any(|m| m.content == "first reply"), "{msgs:?}");
+        assert!(
+            msgs.iter()
+                .any(|m| m.content.contains("resumed an earlier session")),
+            "{msgs:?}"
+        );
+        assert_eq!(out, "pelican\n");
+
+        // --resume ID takes a particular one; a stranger errors out.
+        let p = CommandFakeProvider::scripted(vec![say("still pelican")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("and now?\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--resume", "chat-a"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(
+            p.requests()[0]
+                .messages
+                .iter()
+                .any(|m| m.content == "first reply")
+        );
+        let (_, err, code) = invoke(&s.home, &chat_args(cwd, &["--resume", "nope"]));
+        assert_eq!(code, 2);
+        assert!(err.contains("--resume nope"), "{err}");
+
+        // --continue in a directory without a session errors out.
+        let other = tempfile::tempdir().unwrap();
+        let (_, err, code) = invoke(
+            &s.home,
+            &chat_args(other.path().to_str().unwrap(), &["--continue"]),
+        );
+        assert_eq!(code, 2);
+        assert!(err.contains("no earlier session"), "{err}");
+    }
+
+    #[test]
+    fn harness_chat_first_message_flag_and_json_lines() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::scripted(vec![say("json reply")]));
+        let dir = tempfile::tempdir().unwrap();
+        set_stdin_for_tests(Some(""));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(
+                dir.path().to_str().unwrap(),
+                &["-p", "hi", "--json", "--session", "chat-j"],
+            ),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let lines: Vec<Value> = serde_json::Deserializer::from_str(&out)
+            .into_iter::<Value>()
+            .map(|v| v.unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        assert_eq!(lines[0]["reply"], "json reply");
+        assert_eq!(lines[0]["turn"], 1);
+        assert_eq!(lines[1]["status"], EXIT_ENDED);
+        assert_eq!(lines[1]["turns"], 1);
+        assert_eq!(lines[1]["session"], "chat-j");
+    }
+
+    #[test]
+    fn harness_chat_rejects_stray_arguments_and_both_resume_flags() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let (_, err, code) = invoke(&s.home, &chat_args(cwd, &["stray"]));
+        assert_eq!(code, 2);
+        assert!(err.contains("unrecognized arguments"), "{err}");
+        let (_, err, code) = invoke(&s.home, &chat_args(cwd, &["--resume", "x", "--continue"]));
+        assert_eq!(code, 2);
+        assert!(err.contains("one of --resume ID and --continue"), "{err}");
     }
 }

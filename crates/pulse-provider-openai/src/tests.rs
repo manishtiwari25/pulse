@@ -329,6 +329,120 @@ fn retry_after429_then_success() {
 }
 
 #[test]
+fn chat_stream_shows_text_as_it_arrives_and_folds_the_reply() {
+    let saw = Arc::new(Mutex::new(Value::Null));
+    let saw_log = saw.clone();
+    let srv = Server::new(move |req| {
+        assert_eq!(req.header("accept"), Some("text/event-stream"));
+        *saw_log.lock().unwrap() = req.json().unwrap();
+        let chunks = [
+            json!({"id":"chatcmpl-9","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"id\""}}]},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}),
+        ];
+        let mut body = String::new();
+        for c in chunks {
+            body.push_str(&format!("data: {c}\n\n"));
+        }
+        body.push_str("data: [DONE]\n\n");
+        TestResponse::new(200)
+            .header("Content-Type", "text/event-stream")
+            .header("x-request-id", "req-stream")
+            .body(body.into_bytes())
+    });
+    let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);
+    let p = new_test_provider(&srv.url(), Some(env), None);
+    let mut shown: Vec<String> = Vec::new();
+    let resp = p
+        .chat_stream(&CancelToken::new(), user_request("hi"), &mut |t| {
+            shown.push(t.to_string());
+        })
+        .unwrap();
+    assert_eq!(shown, vec!["Hel", "lo"]);
+    let saw = saw.lock().unwrap().clone();
+    assert_eq!(saw["stream"], true);
+    assert_eq!(saw["stream_options"]["include_usage"], true);
+    assert_eq!(resp.request_id, "req-stream");
+    assert_eq!(resp.finish_reason, "tool_calls");
+    assert_eq!(resp.usage.prompt_tokens, 5);
+    assert_eq!(resp.usage.completion_tokens, 3);
+    assert_eq!(resp.model, "gpt-4o-mini");
+    let msg = resp.message.unwrap();
+    assert_eq!(msg.content, "Hello");
+    assert_eq!(msg.tool_calls.len(), 1);
+    assert_eq!(msg.tool_calls[0].arguments, r#"{"id":1}"#);
+}
+
+#[test]
+fn chat_stream_falls_back_to_whole_replies_when_the_endpoint_refuses_streaming() {
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let bodies_log = bodies.clone();
+    let srv = Server::new(move |req| {
+        let body = req.json().unwrap();
+        let streamed = body["stream"] == true;
+        let with_options = body.get("stream_options").is_some();
+        bodies_log.lock().unwrap().push(body);
+        if with_options {
+            return TestResponse::json(
+                400,
+                &json!({"error": {"code": "invalid_request_error", "message": "Unrecognized request argument supplied: stream_options"}}),
+            );
+        }
+        if streamed {
+            return TestResponse::json(
+                400,
+                &json!({"error": {"code": "invalid_request_error", "message": "streaming is not supported by this model"}}),
+            );
+        }
+        TestResponse::json(200, &ok_chat_body())
+    });
+    let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);
+    let p = new_test_provider(&srv.url(), Some(env), None);
+    let mut shown = String::new();
+    let resp = p
+        .chat_stream(&CancelToken::new(), user_request("hi"), &mut |t| {
+            shown.push_str(t)
+        })
+        .unwrap();
+    assert_eq!(resp.message.unwrap().content, "ok");
+    assert_eq!(shown, "ok", "a whole reply is still shown once");
+    // The second streamed call does not try streaming again.
+    let mut shown = String::new();
+    p.chat_stream(&CancelToken::new(), user_request("again"), &mut |t| {
+        shown.push_str(t)
+    })
+    .unwrap();
+    assert_eq!(shown, "ok");
+    let bodies = bodies.lock().unwrap();
+    let shape: Vec<(bool, bool)> = bodies
+        .iter()
+        .map(|b| (b["stream"] == true, b.get("stream_options").is_some()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![(true, true), (true, false), (false, false), (false, false)],
+        "with usage, then plain, then whole, and whole again: {bodies:?}"
+    );
+}
+
+#[test]
+fn chat_stream_reads_a_plain_json_answer_to_a_streamed_request() {
+    let srv = Server::new(move |_| TestResponse::json(200, &ok_chat_body()));
+    let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);
+    let p = new_test_provider(&srv.url(), Some(env), None);
+    let mut shown = String::new();
+    let resp = p
+        .chat_stream(&CancelToken::new(), user_request("hi"), &mut |t| {
+            shown.push_str(t)
+        })
+        .unwrap();
+    assert_eq!(resp.message.unwrap().content, "ok");
+    assert_eq!(shown, "ok");
+}
+
+#[test]
 fn chat_response_over_body_cap_is_non_retryable() {
     let srv = Server::new(move |_| TestResponse::text(200, "x".repeat(1024 * 1024 + 1)));
     let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);

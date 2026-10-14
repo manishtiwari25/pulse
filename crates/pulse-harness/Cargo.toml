@@ -25,6 +25,7 @@ reqwest.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 libc.workspace = true
+signal-hook.workspace = true
 rand.workspace = true
 hex.workspace = true
 rusqlite.workspace = true

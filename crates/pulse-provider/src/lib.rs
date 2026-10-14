@@ -3,6 +3,7 @@
 pub mod apikey;
 pub mod device;
 pub mod http;
+pub mod sse;
 
 use anyhow::{Result, anyhow};
 use chrono::DateTime;
@@ -369,6 +370,23 @@ pub trait Provider: Send + Sync {
     fn label(&self) -> &str;
     /// Chat makes one call. A missing login is [`NotLoggedInError`]; vendor failures are [`ProviderError`].
     fn chat(&self, cancel: &CancelToken, req: Request) -> Result<Response>;
+    /// Like [`Provider::chat`], handing each piece of the reply's text to
+    /// `on_text` as it arrives; the returned [`Response`] is still whole.
+    /// Providers without streaming answer in one piece at the end.
+    fn chat_stream(
+        &self,
+        cancel: &CancelToken,
+        req: Request,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Response> {
+        let resp = self.chat(cancel, req)?;
+        if let Some(text) = resp.message.as_ref().map(|m| m.content.as_str())
+            && !text.is_empty()
+        {
+            on_text(text);
+        }
+        Ok(resp)
+    }
     /// Models lists what the login may use, chat models first, sorted by ID.
     fn models(&self, cancel: &CancelToken) -> Result<Vec<Model>>;
     /// Status says whether this machine is logged in, without making a model call.

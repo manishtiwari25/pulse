@@ -23,6 +23,7 @@ use pulse_provider::http::{
     DEFAULT_BACKOFFS, configured_base_url, decode_error, error_from_response, is_unauthorized,
     network_error, success_body, trim_base_url, unauthorized_error, with_retries,
 };
+use pulse_provider::sse::{StreamMode, stream_chat_completion, stream_mode_after};
 use pulse_provider::{
     CancelToken, DEVICE_COMPLETE, DeviceFlow, DeviceLogin, Factory, LogFn, Login, LoginExporter,
     Logouter, Message, Model, Options, Provider, ProviderError, Request, Response, Role,
@@ -554,6 +555,7 @@ fn from_options(vendor: &'static Vendor, options: &mut Options) -> Result<OpenAi
         refresh_lock: Mutex::new(()),
         log: options.log.clone(),
         models: Mutex::new(ModelsCache::default()),
+        stream_mode: Mutex::new(StreamMode::default()),
     })
 }
 
@@ -583,6 +585,9 @@ pub struct OpenAiCompatible {
     refresh_lock: Mutex<()>,
     log: Option<LogFn>,
     models: Mutex<ModelsCache>,
+    /// Steps down as the endpoint complains about streamed calls, so a
+    /// refusal is met once per process, not once per call.
+    stream_mode: Mutex<StreamMode>,
 }
 
 #[derive(Default)]
@@ -613,6 +618,53 @@ impl Provider for OpenAiCompatible {
             self.note_refusal(&src, err);
         }
         result
+    }
+
+    fn chat_stream(
+        &self,
+        cancel: &CancelToken,
+        req: Request,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Response> {
+        cancel.check()?;
+        let mut mode = *self.stream_mode.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if mode == StreamMode::Off {
+                return self.chat_stream_whole(cancel, req, on_text);
+            }
+            let src = self.key_for_call()?;
+            let auth = self.auth_of(&src);
+            let mut body = open_ai_request(req.clone());
+            body.stream = true;
+            body.stream_options = (mode == StreamMode::WithUsage).then_some(StreamOptions {
+                include_usage: true,
+            });
+            let body = pulse_store::gojson::to_vec(&body)?;
+            let log = |line: &str| self.log(line);
+            let mut shown = false;
+            let result = with_retries(self.vendor.name, cancel, &DEFAULT_BACKOFFS, &log, || {
+                self.chat_stream_once(cancel, &src.token, auth, body.clone(), &mut |t| {
+                    shown = true;
+                    on_text(t);
+                })
+            });
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(err) => {
+                    if !shown && let Some(next) = stream_mode_after(&err, mode) {
+                        self.log(&format!(
+                            "{} refused a streamed call ({err}); trying {next:?}",
+                            self.vendor.label
+                        ));
+                        mode = next;
+                        *self.stream_mode.lock().unwrap_or_else(|e| e.into_inner()) = next;
+                        continue;
+                    }
+                    self.note_refusal(&src, &err);
+                    return Err(err);
+                }
+            }
+        }
     }
 
     fn models(&self, cancel: &CancelToken) -> Result<Vec<Model>> {
@@ -1050,6 +1102,85 @@ impl OpenAiCompatible {
         Ok(resp)
     }
 
+    /// One streamed call. An endpoint that answers a streamed request with
+    /// a plain JSON body (some local servers) is read whole.
+    fn chat_stream_once(
+        &self,
+        cancel: &CancelToken,
+        token: &str,
+        auth: Auth,
+        body: Vec<u8>,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Response> {
+        let name = self.vendor.name;
+        let mut headers = self.headers(token, auth)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        let res = self
+            .http
+            .post(format!("{}/chat/completions", self.base))
+            .headers(headers)
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .map_err(|e| network_error(name, e))?;
+        let status = res.status();
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(unauthorized_error(name, status.as_u16()).into());
+        }
+        if !status.is_success() {
+            return Err(error_from_response(name, res, false, self.retry_after_cap));
+        }
+        let request_id = res
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let streamed = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("event-stream"));
+        let mut resp = if streamed {
+            stream_chat_completion(name, cancel, res, self.max_body_bytes, on_text)?
+        } else {
+            let data = success_body(name, res, self.max_body_bytes)?;
+            let out: ChatResponse =
+                serde_json::from_slice(&data).map_err(|e| decode_error(name, e))?;
+            let resp = out.provider_response();
+            if let Some(text) = resp.message.as_ref().map(|m| m.content.as_str())
+                && !text.is_empty()
+            {
+                on_text(text);
+            }
+            let mut resp = resp;
+            if resp.request_id.is_empty() {
+                resp.request_id = out.id;
+            }
+            resp
+        };
+        if !request_id.is_empty() {
+            resp.request_id = request_id;
+        }
+        Ok(resp)
+    }
+
+    /// A whole call shown as one piece of text at the end.
+    fn chat_stream_whole(
+        &self,
+        cancel: &CancelToken,
+        req: Request,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Response> {
+        let resp = self.chat(cancel, req)?;
+        if let Some(text) = resp.message.as_ref().map(|m| m.content.as_str())
+            && !text.is_empty()
+        {
+            on_text(text);
+        }
+        Ok(resp)
+    }
+
     /// The headers of every call: the key as `auth` says (none when the
     /// token is empty), JSON accept, and the vendor's extra headers.
     fn headers(&self, token: &str, auth: Auth) -> Result<HeaderMap> {
@@ -1223,6 +1354,15 @@ struct OpenAIChatRequest {
     reasoning_effort: String,
     #[serde(rename = "stream")]
     stream: bool,
+    /// Only on streamed calls: asks for the usage chunk at the end.
+    #[serde(rename = "stream_options", skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    #[serde(rename = "include_usage")]
+    include_usage: bool,
 }
 
 fn open_ai_request(req: Request) -> OpenAIChatRequest {
@@ -1235,6 +1375,7 @@ fn open_ai_request(req: Request) -> OpenAIChatRequest {
         temperature: req.temperature,
         reasoning_effort: req.reasoning,
         stream: false,
+        stream_options: None,
     };
     for m in req.messages {
         let content = if m.content.is_empty() {

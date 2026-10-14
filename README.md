@@ -1709,11 +1709,62 @@ or polling, and keeps following while you are at the bottom. Job rows on a
 task carry `harness_session`, so a task links straight to the run that
 worked it.
 
+**Chatting with the harness.** `pulse harness chat` is the same agent as a
+conversation: it runs in your terminal, in the directory you point it at
+(`-C`), with the same tools, instruction files, skills, hooks, MCP servers
+and deny rules as a job - but it speaks to a person. Each line you type is a
+**turn**: the model reads, searches, runs commands and edits until it has an
+answer, which it prints; then it waits for your next line, keeping the whole
+conversation in context (compaction and context discipline apply as in a
+run). The step budget and the wall-clock cap (`--max-steps`, `--minutes`)
+are **per turn**; a turn that hits one stops with a note and the session
+goes on - say `continue`. `--max-cost` is for the whole session. Replies
+**stream** as they are written from the providers that stream (Copilot and
+the OpenAI-compatible ones: OpenAI, Azure, OpenRouter, Groq, Mistral,
+DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models, Ollama, LM
+Studio, vLLM); the others print each reply when it is whole. Streaming
+needs `stream_options`/`stream` in the API; a provider that rejects either
+is asked again without it, then without streaming, and stays there for the
+session.
+
+Calls that **change things are shown first**: an `edit` or `write` (with the
+blocks or the file's head), a command that would change the clone or that
+crosses the job policy (`git push`, `gh`, …), or an MCP tool. Answer `y`,
+`n`, `a` (always - no more asking this session) or type a reason, which the
+model hears (`bash: declined by the user: not that file`). `--yes` approves
+everything from the start and `/approve` toggles it. Reads, searches, the
+`plan`, `skill`, `fetch` and `subagent` tools and commands that only look
+run without asking. The model may also **ask you** through a `question`
+tool (a question and optional choices; a number picks one). When the input
+is a pipe rather than a terminal - `echo 'what does this build?' | pulse
+harness chat -C .` - every line is a turn, changes are declined unless
+`--yes`, questions go unanswered (the model is told to decide), and stdout
+carries only the model's replies, so the output is scriptable; `--json`
+prints one JSON object per turn and one for the session.
+
+Inside the session: `/help`, `/exit` (also Ctrl-D, or Ctrl-C twice while
+idle; Ctrl-C during a turn stops that turn), `/model NAME` switches the
+model for the next turns, `/compact` summarises the older conversation now,
+`/usage` shows calls, tokens, cost and time, `/session` the session id. A
+line ending in `\` continues on the next. `-p TEXT` sends a first message
+before reading the rest. Every session is a store session like a run
+(`pulse harness sessions`, the Harness page, `pulse harness cancel ID`
+stops its current turn) with status `ended` when you leave, and its
+trajectory under `~/.pulse/harness/ID.json` is rewritten after every turn
+with the full conversation, so a session survives a closed terminal: `pulse
+harness chat --resume ID` carries the conversation into a new session (the
+model is told time has passed and files may have changed) and `--continue`
+picks the newest session that ran in this directory. Sessions use the
+built-in chat prompt, not `harness.system_prompt`; `--prompt-file PATH`
+overrides it. Line editing is the terminal's (no history yet; `rlwrap pulse
+harness chat` adds it).
+
 ```bash
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all), replies stream; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message, /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

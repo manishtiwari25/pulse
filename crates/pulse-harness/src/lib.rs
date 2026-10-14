@@ -1,5 +1,6 @@
 //! PULSE: the built-in agent harness: bash-tool loop, limits, deny rules, trajectories, sessions.
 
+pub mod chat;
 pub mod commands;
 pub mod compact;
 pub mod fetch;

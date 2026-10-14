@@ -2,6 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
+use pulse_provider::sse::{StreamMode, stream_chat_completion, stream_mode_after};
 use pulse_provider::{
     BodyReadError, CancelToken, DEVICE_COMPLETE, DEVICE_DENIED, DEVICE_EXPIRED, DEVICE_PENDING,
     DEVICE_SLOW_DOWN, DeviceFlow, DeviceLogin, ERROR_BODY_LIMIT_BYTES, Login, LoginExporter,
@@ -58,6 +59,9 @@ const HEADER_X_REQUEST_ID: &str = "X-Request-Id";
 const STATUS_CACHE_TTL: ChronoDuration = ChronoDuration::minutes(10);
 const MODELS_CACHE_TTL: ChronoDuration = ChronoDuration::minutes(10);
 const TOKEN_SKEW: ChronoDuration = ChronoDuration::seconds(60);
+
+/// How a call streams: the mode in force and where the text goes.
+type Streaming<'a> = (StreamMode, &'a mut dyn FnMut(&str));
 
 static GITHUB_BASE: LazyLock<RwLock<String>> =
     LazyLock::new(|| RwLock::new("https://api.github.com".to_string()));
@@ -121,6 +125,8 @@ struct Inner {
     denied_token: String,
     denied_msg: String,
     denied_at: Option<DateTime<Utc>>,
+    /// Steps down as the API complains about streamed calls.
+    stream_mode: StreamMode,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -407,13 +413,27 @@ impl Copilot {
         ))
     }
 
-    fn chat_impl(&self, cancel: &CancelToken, req: Request) -> Result<Response> {
+    /// One chat call with the retry loop; `stream` carries the mode and
+    /// the text sink of a streamed call.
+    fn chat_impl(
+        &self,
+        cancel: &CancelToken,
+        req: &Request,
+        mut stream: Option<Streaming<'_>>,
+    ) -> Result<Response> {
         cancel.check()?;
         let src = self.token_source()?;
         if src.token.is_empty() {
             return Err(err_not_logged_in().into());
         }
-        let body = pulse_store::gojson::to_vec(&open_ai_request(&req))?;
+        let mut wire = open_ai_request(req);
+        if let Some((mode, _)) = &stream {
+            wire.stream = true;
+            wire.stream_options = (*mode == StreamMode::WithUsage).then_some(StreamOptions {
+                include_usage: true,
+            });
+        }
+        let body = pulse_store::gojson::to_vec(&wire)?;
         let mut refreshed_for_401 = false;
         let mut attempt = 0usize;
         loop {
@@ -443,7 +463,11 @@ impl Copilot {
                     continue;
                 }
             };
-            match self.chat_once(cancel, &base, &token, &body, &req) {
+            let on_text: Option<&mut dyn FnMut(&str)> = match stream.as_mut() {
+                Some((_, f)) => Some(*f),
+                None => None,
+            };
+            match self.chat_once(cancel, &base, &token, &body, req, on_text) {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     if provider_error(&err).is_some_and(|perr| perr.status == 401)
@@ -523,11 +547,15 @@ impl Copilot {
         token: &str,
         body: &[u8],
         req: &Request,
+        on_text: Option<&mut dyn FnMut(&str)>,
     ) -> Result<Response> {
         cancel.check()?;
         let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let mut headers = self.copilot_headers(token);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if on_text.is_some() {
+            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        }
         headers.insert(
             HeaderName::from_bytes(HEADER_COPILOT_INTEGRATION_ID.as_bytes())
                 .expect("copilot integration header name"),
@@ -555,6 +583,26 @@ impl Copilot {
             .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
         if !res.status().is_success() {
             return Err(self.http_provider_error(res, false).into());
+        }
+        let streamed = res
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("event-stream"));
+        if let Some(on_text) = on_text {
+            if streamed {
+                return stream_chat_completion(NAME, cancel, res, self.max_body_bytes, on_text);
+            }
+            let data = self.read_success_body(res)?;
+            let out: ChatResponse = serde_json::from_slice(&data)
+                .map_err(|err| provider_error_new(0, "decode", &err.to_string(), false))?;
+            let resp = out.provider_response();
+            if let Some(text) = resp.message.as_ref().map(|m| m.content.as_str())
+                && !text.is_empty()
+            {
+                on_text(text);
+            }
+            return Ok(resp);
         }
         let data = self.read_success_body(res)?;
         let out: ChatResponse = serde_json::from_slice(&data)
@@ -925,7 +973,57 @@ impl Provider for Copilot {
     }
 
     fn chat(&self, cancel: &CancelToken, req: Request) -> Result<Response> {
-        self.chat_impl(cancel, req)
+        self.chat_impl(cancel, &req, None)
+    }
+
+    fn chat_stream(
+        &self,
+        cancel: &CancelToken,
+        req: Request,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<Response> {
+        let mut mode = self
+            .inner
+            .lock()
+            .expect("copilot provider poisoned")
+            .stream_mode;
+        loop {
+            if mode == StreamMode::Off {
+                let resp = self.chat_impl(cancel, &req, None)?;
+                if let Some(text) = resp.message.as_ref().map(|m| m.content.as_str())
+                    && !text.is_empty()
+                {
+                    on_text(text);
+                }
+                return Ok(resp);
+            }
+            let mut shown = false;
+            let result = self.chat_impl(
+                cancel,
+                &req,
+                Some((mode, &mut |t: &str| {
+                    shown = true;
+                    on_text(t);
+                })),
+            );
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(err) => {
+                    if !shown && let Some(next) = stream_mode_after(&err, mode) {
+                        self.log_redacted(&format!(
+                            "copilot refused a streamed call ({err}); trying {next:?}"
+                        ));
+                        mode = next;
+                        self.inner
+                            .lock()
+                            .expect("copilot provider poisoned")
+                            .stream_mode = next;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     fn models(&self, cancel: &CancelToken) -> Result<Vec<Model>> {
@@ -1170,6 +1268,15 @@ struct OpenAIChatRequest {
     reasoning_effort: String,
     #[serde(rename = "stream")]
     stream: bool,
+    /// Only on streamed calls: asks for the usage chunk at the end.
+    #[serde(rename = "stream_options", skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    #[serde(rename = "include_usage")]
+    include_usage: bool,
 }
 
 fn is_zero_i32(v: &i32) -> bool {
@@ -1186,6 +1293,7 @@ fn open_ai_request(req: &Request) -> OpenAIChatRequest {
         temperature: req.temperature,
         reasoning_effort: req.reasoning.clone(),
         stream: false,
+        stream_options: None,
     };
     for m in &req.messages {
         let mut om = OpenAIMessage {
@@ -1965,6 +2073,106 @@ mod tests {
         assert_eq!(*saw.lock().unwrap(), "user");
         assert_eq!(resp.message.unwrap().content, "plain");
         assert_eq!(resp.finish_reason, "stop");
+        drop(srv);
+    }
+
+    #[test]
+    fn chat_stream_streams_text_then_steps_down_when_the_api_complains() {
+        let _serial = test_serial();
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let bodies2 = bodies.clone();
+        let srv = copilot_test_server(move |req| {
+            let body = req.json().unwrap();
+            let with_options = body.get("stream_options").is_some();
+            let streamed = body["stream"] == true;
+            let n = {
+                let mut b = bodies2.lock().unwrap();
+                b.push(body);
+                b.len()
+            };
+            match (n, with_options, streamed) {
+                // First call: streams with usage, as asked.
+                (1, true, true) => {
+                    assert_eq!(req.header("Accept"), Some("text/event-stream"));
+                    let chunks = [
+                        json!({"id":"c1","model":"gpt-4.1","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi "}}]}),
+                        json!({"choices":[{"index":0,"delta":{"content":"there"},"finish_reason":"stop"}]}),
+                        json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}),
+                    ];
+                    let mut text = String::new();
+                    for c in chunks {
+                        text.push_str(&format!("data: {c}\n\n"));
+                    }
+                    text.push_str("data: [DONE]\n\n");
+                    HttpResponse::new(200)
+                        .header("Content-Type", "text/event-stream")
+                        .body(text.into_bytes())
+                }
+                // Later: the API has stopped liking stream_options.
+                (_, true, true) => HttpResponse::json(
+                    400,
+                    &json!({"error": {"message": "unknown field stream_options", "code": "invalid_request"}}),
+                ),
+                (_, false, true) => {
+                    let text = format!(
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        json!({"id":"c2","model":"gpt-4.1","choices":[{"index":0,"delta":{"content":"plain stream"},"finish_reason":"stop"}]})
+                    );
+                    HttpResponse::new(200)
+                        .header("Content-Type", "text/event-stream")
+                        .body(text.into_bytes())
+                }
+                _ => HttpResponse::json(200, &chat_content("c3", "gpt-4.1", "whole")),
+            }
+        });
+        let env = BTreeMap::from([(
+            "COPILOT_GITHUB_TOKEN".to_string(),
+            "gho_abcdefghijklmnopqrstuvwxyz".to_string(),
+        )]);
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env),
+        );
+        let req = Request {
+            model: "gpt-4.1".to_string(),
+            messages: vec![msg(Role::User, "hello")],
+            ..Request::default()
+        };
+        let mut shown: Vec<String> = Vec::new();
+        let resp = p
+            .chat_stream(&cancel(), req.clone(), &mut |t| shown.push(t.to_string()))
+            .unwrap();
+        assert_eq!(shown, vec!["Hi ", "there"]);
+        assert_eq!(resp.message.unwrap().content, "Hi there");
+        assert_eq!(resp.usage.completion_tokens, 2);
+        assert_eq!(resp.finish_reason, "stop");
+
+        let mut shown = String::new();
+        let resp = p
+            .chat_stream(&cancel(), req.clone(), &mut |t| shown.push_str(t))
+            .unwrap();
+        assert_eq!(shown, "plain stream");
+        assert_eq!(resp.message.unwrap().content, "plain stream");
+        assert_eq!(
+            p.inner.lock().unwrap().stream_mode,
+            StreamMode::Plain,
+            "stream_options was dropped, streaming kept"
+        );
+        let shape: Vec<(bool, bool)> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| (b["stream"] == true, b.get("stream_options").is_some()))
+            .collect();
+        assert_eq!(shape, vec![(true, true), (true, true), (true, false)]);
+        // A plain chat call never streams.
+        let resp = p.chat(&cancel(), req).unwrap();
+        assert_eq!(resp.message.unwrap().content, "whole");
+        assert_eq!(bodies.lock().unwrap().last().unwrap()["stream"], false);
         drop(srv);
     }
 
