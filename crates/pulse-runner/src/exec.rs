@@ -1033,6 +1033,15 @@ pub(crate) fn worker_command(
     if !fetch_allow.trim().is_empty() {
         cmd.extend(["--fetch-allow".into(), fetch_allow]);
     }
+    for (setting, flag) in [
+        ("harness.allow_tools", "--allow-tool"),
+        ("harness.deny_tools", "--deny-tool"),
+    ] {
+        let rules = s.setting(setting, "");
+        if !rules.trim().is_empty() {
+            cmd.extend([flag.into(), rules.replace('\n', ",")]);
+        }
+    }
     let compact_at = s.setting("harness.compact_at", "70");
     if compact_at != "70" {
         cmd.extend(["--compact-at".into(), compact_at]);
@@ -1739,6 +1748,8 @@ mod tests {
             "--fetch-allow",
             "--compact-at",
             "--reasoning",
+            "--allow-tool",
+            "--deny-tool",
         ] {
             assert!(!cmd.contains(&flag.to_string()), "{cmd:?}");
         }
@@ -1748,7 +1759,13 @@ mod tests {
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
         set_setting(&s, "harness.reasoning", "high");
+        set_setting(&s, "harness.deny_tools", "bash(rm *)\nwrite(*.lock)");
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
+        assert!(
+            cmd.windows(2)
+                .any(|w| w == ["--deny-tool", "bash(rm *),write(*.lock)"]),
+            "{cmd:?}"
+        );
         assert!(
             cmd.windows(2).any(|w| w == ["--reasoning", "high"]),
             "{cmd:?}"
@@ -1771,6 +1788,7 @@ mod tests {
         set_setting(&s, "harness.fetch_allow", "");
         set_setting(&s, "harness.compact_at", "70");
         set_setting(&s, "harness.reasoning", "default");
+        set_setting(&s, "harness.deny_tools", "");
         // Back at the defaults a remote hand gets the same argv behind `pulse`.
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
         let mut remote = want.clone();

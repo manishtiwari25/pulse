@@ -8,6 +8,7 @@ pub mod harness;
 pub mod history;
 pub mod hooks;
 pub mod localenv;
+pub mod permissions;
 pub mod readonly;
 pub mod skills;
 #[cfg(test)]

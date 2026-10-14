@@ -2,11 +2,14 @@ use crate::compact::{
     COMPACT_KEEP_RECENT, COMPACT_MIN_GAP_CALLS, apply_compaction, compaction_cut,
     render_transcript, should_compact, summary_request,
 };
-use crate::fetch::{FETCH_BYTE_LIMIT, FETCH_TIMEOUT, FETCH_TOOL, FetchPolicy, fetch, fetch_tool};
+use crate::fetch::{
+    FETCH_BYTE_LIMIT, FETCH_TIMEOUT, FETCH_TOOL, FetchPolicy, fetch, fetch_tool, url_host,
+};
 use crate::hooks::{
     HOOK_BLOCK_EXIT, HOOK_OUTPUT_LIMIT, Hook, HookEvent, HookSet, cut_bytes, hook_command,
     run_payload, tool_payload,
 };
+use crate::permissions::{self, Rule, Rules};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
 use pulse_provider::{CancelToken, Message, Provider, Request, Role, Tool, ToolCall, Usage};
@@ -529,6 +532,12 @@ pub struct Agent {
     hooks: HookSet,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
+    /// The permission rules in force: what runs without asking, what is
+    /// refused outright.
+    permissions: Rules,
+    /// What the call being run is about - the command, the paths, the
+    /// host, the arguments - for the allow rules at approval time.
+    current_subjects: Vec<String>,
     /// The person at the keyboard of an interactive session: approves the
     /// calls that change things and answers the `question` tool. None in
     /// a job.
@@ -610,11 +619,17 @@ pub struct ApprovalRequest {
     /// Why it needs a look: what the command changes, or the policy it
     /// crosses.
     pub reason: String,
+    /// The permission rule `Approval::Always` would add, so the prompt can
+    /// show it: `bash(git commit *)`, `edit`, `fetch(docs.rs)`.
+    pub always: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Approval {
     Allow,
+    /// Allow this call and every later call matching the request's
+    /// `always` pattern for the rest of the session.
+    Always,
     Deny(String),
 }
 
@@ -899,6 +914,8 @@ pub fn new_shared(
         skills: Vec::new(),
         hooks: HookSet::default(),
         fetch: FetchPolicy::default(),
+        permissions: Rules::new(),
+        current_subjects: Vec::new(),
         ui: None,
         stream: None,
         state: LoopState::default(),
@@ -937,6 +954,28 @@ impl Agent {
     /// Offers the `fetch` tool for the hosts of `policy`; call before `run`.
     pub fn set_fetch_policy(&mut self, policy: FetchPolicy) {
         self.fetch = policy;
+    }
+
+    /// Sets the permission rules from the flags and settings; call before
+    /// `run`. A tool every call of which is denied is not offered at all.
+    pub fn set_permissions(&mut self, rules: Rules) {
+        self.permissions = rules;
+    }
+
+    /// The permission rules in force.
+    pub fn permissions(&self) -> &Rules {
+        &self.permissions
+    }
+
+    /// Adds a rule for the rest of the session (`/permissions allow` in a
+    /// session, `a` at an approval).
+    pub fn add_permission(&mut self, rule: Rule) {
+        self.permissions.push(rule);
+    }
+
+    /// Drops the rules added during the session; how many went.
+    pub fn clear_session_permissions(&mut self) -> usize {
+        self.permissions.clear_session()
     }
 
     /// Puts a person at the keyboard: the calls that change things are
@@ -1065,6 +1104,11 @@ impl Agent {
             cfg.deny.len(),
             if self.offers_subagents() { "on" } else { "off" }
         ));
+        out.push(if self.permissions.is_empty() {
+            "permissions: none (changes are shown before they run)".to_string()
+        } else {
+            format!("permissions: {}", self.permissions.describe().join("; "))
+        });
         out
     }
 
@@ -1092,6 +1136,7 @@ impl Agent {
             out.push(question_tool());
         }
         out.extend(self.mcp.advertised());
+        out.retain(|t| !self.permissions.withdraws(&t.name));
         out
     }
 
@@ -1119,6 +1164,7 @@ impl Agent {
         } else {
             out.extend(self.mcp.table.keys().cloned());
         }
+        out.retain(|n| !self.permissions.withdraws(n));
         out
     }
 
@@ -1661,7 +1707,7 @@ impl Agent {
             };
             let args = args.to_string();
             let (obs_text, submit, sub) =
-                if let Some(blocked) = self.pre_tool_hooks(cancel, tool_name, &args) {
+                if let Some(blocked) = self.gates(cancel, tool_name, &args) {
                     (blocked, false, String::new())
                 } else {
                     let (text, submit, sub) = match &actions[0] {
@@ -1762,7 +1808,7 @@ impl Agent {
             if batch[i].is_none() {
                 continue;
             }
-            if let Some(text) = self.pre_tool_hooks(cancel, &call.name, &call.arguments) {
+            if let Some(text) = self.gates(cancel, &call.name, &call.arguments) {
                 blocked[i] = Some(text);
                 batch[i] = None;
                 continue;
@@ -1894,7 +1940,7 @@ impl Agent {
     /// Runs one typed tool call, with the owner's hooks around it, and
     /// returns what the model gets back.
     fn dispatch_tool_call(&mut self, cancel: &CancelToken, call: &ToolCall) -> ToolOutcome {
-        if let Some(blocked) = self.pre_tool_hooks(cancel, &call.name, &call.arguments) {
+        if let Some(blocked) = self.gates(cancel, &call.name, &call.arguments) {
             return ToolOutcome::clean(blocked);
         }
         let mut outcome = self.dispatch_tool_call_inner(cancel, call);
@@ -2034,16 +2080,41 @@ impl Agent {
         reason: &str,
     ) -> Option<Observation> {
         let ui = self.ui.clone()?;
+        let subjects = if self.current_subjects.is_empty() {
+            vec![summary.to_string()]
+        } else {
+            self.current_subjects.clone()
+        };
+        if self.permissions.allows_all(tool, &subjects) {
+            return None;
+        }
+        let always = permissions::always_pattern(tool, &subjects[0]);
         let req = ApprovalRequest {
             tool: tool.to_string(),
             summary: summary.to_string(),
             detail: detail.to_string(),
             reason: reason.to_string(),
+            always: always.clone(),
         };
         let start = Instant::now();
         let decision = ui.lock().unwrap_or_else(|e| e.into_inner()).approve(&req);
         match decision {
             Approval::Allow => None,
+            Approval::Always => {
+                if let Ok(rule) = Rule::parse(true, &always, permissions::Source::Session) {
+                    self.emit(Step {
+                        kind: StepKind::Note,
+                        content: format!(
+                            "permission: allow {} for the rest of the session",
+                            rule.pattern()
+                        ),
+                        command: summary.to_string(),
+                        ..Step::default()
+                    });
+                    self.permissions.push(rule);
+                }
+                None
+            }
             Approval::Deny(why) => {
                 let why = why.trim();
                 let output = if why.is_empty() {
@@ -2319,6 +2390,36 @@ impl Agent {
     /// Runs the `pre_tool` hooks for a call. Some(text) is the observation
     /// of a call a hook blocked (exit [`HOOK_BLOCK_EXIT`]); the call does
     /// not run. Any other failure is noted and the call goes ahead.
+    /// What stands between the model and a tool: the permission rules,
+    /// then the owner's pre-tool hooks. Some(text) is the refusal the model
+    /// gets; the call does not run. Remembers what the call is about for
+    /// the allow rules at approval time.
+    fn gates(&mut self, cancel: &CancelToken, tool: &str, arguments: &str) -> Option<String> {
+        self.current_subjects = subjects_of(tool, arguments, &self.cfg.cwd);
+        if let Some(rule) = self
+            .permissions
+            .denies_any(tool, &self.current_subjects)
+            .map(Rule::pattern)
+        {
+            let obs = Observation {
+                output: format!(
+                    "{tool}: refused by permission rule `deny {rule}`. The user forbids this for the session; do not do the same thing another way - ask them or move on."
+                ),
+                exit_code: 126,
+                ..Observation::default()
+            };
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: tool.to_string(),
+                ..Step::default()
+            });
+            self.emit_observation(&format!("{tool} tool"), &obs);
+            return Some(format_observation(&obs, self.cfg.output_limit));
+        }
+        self.pre_tool_hooks(cancel, tool, arguments)
+    }
+
     fn pre_tool_hooks(
         &mut self,
         cancel: &CancelToken,
@@ -3986,6 +4087,23 @@ impl NativeCall {
         matches!(self, Self::Edit { .. } | Self::Write { .. })
     }
 
+    /// What a permission rule's filter is matched against: the paths read
+    /// or changed, the directory searched (`.` for the whole checkout).
+    fn subjects(&self) -> Vec<String> {
+        match self {
+            Self::Read(targets) => targets.iter().map(|t| t.path.clone()).collect(),
+            Self::Grep { scope, .. } | Self::Glob { scope, .. } => {
+                vec![if scope.trim().is_empty() {
+                    ".".to_string()
+                } else {
+                    scope.trim().to_string()
+                }]
+            }
+            Self::Edit { path, .. } | Self::Write { path, .. } => vec![path.clone()],
+            Self::Plan(_) => Vec::new(),
+        }
+    }
+
     /// Whether the call can run beside the other calls of its reply: it
     /// only reads, and reads nothing another call of the reply writes.
     fn parallel_safe(&self) -> bool {
@@ -4486,6 +4604,72 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(canon);
         }
     }
+}
+
+/// What a permission rule's filter is matched against for a call of
+/// `tool` with these arguments: the command for `bash`, the paths for the
+/// file tools (relative to `cwd`), the host for `fetch`, the arguments for
+/// an MCP tool, the name for `skill`; nothing for the rest.
+fn subjects_of(tool: &str, arguments: &str, cwd: &str) -> Vec<String> {
+    let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    let str_of = |key: &str| -> String {
+        args.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    match tool {
+        "bash" => vec![str_of("command")],
+        name if NATIVE_TOOL_NAMES.contains(&name) => {
+            let spec = str_of("spec");
+            let call = if spec.is_empty() {
+                NativeCall::from_args(name, arguments)
+            } else {
+                let action = match name {
+                    "read" => NativeAction::Read,
+                    "grep" => NativeAction::Grep,
+                    _ => NativeAction::Edit,
+                };
+                NativeCall::from_fenced(action, &spec)
+            };
+            call.map(|c| {
+                c.subjects()
+                    .into_iter()
+                    .map(|p| relative_subject(&p, cwd))
+                    .collect()
+            })
+            .unwrap_or_default()
+        }
+        FETCH_TOOL => vec![url_host(&str_of("url"))],
+        SKILL_TOOL => vec![str_of("name")],
+        name if name.starts_with(MCP_TOOL_PREFIX) => {
+            vec![if args.is_object() {
+                compact_json(&args, 2000)
+            } else {
+                String::new()
+            }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A path as a rule sees it: relative to the working directory when it
+/// lies inside it, as given otherwise.
+fn relative_subject(path: &str, cwd: &str) -> String {
+    let p = Path::new(path);
+    if p.is_absolute()
+        && !cwd.is_empty()
+        && let Ok(rel) = p.strip_prefix(cwd)
+    {
+        let rel = rel.to_string_lossy();
+        return if rel.is_empty() {
+            ".".to_string()
+        } else {
+            rel.into_owned()
+        };
+    }
+    path.to_string()
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {
@@ -8334,6 +8518,8 @@ mod tests {
     #[derive(Default)]
     struct ScriptUi {
         approvals: Vec<bool>,
+        /// Decisions taken before `approvals`, for `Approval::Always`.
+        decisions: Vec<Approval>,
         answers: Vec<Option<String>>,
         seen: Vec<ApprovalRequest>,
         asked: Vec<(String, Vec<String>)>,
@@ -8343,6 +8529,9 @@ mod tests {
         fn approve(&mut self, req: &ApprovalRequest) -> Approval {
             let mut ui = self.lock().unwrap();
             ui.seen.push(req.clone());
+            if !ui.decisions.is_empty() {
+                return ui.decisions.remove(0);
+            }
             if ui.approvals.is_empty() || ui.approvals.remove(0) {
                 Approval::Allow
             } else {
@@ -8605,6 +8794,172 @@ mod tests {
         h.turn(&cancel, "push it").unwrap();
         let reply = tool_replies(&h).remove(0).1;
         assert!(reply.contains("refused by policy"), "{reply}");
+    }
+
+    fn rules(specs: &[(bool, &str)]) -> Rules {
+        let mut out = Rules::new();
+        for (allow, spec) in specs {
+            out.push(Rule::parse(*allow, spec, permissions::Source::Flag).unwrap());
+        }
+        out
+    }
+
+    #[test]
+    fn permission_deny_rules_refuse_calls_and_withdraw_tools() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(dir.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::write(dir.path().join("a.txt"), "old line\n").unwrap();
+        let p = Arc::new(FakeProvider::new(vec![
+            // A typed call, then the same command as a fenced block.
+            resp(tool("rm -rf a.txt")),
+            resp(msg("```bash\nrm -rf a.txt\n```")),
+            // A write though the tool is withdrawn; a batch of reads with
+            // one denied path.
+            resp(calls(&[
+                ("w1", "write", json!({"path":"b.txt","content":"x\n"})),
+                ("r1", "read", json!({"path":".env"})),
+                ("r2", "read", json!({"path":"./a.txt"})),
+            ])),
+            resp(tool("echo fine")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let sink_steps = steps.clone();
+        let mut h = local_agent(dir.path(), p.clone());
+        h.sinks.push(Box::new(SinkFunc(move |s| {
+            sink_steps.lock().unwrap().push(s);
+        })));
+        h.set_permissions(rules(&[
+            (false, "bash(rm *)"),
+            (false, "write"),
+            (false, "read(.env*)"),
+            (true, "bash(rm -rf a.txt)"),
+        ]));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert!(dir.path().join("a.txt").exists(), "the rm never ran");
+        assert!(!dir.path().join("b.txt").exists(), "the write never ran");
+        let reqs = p.requests();
+        assert!(
+            !reqs[0].tools.iter().any(|t| t.name == "write"),
+            "a tool denied whole is not offered: {:?}",
+            reqs[0].tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+        assert!(reqs[0].tools.iter().any(|t| t.name == "edit"));
+        let all = tool_replies(&h);
+        assert!(
+            all[0]
+                .1
+                .contains("refused by permission rule `deny bash(rm *)`"),
+            "deny beats allow: {}",
+            all[0].1
+        );
+        assert!(all.last().unwrap().1.contains("fine"), "{all:?}");
+        let replies: BTreeMap<String, String> = all.into_iter().collect();
+        assert!(
+            replies["w1"].contains("refused by permission rule `deny write`"),
+            "{}",
+            replies["w1"]
+        );
+        assert!(
+            replies["r1"].contains("refused by permission rule `deny read(.env*)`"),
+            "{}",
+            replies["r1"]
+        );
+        assert!(replies["r2"].contains("old line"), "{}", replies["r2"]);
+        let fenced = h
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(|m| m.content.clone())
+            .find(|c| c.contains("refused by permission rule"))
+            .unwrap_or_default();
+        assert!(
+            fenced.contains("deny bash(rm *)"),
+            "fenced blocks pass the same gate: {fenced}"
+        );
+        let errors = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == StepKind::Error && s.content.contains("permission rule"))
+            .count();
+        assert_eq!(errors, 4, "{:?}", steps.lock().unwrap());
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l.contains("permissions: deny bash(rm *) (flag); deny write (flag)")),
+            "{:?}",
+            h.environment()
+        );
+    }
+
+    #[test]
+    fn permission_allow_rules_skip_approval_and_always_adds_a_session_rule() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("git add a.txt")),
+            resp(tool("git commit -m one")),
+            resp(tool("git commit --amend --no-edit")),
+            resp(calls(&[(
+                "e1",
+                "edit",
+                json!({"path":"a.txt","search":"old line","replace":"new line"}),
+            )])),
+            resp(calls(&[(
+                "e2",
+                "edit",
+                json!({"path":"a.txt","search":"new line","replace":"newer line"}),
+            )])),
+            resp(msg("done")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi {
+            decisions: vec![Approval::Always, Approval::Always],
+            ..ScriptUi::default()
+        }));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), Some(ui.clone()), steps.clone());
+        h.set_permissions(rules(&[(true, "bash(git add *)")]));
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "commit a.txt").unwrap();
+        assert!(matches!(&turn, Turn::Reply(t) if t == "done"), "{turn:?}");
+        let seen = ui.lock().unwrap().seen.clone();
+        let summaries: Vec<&str> = seen.iter().map(|r| r.summary.as_str()).collect();
+        assert_eq!(
+            summaries,
+            vec!["git commit -m one", "a.txt"],
+            "the allowed add and the calls covered by `always` ask nobody"
+        );
+        assert_eq!(seen[0].always, "bash(git commit *)");
+        assert_eq!(seen[1].always, "edit");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "newer line\n"
+        );
+        let described = h.permissions().describe();
+        assert_eq!(
+            described,
+            vec![
+                "allow bash(git add *) (flag)".to_string(),
+                "allow bash(git commit *) (session)".to_string(),
+                "allow edit (session)".to_string(),
+            ]
+        );
+        assert_eq!(
+            steps
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| s.kind == StepKind::Note && s.content.starts_with("permission: allow"))
+                .count(),
+            2
+        );
+        assert_eq!(h.clear_session_permissions(), 2);
+        assert_eq!(h.permissions().len(), 1);
     }
 
     #[test]

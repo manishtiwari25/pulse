@@ -1230,6 +1230,8 @@ record, read with `pulse record show WF-evolve`.
 | `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
 | `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
+| `harness.deny_tools` | empty | Permission rules every run refuses outright, comma-separated: `bash(rm *)`, `read(.env*)`, `write(*.lock)`, `subagent`; a tool denied whole is not offered. Jobs get it as `--deny-tool`. |
+| `harness.allow_tools` | empty | Permission rules `pulse harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
@@ -1730,8 +1732,11 @@ session.
 Calls that **change things are shown first**: an `edit` or `write` (with the
 blocks or the file's head), a command that would change the clone or that
 crosses the job policy (`git push`, `gh`, …), or an MCP tool. Answer `y`,
-`n`, `a` (always - no more asking this session) or type a reason, which the
-model hears (`bash: declined by the user: not that file`). `--yes` approves
+`n`, `a` (always: the prompt names the rule it adds - `bash(git commit *)`
+for a command, `edit` or `write` for the file tools, `fetch(host)`, the
+tool's name for MCP - and no call it covers asks again this session),
+`all` (approve everything from now on) or type a reason, which the model
+hears (`bash: declined by the user: not that file`). `--yes` approves
 everything from the start and `/approve` toggles it. Reads, searches, the
 `plan`, `skill`, `fetch` and `subagent` tools and commands that only look
 run without asking. The model may also **ask you** through a `question`
@@ -1763,11 +1768,14 @@ are withdrawn and commands that would change the clone are refused, so the
 model can explore and propose before `/plan off` lets it act; `/model
 NAME` switches the model for the next turns; `/compact` summarises the
 older conversation now; `/usage` shows calls, tokens, cost and time;
-`/approve` toggles approving everything; `/diff` shows `git status` and
+`/approve` toggles approving everything; `/permissions` lists the
+permission rules in force, `/permissions allow PATTERN` or `/permissions
+deny PATTERN` adds one for the session and `/permissions clear` drops the
+session's (see below); `/diff` shows `git status` and
 the diff stat of the clone; `/export [PATH]` writes the conversation as
 Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
 has in hand - model, context window, budgets, mode, tools, instruction
-files, skills, hooks, MCP servers, deny rules; `/init` asks the model to
+files, skills, hooks, MCP servers, deny rules, permission rules; `/init` asks the model to
 write or improve the project's `AGENTS.md` from what it finds; `/delegate
 [TITLE]` has the model turn the conversation so far into a brief and puts
 it on the board as a task for the fleet (the directory must be a
@@ -1782,14 +1790,39 @@ conversation, so a session survives a closed terminal: `pulse harness chat
 told time has passed and files may have changed) and `--continue` picks
 the newest session that ran in this directory. Sessions use the built-in
 chat prompt, not `harness.system_prompt`; `--prompt-file PATH` overrides
-it.
+it. `--bare` starts a plain agent - no instruction files, skills, hooks or
+MCP servers (`--no-instructions --no-skills --no-hooks --no-mcp` in one).
+
+**Permission rules** say what runs without asking and what may not run at
+all, in the `tool` / `tool(filter)` grammar Claude Code and Copilot CLI
+users know. The filter is a glob (`*` any text, `?` one character) matched
+against the whole **subject** of the call: the command line for `bash`,
+the path relative to the working directory for `read`, `grep`, `glob`,
+`edit` and `write`, the host for `fetch`, the arguments as compact JSON
+for an MCP tool (whose name may itself be a glob: `mcp__github__*`), the
+skill's name for `skill`; a bare tool name covers every call of it. **Deny
+beats allow beats the default**: a denied call is refused before anything
+runs - also under `--yes`, also as a fenced block or in a parallel batch -
+and the model is told (``bash: refused by permission rule `deny bash(rm
+*)` ``); a tool denied whole (`deny write`) is not offered to the model at
+all; an allowed call runs without approval, including a policy-line
+crossing like `bash(git push *)`; everything else does what it would do
+anyway. Rules come from `--allow-tool` / `--deny-tool` (repeatable or
+comma-separated: `--deny-tool 'bash(rm *), read(.env*), write(*.lock)'`),
+from the settings `harness.allow_tools` and `harness.deny_tools`
+(Settings → Harness; comma- or newline-separated) and, in a session, from
+`a` at an approval or `/permissions allow|deny PATTERN`. `harness.deny_tools`
+reaches jobs too - the runner passes it as `--deny-tool`, so a rule like
+`bash(curl *)` holds fleet-wide - on top of the job policy line (no push,
+no remotes, no `gh`, no credential paths), which stays as it is; allow
+rules change nothing in a job, which asks nobody.
 
 ```bash
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /diff /export /env /init /delegate /new /sessions /help inside
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents leave those out, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
 pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one

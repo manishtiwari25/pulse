@@ -3,6 +3,7 @@ use crate::fetch::FetchPolicy;
 use crate::harness::*;
 use crate::hooks::load_hooks;
 use crate::localenv::LocalEnv;
+use crate::permissions::{Rule, Rules};
 use crate::skills::{Skill, load_skills};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, table, write_json};
@@ -163,6 +164,19 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         "fetch-allow",
         "",
         "hosts the fetch tool may read web pages from (comma-separated, *.example.com, or *); overrides harness.fetch_allow",
+    );
+    fs.strings_var(
+        "allow-tool",
+        "calls that run without approval: bash(git *), edit(src/*), write, fetch(docs.rs), mcp__github__* (repeatable, or comma-separated; adds to harness.allow_tools)",
+    );
+    fs.strings_var(
+        "deny-tool",
+        "calls that are refused outright: bash(git push *), read(.env*), write(*.lock), subagent (repeatable, or comma-separated; adds to harness.deny_tools; a tool denied whole is not offered)",
+    );
+    fs.bool_var(
+        "bare",
+        false,
+        "a plain agent: no instruction files, skills, hooks or MCP servers (the same as --no-instructions --no-skills --no-hooks --no-mcp)",
     );
     fs.int_var(
         "compact-at",
@@ -462,7 +476,9 @@ pub(crate) fn prepare_agent(
             "GIT_TERMINAL_PROMPT=0".to_string(),
         ])
         .collect();
-    let instructions_on = !fs.get_bool("no-instructions")
+    let bare = fs.get_bool("bare");
+    let instructions_on = !bare
+        && !fs.get_bool("no-instructions")
         && st
             .as_ref()
             .is_none_or(|s| s.setting("harness.instructions", "on") != "off");
@@ -572,7 +588,8 @@ pub(crate) fn prepare_agent(
             agent.cfg.instructions.len()
         ));
     }
-    let mcp_on = !fs.get_bool("no-mcp")
+    let mcp_on = !bare
+        && !fs.get_bool("no-mcp")
         && st
             .as_ref()
             .is_some_and(|s| s.setting("harness.mcp_tools", "on") != "off");
@@ -582,14 +599,16 @@ pub(crate) fn prepare_agent(
             agent.note_at_start(note);
         }
     }
-    let skills_on = !fs.get_bool("no-skills")
+    let skills_on = !bare
+        && !fs.get_bool("no-skills")
         && st
             .as_ref()
             .is_none_or(|s| s.setting("harness.skills", "on") != "off");
     if skills_on && let Some(note) = attach_skills(&mut agent, st.as_ref(), &project, &c.home) {
         agent.note_at_start(note);
     }
-    let hooks_on = !fs.get_bool("no-hooks")
+    let hooks_on = !bare
+        && !fs.get_bool("no-hooks")
         && st
             .as_ref()
             .is_none_or(|s| s.setting("harness.hooks", "on") != "off");
@@ -608,6 +627,20 @@ pub(crate) fn prepare_agent(
     if !fetch_policy.is_empty() {
         agent.note_at_start(format!("fetch tool on for {}", fetch_policy.describe()));
         agent.set_fetch_policy(fetch_policy);
+    }
+    let permissions = permission_rules(fs, st.as_ref())?;
+    if !permissions.is_empty() {
+        let (allow, deny) = permissions.counts();
+        agent.note_at_start(format!(
+            "permissions: {allow} allow and {deny} deny rule{} ({})",
+            if allow + deny == 1 { "" } else { "s" },
+            permissions
+                .iter()
+                .map(|r| format!("{} {}", if r.allow { "allow" } else { "deny" }, r.pattern()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        agent.set_permissions(permissions);
     }
     let shared = shared_agent(agent);
     if let Some(ts) = trajectory_sink {
@@ -630,6 +663,46 @@ pub(crate) fn prepare_agent(
         rec_for_finish,
         _close_store: close_store,
     })
+}
+
+/// The permission rules from the settings (`harness.allow_tools`,
+/// `harness.deny_tools`) and the flags (`--allow-tool`, `--deny-tool`).
+fn permission_rules(fs: &FlagSet, st: Option<&Store>) -> Result<Rules> {
+    use crate::permissions::Source;
+    let mut rules = Rules::new();
+    let parse = |allow: bool, specs: &[String], source: Source, what: &str| -> Result<Vec<Rule>> {
+        Rules::parse_all(allow, specs, source)
+            .map_err(|e| errorf(2, &format!("pulse harness: {what}: {e}"), "", "").into())
+    };
+    if let Some(s) = st {
+        let allow = s.setting("harness.allow_tools", "");
+        let deny = s.setting("harness.deny_tools", "");
+        rules.extend(parse(
+            true,
+            &[allow],
+            Source::Setting,
+            "harness.allow_tools",
+        )?);
+        rules.extend(parse(
+            false,
+            &[deny],
+            Source::Setting,
+            "harness.deny_tools",
+        )?);
+    }
+    rules.extend(parse(
+        true,
+        &fs.get_strings("allow-tool"),
+        Source::Flag,
+        "--allow-tool",
+    )?);
+    rules.extend(parse(
+        false,
+        &fs.get_strings("deny-tool"),
+        Source::Flag,
+        "--deny-tool",
+    )?);
+    Ok(rules)
 }
 
 fn harness_run(c: &mut Context, args: &[String]) -> Result<()> {
@@ -4026,6 +4099,183 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM harness_sessions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(sessions, 2, "two sessions were recorded");
+    }
+
+    #[test]
+    fn harness_chat_permission_rules_from_flags_and_slash_command() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let p = CommandFakeProvider::scripted(vec![
+            call("write", json!({"path": "note.txt", "content": "written\n"})),
+            call("bash", json!({"command": "rm note.txt"})),
+            say("done"),
+            say("ok"),
+        ]);
+        set_fake_provider(p.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        set_stdin_for_tests(Some(
+            "/permissions\nwrite the note\n/permissions deny edit\n/permissions allow bash(\nagain\n/permissions\n/permissions clear\n/permissions\n/env\n/exit\n",
+        ));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(
+                cwd,
+                &[
+                    "--allow-tool",
+                    "write(note.txt)",
+                    "--deny-tool",
+                    "bash(rm *), read(.env*)",
+                ],
+            ),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(out, "done\nok\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "written\n",
+            "an allowed write runs without a terminal to ask"
+        );
+        assert!(
+            !err.contains("declined (no terminal to ask)"),
+            "nothing was asked: {err}"
+        );
+        assert!(
+            err.contains("permissions: 3 rules (deny beats allow; the rest asks as usual)")
+                && err.contains("  allow write(note.txt) (flag)")
+                && err.contains("  deny bash(rm *) (flag)")
+                && err.contains("  deny read(.env*) (flag)"),
+            "/permissions lists the flags' rules: {err}"
+        );
+        assert!(
+            err.contains("bash: refused by permission rule `deny bash(rm *)`"),
+            "the refusal shows: {err}"
+        );
+        assert!(
+            err.contains("deny edit for the rest of the session; the tool is no longer offered"),
+            "{err}"
+        );
+        assert!(
+            err.contains("/permissions: \"bash(\": missing the closing parenthesis"),
+            "{err}"
+        );
+        assert!(err.contains("  deny edit (session)"), "{err}");
+        assert!(err.contains("dropped 1 session rule;"), "{err}");
+        assert!(
+            err.contains("permissions: allow write(note.txt) (flag); deny bash(rm *) (flag); deny read(.env*) (flag)"),
+            "/env lists the rules in force: {err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 4);
+        let rm_reply = reqs[2].messages.last().unwrap();
+        assert!(
+            rm_reply
+                .content
+                .contains("refused by permission rule `deny bash(rm *)`"),
+            "the model hears the refusal: {}",
+            rm_reply.content
+        );
+        assert!(
+            reqs[0].tools.iter().any(|t| t.name == "edit")
+                && !reqs[3].tools.iter().any(|t| t.name == "edit"),
+            "edit withdrawn after /permissions deny edit: {:?}",
+            reqs[3]
+                .tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn harness_run_bare_and_deny_tool_flags() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("AGENTS.md"),
+            "# Rules\nAlways say pelican.\n",
+        )
+        .unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let base = |extra: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = [
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                cwd,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--trajectory",
+                "none",
+                "--quiet",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| (*s).to_string()));
+            v
+        };
+        let p = CommandFakeProvider::default();
+        set_fake_provider(p.clone());
+        let args = base(&[]);
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            code == 0,
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let reqs = p.requests();
+        assert!(
+            reqs[0].messages[0].content.contains("Always say pelican"),
+            "instructions load by default"
+        );
+        assert!(reqs[0].tools.iter().any(|t| t.name == "subagent"));
+
+        let p = CommandFakeProvider::default();
+        set_fake_provider(p.clone());
+        let args = base(&[
+            "--bare",
+            "--deny-tool",
+            "subagent",
+            "--deny-tool",
+            "glob,bash(curl *)",
+        ]);
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            code == 0,
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let reqs = p.requests();
+        assert!(
+            !reqs[0].messages[0].content.contains("Always say pelican"),
+            "--bare reads no instruction files"
+        );
+        let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !names.contains(&"subagent") && !names.contains(&"glob") && names.contains(&"bash"),
+            "{names:?}"
+        );
+
+        let args = base(&["--deny-tool", "bash(curl"]);
+        let (_out, stderr, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.contains("--deny-tool: \"bash(curl\": missing the closing parenthesis"),
+            "{stderr}"
+        );
     }
 
     #[test]

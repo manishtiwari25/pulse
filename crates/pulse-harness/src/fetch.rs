@@ -268,6 +268,14 @@ pub fn fetch(url: &str, policy: &FetchPolicy, max_bytes: usize, timeout: Duratio
     }
 }
 
+/// The host of an http(s) URL, lower-case; empty when `url` is not one.
+pub fn url_host(url: &str) -> String {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_lowercase()))
+        .unwrap_or_default()
+}
+
 fn check_url(url: &str, policy: &FetchPolicy) -> Result<reqwest::Url, FetchResult> {
     let parsed = reqwest::Url::parse(url.trim())
         .map_err(|e| FetchResult::failed(format!("fetch: {url:?} is not a URL: {e}")))?;

@@ -888,6 +888,8 @@ impl Handler {
                 "harness.hooks",
                 "harness.subagents",
                 "harness.fetch_allow",
+                "harness.allow_tools",
+                "harness.deny_tools",
                 "harness.compact_at",
                 "harness.reasoning",
                 "harness.step_timeout",

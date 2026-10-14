@@ -242,6 +242,30 @@
       "secret": false
     },
     {
+      "name": "harness.deny_tools",
+      "value": "bash(rm -rf *), read(.env*)",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "permission rules every native-harness run refuses outright (tool or tool(filter), comma- or newline-separated); a tool denied whole is not offered",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
+      "name": "harness.allow_tools",
+      "value": "",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "permission rules pulse harness chat runs without asking (tool or tool(filter), comma- or newline-separated); deny rules win",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
       "name": "harness.compact_at",
       "value": "70",
       "default": "70",

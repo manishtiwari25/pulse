@@ -149,6 +149,8 @@ const LABELS: Record<string, string> = {
   "harness.hooks": "Run the owner's hooks around the run and its tools",
   "harness.subagents": "Let a run start a bounded helper on a sub-task",
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
+  "harness.deny_tools": "Tool calls a run refuses outright",
+  "harness.allow_tools": "Tool calls a chat session runs without asking",
   "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
   "harness.reasoning": "Reasoning effort asked of the model",
   "harness.step_timeout": "Time limit per command (seconds)",
@@ -263,6 +265,10 @@ const HELP: Record<string, string> = {
     "On: a run can hand a self-contained sub-task to a helper that works in the same clone with the same budget and returns a report; its steps show indented in the session. Off: the tool is not offered.",
   "harness.fetch_allow":
     "The hosts a run may read web pages from, comma-separated - docs.rs, *.rust-lang.org, or * for any. Pages come back as text (2 MB, 30 s). Empty turns the fetch tool off.",
+  "harness.deny_tools":
+    "Permission rules every run follows, comma-separated: a tool name or tool(filter) with * wildcards - bash(git push *), read(.env*), write(*.lock), subagent. A matching call is refused and the model is told; a tool denied whole is not offered. The job policy line stays on top.",
+  "harness.allow_tools":
+    "Permission rules for pulse harness chat, comma-separated: calls matching them run without the user's approval - bash(git *), bash(cargo *), edit(src/*), mcp__github__*. A deny rule wins. Jobs ask nobody, so this does not change them.",
   "harness.compact_at":
     "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. The summary call is free of the step cap. 0 turns compaction off.",
   "harness.reasoning":

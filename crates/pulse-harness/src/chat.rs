@@ -77,6 +77,11 @@ const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
         "toggle approving edits and changing commands without asking",
     ),
     (
+        "permissions",
+        "[allow|deny PATTERN | clear]",
+        "the permission rules in force; add one (bash(git *), edit(src/*), write) or drop the session's",
+    ),
+    (
         "diff",
         "",
         "what changed in the working tree (git status and diff --stat)",
@@ -918,13 +923,29 @@ impl Ui for ChatUi {
         if req.detail.lines().count() > 40 {
             let _ = writeln!(self.err, "  ...");
         }
-        let Some(answer) = self.answer("  [y]es, [n]o, [a]lways, or a reason to decline: ") else {
+        let prompt = if req.always.is_empty() {
+            "  [y]es, [n]o, [all] without asking from now on, or a reason to decline: ".to_string()
+        } else {
+            format!(
+                "  [y]es, [n]o, [a]lways for {}, [all] without asking from now on, or a reason to decline: ",
+                req.always
+            )
+        };
+        let Some(answer) = self.answer(&prompt) else {
             let _ = writeln!(self.err);
             return Approval::Deny("the user did not answer (interrupted or input closed)".into());
         };
         match answer.to_lowercase().as_str() {
             "" | "y" | "yes" => Approval::Allow,
-            "a" | "always" => {
+            "a" | "always" if !req.always.is_empty() => {
+                let _ = writeln!(
+                    self.err,
+                    "  allowing {} for the rest of the session (/permissions lists the rules)",
+                    req.always
+                );
+                Approval::Always
+            }
+            "a" | "always" | "all" => {
                 self.auto.store(true, Ordering::SeqCst);
                 let _ = writeln!(
                     self.err,
@@ -1228,6 +1249,69 @@ struct Session<'a> {
 }
 
 impl Session<'_> {
+    /// `/permissions`: the rules in force; `allow PATTERN`/`deny PATTERN`
+    /// adds one for the session; `clear` drops the session's.
+    fn permissions(&self, arg: &str) -> String {
+        use crate::permissions::{Rule, Source};
+        let (verb, pattern) = match arg.split_once(char::is_whitespace) {
+            Some((v, p)) => (v.trim(), p.trim()),
+            None => (arg.trim(), ""),
+        };
+        match verb {
+            "" => {
+                let agent = self.agent.lock().expect("agent poisoned");
+                let rules = agent.permissions();
+                if rules.is_empty() {
+                    return "permissions: no rules; edits and changing commands are shown before they run (/permissions allow bash(git *) adds a rule, `a` at an approval adds one for that command)".to_string();
+                }
+                let mut out = vec![format!(
+                    "permissions: {} rule{} (deny beats allow; the rest asks as usual)",
+                    rules.len(),
+                    if rules.len() == 1 { "" } else { "s" }
+                )];
+                out.extend(rules.describe().into_iter().map(|l| format!("  {l}")));
+                out.join("\n")
+            }
+            "clear" => {
+                let n = self
+                    .agent
+                    .lock()
+                    .expect("agent poisoned")
+                    .clear_session_permissions();
+                format!(
+                    "dropped {n} session rule{}; the flags' and settings' rules stay",
+                    if n == 1 { "" } else { "s" }
+                )
+            }
+            "allow" | "deny" if pattern.is_empty() => {
+                format!(
+                    "usage: /permissions {verb} PATTERN (bash(git *), edit(src/*), write, fetch(docs.rs), mcp__github__*)"
+                )
+            }
+            "allow" | "deny" => match Rule::parse(verb == "allow", pattern, Source::Session) {
+                Ok(rule) => {
+                    let line = format!(
+                        "{} {} for the rest of the session{}",
+                        verb,
+                        rule.pattern(),
+                        if verb == "deny" && rule.filter.is_none() {
+                            "; the tool is no longer offered"
+                        } else {
+                            ""
+                        }
+                    );
+                    self.agent
+                        .lock()
+                        .expect("agent poisoned")
+                        .add_permission(rule);
+                    line
+                }
+                Err(e) => format!("/permissions: {e}"),
+            },
+            _ => "usage: /permissions [allow PATTERN | deny PATTERN | clear]".to_string(),
+        }
+    }
+
     fn usage_line(&self) -> String {
         let agent = self.agent.lock().expect("agent poisoned");
         let r = agent.result();
@@ -1404,6 +1488,7 @@ impl Session<'_> {
                     "approving edits and changing commands without asking: off".to_string()
                 }
             }
+            "permissions" => self.permissions(&arg),
             "diff" => git_changes(self.cwd),
             "export" => {
                 let path = if arg.is_empty() {
