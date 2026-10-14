@@ -28,6 +28,8 @@ pub enum Source {
     Setting,
     /// Added during the session: `a` at an approval, `/permissions allow`.
     Session,
+    /// The `tools` list of the custom agent a helper runs as.
+    Agent,
 }
 
 impl fmt::Display for Source {
@@ -36,6 +38,7 @@ impl fmt::Display for Source {
             Self::Flag => "flag",
             Self::Setting => "setting",
             Self::Session => "session",
+            Self::Agent => "agent",
         })
     }
 }

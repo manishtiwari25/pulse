@@ -1,3 +1,4 @@
+use crate::agents::{AgentDef, describe_for_tool, withheld_tools};
 use crate::background::{
     BACKGROUND_LIMIT, BACKGROUND_WAIT_DEFAULT, BACKGROUND_WAIT_LIMIT, PROCESS_TOOL,
     PROCESS_WAIT_DEFAULT, Process, ProcessAction, Procs, dropped_marker, fmt_dur, process_tool,
@@ -207,16 +208,28 @@ pub const SUBAGENT_TIME_RESERVE: Duration = Duration::from_secs(60);
 /// Characters of a subagent's report the parent reads.
 pub const SUBAGENT_REPORT_LIMIT: usize = 12_000;
 
-pub fn subagent_tool() -> Tool {
+/// The `subagent` tool; with custom agents (see [`crate::agents`]) it takes
+/// an `agent` too.
+pub fn subagent_tool(agents: &[AgentDef]) -> Tool {
+    let mut properties = json!({
+        "task":{"type":"string","description":"The complete brief for the helper, including what to report back."},
+        "max_steps":{"type":"integer","description":"Model calls the helper may spend (capped by what remains of this run)."}
+    });
+    if !agents.is_empty() {
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        properties["agent"] = json!({
+            "type":"string",
+            "enum": names,
+            "description":"A custom agent to run the sub-task as; leave it out for a plain helper."
+        });
+    }
     Tool {
         name: SUBAGENT_TOOL.to_string(),
         description: format!(
-            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Use it for parallel-free, bounded work such as surveying part of the code or running and summarising a long check. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls."
+            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Use it for parallel-free, bounded work such as surveying part of the code or running and summarising a long check. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls.{}",
+            describe_for_tool(agents)
         ),
-        parameters: json!({"type":"object","properties":{
-            "task":{"type":"string","description":"The complete brief for the helper, including what to report back."},
-            "max_steps":{"type":"integer","description":"Model calls the helper may spend (capped by what remains of this run)."}
-        },"required":["task"]}),
+        parameters: json!({"type":"object","properties":properties,"required":["task"]}),
     }
 }
 
@@ -235,20 +248,10 @@ pub const MCP_SEARCH_TOOL: &str = "mcp_search";
 /// Prefix of every MCP tool name the model sees: `mcp__<server>__<tool>`.
 pub const MCP_TOOL_PREFIX: &str = "mcp__";
 
-/// Repository instruction files, in the order they are read from the
-/// clone root. Identical contents (CLAUDE.md as a copy of AGENTS.md) are
-/// read once.
-pub const INSTRUCTION_FILES: &[&str] = &[
-    "AGENTS.md",
-    "CLAUDE.md",
-    "GEMINI.md",
-    ".github/copilot-instructions.md",
-];
-
-/// Bytes of one instruction file the prompt carries before it is cut.
-pub const INSTRUCTION_FILE_LIMIT: usize = 16 * 1024;
-/// Bytes of instructions the prompt carries in total.
-pub const INSTRUCTIONS_LIMIT: usize = 32 * 1024;
+pub use crate::instructions::{
+    INSTRUCTION_FILE_LIMIT, INSTRUCTION_FILES, INSTRUCTIONS_LIMIT, Instructions, PathRules,
+    load_instructions,
+};
 
 pub const DEFAULT_DENY: &[&str] = &[
     r"(?i)(^|[;&|]\s*)git\s+push\b",
@@ -594,6 +597,11 @@ pub struct Agent {
     memory: Option<Memory>,
     /// What each turn of a session changed, for `/rewind`.
     rewind: Rewind,
+    /// Instruction files that wait for the paths they speak of; None
+    /// when instruction files are off.
+    path_rules: Option<PathRules>,
+    /// The custom agents the `subagent` tool can run a helper as.
+    agents: Vec<AgentDef>,
     /// The hosts `fetch` may read; empty means no tool.
     fetch: FetchPolicy,
     web_search: WebSearch,
@@ -983,6 +991,8 @@ pub fn new_shared(
         hooks: HookSet::default(),
         memory: None,
         rewind,
+        path_rules: None,
+        agents: Vec::new(),
         fetch: FetchPolicy::default(),
         web_search: WebSearch::default(),
         procs: Procs::default(),
@@ -1018,6 +1028,16 @@ impl Agent {
         self.skills = skills;
     }
 
+    /// The custom agents the model can run a helper as (`subagent` with
+    /// `agent`); each brings its own instructions and tool list.
+    pub fn set_agents(&mut self, agents: Vec<AgentDef>) {
+        self.agents = agents;
+    }
+
+    pub fn agents(&self) -> &[AgentDef] {
+        &self.agents
+    }
+
     /// Runs these hooks around the run and its tool calls; call before `run`.
     /// Gives the run its memory files: the `memory` tool is offered (not
     /// in a read-only run) and `/memory` in a session reads them.
@@ -1034,6 +1054,52 @@ impl Agent {
     /// leave something behind (a read-only run may not).
     pub fn offers_memory(&self) -> bool {
         self.memory.is_some() && !self.cfg.read_only
+    }
+
+    /// Hands the model the instruction files that name paths (see
+    /// [`crate::instructions`]) as it first touches a file they apply to.
+    pub fn set_path_rules(&mut self, rules: Option<PathRules>) {
+        self.path_rules = rules;
+    }
+
+    /// The instruction files that speak of a file `call` read or changed
+    /// and were not given yet: each becomes a note step and is appended
+    /// to `text`, the model's view of the call's result.
+    fn with_path_instructions(&mut self, call: &NativeCall, text: String) -> String {
+        if self.path_rules.is_none() {
+            return text;
+        }
+        let rels: Vec<String> = call
+            .files()
+            .iter()
+            .filter_map(|p| self.fs().resolve_action_path(p, true).ok().map(|r| r.rel))
+            .collect();
+        let Some(rules) = self.path_rules.as_mut() else {
+            return text;
+        };
+        let attached: Vec<(String, crate::instructions::Attached)> = rels
+            .iter()
+            .flat_map(|rel| rules.attach(rel).into_iter().map(move |a| (rel.clone(), a)))
+            .collect();
+        let mut text = text;
+        for (rel, a) in attached {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "instructions for {rel} from {} ({}; {} bytes)",
+                    a.source,
+                    a.reason,
+                    a.body.len()
+                ),
+                command: a.source.clone(),
+                ..Step::default()
+            });
+            text.push_str(&format!(
+                "\n\n[Instructions from {} ({}). They apply to {rel} and the other paths they name; follow them there.]\n{}",
+                a.source, a.reason, a.body
+            ));
+        }
+        text
     }
 
     /// Where a session keeps its rewind records (`<home>/harness/<id>.rewind`);
@@ -1218,6 +1284,14 @@ impl Agent {
                 }
             )
         });
+        out.push(match &self.path_rules {
+            Some(r) if !r.is_empty() => format!("path rules: {}", r.describe().join("; ")),
+            Some(_) => {
+                "path rules: none (an AGENTS.md below the root is read as files there are touched)"
+                    .to_string()
+            }
+            None => "path rules: off".to_string(),
+        });
         out.push(if self.skills.is_empty() {
             "skills: none".to_string()
         } else {
@@ -1226,6 +1300,18 @@ impl Agent {
                 self.skills
                     .iter()
                     .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+        out.push(if self.agents.is_empty() {
+            "agents: none".to_string()
+        } else {
+            format!(
+                "agents: {}",
+                self.agents
+                    .iter()
+                    .map(|a| format!("{} ({})", a.name, a.source))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -1324,7 +1410,7 @@ impl Agent {
             out.push(web_search_tool(&self.web_search));
         }
         if self.offers_subagents() {
-            out.push(subagent_tool());
+            out.push(subagent_tool(&self.agents));
         }
         if self.offers_question() {
             out.push(question_tool());
@@ -2053,7 +2139,12 @@ impl Agent {
                 });
             }
             self.emit_observation(&p.observation_command(), &obs);
-            let text = format_observation(&obs, self.cfg.output_limit);
+            let mut text = format_observation(&obs, self.cfg.output_limit);
+            if let ParallelCall::Native(native) = p
+                && obs.exit_code == 0
+            {
+                text = self.with_path_instructions(native, text);
+            }
             let text = self.with_post_tool_hooks(cancel, &call.name, &call.arguments, text);
             outcomes[i] = Some(ToolOutcome::clean(text));
         }
@@ -2560,6 +2651,33 @@ impl Agent {
                 "subagent: arguments must be a JSON object with a string task".to_string(),
             );
         }
+        let wanted = args
+            .get("agent")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let custom = if wanted.is_empty() {
+            None
+        } else {
+            match self.agents.iter().find(|a| a.name == wanted).or_else(|| {
+                self.agents
+                    .iter()
+                    .find(|a| a.name.eq_ignore_ascii_case(wanted))
+            }) {
+                Some(a) => Some(a.clone()),
+                None => {
+                    let known: Vec<&str> = self.agents.iter().map(|a| a.name.as_str()).collect();
+                    return self.tool_error(if known.is_empty() {
+                        format!("subagent: there is no custom agent {wanted:?}; leave agent out")
+                    } else {
+                        format!(
+                            "subagent: there is no custom agent {wanted:?}; the agents are {}",
+                            known.join(", ")
+                        )
+                    });
+                }
+            }
+        };
         let requested = args
             .get("max_steps")
             .and_then(Value::as_i64)
@@ -2592,7 +2710,10 @@ impl Agent {
         self.emit(Step {
             kind: StepKind::Subagent,
             content: task.clone(),
-            command: format!("{SUBAGENT_TOOL} ({} calls)", budget.max(0)),
+            command: match &custom {
+                Some(a) => format!("{SUBAGENT_TOOL} {} ({} calls)", a.name, budget.max(0)),
+                None => format!("{SUBAGENT_TOOL} ({} calls)", budget.max(0)),
+            },
             ..Step::default()
         });
         if let Some(text) = refusal {
@@ -2610,9 +2731,15 @@ impl Agent {
             return ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit));
         };
         let mut cfg = self.cfg.clone();
-        cfg.task = format!(
-            "You are a helper agent of a larger run, working in the same clone. Do only the sub-task below. Then reply with no tool call and a report that starts with SUMMARY: and carries everything the main agent needs: findings, exact file paths, commands and their results. The main agent does not see your conversation, only that report. Do not commit unless the sub-task says so.\n\nSub-task:\n{task}"
-        );
+        cfg.task = match &custom {
+            Some(a) if !a.body.is_empty() => format!(
+                "You are the {} helper agent of a larger run, working in the same clone. Your standing instructions follow; then the sub-task. Do only the sub-task. Then reply with no tool call and a report that starts with SUMMARY: and carries everything the main agent needs: findings, exact file paths, commands and their results. The main agent does not see your conversation, only that report. Do not commit unless the sub-task says so.\n\n--- {} ---\n{}\n--- end of {} ---\n\nSub-task:\n{task}",
+                a.name, a.source, a.body, a.name
+            ),
+            _ => format!(
+                "You are a helper agent of a larger run, working in the same clone. Do only the sub-task below. Then reply with no tool call and a report that starts with SUMMARY: and carries everything the main agent needs: findings, exact file paths, commands and their results. The main agent does not see your conversation, only that report. Do not commit unless the sub-task says so.\n\nSub-task:\n{task}"
+            ),
+        };
         cfg.max_steps = budget;
         cfg.depth = self.cfg.depth.saturating_add(1);
         cfg.subagents = false;
@@ -2632,6 +2759,21 @@ impl Agent {
         child.memory = self.memory.clone();
         child.fetch = self.fetch.clone();
         child.web_search = self.web_search.clone();
+        child.permissions = self.permissions.clone();
+        if let Some(a) = &custom {
+            // The agent's tool list holds as deny rules, so a tool outside
+            // it is neither offered nor run.
+            let offered = self.tool_names();
+            child
+                .permissions
+                .extend(withheld_tools(a, &offered).into_iter().map(|kind| Rule {
+                    allow: false,
+                    kind,
+                    filter: None,
+                    source: permissions::Source::Agent,
+                }));
+        }
+        child.path_rules = self.path_rules.clone();
         child.ui = self.ui.clone();
         child.next_n = self.next_n;
         // The child's steps go to this run's sinks, one level deeper, and
@@ -3493,13 +3635,18 @@ impl Agent {
             ..Step::default()
         });
         let start = Instant::now();
-        let obs = match NativeCall::from_fenced(action, spec) {
-            Ok(call) => self.execute_native(&call, spec),
-            Err(e) => action_error(e, start, 1),
+        let (obs, call) = match NativeCall::from_fenced(action, spec) {
+            Ok(call) => (self.execute_native(&call, spec), Some(call)),
+            Err(e) => (action_error(e, start, 1), None),
         };
         let command = format!("{} action", action.name());
         self.emit_observation(&command, &obs);
-        let formatted = format_observation(&obs, self.cfg.output_limit);
+        let mut formatted = format_observation(&obs, self.cfg.output_limit);
+        if let Some(call) = call
+            && obs.exit_code == 0
+        {
+            formatted = self.with_path_instructions(&call, formatted);
+        }
         (formatted, false, String::new())
     }
 
@@ -3516,7 +3663,12 @@ impl Agent {
         let obs = self.execute_native(call, &spec);
         let command = format!("{} tool", call.name());
         self.emit_observation(&command, &obs);
-        format_observation(&obs, self.cfg.output_limit)
+        let text = format_observation(&obs, self.cfg.output_limit);
+        if obs.exit_code == 0 {
+            self.with_path_instructions(call, text)
+        } else {
+            text
+        }
     }
 
     /// Runs a parsed native call; in a read-only run `edit` and `write`
@@ -4446,53 +4598,6 @@ pub fn render_prompt(tmpl: &str, data: PromptData) -> anyhow::Result<String> {
 
 pub use render_prompt as RenderPrompt;
 
-/// Reads the repository's instruction files ([`INSTRUCTION_FILES`]) from
-/// `cwd`: each file once (a copy of another is skipped), cut at
-/// [`INSTRUCTION_FILE_LIMIT`] with a marker, [`INSTRUCTIONS_LIMIT`] in all.
-/// Returns the text and the files it came from.
-pub fn load_instructions(cwd: &str) -> (String, Vec<String>) {
-    let root = if cwd.is_empty() {
-        Path::new(".")
-    } else {
-        Path::new(cwd)
-    };
-    let mut out = String::new();
-    let mut files = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
-    for name in INSTRUCTION_FILES {
-        let path = root.join(name);
-        let Ok(raw) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let text = raw.trim();
-        if text.is_empty() || seen.iter().any(|s| s == text) {
-            continue;
-        }
-        seen.push(text.to_string());
-        let mut body = text.to_string();
-        if body.len() > INSTRUCTION_FILE_LIMIT {
-            let cut = body.floor_char_boundary(INSTRUCTION_FILE_LIMIT);
-            body = format!(
-                "{}\n[... {name} continues for {} more bytes; read the file for the rest ...]",
-                &body[..cut],
-                text.len() - cut
-            );
-        }
-        let section = format!("--- {name} ---\n{body}\n");
-        if out.len() + section.len() > INSTRUCTIONS_LIMIT {
-            out.push_str(&format!(
-                "--- {name} ---\n[omitted: the instructions already fill {} bytes; read the file]\n",
-                out.len()
-            ));
-            files.push((*name).to_string());
-            continue;
-        }
-        out.push_str(&section);
-        files.push((*name).to_string());
-    }
-    (out, files)
-}
-
 pub fn normalize_prompt_data(mut data: PromptData) -> PromptData {
     let mut cp = data.info.clone();
     if cp.get("cwd").is_none_or(String::is_empty) {
@@ -4743,6 +4848,15 @@ impl NativeCall {
         match self {
             Self::Edit { path, .. } | Self::Write { path, .. } => Some(path.trim()),
             _ => None,
+        }
+    }
+
+    /// The files the call reads or changes (none for a search or a plan).
+    fn files(&self) -> Vec<&str> {
+        match self {
+            Self::Read(targets) => targets.iter().map(|t| t.path.trim()).collect(),
+            Self::Edit { path, .. } | Self::Write { path, .. } => vec![path.trim()],
+            _ => Vec::new(),
         }
     }
 
@@ -6744,6 +6858,206 @@ mod tests {
     }
 
     #[test]
+    fn path_rules_come_with_the_first_file_they_cover_and_once_only() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let p = dir.path().join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        };
+        write(
+            ".github/instructions/ts.instructions.md",
+            "---\napplyTo: \"src/**/*.ts\"\n---\nUse strict TypeScript.\n",
+        );
+        write("src/api/AGENTS.md", "Handlers return Result.\n");
+        write("src/api/a.ts", "export const a = 1;\n");
+        write("src/api/b.ts", "export const b = 2;\n");
+        write("src/other.md", "nothing special\n");
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("r1", "read", json!({"path":"src/api/a.ts"})),
+                ("r2", "read", json!({"path":"src/other.md"})),
+            ])),
+            resp(calls(&[(
+                "e1",
+                "edit",
+                json!({"path":"src/api/b.ts","search":"= 2","replace":"= 3"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        assert!(h.environment().iter().any(|l| l == "path rules: off"));
+        let cwd = dir.path().to_str().unwrap();
+        h.set_path_rules(Some(load_instructions(cwd, "").path_rules(cwd)));
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l == "path rules: .github/instructions/ts.instructions.md (src/**/*.ts)"),
+            "{:?}",
+            h.environment()
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        let r1 = &replies["r1"];
+        assert!(r1.contains("export const a = 1;"), "{r1}");
+        assert!(
+            r1.contains("[Instructions from src/api/AGENTS.md (for everything under src/api/). They apply to src/api/a.ts"),
+            "{r1}"
+        );
+        assert!(r1.contains("Handlers return Result."), "{r1}");
+        assert!(
+            r1.contains("[Instructions from .github/instructions/ts.instructions.md (applies to src/**/*.ts)"),
+            "{r1}"
+        );
+        assert!(r1.contains("Use strict TypeScript."), "{r1}");
+        assert!(
+            !replies["r2"].contains("[Instructions"),
+            "a file no rule covers brings none: {}",
+            replies["r2"]
+        );
+        assert!(
+            !replies["e1"].contains("[Instructions"),
+            "rules already given are not repeated: {}",
+            replies["e1"]
+        );
+        let notes: Vec<String> = h
+            .trajectory()
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Note)
+            .map(|s| s.content.clone())
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "instructions for src/api/a.ts from src/api/AGENTS.md (for everything under src/api/; 23 bytes)",
+                "instructions for src/api/a.ts from .github/instructions/ts.instructions.md (applies to src/**/*.ts; 22 bytes)",
+            ],
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn custom_agents_hand_the_helper_their_instructions_and_tool_list() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "subagent",
+                json!({"task": "look at src", "agent": "reviewer", "max_steps": 5}),
+            )])),
+            resp(tool("rm -rf src")),
+            resp(msg("SUMMARY: looked, nothing removed")),
+            resp(calls(&[(
+                "c2",
+                "subagent",
+                json!({"task": "anything", "agent": "nobody"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.subagents = true;
+        cfg.max_steps = 12;
+        let mut h = new(
+            Box::new(SharedFakeProvider(p.clone())),
+            Box::new(env.clone()),
+            cfg,
+            Vec::new(),
+        );
+        h.set_permissions(rules(&[(false, "bash(rm *)")]));
+        assert!(h.environment().iter().any(|l| l == "agents: none"));
+        h.set_agents(vec![crate::agents::AgentDef {
+            name: "reviewer".into(),
+            description: "Reviews code.".into(),
+            tools: Some(vec![
+                "read".into(),
+                "grep".into(),
+                "glob".into(),
+                "bash".into(),
+            ]),
+            denied: Vec::new(),
+            body: "Report only; never edit.".into(),
+            source: ".claude/agents/reviewer.md".into(),
+        }]);
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l == "agents: reviewer (.claude/agents/reviewer.md)"),
+            "{:?}",
+            h.environment()
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.subagents, 1);
+        assert!(
+            env.lock().unwrap().commands.is_empty(),
+            "the inherited deny rule stopped the helper's rm"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 5);
+        let sub = reqs[0]
+            .tools
+            .iter()
+            .find(|t| t.name == SUBAGENT_TOOL)
+            .unwrap();
+        assert!(
+            sub.description
+                .contains("Custom agents (pass one as agent; it brings its own instructions and tools): reviewer: Reviews code."),
+            "{}",
+            sub.description
+        );
+        assert_eq!(
+            sub.parameters["properties"]["agent"]["enum"],
+            json!(["reviewer"])
+        );
+        let child = &reqs[1];
+        let brief = &child.messages[1].content;
+        assert!(
+            brief.starts_with("You are the reviewer helper agent of a larger run"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(
+                "--- .claude/agents/reviewer.md ---\nReport only; never edit.\n--- end of reviewer ---\n\nSub-task:\nlook at src"
+            ),
+            "{brief}"
+        );
+        let mut names: Vec<&str> = child.tools.iter().map(|t| t.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            ["bash", "glob", "grep", "read"],
+            "tools outside the agent's list are not offered"
+        );
+        assert!(
+            h.steps.iter().any(|s| s.depth == 1
+                && s.kind == StepKind::Error
+                && s.content
+                    .contains("refused by permission rule `deny bash(rm *)`")),
+            "the helper inherits the run's rules"
+        );
+        let sub_step = h
+            .steps
+            .iter()
+            .find(|s| s.kind == StepKind::Subagent)
+            .unwrap();
+        assert_eq!(sub_step.command, "subagent reviewer (5 calls)");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["c1"].contains("SUMMARY: looked, nothing removed"),
+            "{}",
+            replies["c1"]
+        );
+        assert_eq!(
+            replies["c2"],
+            "subagent: there is no custom agent \"nobody\"; the agents are reviewer"
+        );
+    }
+
+    #[test]
     fn typed_tools_read_grep_glob_edit_write_plan_in_one_turn() {
         let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
@@ -7306,8 +7620,8 @@ mod tests {
     fn load_instructions_reads_each_file_once_within_limits() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            load_instructions(&dir.path().display().to_string()),
-            (String::new(), Vec::new())
+            load_instructions(&dir.path().display().to_string(), ""),
+            Instructions::default()
         );
         fs::create_dir_all(dir.path().join(".github")).unwrap();
         fs::write(dir.path().join("AGENTS.md"), "# Agents\nRun cargo test.\n").unwrap();
@@ -7320,7 +7634,8 @@ mod tests {
         fs::write(dir.path().join("GEMINI.md"), "   \n").unwrap();
         let big = "x".repeat(INSTRUCTION_FILE_LIMIT + 100);
         fs::write(dir.path().join(".github/copilot-instructions.md"), &big).unwrap();
-        let (text, files) = load_instructions(&dir.path().display().to_string());
+        let Instructions { text, files, .. } =
+            load_instructions(&dir.path().display().to_string(), "");
         assert_eq!(files, vec!["AGENTS.md", ".github/copilot-instructions.md"]);
         assert!(
             text.starts_with("--- AGENTS.md ---\n# Agents\nRun cargo test.\n"),
@@ -7350,7 +7665,8 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.path().join("GEMINI.md"), "c".repeat(100)).unwrap();
-        let (text, files) = load_instructions(&dir.path().display().to_string());
+        let Instructions { text, files, .. } =
+            load_instructions(&dir.path().display().to_string(), "");
         assert_eq!(files, vec!["AGENTS.md", "CLAUDE.md", "GEMINI.md"]);
         // The second 16 KB file would overflow the total: its section is
         // the marker alone; the small third file still fits.

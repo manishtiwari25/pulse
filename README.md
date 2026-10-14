@@ -1224,7 +1224,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.context_window` | `0` tokens (= the model list) | The context window the harness assumes for context discipline (collapsing harder past 80% of it); `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none keeps the first level. `pulse harness run --context-window N` overrides it for one run. |
 | `harness.compact_at` | `70` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness)). `--compact-at N` for one run. |
 | `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](#the-harness)). `--reasoning LEVEL` for one run. |
-| `harness.instructions` | `on` | A native-harness run reads the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` into its system prompt. |
+| `harness.instructions` | `on` | A native-harness run reads the owner's `~/.pulse/AGENTS.md`, the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and its rules (`.pulse/rules`, `.claude/rules`, `.github/instructions`) into its system prompt; path-scoped rules and nested `AGENTS.md` files arrive with the files they cover. |
 | `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
 | `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
 | `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
@@ -1378,17 +1378,47 @@ files, `/memory add [user] TEXT` and `/memory forget TEXT` edit them
 without a model turn, `/memory clear project|user` empties one
 (**Conversations**, below).
 
-**Repository instructions.** A run reads the clone's `AGENTS.md`,
-`CLAUDE.md`, `GEMINI.md` and `.github/copilot-instructions.md` - each once
-(a copy of another is skipped), 16 KB per file with a marker where it was
-cut, 32 KB in all - and places them in the system prompt where the
-template's `{{.Instructions}}` key stands (the built-in template puts them
-just before the task; a custom template without the key gets them appended),
-under the sentence that the harness's own rules still win where they
-differ. `harness.instructions` (`on`; Settings → Harness **Run mode and
-transcript size**) turns it off for every run, `--no-instructions` for one;
-`pulse harness prompt -C <clone>` shows the prompt a run there would start
-with. The transcript's first `note` step says which files were read.
+**Repository instructions.** A run reads the owner's own
+`~/.pulse/AGENTS.md` first, then the clone's `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md` and `.github/copilot-instructions.md` - each once (a copy of
+another is skipped), 16 KB per file with a marker where it was cut, 32 KB
+in all - and places them in the system prompt where the template's
+`{{.Instructions}}` key stands (the built-in template puts them just before
+the task; a custom template without the key gets them appended), under the
+sentence that the harness's own rules still win where they differ. The
+rule layouts of the other harnesses are read as they are: every Markdown
+file under `.pulse/rules`, `.claude/rules` (Claude Code) and
+`.github/instructions` (Copilot's `*.instructions.md`), recursively, in
+path order. A rule without a scope - no `applyTo:` or `paths:` in its
+front matter, or one that says `**` - joins the system prompt under its
+path; a scoped rule (`applyTo: "src/**/*.ts"`, a list, `{a,b}`, a plain
+directory name) waits and is handed to the model, once, the first time it
+reads, edits or writes a file the scope covers, appended to that tool's
+result with its source and scope named, and noted in the transcript
+(`instructions for src/api/a.ts from .github/instructions/ts.instructions.md
+(applies to src/**/*.ts; 212 bytes)`). An `AGENTS.md` or `CLAUDE.md` in a
+directory below the root works the same way, for everything under that
+directory. `harness.instructions` (`on`; Settings → Harness **Run mode and
+transcript size**) turns all of it off for every run, `--no-instructions`
+for one; `pulse harness prompt -C <clone>` shows the prompt a run there
+would start with, `/env` in a session lists the rules still waiting
+(`path rules: …`). The transcript's first `note` steps say which files
+were read and how many rules wait.
+
+**Custom agents.** The helper the `subagent` tool runs can be one the
+repository or the owner described: a Markdown file with front matter under
+`.pulse/agents`, `.claude/agents` (Claude Code's `<name>.md`),
+`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, the
+first of a name winning in that order. Its `description` tells the model
+when to pick it (the tool lists them and takes `agent: NAME`), its body
+becomes the helper's standing instructions ahead of the sub-task, and its
+`tools` list - in any harness's spelling: `Read`, `view`, `shell`,
+`WebFetch`, `Task`, `mcp__github__*`; `Bash(git *)` counts as `bash` -
+narrows what the helper gets: a tool outside the list (or in
+`disallowedTools`) is neither offered to it nor run for it, the same way a
+`deny` rule works. A helper also inherits the run's permission rules and
+the path-scoped rules above. `--no-agents` leaves the agents out for one
+run; they follow `harness.subagents` otherwise.
 
 **MCP servers as tools.** With a store at hand, a run connects the
 project's enabled [MCP servers](#connecting-the-outside-world-pulse-mcp)
@@ -1875,8 +1905,9 @@ conversation, so a session survives a closed terminal: `pulse harness chat
 told time has passed and files may have changed) and `--continue` picks
 the newest session that ran in this directory. Sessions use the built-in
 chat prompt, not `harness.system_prompt`; `--prompt-file PATH` overrides
-it. `--bare` starts a plain agent - no instruction files, skills, hooks or
-MCP servers (`--no-instructions --no-skills --no-hooks --no-mcp` in one).
+it. `--bare` starts a plain agent - no instruction files, memory, skills,
+custom agents, hooks or MCP servers (`--no-instructions --no-memory
+--no-skills --no-agents --no-hooks --no-mcp` in one).
 
 **Rewind.** A turn that went the wrong way can be taken back. Before an
 `edit` or `write` runs, the session keeps a copy of the file as it was
@@ -1928,7 +1959,7 @@ rules change nothing in a job, which asks nobody.
 pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md, --no-mcp offers no MCP tools, --no-skills / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events, --max-cost 2 --keep-observations 3 override the budgets, --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /export /env /init /delegate /new /sessions /help inside
 pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
 pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)

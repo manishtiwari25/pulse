@@ -1,3 +1,4 @@
+use crate::agents::load_agents;
 use crate::compact::DEFAULT_COMPACT_AT;
 use crate::fetch::FetchPolicy;
 use crate::harness::*;
@@ -140,7 +141,7 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "no-instructions",
         false,
-        "do not read AGENTS.md and the other repository instruction files into the prompt",
+        "do not read AGENTS.md, ~/.pulse/AGENTS.md, the other instruction files and the path-scoped rules (.pulse/rules, .claude/rules, .github/instructions)",
     );
     fs.bool_var(
         "no-mcp",
@@ -161,6 +162,11 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         "no-subagents",
         false,
         "do not offer the subagent tool (a bounded helper run on a sub-task)",
+    );
+    fs.bool_var(
+        "no-agents",
+        false,
+        "do not offer the clone's and the owner's custom agents (.pulse/agents, .claude/agents, .github/agents, ~/.pulse/agents) through the subagent tool",
     );
     fs.bool_var(
         "no-memory",
@@ -189,7 +195,7 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "bare",
         false,
-        "a plain agent: no instruction files, memory, skills, hooks or MCP servers (the same as --no-instructions --no-memory --no-skills --no-hooks --no-mcp)",
+        "a plain agent: no instruction files, memory, skills, custom agents, hooks or MCP servers (the same as --no-instructions --no-memory --no-skills --no-agents --no-hooks --no-mcp)",
     );
     fs.int_var(
         "compact-at",
@@ -495,11 +501,17 @@ pub(crate) fn prepare_agent(
         && st
             .as_ref()
             .is_none_or(|s| s.setting("harness.instructions", "on") != "off");
-    let (instructions, instruction_files) = if instructions_on {
-        load_instructions(&abs_cwd)
+    let loaded = if instructions_on {
+        load_instructions(&abs_cwd, &c.home)
     } else {
-        (String::new(), Vec::new())
+        Instructions::default()
     };
+    let path_rules = instructions_on.then(|| loaded.path_rules(&abs_cwd));
+    let Instructions {
+        text: instructions,
+        files: instruction_files,
+        ..
+    } = loaded;
     let project = std::env::var("PULSE_PROJECT").unwrap_or_default();
     let memory_on = !bare
         && !fs.get_bool("no-memory")
@@ -625,6 +637,16 @@ pub(crate) fn prepare_agent(
             agent.cfg.instructions.len()
         ));
     }
+    if let Some(rules) = path_rules {
+        if !rules.is_empty() {
+            agent.note_at_start(format!(
+                "{} path rule(s) wait for the files they name: {}",
+                rules.describe().len(),
+                rules.describe().join("; ")
+            ));
+        }
+        agent.set_path_rules(Some(rules));
+    }
     if let Some(m) = memory {
         if !memory_files.is_empty() {
             agent.note_at_start(format!(
@@ -651,6 +673,14 @@ pub(crate) fn prepare_agent(
             .as_ref()
             .is_none_or(|s| s.setting("harness.skills", "on") != "off");
     if skills_on && let Some(note) = attach_skills(&mut agent, st.as_ref(), &project, &c.home) {
+        agent.note_at_start(note);
+    }
+    let agents_on = !bare
+        && !fs.get_bool("no-agents")
+        && st
+            .as_ref()
+            .is_none_or(|s| s.setting("harness.subagents", "on") != "off");
+    if agents_on && let Some(note) = attach_agents(&mut agent, &c.home) {
         agent.note_at_start(note);
     }
     let hooks_on = !bare
@@ -1353,7 +1383,7 @@ fn harness_prompt(c: &mut Context, args: &[String]) -> Result<()> {
         .as_ref()
         .is_none_or(|s| s.setting("harness.instructions", "on") != "off")
     {
-        load_instructions(&abs_cwd).0
+        load_instructions(&abs_cwd, &c.home).text
     } else {
         String::new()
     };
@@ -1586,6 +1616,27 @@ pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &st
         }
     }
     notes
+}
+
+/// Offers the clone's and the owner's custom agents through the
+/// `subagent` tool. Returns the start note when there are any.
+pub fn attach_agents(agent: &mut Agent, home: &str) -> Option<String> {
+    let agents = load_agents(&agent.cfg.cwd, home);
+    if agents.is_empty() {
+        return None;
+    }
+    let note = format!(
+        "offered {} custom agent(s) through the subagent tool: {}",
+        agents.len(),
+        agents
+            .iter()
+            .take(12)
+            .map(|a| format!("{} ({})", a.name, a.source))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    agent.set_agents(agents);
+    Some(note)
 }
 
 /// Offers the clone's, the owner's and the registry's skills through the
@@ -4624,6 +4675,122 @@ bye
             stderr.contains("--deny-tool: \"bash(curl\": missing the closing parenthesis"),
             "{stderr}"
         );
+    }
+
+    #[test]
+    fn harness_chat_instruction_layouts_and_custom_agents() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let p = dir.path().join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        };
+        write("AGENTS.md", "# Rules\nAlways say pelican.\n");
+        write(
+            ".github/instructions/rs.instructions.md",
+            "---\napplyTo: '**/*.rs'\n---\nRun cargo fmt after edits.\n",
+        );
+        write(".claude/rules/always.md", "Keep commits small.\n");
+        write("src/lib.rs", "pub fn a() {}\n");
+        write(
+            ".claude/agents/reviewer.md",
+            "---\ndescription: Reviews code.\ntools: Read, Grep\n---\nReport only.\n",
+        );
+        fs::write(Path::new(&s.home).join("AGENTS.md"), "Sign off as PULSE.\n").unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let p = CommandFakeProvider::scripted(vec![
+            call("read", json!({"path": "src/lib.rs"})),
+            say("read it"),
+        ]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("/env\nread the lib\n/exit\n"));
+        let (out, err, code) = invoke(&s.home, &chat_args(cwd, &["--session", "layouts"]));
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(
+            err.contains("path rules: .github/instructions/rs.instructions.md (**/*.rs)"),
+            "{err}"
+        );
+        assert!(
+            err.contains("agents: reviewer (.claude/agents/reviewer.md)"),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "note: instructions for src/lib.rs from .github/instructions/rs.instructions.md (applies to **/*.rs; 26 bytes)"
+            ),
+            "{err}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        let system = &reqs[0].messages[0].content;
+        assert!(
+            system.contains("--- ~/.pulse/AGENTS.md ---\nSign off as PULSE."),
+            "{system}"
+        );
+        assert!(system.contains("Always say pelican."), "{system}");
+        assert!(
+            system.contains("--- .claude/rules/always.md ---\nKeep commits small."),
+            "an unscoped rule goes into the prompt: {system}"
+        );
+        assert!(
+            !system.contains("Run cargo fmt"),
+            "a scoped rule waits for its files: {system}"
+        );
+        let tool_reply = reqs[1]
+            .messages
+            .iter()
+            .find(|m| m.role == pulse_provider::Role::Tool)
+            .unwrap();
+        assert!(
+            tool_reply.content.contains("pub fn a() {}")
+                && tool_reply.content.contains(
+                    "[Instructions from .github/instructions/rs.instructions.md (applies to **/*.rs). They apply to src/lib.rs"
+                )
+                && tool_reply.content.contains("Run cargo fmt after edits."),
+            "{}",
+            tool_reply.content
+        );
+        let sub = reqs[0]
+            .tools
+            .iter()
+            .find(|t| t.name == SUBAGENT_TOOL)
+            .unwrap();
+        assert_eq!(
+            sub.parameters["properties"]["agent"]["enum"],
+            json!(["reviewer"])
+        );
+
+        let p = CommandFakeProvider::scripted(vec![say("plain")]);
+        set_fake_provider(p.clone());
+        set_stdin_for_tests(Some("/env\nhi\n/exit\n"));
+        let (out, err, code) = invoke(
+            &s.home,
+            &chat_args(
+                cwd,
+                &[
+                    "--session",
+                    "layouts-off",
+                    "--no-agents",
+                    "--no-instructions",
+                ],
+            ),
+        );
+        set_stdin_for_tests(None);
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert!(err.contains("path rules: off"), "{err}");
+        assert!(err.contains("agents: none"), "{err}");
+        let reqs = p.requests();
+        assert!(!reqs[0].messages[0].content.contains("pelican"));
+        let sub = reqs[0]
+            .tools
+            .iter()
+            .find(|t| t.name == SUBAGENT_TOOL)
+            .unwrap();
+        assert!(sub.parameters["properties"].get("agent").is_none());
     }
 
     #[test]
