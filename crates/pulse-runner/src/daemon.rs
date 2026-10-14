@@ -577,9 +577,20 @@ fn run_fits_p90(
 
 /// The expected length of a run of each kind of job on each active project,
 /// measured once per tick.
+///
+/// A store error is said on stderr instead of swallowed: an empty table
+/// would otherwise close every slot during a restart hold while the daemon
+/// looks merely idle.
 fn kind_fits(s: &pulse_store::Store) -> Fits {
-    let projects = s.projects(true).unwrap_or_default();
-    projects
+    kind_fits_result(s).unwrap_or_else(|e| {
+        eprintln!("daemon: run fits unavailable: {e}; holding every kind of run this tick");
+        Fits::new()
+    })
+}
+
+fn kind_fits_result(s: &pulse_store::Store) -> Result<Fits, String> {
+    let projects = s.projects(true).map_err(|e| e.to_string())?;
+    Ok(projects
         .iter()
         .flat_map(|p| {
             pulse_board::JOB_KINDS
@@ -590,7 +601,7 @@ fn kind_fits(s: &pulse_store::Store) -> Fits {
             let fit = run_fits(s, &project, &kind);
             ((project, kind), fit)
         })
-        .collect()
+        .collect())
 }
 
 /// The project and kind pairs whose run fits a restart window with `left`
@@ -2183,6 +2194,20 @@ mod tests {
         let err = meta_upsert_result(&s, "daemon", &serde_json::json!({}))
             .expect_err("a missing meta table must surface as an error");
         assert!(err.contains("meta"), "{err}");
+    }
+
+    #[test]
+    fn kind_fits_reports_store_failure_instead_of_empty_table() {
+        let s = new_store();
+        s.conn()
+            .unwrap()
+            .execute("DROP TABLE projects", [])
+            .unwrap();
+        let err =
+            kind_fits_result(&s).expect_err("a missing projects table must surface as an error");
+        assert!(err.contains("projects"), "{err}");
+        // The tick keeps going on an empty table; the error is already said.
+        assert!(kind_fits(&s).is_empty());
     }
     use std::io::Write;
     use std::time::Duration;
