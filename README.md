@@ -71,7 +71,7 @@ part of this file that explains them.
 | --- | --- | --- |
 | Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `lead`, `mcp`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `skill`, `task`, `thread`, `toolkit`, `vote`, `watch` | [The agents' path](#the-agents-path) |
 | Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](#records-in-sqlite) |
-| Human - the maintainer's calls | `ask`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop` | [The owner's path](#the-owners-path) |
+| Human - the maintainer's calls | `ask`, `chat`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop` | [The owner's path](#the-owners-path) |
 | Runner | `bulk`, `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `service`, `sweep`, `work` | [The runner](#the-runner) |
 | Hub | `hub`, `serve` | [The owner's path](#the-owners-path) |
 | Inspect | `agents`, `events`, `jobs`, `projects`, `schema`, `signers`, `status`, `tally`, `usage`, `verify`, `version` | [The owner's path](#the-owners-path) / [Development](#development) |
