@@ -2426,7 +2426,11 @@ pub(crate) fn watch_run_harness_cancel_every(
 
 /// Warning text written to stderr and the run log when a job's result (or
 /// answer) post cannot be saved, so owners see which job lost its report and why.
+/// An empty error means nothing failed, so no warning is built.
 pub(crate) fn result_post_failure_message(job_id: &str, what: &str, err: &str) -> String {
+    if err.is_empty() {
+        return String::new();
+    }
     format!(
         "warning: job {job_id}: {what} post failed, owners will not see this report on the board: {err}"
     )
@@ -3036,6 +3040,17 @@ mod tests {
         assert!(
             a.contains("job job-2") && a.contains("answer post failed"),
             "{a}"
+        );
+    }
+
+    /// An empty error message means nothing failed, so no warning may
+    /// claim the result post failed on stderr.
+    #[test]
+    fn result_post_failure_message_is_not_built_for_an_empty_error() {
+        let m = super::result_post_failure_message("job-3", "result", "");
+        assert!(
+            !m.starts_with("warning: "),
+            "never built for an empty error message: {m}"
         );
     }
 
