@@ -314,6 +314,11 @@ mod tests {
 
     fn new_store() -> (Store, tempfile::TempDir) {
         let _guard = crate::test_helpers::serial();
+        // Clear PULSE_JOB so the worker guard does not refuse a store opened
+        // inside this job's checkout-adjacent tempdir (every other store
+        // module's new_store does this; without it these tests fail under a
+        // PULSE job whenever they run before a crate that clears it).
+        unsafe { std::env::set_var("PULSE_JOB", "") };
         let home = tempfile::tempdir().unwrap();
         let s = Store::open(Options {
             home: home.path().display().to_string(),
