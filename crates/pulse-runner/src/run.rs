@@ -2099,16 +2099,20 @@ pub(crate) fn run_job(
             },
         ) {
             let msg = result_post_failure_message(&job.str("id"), "result", &err_message(&e));
-            eprintln!("run {run_id}: {msg}");
-            log.add(msg);
+            if let Some(msg) = msg {
+                eprintln!("run {run_id}: {msg}");
+                log.add(msg);
+            }
         }
         if job_status == "done"
             && let Err(e) =
                 post_result_answer(s, job.clone(), agent, now, &run_id, &branch, parsed.clone())
         {
             let msg = result_post_failure_message(&job.str("id"), "answer", &err_message(&e));
-            eprintln!("run {run_id}: {msg}");
-            log.add(msg);
+            if let Some(msg) = msg {
+                eprintln!("run {run_id}: {msg}");
+                log.add(msg);
+            }
         }
         for q in &parsed.questions {
             if let Err(e) = crate::board::create_post(
@@ -2426,14 +2430,16 @@ pub(crate) fn watch_run_harness_cancel_every(
 
 /// Warning text written to stderr and the run log when a job's result (or
 /// answer) post cannot be saved, so owners see which job lost its report and why.
-/// An empty error means nothing failed, so no warning is built.
-pub(crate) fn result_post_failure_message(job_id: &str, what: &str, err: &str) -> String {
-    if err.is_empty() {
-        return String::new();
+/// Returns `None` when the error text is empty or whitespace-only: an error
+/// with no message is almost certainly a spurious post failure (the post
+/// actually landed), and a warning with empty error text tells owners nothing.
+pub(crate) fn result_post_failure_message(job_id: &str, what: &str, err: &str) -> Option<String> {
+    if err.trim().is_empty() {
+        return None;
     }
-    format!(
+    Some(format!(
         "warning: job {job_id}: {what} post failed, owners will not see this report on the board: {err}"
-    )
+    ))
 }
 
 /// Warning text for a run log that could not be written: the result post
@@ -3031,12 +3037,14 @@ pub(crate) fn base_tree_verify(
 mod tests {
     #[test]
     fn result_post_failure_message_names_job_and_error() {
-        let m = super::result_post_failure_message("job-1", "result", "disk I/O error");
+        let m = super::result_post_failure_message("job-1", "result", "disk I/O error")
+            .expect("a real error must produce a warning");
         assert!(m.starts_with("warning: "), "{m}");
         assert!(m.contains("job job-1"), "{m}");
         assert!(m.contains("result post failed"), "{m}");
         assert!(m.ends_with("disk I/O error"), "{m}");
-        let a = super::result_post_failure_message("job-2", "answer", "no question");
+        let a = super::result_post_failure_message("job-2", "answer", "no question")
+            .expect("a real error must produce a warning");
         assert!(
             a.contains("job job-2") && a.contains("answer post failed"),
             "{a}"
@@ -3048,10 +3056,27 @@ mod tests {
     #[test]
     fn result_post_failure_message_is_not_built_for_an_empty_error() {
         let m = super::result_post_failure_message("job-3", "result", "");
-        assert!(
-            !m.starts_with("warning: "),
-            "never built for an empty error message: {m}"
-        );
+        assert!(m.is_none(), "never built for an empty error message: {m:?}");
+    }
+
+    /// A whitespace-only error message is no error text either, so it must
+    /// never surface as a warning that ends in nothing.
+    #[test]
+    fn result_post_failure_message_is_not_built_for_a_blank_error() {
+        let m = super::result_post_failure_message("job-3", "result", "  \n");
+        assert!(m.is_none(), "never built for a blank error message: {m:?}");
+    }
+
+    /// A real error must surface as a warning that names the job, the post
+    /// kind and the non-empty error text, so the owner can act on it.
+    #[test]
+    fn result_post_failure_message_is_built_for_a_real_error() {
+        let m = super::result_post_failure_message("job-3", "result", "connection refused");
+        let m = m.expect("a real error must produce a warning");
+        assert!(m.starts_with("warning: "), "{m}");
+        assert!(m.contains("job-3"), "{m}");
+        assert!(m.contains("result post failed"), "{m}");
+        assert!(m.ends_with("connection refused"), "{m}");
     }
 
     #[test]

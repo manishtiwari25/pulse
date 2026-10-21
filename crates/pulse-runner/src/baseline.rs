@@ -423,9 +423,10 @@ pub(crate) fn run_baseline(
         ) {
             // The run log lands in a file nobody tails; the daemon log reads
             // stderr, so the miss is said there too instead of being dropped.
-            let msg = baseline_result_post_failure(&job.str("id"), &run_id, &err);
-            eprintln!("{msg}");
-            log.add(msg);
+            if let Some(msg) = baseline_result_post_failure(&job.str("id"), &run_id, &err) {
+                eprintln!("{msg}");
+                log.add(msg);
+            }
         }
         if job_status == "failed" {
             baseline_finding(
@@ -515,20 +516,20 @@ pub(crate) fn baseline_finding(
 
 /// The line written to stderr and the run log when a baseline job's result
 /// post could not be created: the owner reads the board for the baseline's
-/// score, so a silent miss there would look like the job never ran.
+/// score, so a silent miss there would look like the job never ran. Returns
+/// `None` when the error text is empty: then the post almost certainly landed
+/// and there is nothing to warn about.
 pub(crate) fn baseline_result_post_failure(
     job_id: &str,
     run_id: &str,
     err: &anyhow::Error,
-) -> String {
-    format!(
-        "run {run_id}: {}",
-        crate::run::result_post_failure_message(
-            job_id,
-            "baseline result",
-            &crate::run::err_message(err)
-        )
+) -> Option<String> {
+    crate::run::result_post_failure_message(
+        job_id,
+        "baseline result",
+        &crate::run::err_message(err),
     )
+    .map(|msg| format!("run {run_id}: {msg}"))
 }
 
 #[cfg(test)]
@@ -540,11 +541,23 @@ mod tests {
     #[test]
     fn baseline_result_post_failure_names_run_job_and_cause() {
         let err = anyhow::anyhow!("database is locked");
-        let m = baseline_result_post_failure("job-9", "run-7", &err);
+        let m = baseline_result_post_failure("job-9", "run-7", &err)
+            .expect("a real error must produce a warning");
         assert!(m.starts_with("run run-7: warning: "), "{m}");
         assert!(m.contains("job job-9"), "{m}");
         assert!(m.contains("baseline result post failed"), "{m}");
         assert!(m.ends_with("database is locked"), "{m}");
+    }
+
+    /// A spurious post failure whose error text is empty must stay silent:
+    /// the baseline job's result then landed, and a warning would be a lie.
+    #[test]
+    fn baseline_result_post_failure_is_silent_for_an_empty_error() {
+        let err = anyhow::anyhow!("");
+        assert!(
+            baseline_result_post_failure("job-9", "run-7", &err).is_none(),
+            "no warning may be built when the error text is empty"
+        );
     }
 
     fn set_retry_setting(s: &pulse_store::Store, key: &str, value: &str) {
