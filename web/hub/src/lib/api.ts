@@ -754,16 +754,21 @@ export interface DaemonRestart {
 }
 
 // The keep-awake hold (daemon.keep_awake): whether the daemon holds this
-// machine awake right now, since when and how (`caffeinate -s -w <pid>` on
-// macOS, `systemd-inhibit` on Linux), the reason when it asked for the hold
-// but holds nothing, and the lid caveat for laptops. Omitted by daemons
-// older than the feature.
+// machine awake right now, since when and how (`caffeinate -d -i -s -w
+// <pid>` on macOS - the display assertion keeps the screen saver off too -
+// `systemd-inhibit` on Linux), the reason when it asked for the hold but
+// holds nothing, and the lid caveat for laptops. Omitted by daemons older
+// than the feature.
 export interface DaemonAwake {
   mode: "off" | "on" | "always";
   holding: boolean;
-  // The hold keeps the machine awake right now: false while a Mac on `on`
-  // runs on battery (caffeinate -s holds on AC power only).
+  // The hold keeps the machine awake right now (false while waiting).
   effective?: boolean;
+  // `on` on a Mac running on battery: nothing is held until the charger is
+  // back, because the display and idle assertions would drain the battery.
+  // Daemons before this field held a hold that did nothing on battery and
+  // said so with `holding` true, `effective` false.
+  waiting?: boolean;
   // Where the machine draws its power from, read with the hold.
   power?: "ac" | "battery" | "unknown";
   since?: string;
@@ -771,6 +776,9 @@ export interface DaemonAwake {
   pid?: number;
   note?: string;
   lid?: string;
+  // What the hold does for the screen, where the holder takes a display
+  // assertion ("the display stays on and the screen saver stays off").
+  display?: string;
 }
 
 // The last sleep the daemon noticed: the wall clock jumped while its loop

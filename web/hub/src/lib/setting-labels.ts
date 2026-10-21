@@ -225,7 +225,7 @@ const HELP: Record<string, string> = {
   "evolve.parent_rate": "How often an experiment starts from an earlier attempt instead of the main branch.",
   "evolve.outcome_hours": "How long after a change to PULSE itself its effect on merges and lead time is measured.",
   "daemon.self_update": "Whether PULSE rebuilds and restarts itself when its own source changes. Runs in progress finish first.",
-  "daemon.keep_awake": "Like a coffee for the runner: while it works, the machine doesn't go to sleep, so overnight runs aren't lost. The console turns warm while it's on. Closing a laptop's lid still sleeps it unless a screen is attached.",
+  "daemon.keep_awake": "Like a coffee for the runner: while it works, the machine doesn't go to sleep and the screen stays on, so overnight runs aren't lost. On, it holds while plugged in and lets a battery rest; always holds on battery too. The console turns warm while it's on. Closing a laptop's lid still sleeps it unless a screen is attached.",
   "daemon.self_update_retry_minutes": "How long PULSE waits before trying again after an update failed to build or test.",
   "daemon.recover": "Whether PULSE retries failed work by itself when the failure looks temporary.",
   "daemon.recover_days": "How long a failed run can still be retried.",

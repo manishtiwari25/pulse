@@ -1,22 +1,26 @@
-//! Keep-awake (`daemon.keep_awake`): while the daemon runs, it holds a power
-//! assertion so the machine does not sleep under its runs - the way
+//! Keep-awake (`daemon.keep_awake`): while the daemon runs, it holds power
+//! assertions so the machine does not sleep under its runs - the way
 //! `caffeinate` does for a terminal - and it notices when the machine slept
 //! anyway, so the console can explain the lost hours.
 //!
 //! The hold is a child process that dies with the daemon: on macOS
-//! `caffeinate -s -w <daemon pid>` (no system sleep while on AC power;
-//! `always` adds `-i`, no idle sleep on battery either), on Linux
-//! `systemd-inhibit --what=sleep:idle --mode=block tail --pid=<daemon pid>
-//! -f /dev/null`. A daemon that exits (stopped, restarting) takes the hold
-//! with it, so a paused machine sleeps as usual. Closing a laptop's lid still
-//! sleeps a Mac unless an external display is attached: no assertion stops
-//! clamshell sleep, and the console says so.
+//! `caffeinate -d -i -s -w <daemon pid>`, the assertions Copilot CLI's
+//! keep-alive takes (`-d` keeps the display awake - loginwindow's
+//! screen-saver daemon asks for exactly that assertion before it starts the
+//! saver, so the saver stays off too; `-i` no idle sleep; `-s` no system
+//! sleep on AC power), on Linux `systemd-inhibit --what=sleep:idle
+//! --mode=block tail --pid=<daemon pid> -f /dev/null`. A daemon that exits
+//! (stopped, restarting) takes the hold with it, so a paused machine sleeps
+//! as usual. Closing a laptop's lid still sleeps a Mac unless an external
+//! display is attached: no assertion stops clamshell sleep, and the console
+//! says so.
 //!
-//! `on` holds only while the machine is plugged in (`caffeinate -s` ignores
-//! battery power), so the daemon also reads the power source each tick -
-//! `pmset -g batt` on macOS, `/sys/class/power_supply` on Linux - and the
-//! heartbeat says whether the hold is in effect right now; a hold waiting
-//! for the charger is said once in the log, not every tick.
+//! `on` means plugged in only: `-d` and `-i` would keep a battery awake, so
+//! a Mac on battery holds nothing until the charger is back. The daemon
+//! reads the power source each tick - `pmset -g batt` on macOS,
+//! `/sys/class/power_supply` on Linux - the heartbeat says whether the hold
+//! is in force or waiting, and the wait is said once in the log, not every
+//! tick. `always` holds on battery too, display included.
 //!
 //! Sleep detection compares the wall clock's advance with the monotonic
 //! clock's between two loop ticks: the monotonic clock stops while the
@@ -28,8 +32,8 @@
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime};
 
-/// The setting: `off` (default), `on` (no sleep while plugged in) or
-/// `always` (no idle sleep on battery either).
+/// The setting: `off` (default), `on` (awake while plugged in) or `always`
+/// (awake on battery too).
 pub const SETTING: &str = "daemon.keep_awake";
 /// The event written when a tick finds the machine slept.
 pub const SLEPT_ACTION: &str = "daemon.slept";
@@ -50,9 +54,9 @@ const POWER_PROBE_SECONDS: u64 = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Off,
-    /// No system sleep while the machine is on AC power.
+    /// Awake - no sleep, display on - while the machine is plugged in.
     PluggedIn,
-    /// No idle sleep on battery either.
+    /// Awake on battery too.
     Always,
 }
 
@@ -81,22 +85,29 @@ pub fn holder_command(mode: Mode, pid: u32) -> Option<(String, Vec<String>)> {
     if mode == Mode::Off {
         return None;
     }
-    holder_for(std::env::consts::OS, mode, pid)
+    holder_for(std::env::consts::OS, pid)
 }
 
-fn holder_for(os: &str, mode: Mode, pid: u32) -> Option<(String, Vec<String>)> {
+/// The holder for a platform; the mode does not change it (`on` and
+/// `always` differ only in whether the hold is held on battery, see
+/// tick_mode).
+fn holder_for(os: &str, pid: u32) -> Option<(String, Vec<String>)> {
     match os {
         "macos" => {
-            // -s: prevent system sleep (AC power only); -i: prevent idle
-            // sleep, which keeps a battery awake too; -w: hold until the
-            // daemon exits.
-            let mut args = vec!["-s".to_string()];
-            if mode == Mode::Always {
-                args.push("-i".to_string());
-            }
-            args.push("-w".to_string());
-            args.push(pid.to_string());
-            Some(("caffeinate".to_string(), args))
+            // The same assertions Copilot CLI's keep-alive takes. -d: keep
+            // the display awake - the screen-saver daemon checks this one
+            // before it starts the saver; -i: no idle sleep; -s: no system
+            // sleep (AC power only); -w: hold until the daemon exits.
+            Some((
+                "caffeinate".to_string(),
+                vec![
+                    "-d".to_string(),
+                    "-i".to_string(),
+                    "-s".to_string(),
+                    "-w".to_string(),
+                    pid.to_string(),
+                ],
+            ))
         }
         "linux" => Some((
             "systemd-inhibit".to_string(),
@@ -119,6 +130,16 @@ fn holder_for(os: &str, mode: Mode, pid: u32) -> Option<(String, Vec<String>)> {
 pub fn lid_note() -> &'static str {
     if std::env::consts::OS == "macos" {
         "closing the lid still sleeps a Mac unless an external display is attached"
+    } else {
+        ""
+    }
+}
+
+/// What the hold does for the screen, where the holder takes a display
+/// assertion (macOS `caffeinate -d`).
+pub fn display_note() -> &'static str {
+    if std::env::consts::OS == "macos" {
+        "the display stays on and the screen saver stays off"
     } else {
         ""
     }
@@ -201,8 +222,9 @@ fn power_from_sysfs(root: &std::path::Path) -> Power {
     }
 }
 
-/// Whether this platform's holder keeps a machine on battery awake: macOS
-/// `caffeinate -s` does not (`-i`, the `always` mode, does); a systemd
+/// Whether the hold may be held while the machine runs on battery: on macOS
+/// the holder's `-d` and `-i` would keep a battery awake, so `on` (plugged
+/// in only) waits for the charger and `always` holds anyway; a systemd
 /// inhibitor does not care where the power comes from.
 fn holds_on_battery(os: &str, mode: Mode) -> bool {
     match os {
@@ -239,8 +261,8 @@ pub struct Awake {
     os: &'static str,
     power: Power,
     power_read: Option<Instant>,
-    /// The hold is held but does nothing until the charger is back
-    /// (`on` on a Mac running on battery).
+    /// Nothing is held until the charger is back (`on` on a Mac running on
+    /// battery).
     charger_wait: bool,
     child: Option<std::process::Child>,
     spawned: Option<Instant>,
@@ -328,17 +350,29 @@ impl Awake {
             self.power = (self.probe)();
             self.power_read = Some(Instant::now());
         }
-        let was_holding = self.holding();
         let was_waiting = self.charger_wait;
-        let mut lines = self.tick_hold(mode, now);
-        self.charger_wait =
-            self.holding() && self.power == Power::Battery && !holds_on_battery(self.os, self.mode);
-        if was_holding && self.holding() && was_waiting != self.charger_wait {
-            lines.push(if self.charger_wait {
-                "keep-awake: on battery, so the hold waits for the charger (daemon.keep_awake=always holds on battery too)".to_string()
-            } else {
-                "keep-awake: plugged in again; holding this machine awake".to_string()
-            });
+        let wait =
+            mode != Mode::Off && self.power == Power::Battery && !holds_on_battery(self.os, mode);
+        let mut lines = Vec::new();
+        if wait {
+            // `on` on a Mac running on battery: the holder would keep the
+            // battery awake, so nothing is held until the charger is back.
+            if mode != self.mode {
+                self.retry_after = None;
+                self.note.clear();
+            }
+            self.mode = mode;
+            self.release();
+            self.charger_wait = true;
+            if !was_waiting {
+                lines.push("keep-awake: on battery, so the hold waits for the charger (daemon.keep_awake=always holds on battery too)".to_string());
+            }
+        } else {
+            self.charger_wait = false;
+            if was_waiting && self.power != Power::Battery {
+                lines.push("keep-awake: plugged in again; taking the hold".to_string());
+            }
+            lines.extend(self.tick_hold(mode, now));
         }
         self.publish();
         lines
@@ -353,7 +387,7 @@ impl Awake {
         let was = self.mode;
         self.mode = mode;
         if mode == Mode::Off {
-            if self.release() {
+            if self.release() || was != Mode::Off {
                 lines.push("keep-awake off: the machine may sleep again".to_string());
             }
             self.publish();
@@ -431,26 +465,19 @@ impl Awake {
             .spawn()
         {
             Ok(child) => {
-                let lid = lid_note();
-                let battery_now = self.power == Power::Battery && !holds_on_battery(self.os, mode);
+                let notes = [display_note(), lid_note()]
+                    .into_iter()
+                    .filter(|n| !n.is_empty())
+                    .map(|n| format!("; {n}"))
+                    .collect::<String>();
                 lines.push(format!(
-                    "keeping this machine awake while PULSE runs ({how}, pid {}){}{}{}",
+                    "keeping this machine awake while PULSE runs ({how}, pid {}){}{notes}",
                     child.id(),
                     if mode == Mode::Always {
                         ", on battery too"
                     } else {
                         ", while plugged in"
                     },
-                    if battery_now {
-                        "; on battery now, so the hold waits for the charger"
-                    } else {
-                        ""
-                    },
-                    if lid.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; {lid}")
-                    }
                 ));
                 self.child = Some(child);
                 self.spawned = Some(Instant::now());
@@ -481,7 +508,6 @@ impl Awake {
         let _ = child.wait();
         self.spawned = None;
         self.since.clear();
-        self.charger_wait = false;
         self.publish();
         true
     }
@@ -513,8 +539,10 @@ impl Awake {
             "how": if self.holding() { self.how.as_str() } else { "" },
             "note": self.note,
             "lid": lid_note(),
+            "display": display_note(),
             "power": self.power.as_str(),
             "effective": self.effective(),
+            "waiting": self.charger_wait,
         });
         if let Some(child) = &self.child {
             awake["pid"] = serde_json::json!(child.id());
@@ -559,17 +587,21 @@ mod tests {
 
     #[test]
     fn holder_commands_per_platform() {
-        let (p, a) = holder_for("macos", Mode::PluggedIn, 42).unwrap();
+        let (p, a) = holder_for("macos", 42).unwrap();
         assert_eq!(p, "caffeinate");
-        assert_eq!(a, ["-s", "-w", "42"]);
-        let (_, a) = holder_for("macos", Mode::Always, 42).unwrap();
-        assert_eq!(a, ["-s", "-i", "-w", "42"]);
-        let (p, a) = holder_for("linux", Mode::PluggedIn, 7).unwrap();
+        assert_eq!(a, ["-d", "-i", "-s", "-w", "42"], "Copilot CLI's -dis");
+        let (p, a) = holder_for("linux", 7).unwrap();
         assert_eq!(p, "systemd-inhibit");
         assert!(a.contains(&"--pid=7".to_string()));
         assert!(a.contains(&"--what=sleep:idle".to_string()));
-        assert!(holder_for("windows", Mode::Always, 1).is_none());
+        assert!(holder_for("windows", 1).is_none());
         assert!(holder_command(Mode::Off, 1).is_none());
+    }
+
+    /// A hold with the caller's command on a machine that is plugged in, so
+    /// the test does not depend on where the test machine draws its power.
+    fn on_ac(holder: Holder) -> Awake {
+        Awake::with_holder_and_probe(holder, Box::new(|| Power::Ac))
     }
 
     #[test]
@@ -607,7 +639,7 @@ mod tests {
 
     #[test]
     fn on_takes_the_hold_and_off_releases_it() {
-        let mut a = Awake::with_holder(Box::new(|_, _| {
+        let mut a = on_ac(Box::new(|_, _| {
             Some(("/bin/sleep".to_string(), vec!["30".to_string()]))
         }));
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
@@ -617,9 +649,12 @@ mod tests {
         );
         assert!(lines[0].contains("while plugged in"));
         assert!(a.holding());
+        assert!(a.effective());
         let beat = a.beat_value();
         assert_eq!(beat["awake"]["mode"], "on");
         assert_eq!(beat["awake"]["holding"], true);
+        assert_eq!(beat["awake"]["effective"], true);
+        assert_eq!(beat["awake"]["waiting"], false);
         assert_eq!(beat["awake"]["since"], "2026-01-01T00:00:00Z");
         assert_eq!(beat["awake"]["how"], "/bin/sleep 30");
         assert!(beat["awake"]["pid"].as_u64().is_some());
@@ -642,7 +677,7 @@ mod tests {
 
     #[test]
     fn a_holder_that_exits_at_once_waits_before_the_next_try() {
-        let mut a = Awake::with_holder(Box::new(|_, _| {
+        let mut a = on_ac(Box::new(|_, _| {
             Some(("/bin/sleep".to_string(), vec!["0".to_string()]))
         }));
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
@@ -679,7 +714,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_noted_once_and_retried_later() {
-        let mut a = Awake::with_holder(Box::new(|_, _| {
+        let mut a = on_ac(Box::new(|_, _| {
             Some(("/nonexistent/pulse-caffeinate".to_string(), vec![]))
         }));
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
@@ -694,7 +729,7 @@ mod tests {
 
     #[test]
     fn no_holder_on_this_platform_is_said_once() {
-        let mut a = Awake::with_holder(Box::new(|_, _| None));
+        let mut a = on_ac(Box::new(|_, _| None));
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("not available"), "{lines:?}");
@@ -772,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mac_on_battery_waits_for_the_charger_and_says_so_once() {
+    fn a_mac_on_battery_holds_nothing_until_the_charger_is_back() {
         use std::sync::{Arc, Mutex};
         let power = Arc::new(Mutex::new(Power::Battery));
         let probe_power = Arc::clone(&power);
@@ -782,47 +817,91 @@ mod tests {
         );
         a.os = "macos";
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains("on battery now, so the hold waits for the charger"));
-        assert!(a.holding());
+        assert_eq!(
+            lines,
+            [
+                "keep-awake: on battery, so the hold waits for the charger (daemon.keep_awake=always holds on battery too)"
+            ]
+        );
+        assert!(!a.holding(), "-d and -i would drain the battery");
         assert!(!a.effective());
         let beat = a.beat_value();
-        assert_eq!(beat["awake"]["holding"], true);
+        assert_eq!(beat["awake"]["mode"], "on");
+        assert_eq!(beat["awake"]["holding"], false);
         assert_eq!(beat["awake"]["effective"], false);
+        assert_eq!(beat["awake"]["waiting"], true);
         assert_eq!(beat["awake"]["power"], "battery");
 
-        // Still on battery: nothing new to say.
+        // Still on battery: nothing new to say, nothing held.
         a.power_read = None;
         assert!(
             a.tick_mode(Mode::PluggedIn, "2026-01-01T00:01:00Z")
                 .is_empty()
         );
+        assert!(!a.holding());
 
         *power.lock().unwrap() = Power::Ac;
         a.power_read = None;
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:02:00Z");
-        assert_eq!(
-            lines,
-            vec!["keep-awake: plugged in again; holding this machine awake"]
-        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0], "keep-awake: plugged in again; taking the hold");
+        assert!(lines[1].starts_with("keeping this machine awake while PULSE runs"));
+        assert!(a.holding());
         assert!(a.effective());
-        assert_eq!(a.beat_value()["awake"]["power"], "ac");
+        let beat = a.beat_value();
+        assert_eq!(beat["awake"]["waiting"], false);
+        assert_eq!(beat["awake"]["power"], "ac");
+        assert_eq!(beat["awake"]["since"], "2026-01-01T00:02:00Z");
 
         *power.lock().unwrap() = Power::Battery;
         a.power_read = None;
         let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:03:00Z");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].starts_with("keep-awake: on battery, so the hold waits for the charger"));
+        assert!(!a.holding(), "unplugged: the hold is released");
         assert!(!a.effective());
 
         // `always` holds on battery too, so the wait ends with the mode.
         a.power_read = None;
         let lines = a.tick_mode(Mode::Always, "2026-01-01T00:04:00Z");
-        assert!(a.effective(), "{lines:?}");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("on battery too"), "{lines:?}");
+        assert!(a.holding());
+        assert!(a.effective());
+        assert_eq!(a.beat_value()["awake"]["waiting"], false);
+
+        // Back to `on` on battery: released again, waiting again.
+        a.power_read = None;
+        let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:05:00Z");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("waits for the charger"), "{lines:?}");
+        assert!(!a.holding());
+        assert_eq!(a.beat_value()["awake"]["waiting"], true);
+
+        // Off while waiting is still said, and the wait ends.
+        a.power_read = None;
+        let lines = a.tick_mode(Mode::Off, "2026-01-01T00:06:00Z");
+        assert_eq!(lines, ["keep-awake off: the machine may sleep again"]);
+        assert_eq!(a.beat_value()["awake"]["waiting"], false);
+        a.release();
+    }
+
+    #[test]
+    fn linux_holds_on_battery_under_on() {
+        let mut a = Awake::with_holder_and_probe(
+            Box::new(|_, _| Some(("/bin/sleep".to_string(), vec!["30".to_string()]))),
+            Box::new(|| Power::Battery),
+        );
+        a.os = "linux";
+        let lines = a.tick_mode(Mode::PluggedIn, "2026-01-01T00:00:00Z");
+        assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines.iter().all(|l| !l.contains("waits for the charger")),
+            lines[0].starts_with("keeping this machine awake"),
             "{lines:?}"
         );
+        assert!(a.holding());
+        assert!(a.effective());
+        assert_eq!(a.beat_value()["awake"]["waiting"], false);
         a.release();
     }
 
@@ -857,7 +936,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let store = crate::test_helpers::new_store();
         let s: &pulse_store::Store = &store;
-        let mut a = Awake::with_holder(Box::new(|_, _| {
+        let mut a = on_ac(Box::new(|_, _| {
             Some(("/bin/sleep".to_string(), vec!["30".to_string()]))
         }));
         assert!(a.tick(s).is_empty());

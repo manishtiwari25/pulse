@@ -21,8 +21,8 @@ export interface AwakeView {
   on: boolean;
   // The runner is alive and holds the machine awake right now.
   holding: boolean;
-  // The runner holds, but the machine runs on battery and `on` holds on AC
-  // power only: the hold waits for the charger.
+  // `on` while the machine runs on battery: the runner holds nothing until
+  // the charger is back (the display and idle assertions would drain it).
   waiting: boolean;
   // Where the machine draws its power from, as the runner last read it.
   power: "ac" | "battery" | "unknown";
@@ -36,7 +36,9 @@ export function awakeView(r: Runner | undefined): AwakeView {
   const live = d?.state === "alive";
   const on = !!awake && awake.mode !== "off";
   const held = live && !!awake?.holding;
-  const waiting = held && awake?.effective === false;
+  // Older daemons kept a hold that did nothing on battery and said so with
+  // `holding` true, `effective` false; newer ones say `waiting` outright.
+  const waiting = live && on && (awake?.waiting === true || (held && awake?.effective === false));
   return { on, holding: held && !waiting, waiting, power: awake?.power ?? "unknown", awake, slept: d?.slept ?? null };
 }
 
@@ -45,19 +47,24 @@ export function useAwake(): AwakeView {
   return awakeView(q.data);
 }
 
-// The hold stops sleep, not the screen saver: the display still rests on
-// its own timer while the agents keep working behind it.
-export const SCREEN_SAVER_NOTE = "The screen saver may still come on; that's the display resting, not the machine sleeping, and the agents keep working behind it.";
-
 // One or two sentences for the state, used by the shell's cup, the hero and
-// the Settings strip.
+// the Settings strip. The display sentence comes from the runner (macOS:
+// the hold's display assertion is what the screen-saver daemon checks, so
+// the saver stays off too), the lid caveat likewise.
 export function awakeText(v: AwakeView): string {
   const a = v.awake;
   if (!a || a.mode === "off") return "The machine sleeps as its power settings say.";
   if (v.holding) {
-    return "Keeping this machine awake" + (a.mode === "always" ? ", on battery too" : " while it's plugged in") + (a.since ? ", since " + rel(a.since) : "") + ". " + SCREEN_SAVER_NOTE + (a.lid ? " " + capital(a.lid) + "." : "");
+    return (
+      "Keeping this machine awake" +
+      (a.mode === "always" ? ", on battery too" : " while it's plugged in") +
+      (a.since ? ", since " + rel(a.since) : "") +
+      "." +
+      (a.display ? " " + capital(a.display) + "." : "") +
+      (a.lid ? " " + capital(a.lid) + "." : "")
+    );
   }
-  if (v.waiting) return "Keep-awake is on, but the machine runs on battery, so the hold waits for the charger. Set it to always to hold on battery too.";
+  if (v.waiting) return "Keep-awake is on, but the machine runs on battery, so nothing holds it until the charger is back. Set it to always to hold on battery too.";
   if (a.note) return "Keep-awake is on, but nothing holds the machine right now: " + a.note + ".";
   return "Keep-awake is on; the runner takes the hold on its next check-in.";
 }

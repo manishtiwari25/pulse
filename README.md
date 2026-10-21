@@ -2930,51 +2930,58 @@ timeline shows a gap, and the trends dip. `daemon.keep_awake` is PULSE's own
 caffeination mode. `off` (the default) leaves the power settings alone. `on`
 holds the machine awake while the daemon runs and the machine is plugged in;
 `always` holds it on battery too. The hold is a child of the daemon - on
-macOS `caffeinate -s -w <daemon pid>` (`-i` added for `always`), on Linux a
-`systemd-inhibit --what=sleep:idle --mode=block` that waits on the daemon's
-pid - so it ends the moment the daemon exits, is paused with `pulse stop`, or
-restarts under a new build, and it never outlives PULSE. A closed lid still
-sleeps a Mac unless an external display is attached; the daemon's log line
-says so (`keeping this machine awake while PULSE runs (caffeinate -s -w
-<pid>, pid …), while plugged in; closing the lid still sleeps a Mac unless an
-external display is attached`). When the holder cannot start (no `caffeinate`, no systemd) the
+macOS `caffeinate -d -i -s -w <daemon pid>`, the same assertions Copilot
+CLI's `/keep-alive` takes (`-d` keeps the display awake, `-i` stops idle
+sleep, `-s` stops system sleep on AC power); on Linux a `systemd-inhibit
+--what=sleep:idle --mode=block` that waits on the daemon's pid - so it ends
+the moment the daemon exits, is paused with `pulse stop`, or restarts under a
+new build, and it never outlives PULSE. A closed lid still sleeps a Mac
+unless an external display is attached; the daemon's log line says so
+(`keeping this machine awake while PULSE runs (caffeinate -d -i -s -w <pid>,
+pid …), while plugged in; the display stays on and the screen saver stays
+off; closing the lid still sleeps a Mac unless an external display is
+attached`). When the holder cannot start (no `caffeinate`, no systemd) the
 daemon logs why and tries again ten minutes later instead of giving up.
 
 The daemon reads the power source every twenty seconds while the mode is on
-(`pmset -g batt` on macOS, `/sys/class/power_supply` on Linux) so the hold is
-reported as what it is, not what was asked for: `caffeinate -s` only counts
-while a Mac is plugged in, so `on` on battery is a hold that waits for the
-charger - the log says `keep-awake: on battery, so the hold waits for the
-charger (daemon.keep_awake=always holds on battery too)`, then `plugged in
-again; holding this machine awake` when the cable returns. The heartbeat
-carries `power` (`ac`, `battery`, `unknown`) and `effective` next to the mode,
-so the console says "Staying awake" only when the hold is in force and "Awake
-once plugged in" while it waits.
+(`pmset -g batt` on macOS, `/sys/class/power_supply` on Linux). Because `-d`
+and `-i` would keep a battery awake, `on` on a Mac running on battery holds
+nothing at all until the charger is back - the log says `keep-awake: on
+battery, so the hold waits for the charger (daemon.keep_awake=always holds on
+battery too)`, then `keep-awake: plugged in again; taking the hold` and the
+usual holding line when the cable returns. The heartbeat carries `power`
+(`ac`, `battery`, `unknown`), `effective` and `waiting` next to the mode, so
+the console says "Staying awake" only when the hold is in force and "Awake
+once plugged in" while it waits. `always` keeps the display on while on
+battery too, which is exactly the drain `on` avoids.
 
-The screen saver is not sleep. macOS starts it from the Lock Screen idle timer
-and no sleep assertion - not `caffeinate -d`, not a declared user activity -
-stops it; behind it the agents keep leasing and finishing jobs, the hold stays
-up, and the log and `pmset -g log` show no `Entering Sleep`. The console says
-so next to the hold ("the screen saver may still come on; that's the display
-resting, not the machine sleeping"). A machine that must never show it needs
-System Settings → Lock Screen → "Start Screen Saver when inactive" set to
-Never; PULSE does not change that setting for you.
+The screen saver stays off while the hold is in force. macOS starts the saver
+from the Lock Screen idle timer, but before launching it the screen-saver
+daemon asks power management whether idle display sleep is blocked
+(`PMDisplaySleepIsBlocked`), and `caffeinate -d` is that block: the system
+log reads `IS blocked, by assertionType: PreventUserIdleDisplaySleep` …
+`do not launch screen saver`. A hold without `-d` - the plain `caffeinate -s`
+PULSE used before - stopped sleep but let the saver come on every three
+minutes while the agents worked behind it. With the hold waiting for the
+charger or the setting off, the display rests as the Lock Screen settings
+say.
 
 The daemon also notices when the machine slept under it anyway - the wall
 clock jumps while the monotonic clock does not - and writes a `daemon.slept`
 event with the gap and the runs that were in flight. The heartbeat carries
-`awake` (mode, whether the hold is held and effective, since when, how, the
-power source) and `slept`; `/api/v1/runner` and `/api/v1/running` pass them to
-the console. The setting lives under Settings → This machine → Staying awake;
-the Running strip shows "Staying awake" and "Last sleep"; the home page adds a
-line under the headline. While the hold is held a thin amber line runs along
-the top of the console and a steaming cup sits in the shell's footer and
-header - the palette itself does not change - so a glance says the machine is
-staying up for its agents. Pip, the mascot on the home page, works at a laptop
-instead of waving: typing when the daemon is up, typing with a coffee in hand
-while the hold is in force, and with the laptop on its charger when the
-machine is plugged in as well; a hold that waits for the charger shows the
-plain laptop and the "Awake once plugged in" label.
+`awake` (mode, whether the hold is held and effective or waiting, since when,
+how, the power source, the display and lid notes) and `slept`;
+`/api/v1/runner` and `/api/v1/running` pass them to the console. The setting
+lives under Settings → This machine → Staying awake; the Running strip shows
+"Staying awake" and "Last sleep"; the home page adds a line under the
+headline. While the hold is held a thin amber line runs along the top of the
+console and a steaming cup sits in the shell's footer and header - the
+palette itself does not change - so a glance says the machine is staying up
+for its agents. Pip, the mascot on the home page, works at a laptop instead
+of waving: typing when the daemon is up, typing with a coffee in hand while
+the hold is in force, and with the laptop on its charger when the machine is
+plugged in as well; a hold that waits for the charger shows the plain laptop
+and the "Awake once plugged in" label.
 
 ### Workers, landing and the load governor
 
