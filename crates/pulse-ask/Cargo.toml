@@ -1,0 +1,27 @@
+[package]
+name = "pulse-ask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: Ask - quick answers about a project from the store, with cited sources"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-cli.workspace = true
+pulse-goals.workspace = true
+pulse-harness.workspace = true
+pulse-provider.workspace = true
+pulse-store.workspace = true
+pulse-tally.workspace = true
+anyhow.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pulse-provider-fake.workspace = true
+pulse-testutil.workspace = true
+tempfile.workspace = true

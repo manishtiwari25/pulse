@@ -1,0 +1,11 @@
+{
+  "errors": {},
+  "ok": true,
+  "projects": [
+    "commons",
+    "demo-app",
+    "demo-lib",
+    "pulse"
+  ],
+  "time": "2026-09-07T09:00:00Z"
+}

@@ -1,0 +1,341 @@
+{
+  "provider": {
+    "name": "copilot",
+    "label": "GitHub Copilot",
+    "device_login": true,
+    "token_login": true,
+    "login": {
+      "logged_in": true,
+      "user": "octocat",
+      "source": "device login",
+      "plan": "individual",
+      "expires_at": "2026-09-11T12:00:00Z",
+      "detail": ""
+    }
+  },
+  "providers": [
+    {
+      "name": "copilot",
+      "label": "GitHub Copilot",
+      "device_login": true,
+      "token_login": true
+    },
+    {
+      "name": "openai",
+      "label": "OpenAI-compatible",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "anthropic",
+      "label": "Anthropic Claude",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "gemini",
+      "label": "Google Gemini",
+      "device_login": false,
+      "token_login": true
+    },
+    {
+      "name": "azure-openai",
+      "label": "Azure OpenAI",
+      "device_login": true,
+      "token_login": true
+    },
+    {
+      "name": "github-models",
+      "label": "GitHub Models",
+      "device_login": true,
+      "token_login": true
+    },
+    {
+      "name": "ollama",
+      "label": "Ollama (local)",
+      "device_login": false,
+      "token_login": true
+    }
+  ],
+  "models": {
+    "worker": "claude-sonnet-4.5",
+    "light": "gpt-4.1",
+    "ask": ""
+  },
+  "limits": {
+    "max_steps": 60,
+    "step_timeout_seconds": 300,
+    "output_limit": 20000,
+    "minutes_per_job": 10,
+    "max_cost": 80,
+    "keep_observations": 5
+  },
+  "sessions": {
+    "running": 1,
+    "today": 5,
+    "failed_today": 3,
+    "submitted_today": 1,
+    "cost_today": 20
+  },
+  "settings": [
+    {
+      "name": "provider",
+      "value": "copilot",
+      "default": "copilot",
+      "kind": "choice",
+      "min": null,
+      "choices": ["copilot"],
+      "description": "model provider the native harness uses",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.max_steps",
+      "value": "60",
+      "default": "60",
+      "kind": "count",
+      "min": 1,
+      "choices": null,
+      "description": "maximum tool/model steps a harness run may take",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.step_timeout",
+      "value": "300",
+      "default": "300",
+      "kind": "count",
+      "min": 30,
+      "choices": null,
+      "description": "seconds one command or provider step may run before the harness stops it",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.output_limit",
+      "value": "20000",
+      "default": "20000",
+      "kind": "count",
+      "min": 1000,
+      "choices": null,
+      "description": "characters of command output kept in the prompt and transcript",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.max_cost",
+      "value": "80",
+      "default": "0",
+      "kind": "number",
+      "min": 0,
+      "choices": null,
+      "description": "provider units one harness run may spend before the harness stops it; 0 means no cap",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.keep_observations",
+      "value": "5",
+      "default": "5",
+      "kind": "count",
+      "min": 0,
+      "choices": null,
+      "description": "recent command observations kept in the model prompt when older output is summarized",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "harness.context_window",
+      "value": "0",
+      "kind": "count",
+      "choices": null,
+      "description": "tokens of context the native harness assumes the model takes: past 80% of it older observations collapse harder; 0 reads the window from the provider's model list (1M for the Claude and Gemini models that take it, Copilot's per-model limit), and a model that lists none keeps context discipline at its first level"
+    },
+    {
+      "name": "harness.system_prompt",
+      "value": "",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "custom harness system prompt template; empty uses the built-in default",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.instructions",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run reads the clone's repository instruction files - AGENTS.md, CLAUDE.md, GEMINI.md, .github/copilot-instructions.md - into its system prompt; off: the task alone speaks for the repository",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.mcp_tools",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run with a store connects the project's enabled MCP servers at its start and offers their tools to the model as mcp__<server>__<tool>; off: workers call servers through pulse mcp call only",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.skills",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run offers the skill tool, which loads one skill's SKILL.md when the model asks; off: skills reach the model through the brief alone",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.hooks",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run runs the owner's hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json; off: no hooks run",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.memory",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run reads ~/.pulse/memory into its system prompt and offers the memory tool; off: nothing is read or offered",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.web_search",
+      "value": "chat",
+      "default": "chat",
+      "kind": "choice",
+      "min": null,
+      "choices": ["chat", "on", "off"],
+      "description": "chat: pulse harness chat offers the web_search tool and jobs do not; on: jobs too; off: nowhere",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.subagents",
+      "value": "on",
+      "default": "on",
+      "kind": "choice",
+      "min": null,
+      "choices": ["on", "off"],
+      "description": "on: a native-harness run offers the subagent tool: a bounded helper run on a self-contained sub-task; off: the tool is not offered",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.fetch_allow",
+      "value": "docs.rs, *.rust-lang.org",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "hosts a native-harness run's fetch tool may read web pages from; empty turns the tool off",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
+      "name": "harness.deny_tools",
+      "value": "bash(rm -rf *), read(.env*)",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "permission rules every native-harness run refuses outright (tool or tool(filter), comma- or newline-separated); a tool denied whole is not offered",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
+      "name": "harness.allow_tools",
+      "value": "",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "permission rules pulse harness chat runs without asking (tool or tool(filter), comma- or newline-separated); deny rules win",
+      "updated_at": "2026-09-10T18:02:00Z",
+      "updated_by": "human",
+      "secret": false
+    },
+    {
+      "name": "harness.compact_at",
+      "value": "70",
+      "default": "70",
+      "kind": "count",
+      "min": 0,
+      "choices": null,
+      "description": "percent of the context window at which a native-harness run summarises the older part of the conversation; 0 turns compaction off",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "harness.reasoning",
+      "value": "default",
+      "default": "default",
+      "kind": "choice",
+      "min": null,
+      "choices": ["default", "minimal", "low", "medium", "high", "xhigh"],
+      "description": "the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers and to copilot for the models that take it; default sends nothing",
+      "updated_at": "",
+      "updated_by": "default",
+      "secret": false
+    },
+    {
+      "name": "worker_model",
+      "value": "claude-sonnet-4.5",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "model used for implementation runs",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    },
+    {
+      "name": "light_model",
+      "value": "gpt-4.1",
+      "default": "",
+      "kind": "text",
+      "min": null,
+      "choices": null,
+      "description": "model used for lead, reflect and other light runs; empty means worker_model",
+      "updated_at": "2026-09-11T07:00:00Z",
+      "updated_by": "owner",
+      "secret": false
+    }
+  ]
+}

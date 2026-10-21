@@ -1,0 +1,47 @@
+{
+  "posts": [
+    {
+      "agent": "delta",
+      "branch": "",
+      "date": "2026-09-01T20:47:00Z",
+      "expires": "",
+      "has_read_line": 0,
+      "id": "20260901T204700Z-delta",
+      "kind": "proposal",
+      "model": "gpt-6-astra",
+      "name": "",
+      "on_post": "",
+      "project": "",
+      "provenance_missing": [
+        "session",
+        "branch"
+      ],
+      "provenance_ok": 0,
+      "rel_path": "store:20260901T204700Z-delta",
+      "resolution": "",
+      "runner": "copilot-cli",
+      "session": "",
+      "summary": "compute request CR-002: Standard_B2ms for 8h - fuzzing the v2 parser overnight",
+      "text_hash": "",
+      "vote": ""
+    }
+  ],
+  "thread": {
+    "active_claims": [],
+    "area": "runner",
+    "key": "runner/compute",
+    "last": "2026-09-01T20:47:00Z",
+    "last_by": "delta",
+    "last_kind": "proposal",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta"
+    ],
+    "posts": 1,
+    "resolution": "",
+    "status": "open",
+    "summary": "compute request CR-002: Standard_B2ms for 8h - fuzzing the v2 parser overnight",
+    "thread": "compute"
+  }
+}

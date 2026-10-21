@@ -1,0 +1,34 @@
+[package]
+name = "pulse-evolve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-bus.workspace = true
+pulse-cli.workspace = true
+pulse-gitenv.workspace = true
+pulse-records.workspace = true
+pulse-store.workspace = true
+pulse-tally.workspace = true
+anyhow.workspace = true
+signal-hook.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+home.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

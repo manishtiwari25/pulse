@@ -1,0 +1,38 @@
+{
+  "body": "# Agent instructions\n\nUse the `pulse` command for everything: the board, records, tasks, compute. Never edit the store by hand.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "INSTR-agents",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "agents"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "INSTR-agents",
+    "kind": "instruction",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "agents",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "agents",
+    "updated_at": "2026-09-01T13:12:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T13:12:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}
