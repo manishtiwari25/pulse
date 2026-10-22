@@ -1559,21 +1559,45 @@ pub(crate) fn daemon(
                     }
                     if crate::run::runner_stopped(s).is_empty() {
                         let mut scripts_held = false;
-                        for line in
-                            crate::schedule::tend_schedules(s, now.clone(), actor.clone(), &slugs)
+                        // When the bulk volume is away, leave every due schedule
+                        // untouched so it still falls due on the first pass after
+                        // the disk is back, instead of running with a dangling
+                        // work dir and moving next_at past the missed tick. The
+                        // hold note rides the "schedules" idle-log key, so it
+                        // logs once per away spell, like the load hold.
+                        if let crate::bulk::State::Missing { target, .. } =
+                            crate::bulk::state(std::path::Path::new(&s.home))
                         {
-                            // A hold on the check and watch scripts stands for
-                            // as long as the machine is saturated; it logs
-                            // once per change, like the load hold.
-                            if crate::schedule_script::is_hold_line(&line) {
-                                scripts_held = true;
-                                if let Some(line) =
-                                    idle_log.line("schedules", &line, std::time::Instant::now())
-                                {
+                            let line = crate::bulk::hold_note(&target);
+                            // Keep the slot set across passes (skip the clear
+                            // below) so the note logs once per away spell; it
+                            // clears on the first pass that runs scripts again.
+                            scripts_held = true;
+                            if let Some(line) =
+                                idle_log.line("schedules", &line, std::time::Instant::now())
+                            {
+                                say(&o, line);
+                            }
+                        } else {
+                            for line in crate::schedule::tend_schedules(
+                                s,
+                                now.clone(),
+                                actor.clone(),
+                                &slugs,
+                            ) {
+                                // A hold on the check and watch scripts stands for
+                                // as long as the machine is saturated; it logs
+                                // once per change, like the load hold.
+                                if crate::schedule_script::is_hold_line(&line) {
+                                    scripts_held = true;
+                                    if let Some(line) =
+                                        idle_log.line("schedules", &line, std::time::Instant::now())
+                                    {
+                                        say(&o, line);
+                                    }
+                                } else {
                                     say(&o, line);
                                 }
-                            } else {
-                                say(&o, line);
                             }
                         }
                         if !scripts_held {
