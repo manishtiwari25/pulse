@@ -2133,9 +2133,11 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = format!("question post skipped: {}", err_message(&e));
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
+                let msg = result_post_failure_message(&job.str("id"), "question", &err_message(&e));
+                if let Some(msg) = msg {
+                    eprintln!("run {run_id}: {msg}");
+                    log.add(msg);
+                }
             }
         }
         // Teacher mode: each lesson the worker reported becomes a `lesson`
@@ -2164,9 +2166,11 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = format!("lesson post skipped: {}", err_message(&e));
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
+                let msg = result_post_failure_message(&job.str("id"), "lesson", &err_message(&e));
+                if let Some(msg) = msg {
+                    eprintln!("run {run_id}: {msg}");
+                    log.add(msg);
+                }
             }
         }
         // A card about PULSE itself (`Class: pulse`) from any project but the
@@ -2216,9 +2220,12 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = format!("shared finding post skipped: {}", err_message(&e));
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
+                let msg =
+                    result_post_failure_message(&job.str("id"), "shared finding", &err_message(&e));
+                if let Some(msg) = msg {
+                    eprintln!("run {run_id}: {msg}");
+                    log.add(msg);
+                }
             }
         }
         for sg in &parsed.suggestions {
@@ -2283,9 +2290,12 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = format!("suggestion post skipped: {}", err_message(&e));
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
+                let msg =
+                    result_post_failure_message(&job.str("id"), "suggestion", &err_message(&e));
+                if let Some(msg) = msg {
+                    eprintln!("run {run_id}: {msg}");
+                    log.add(msg);
+                }
             }
         }
         write_run_log(&run_id, &log_path, &log.text());
@@ -3077,6 +3087,29 @@ mod tests {
         assert!(m.contains("job-3"), "{m}");
         assert!(m.contains("result post failed"), "{m}");
         assert!(m.ends_with("connection refused"), "{m}");
+    }
+
+    /// The question/lesson/finding/suggestion post-failure paths use the same
+    /// gate as the result/answer paths: a real error names the post kind, and
+    /// an empty or blank error never becomes a "post skipped" claim.
+    #[test]
+    fn result_post_failure_message_covers_every_post_kind() {
+        for what in ["question", "lesson", "shared finding", "suggestion"] {
+            let m = super::result_post_failure_message("job-4", what, "disk I/O error")
+                .unwrap_or_else(|| panic!("a real error must produce a warning for {what}"));
+            assert!(m.starts_with("warning: "), "{what}: {m}");
+            assert!(m.contains("job-4"), "{what}: {m}");
+            assert!(m.contains(&format!("{what} post failed")), "{what}: {m}");
+            assert!(m.ends_with("disk I/O error"), "{what}: {m}");
+            assert!(
+                super::result_post_failure_message("job-4", what, "").is_none(),
+                "{what} must not warn on an empty error"
+            );
+            assert!(
+                super::result_post_failure_message("job-4", what, "  \n").is_none(),
+                "{what} must not warn on a blank error"
+            );
+        }
     }
 
     #[test]
