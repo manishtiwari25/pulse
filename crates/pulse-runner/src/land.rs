@@ -1487,6 +1487,7 @@ pub(crate) fn result_post_failed_warning(
     )
 }
 
+/// Go: func pendingLandings(q querier, slug string) []row
 pub(crate) fn pending_landings<Q, S>(q: &Q, slug: S) -> Vec<crate::util::Row>
 where
     Q: PendingQuerier + ?Sized,
