@@ -1,0 +1,32 @@
+{
+  "body": "---\nrecipe: 1\ntools:\n  - node@22\nsetup:\n  - npm ci\nenv: {}\nservices: []\nsuggested_check: \"npm test\"\n---\n\n# Environment\n\nNode 22 and npm; `npm ci` restores the lockfile. The tests need no service.\n",
+  "frontmatter": {
+    "recipe": "1"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "",
+    "delivered": "",
+    "delivery": "",
+    "id": "CTX-environment-demo-app",
+    "kind": "context",
+    "number": 0,
+    "path": "",
+    "project": "demo-app",
+    "slug": "environment",
+    "status": "active",
+    "tags": [],
+    "tier": 0,
+    "title": "Environment recipe",
+    "updated_at": "2026-09-01T13:33:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T13:33:00Z",
+      "author": "human",
+      "note": "pulse env set",
+      "rev": 1
+    }
+  ]
+}

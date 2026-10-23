@@ -1,0 +1,86 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.*.example
+
+# Credentials
+credentials
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Generated output
+dist/
+build/
+coverage/
+*.out
+# A stray `pulse` binary at the repo root; install into ~/.pulse/bin with `cargo install --root ~/.pulse` instead.
+/pulse
+
+# JavaScript / TypeScript
+node_modules/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.vite/
+out/
+# The hub UI's static export is committed so a human builds the binary without Node.
+!web/hub/out/
+!web/hub/out/**
+.nyc_output/
+
+# .NET
+bin/
+obj/
+TestResults/
+
+# Python
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Tool-specific agent directories (never committed; `pulse hooks install` writes them per machine)
+.claude/
+.cursor/
+.codex/
+.opencode/
+.agents/
+/.github/skills/
+
+# Local caches and temp files
+.cache/
+tmp/
+temp/
+
+# Rust
+/target/
+crates/*/target/

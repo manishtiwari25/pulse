@@ -1,0 +1,54 @@
+{
+  "session": {
+    "id": "run-20260911-003",
+    "run_id": "run-20260911-003",
+    "job_id": "job-schema-index",
+    "job_title": "Add events subject index",
+    "agent": "fjord",
+    "project": "pulse",
+    "executor": "",
+    "provider": "copilot",
+    "model": "gpt-4.1",
+    "cwd": "/home/owner/.pulse/work/job-schema-index",
+    "status": "step_limit",
+    "exit_status": "step_limit",
+    "submission": "",
+    "error": "The run reached 60 steps before a safe patch was ready.",
+    "steps": 60,
+    "calls": 41,
+    "prompt_tokens": 105000,
+    "completion_tokens": 11800,
+    "cost": 0,
+    "started_at": "2026-09-11T04:00:00Z",
+    "updated_at": "2026-09-11T04:47:00Z",
+    "ended_at": "2026-09-11T04:47:00Z",
+    "trajectory": "/home/owner/.pulse/harness/run-20260911-003.json",
+    "cancel_requested_at": ""
+  },
+  "steps": [
+    {
+      "n": 1,
+      "at": "2026-09-11T04:00:12Z",
+      "kind": "assistant",
+      "content": "I will trace the store migration path before adding the index.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 900,
+      "completion_tokens": 34,
+      "model": "gpt-4.1"
+    },
+    {
+      "n": 60,
+      "at": "2026-09-11T04:47:00Z",
+      "kind": "exit",
+      "content": "step_limit",
+      "command": "",
+      "exit_code": 124,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": ""
+    }
+  ]
+}

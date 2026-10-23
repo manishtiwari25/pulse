@@ -1,0 +1,83 @@
+{
+  "available": true,
+  "now": "2026-09-11T09:00:00Z",
+  "sweep": {
+    "at": "2026-09-11T08:50:00Z",
+    "removed": { "clone": 2, "scratch": 5, "worktree": 1 },
+    "held": { "branch": 3, "worktree": 1 },
+    "bytes": 184549376,
+    "errors": 0,
+    "items": {
+      "removed": [
+        { "kind": "clone", "path": "/home/owner/.pulse/work/job-20260911T074512Z-3f9a1c/clone", "why": "job done 1h ago", "bytes": 94371840 },
+        { "kind": "clone", "path": "/home/owner/.pulse/work/job-20260911T071030Z-9b2e44/clone", "why": "job done 1h ago", "bytes": 88080384 },
+        { "kind": "worktree", "path": "/home/owner/src/demo-app/wt/fleet-cap-continue", "project": "demo-app", "why": "merged into main, untouched for 42m", "bytes": 2097152 }
+      ],
+      "held": [
+        { "kind": "worktree", "path": "/home/owner/src/demo-lib/wt/retry-backoff", "project": "demo-lib", "why": "has uncommitted changes" },
+        { "kind": "branch", "path": "pulse/demo-app/job-20260911T083000Z-1c7d2e", "project": "demo-app", "why": "held by job job-20260911T083000Z-1c7d2e (running)" },
+        { "kind": "branch", "path": "pulse/demo-app/job-20260910T190000Z-77ab10", "project": "demo-app", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" },
+        { "kind": "branch", "path": "pulse/demo-lib/job-20260909T120000Z-0d4e9f", "project": "demo-lib", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" }
+      ],
+      "errors": []
+    }
+  },
+  "text": "last sweep 2026-09-11T08:50:00Z: removed clone 2, scratch 5, worktree 1 (176.0 MB freed); held branch 3, worktree 1",
+  "settings": { "sweep": "on", "grace_minutes": 30, "branch_days": 7, "keep_days": 14 },
+  "agents": [
+    { "agent": "aurora", "runs": 14, "last_at": "2026-09-11T08:41:10Z", "left": 2, "removed": 2, "bytes": 6291456 },
+    { "agent": "borealis", "runs": 11, "last_at": "2026-09-11T07:58:02Z", "left": 0, "removed": 0, "bytes": 0 },
+    { "agent": "cirrus", "runs": 6, "last_at": "2026-09-10T22:14:40Z", "left": 0, "removed": 0, "bytes": 0 }
+  ],
+  "agent_days": 30,
+  "events": [
+    {
+      "id": 9120,
+      "at": "2026-09-11T08:50:00Z",
+      "actor": "daemon",
+      "action": "daemon.sweep",
+      "subject": "local",
+      "detail": { "removed": { "clone": 2, "scratch": 5, "worktree": 1 }, "bytes": 184549376, "held": 4, "errors": [], "examples": ["clone /home/owner/.pulse/work/job-20260911T074512Z-3f9a1c/clone", "worktree /home/owner/src/demo-app/wt/fleet-cap-continue"] }
+    },
+    {
+      "id": 9119,
+      "at": "2026-09-11T08:50:00Z",
+      "actor": "daemon",
+      "action": "worktree.swept",
+      "subject": "/home/owner/src/demo-app/wt/fleet-cap-continue",
+      "detail": { "project": "demo-app", "branch": "fleet/2026-09-11/cap-continue", "tip": "4f1c2a9", "merged": true, "why": "merged into main, untouched for 42m" }
+    },
+    {
+      "id": 9102,
+      "at": "2026-09-11T08:41:10Z",
+      "actor": "aurora",
+      "action": "agent.cleanup",
+      "subject": "run-20260911T081500Z-6a2b1f",
+      "detail": {
+        "job": "job-20260911T074512Z-3f9a1c",
+        "project": "demo-app",
+        "executor": "local",
+        "status": "done",
+        "clone_mb": 90,
+        "left": [{ "kind": "worktree", "path": "/tmp/aurora-bench", "branch": "scratch/bench", "bytes": 4194304, "removed": true }],
+        "text": "clone removed (90 MB); left 1 worktree behind; removed 1 (4.0 MB)"
+      }
+    },
+    {
+      "id": 9088,
+      "at": "2026-09-11T07:58:02Z",
+      "actor": "borealis",
+      "action": "agent.cleanup",
+      "subject": "run-20260911T073000Z-c91d07",
+      "detail": { "job": "job-20260911T071030Z-9b2e44", "project": "demo-lib", "executor": "pulse-vm1", "status": "done", "clone_mb": 0, "left": [], "text": "clone removed on pulse-vm1; nothing left behind" }
+    },
+    {
+      "id": 9031,
+      "at": "2026-09-11T06:20:00Z",
+      "actor": "daemon",
+      "action": "land.swept",
+      "subject": "pulse/demo-app/job-20260910T214000Z-5e0f33",
+      "detail": { "project": "demo-app", "why": "merged branch, landed 2026-09-10T22:05:11Z" }
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "ballot": [
+    {
+      "amendments": 0,
+      "base": "/p/demo-app",
+      "brain": false,
+      "name": "demo-app",
+      "proposals": 1,
+      "slug": "demo-app",
+      "suggestions": 2
+    },
+    {
+      "amendments": 0,
+      "base": "/p/demo-lib",
+      "brain": false,
+      "name": "demo-lib",
+      "proposals": 0,
+      "slug": "demo-lib",
+      "suggestions": 1
+    },
+    {
+      "amendments": 1,
+      "base": "/p/pulse",
+      "brain": true,
+      "name": "pulse",
+      "proposals": 0,
+      "slug": "pulse",
+      "suggestions": 2
+    }
+  ],
+  "brain": "pulse",
+  "brains": [
+    "pulse"
+  ],
+  "commons_base": "/commons",
+  "commons_present": true,
+  "commons_questions": 1,
+  "proposals_awaiting": 1,
+  "votes_open": 6
+}

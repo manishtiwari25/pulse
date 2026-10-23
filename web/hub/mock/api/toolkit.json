@@ -1,0 +1,185 @@
+{
+  "project": "",
+  "projects": [
+    {
+      "project": "demo-app",
+      "tools": [
+        {
+          "project": "demo-app",
+          "name": "playwright",
+          "title": "Playwright browser",
+          "about": "A real browser: open the app, click through it, read the page and take screenshots, so UI work is seen before it is called done.",
+          "docs": "https://github.com/microsoft/playwright-mcp",
+          "why": "the checkout has a web UI (nextjs) and depends on @playwright/test",
+          "transport": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "@playwright/mcp@latest"
+          ],
+          "url": "",
+          "auth": "none",
+          "auth_header": "",
+          "secret": "",
+          "scope": "shared",
+          "add": "pulse mcp add --name playwright --transport stdio --command npx --arg -y --arg @playwright/mcp@latest",
+          "after": ""
+        },
+        {
+          "project": "demo-app",
+          "name": "context7",
+          "title": "Context7 docs",
+          "about": "Current documentation and code examples for the libraries this project depends on, so agents stop guessing at APIs. Works without a key; one raises the rate limit.",
+          "docs": "https://github.com/upstash/context7",
+          "why": "the checkout depends on 42 packages from package.json",
+          "transport": "http",
+          "command": "",
+          "args": [],
+          "url": "https://mcp.context7.com/mcp",
+          "auth": "none",
+          "auth_header": "",
+          "secret": "",
+          "scope": "shared",
+          "add": "pulse mcp add --name context7 --transport http --url https://mcp.context7.com/mcp",
+          "after": ""
+        },
+        {
+          "project": "demo-app",
+          "name": "postgres",
+          "title": "Postgres",
+          "about": "Reads the schema, explains query plans and runs read-only SQL against the project's database.",
+          "docs": "https://github.com/crystaldba/postgres-mcp",
+          "why": "the checkout depends on pg and docker-compose.yml runs a postgres service",
+          "transport": "stdio",
+          "command": "uvx",
+          "args": [
+            "postgres-mcp",
+            "--access-mode=restricted"
+          ],
+          "url": "",
+          "auth": "env",
+          "auth_header": "DATABASE_URI",
+          "secret": "database URL, ******host/db",
+          "scope": "project",
+          "add": "pulse mcp add --name postgres --project demo-app --transport stdio --command uvx --arg postgres-mcp --arg --access-mode=restricted --auth env --auth-header DATABASE_URI --secret keychain://pulse/postgres",
+          "after": "put the database URL in the keychain first: security add-generic-password -s pulse -a postgres -U -w '<secret>'"
+        }
+      ],
+      "skills": [
+        {
+          "project": "demo-app",
+          "name": "dev-setup",
+          "description": "How to install, build and run the project's check on a fresh machine",
+          "why": "the checkout has package.json and docker-compose.yml and no setup skill yet",
+          "body": "# Dev setup for demo-app\n\nUse this on a fresh clone or when a build fails for reasons that look environmental.\n\n1. Read the recorded environment first: `pulse env show --project demo-app` prints the toolchain versions and the install recipe the project keeps; prefer it to guessing.\n2. Install with npm: `npm ci`.\n3. Run the project's check: `npm test`; it is what `pulse` runs before a landing, so a red one blocks.\n4. Services come from `docker-compose.yml`: `docker compose up -d` before the check, `docker compose down` after.\n\nWhen a step fails on the environment and not the code, fix the environment, then record what you learned with `pulse env` so the next agent starts further along.\n\nWritten by PULSE from the project's shape; edit it as the project changes.",
+          "add": "pulse skill add --name dev-setup --project demo-app --description 'How to install, build and run the project'\"'\"'s check on a fresh machine' --file dev-setup.md"
+        },
+        {
+          "project": "demo-app",
+          "name": "ui-check",
+          "description": "How to look at UI work before calling it done",
+          "why": "the checkout has a web UI (nextjs) and no UI check skill yet",
+          "body": "# UI check for demo-app\n\nUI work is not done until someone has looked at it. Do this before the last commit of any change that touches a page, a component or a stylesheet.\n\n1. Serve it: `npm run dev (or `npm run build && npx serve out` for a static export)`.\n2. Screenshot it headless: `npx -y playwright screenshot --viewport-size 1280,900 --wait-for-timeout 2000 http://127.0.0.1:PORT/ check.png` (a playwright tool connection makes this a tool call; `pulse toolkit` suggests it).\n3. Look at the screenshot: layout, spacing, text that overflows, states that are empty or loading. Take one in light and one in dark when the app has both.\n4. Read the browser console; a new error or warning is part of the change.\n5. Keep the screenshot out of the commit unless the project keeps them on purpose; mention what you saw in the handoff.\n\nUser interface: nextjs.\n\nWritten by PULSE from the project's shape; edit it as the project changes.",
+          "add": "pulse skill add --name ui-check --project demo-app --description 'How to look at UI work before calling it done' --file ui-check.md"
+        }
+      ]
+    },
+    {
+      "project": "demo-lib",
+      "tools": [],
+      "skills": []
+    }
+  ],
+  "catalog": {
+    "tools": [
+      {
+        "name": "github",
+        "title": "GitHub",
+        "about": "Issues, pull requests, reviews, Actions runs and code search on GitHub, read and written as you.",
+        "docs": "https://github.com/github/github-mcp-server",
+        "transport": "http",
+        "auth": "oauth",
+        "shared": true
+      },
+      {
+        "name": "playwright",
+        "title": "Playwright browser",
+        "about": "A real browser: open the app, click through it, read the page and take screenshots, so UI work is seen before it is called done.",
+        "docs": "https://github.com/microsoft/playwright-mcp",
+        "transport": "stdio",
+        "auth": "none",
+        "shared": true
+      },
+      {
+        "name": "context7",
+        "title": "Context7 docs",
+        "about": "Current documentation and code examples for the libraries this project depends on, so agents stop guessing at APIs. Works without a key; one raises the rate limit.",
+        "docs": "https://github.com/upstash/context7",
+        "transport": "http",
+        "auth": "none",
+        "shared": true
+      },
+      {
+        "name": "postgres",
+        "title": "Postgres",
+        "about": "Reads the schema, explains query plans and runs read-only SQL against the project's database.",
+        "docs": "https://github.com/crystaldba/postgres-mcp",
+        "transport": "stdio",
+        "auth": "env",
+        "shared": false
+      },
+      {
+        "name": "sentry",
+        "title": "Sentry",
+        "about": "Issues, events and stack traces from the project's error tracking, as you.",
+        "docs": "https://docs.sentry.io/product/sentry-mcp/",
+        "transport": "http",
+        "auth": "oauth",
+        "shared": false
+      },
+      {
+        "name": "linear",
+        "title": "Linear",
+        "about": "Issues, projects and cycles in Linear, read and written as you.",
+        "docs": "https://linear.app/docs/mcp",
+        "transport": "http",
+        "auth": "oauth",
+        "shared": true
+      }
+    ],
+    "skills": [
+      {
+        "name": "dev-setup",
+        "description": "How to install, build and run the project's check on a fresh machine"
+      },
+      {
+        "name": "ui-check",
+        "description": "How to look at UI work before calling it done"
+      },
+      {
+        "name": "release-check",
+        "description": "How to verify and cut a release of this project"
+      },
+      {
+        "name": "db-migrations",
+        "description": "How to write, run and roll back a schema migration here"
+      },
+      {
+        "name": "containers",
+        "description": "How this project's containers are built and run"
+      },
+      {
+        "name": "ci-failures",
+        "description": "How to read and fix a failing CI run on this project"
+      },
+      {
+        "name": "api-contract",
+        "description": "How to change the API without breaking its clients"
+      },
+      {
+        "name": "infra-changes",
+        "description": "How infrastructure changes are planned, reviewed and applied here"
+      }
+    ]
+  }
+}

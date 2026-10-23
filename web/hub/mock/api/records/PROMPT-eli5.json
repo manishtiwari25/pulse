@@ -1,0 +1,38 @@
+{
+  "body": "# The closing message\n\nSay what landed, what was discarded and why, and what the agents do next. Ask a yes-or-no question only when a proposal waits at a hard stop.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "PROMPT-eli5",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "eli5"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "PROMPT-eli5",
+    "kind": "prompt",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "eli5",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "eli5",
+    "updated_at": "2026-09-01T13:05:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T13:05:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

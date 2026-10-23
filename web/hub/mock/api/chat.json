@@ -1,0 +1,75 @@
+{
+  "conversations": [
+    {
+      "id": "chat-20261018T101000-d4e5f6",
+      "title": "Refresh the getting-started docs",
+      "project": "",
+      "cwd": "/home/owner/.pulse/work/chat/chat-20261018T101000-d4e5f6/scratch",
+      "branch": "",
+      "status": "waiting",
+      "session_id": "run-20261018-chat-d4e5f6-1",
+      "provider": "copilot",
+      "model": "",
+      "auto_approve": true,
+      "created_by": "owner",
+      "created_at": "2026-10-18T10:10:00Z",
+      "updated_at": "2026-10-18T10:12:40Z",
+      "last_at": "2026-10-18T10:12:40Z",
+      "turns": 1,
+      "cost": 0.2,
+      "note": "",
+      "live": {
+        "status": "waiting",
+        "note": "",
+        "stream": "",
+        "pending": {
+          "kind": "question",
+          "id": 3,
+          "question": "Two projects ship docs: demo-app has a docs/ folder that is a year old, demo-lib has none at all. Which one should the refresh cover first?",
+          "choices": [
+            "demo-app",
+            "demo-lib",
+            "Both, demo-app first"
+          ]
+        },
+        "queued": [],
+        "turn_from": 3,
+        "turn_started_at": "2026-10-18T10:12:40Z",
+        "auto_approve": true,
+        "version": 4,
+        "session_id": "run-20261018-chat-d4e5f6-1"
+      }
+    },
+    {
+      "id": "chat-20261018T091500-a1b2c3",
+      "title": "Add a dark mode toggle to the settings page",
+      "project": "demo-app",
+      "cwd": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/tree",
+      "branch": "pulse/chat-a1b2c3",
+      "status": "idle",
+      "session_id": "run-20261018-chat-a1b2c3-2",
+      "provider": "copilot",
+      "model": "claude-sonnet-4.5",
+      "auto_approve": true,
+      "created_by": "owner",
+      "created_at": "2026-10-18T09:15:00Z",
+      "updated_at": "2026-10-18T09:41:12Z",
+      "last_at": "2026-10-18T09:41:12Z",
+      "turns": 3,
+      "cost": 1.5,
+      "note": "",
+      "live": {
+        "status": "idle",
+        "note": "",
+        "stream": "",
+        "pending": null,
+        "queued": [],
+        "turn_from": 0,
+        "turn_started_at": "",
+        "auto_approve": true,
+        "version": 7,
+        "session_id": "run-20261018-chat-a1b2c3-2"
+      }
+    }
+  ]
+}

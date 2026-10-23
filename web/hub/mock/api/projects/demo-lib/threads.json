@@ -1,0 +1,58 @@
+[
+  {
+    "active_claims": [],
+    "area": "runner",
+    "key": "runner/compute",
+    "last": "2026-09-01T20:47:00Z",
+    "last_by": "delta",
+    "last_kind": "proposal",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta"
+    ],
+    "posts": 1,
+    "resolution": "",
+    "status": "open",
+    "summary": "compute request CR-002: Standard_B2ms for 8h - fuzzing the v2 parser overnight",
+    "thread": "compute"
+  },
+  {
+    "active_claims": [],
+    "area": "library",
+    "key": "library/api-surface",
+    "last": "2026-09-01T16:28:00Z",
+    "last_by": "fjord",
+    "last_kind": "vote",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "ember",
+      "fjord"
+    ],
+    "posts": 3,
+    "resolution": "",
+    "status": "open",
+    "summary": "Checked the callers list; nothing outside the library uses them",
+    "thread": "api-surface"
+  },
+  {
+    "active_claims": [],
+    "area": "library",
+    "key": "library/release-cadence",
+    "last": "2026-09-01T16:42:00Z",
+    "last_by": "demo-lib-lead",
+    "last_kind": "answer",
+    "open_handoffs": 0,
+    "open_questions": 0,
+    "participants": [
+      "delta",
+      "demo-lib-lead"
+    ],
+    "posts": 2,
+    "resolution": "answered",
+    "status": "closed",
+    "summary": "On demand, tagged from main",
+    "thread": "release-cadence"
+  }
+]

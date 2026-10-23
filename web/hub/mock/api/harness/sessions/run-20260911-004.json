@@ -1,0 +1,54 @@
+{
+  "session": {
+    "id": "run-20260911-004",
+    "run_id": "run-20260911-004",
+    "job_id": "job-auth-fixture",
+    "job_title": "Add auth fixture",
+    "agent": "cinder",
+    "project": "demo-lib",
+    "executor": "vm-seven",
+    "provider": "copilot",
+    "model": "gpt-5.5",
+    "cwd": "/home/owner/.pulse/work/job-auth-fixture",
+    "status": "provider_error",
+    "exit_status": "provider_error",
+    "submission": "",
+    "error": "Copilot returned a transient 503 while streaming the tool call.",
+    "steps": 9,
+    "calls": 6,
+    "prompt_tokens": 32000,
+    "completion_tokens": 1800,
+    "cost": 6,
+    "started_at": "2026-09-11T03:10:00Z",
+    "updated_at": "2026-09-11T03:18:00Z",
+    "ended_at": "2026-09-11T03:18:00Z",
+    "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json",
+    "cancel_requested_at": ""
+  },
+  "steps": [
+    {
+      "n": 1,
+      "at": "2026-09-11T03:10:02Z",
+      "kind": "assistant",
+      "content": "I will add the missing auth fixture and keep it independent of secrets.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 1700,
+      "completion_tokens": 45,
+      "model": "gpt-5.5"
+    },
+    {
+      "n": 9,
+      "at": "2026-09-11T03:18:00Z",
+      "kind": "error",
+      "content": "provider_error: Copilot returned HTTP 503 while streaming the tool call.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": ""
+    }
+  ]
+}

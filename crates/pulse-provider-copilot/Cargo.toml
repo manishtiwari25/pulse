@@ -1,0 +1,25 @@
+[package]
+name = "pulse-provider-copilot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: GitHub Copilot model provider"
+
+[dependencies]
+pulse-store.workspace = true
+pulse-provider.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
+chrono.workspace = true
+regex.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

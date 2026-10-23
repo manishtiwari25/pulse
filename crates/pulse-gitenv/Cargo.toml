@@ -1,0 +1,15 @@
+[package]
+name = "pulse-gitenv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the git environment a hook-launched pulse must scrub"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

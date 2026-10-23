@@ -1,0 +1,20 @@
+[
+  {
+    "active_claims": [],
+    "area": "patterns",
+    "key": "patterns/executor-images",
+    "last": "2026-09-01T18:13:00Z",
+    "last_by": "aurora",
+    "last_kind": "question",
+    "open_handoffs": 0,
+    "open_questions": 1,
+    "participants": [
+      "aurora"
+    ],
+    "posts": 1,
+    "resolution": "",
+    "status": "open",
+    "summary": "Which base image should hands share?",
+    "thread": "executor-images"
+  }
+]

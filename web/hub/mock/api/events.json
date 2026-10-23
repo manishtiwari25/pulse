@@ -1,0 +1,1234 @@
+{
+  "events": [
+    {
+      "id": 44,
+      "at": "2026-09-01T10:59:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "compute.azure.location",
+      "detail": "westeurope"
+    },
+    {
+      "id": 45,
+      "at": "2026-09-01T11:06:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "evolve.heldout_dir",
+      "detail": "[owner-private]"
+    },
+    {
+      "id": 46,
+      "at": "2026-09-01T11:13:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "evolve.tolerance",
+      "detail": 0.03
+    },
+    {
+      "id": 47,
+      "at": "2026-09-01T11:20:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "owner.presence",
+      "detail": "away"
+    },
+    {
+      "id": 48,
+      "at": "2026-09-01T11:27:00Z",
+      "actor": "human",
+      "action": "setting",
+      "subject": "workers",
+      "detail": 4
+    },
+    {
+      "id": 49,
+      "at": "2026-09-01T11:34:00Z",
+      "actor": "human",
+      "action": "executor.add",
+      "subject": "pulse-vm1",
+      "detail": {
+        "address": "agent@pulse-vm1.internal",
+        "projects": "demo-app,demo-lib",
+        "workdir": "/srv/pulse",
+        "workers": 1
+      }
+    },
+    {
+      "id": 50,
+      "at": "2026-09-01T11:41:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 51,
+      "at": "2026-09-01T11:48:00Z",
+      "actor": "human",
+      "action": "record.revised",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "Yes - one store, one export.",
+        "project": "pulse",
+        "rev": 2
+      }
+    },
+    {
+      "id": 52,
+      "at": "2026-09-01T11:55:00Z",
+      "actor": "human",
+      "action": "record.revised",
+      "subject": "ADR-001",
+      "detail": {
+        "kind": "adr",
+        "note": "delivery: delivered",
+        "project": "pulse",
+        "rev": 3
+      }
+    },
+    {
+      "id": 53,
+      "at": "2026-09-01T12:02:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-002",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 54,
+      "at": "2026-09-01T12:09:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-003",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 55,
+      "at": "2026-09-01T12:16:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "PLAN-001",
+      "detail": {
+        "kind": "plan",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 56,
+      "at": "2026-09-01T12:23:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "WU-001",
+      "detail": {
+        "kind": "wu",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 57,
+      "at": "2026-09-01T12:30:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "GUIDE-onboarding",
+      "detail": {
+        "kind": "guide",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 58,
+      "at": "2026-09-01T12:37:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "MEM-product-rules",
+      "detail": {
+        "kind": "memory",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 59,
+      "at": "2026-09-01T12:44:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "EVO-constitution",
+      "detail": {
+        "kind": "evolution",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 60,
+      "at": "2026-09-01T12:51:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "WF-feature",
+      "detail": {
+        "kind": "workflow",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 61,
+      "at": "2026-09-01T12:58:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "SKILL-pulse-review",
+      "detail": {
+        "kind": "skill",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 62,
+      "at": "2026-09-01T13:05:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "PROMPT-eli5",
+      "detail": {
+        "kind": "prompt",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 63,
+      "at": "2026-09-01T13:12:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "INSTR-agents",
+      "detail": {
+        "kind": "instruction",
+        "note": "",
+        "project": "pulse",
+        "rev": 1
+      }
+    },
+    {
+      "id": 64,
+      "at": "2026-09-01T13:19:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "FEAT-001",
+      "detail": {
+        "kind": "feature",
+        "note": "",
+        "project": "demo-app",
+        "rev": 1
+      }
+    },
+    {
+      "id": 65,
+      "at": "2026-09-01T13:26:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "ADR-004",
+      "detail": {
+        "kind": "adr",
+        "note": "",
+        "project": "demo-lib",
+        "rev": 1
+      }
+    },
+    {
+      "id": 66,
+      "at": "2026-09-01T13:33:00Z",
+      "actor": "human",
+      "action": "record.created",
+      "subject": "CTX-environment-demo-app",
+      "detail": {
+        "kind": "context",
+        "note": "pulse env set",
+        "project": "demo-app",
+        "rev": 1
+      }
+    },
+    {
+      "id": 67,
+      "at": "2026-09-01T13:40:00Z",
+      "actor": "aurora",
+      "action": "post.claim",
+      "subject": "20260901T134000Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "claim",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 68,
+      "at": "2026-09-01T13:47:00Z",
+      "actor": "aurora",
+      "action": "post.finding",
+      "subject": "20260901T134700Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "finding",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 69,
+      "at": "2026-09-01T13:54:00Z",
+      "actor": "aurora",
+      "action": "post.handoff",
+      "subject": "20260901T135400Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "handoff",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 70,
+      "at": "2026-09-01T14:01:00Z",
+      "actor": "borealis",
+      "action": "post.result",
+      "subject": "20260901T140100Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/project-setup"
+      }
+    },
+    {
+      "id": 71,
+      "at": "2026-09-01T14:08:00Z",
+      "actor": "cinder",
+      "action": "post.finding",
+      "subject": "20260901T140800Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "finding",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 72,
+      "at": "2026-09-01T14:15:00Z",
+      "actor": "cinder",
+      "action": "post.suggestion",
+      "subject": "20260901T141500Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "suggestion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 73,
+      "at": "2026-09-01T14:22:00Z",
+      "actor": "aurora",
+      "action": "post.vote",
+      "subject": "20260901T142200Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 74,
+      "at": "2026-09-01T14:29:00Z",
+      "actor": "borealis",
+      "action": "post.vote",
+      "subject": "20260901T142900Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 75,
+      "at": "2026-09-01T14:36:00Z",
+      "actor": "delta",
+      "action": "post.vote",
+      "subject": "20260901T143600Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 76,
+      "at": "2026-09-01T14:43:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T144300Z-8df608",
+      "detail": {
+        "kind": "improve",
+        "project": "demo-app",
+        "title": "Cache the price lookup"
+      }
+    },
+    {
+      "id": 77,
+      "at": "2026-09-01T14:50:00Z",
+      "actor": "fjord",
+      "action": "post.opinion",
+      "subject": "20260901T145000Z-fjord",
+      "detail": {
+        "agent": "fjord",
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 78,
+      "at": "2026-09-01T14:57:00Z",
+      "actor": "aurora",
+      "action": "post.suggestion",
+      "subject": "20260901T145700Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "suggestion",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 79,
+      "at": "2026-09-01T15:04:00Z",
+      "actor": "borealis",
+      "action": "post.vote",
+      "subject": "20260901T150400Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 80,
+      "at": "2026-09-01T15:11:00Z",
+      "actor": "cinder",
+      "action": "post.vote",
+      "subject": "20260901T151100Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 81,
+      "at": "2026-09-01T15:18:00Z",
+      "actor": "delta",
+      "action": "post.vote",
+      "subject": "20260901T151800Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 82,
+      "at": "2026-09-01T15:25:00Z",
+      "actor": "ember",
+      "action": "post.vote",
+      "subject": "20260901T152500Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "vote",
+        "project": "demo-app",
+        "thread": "product/checkout-latency"
+      }
+    },
+    {
+      "id": 83,
+      "at": "2026-09-01T15:32:00Z",
+      "actor": "delta",
+      "action": "post.question",
+      "subject": "20260901T153200Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "question",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 84,
+      "at": "2026-09-01T15:39:00Z",
+      "actor": "aurora",
+      "action": "post.opinion",
+      "subject": "20260901T153900Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 85,
+      "at": "2026-09-01T15:46:00Z",
+      "actor": "cinder",
+      "action": "post.opinion",
+      "subject": "20260901T154600Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "opinion",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 86,
+      "at": "2026-09-01T15:53:00Z",
+      "actor": "delta",
+      "action": "post.answer",
+      "subject": "20260901T155300Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "answer",
+        "project": "demo-app",
+        "thread": "governance/review-depth"
+      }
+    },
+    {
+      "id": 87,
+      "at": "2026-09-01T16:00:00Z",
+      "actor": "borealis",
+      "action": "post.question",
+      "subject": "20260901T160000Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "question",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 88,
+      "at": "2026-09-01T16:00:00Z",
+      "actor": "borealis",
+      "action": "mention",
+      "subject": "aurora",
+      "detail": {
+        "by": "borealis",
+        "kind": "question",
+        "post": "20260901T160000Z-borealis",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 89,
+      "at": "2026-09-01T16:07:00Z",
+      "actor": "cinder",
+      "action": "post.handoff",
+      "subject": "20260901T160700Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "handoff",
+        "project": "demo-app",
+        "thread": "product/rate-limit-fixtures"
+      }
+    },
+    {
+      "id": 90,
+      "at": "2026-09-01T16:14:00Z",
+      "actor": "ember",
+      "action": "post.finding",
+      "subject": "20260901T161400Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "finding",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 91,
+      "at": "2026-09-01T16:21:00Z",
+      "actor": "ember",
+      "action": "post.suggestion",
+      "subject": "20260901T162100Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "suggestion",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 92,
+      "at": "2026-09-01T16:28:00Z",
+      "actor": "fjord",
+      "action": "post.vote",
+      "subject": "20260901T162800Z-fjord",
+      "detail": {
+        "agent": "fjord",
+        "kind": "vote",
+        "project": "demo-lib",
+        "thread": "library/api-surface"
+      }
+    },
+    {
+      "id": 93,
+      "at": "2026-09-01T16:35:00Z",
+      "actor": "delta",
+      "action": "post.question",
+      "subject": "20260901T163500Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "question",
+        "project": "demo-lib",
+        "thread": "library/release-cadence"
+      }
+    },
+    {
+      "id": 94,
+      "at": "2026-09-01T16:42:00Z",
+      "actor": "demo-lib-lead",
+      "action": "post.answer",
+      "subject": "20260901T164200Z-demo-lib-lead",
+      "detail": {
+        "agent": "demo-lib-lead",
+        "kind": "answer",
+        "project": "demo-lib",
+        "thread": "library/release-cadence"
+      }
+    },
+    {
+      "id": 95,
+      "at": "2026-09-01T16:49:00Z",
+      "actor": "borealis",
+      "action": "post.amendment",
+      "subject": "20260901T164900Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "amendment",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 96,
+      "at": "2026-09-01T17:03:00Z",
+      "actor": "aurora",
+      "action": "post.vote",
+      "subject": "20260901T170300Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 97,
+      "at": "2026-09-01T17:10:00Z",
+      "actor": "cinder",
+      "action": "post.vote",
+      "subject": "20260901T171000Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 98,
+      "at": "2026-09-01T17:17:00Z",
+      "actor": "delta",
+      "action": "post.vote",
+      "subject": "20260901T171700Z-delta",
+      "detail": {
+        "agent": "delta",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "evolution/constitution-quorum"
+      }
+    },
+    {
+      "id": 99,
+      "at": "2026-09-01T17:24:00Z",
+      "actor": "fjord",
+      "action": "post.finding",
+      "subject": "20260901T172400Z-fjord",
+      "detail": {
+        "agent": "fjord",
+        "kind": "finding",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 100,
+      "at": "2026-09-01T17:31:00Z",
+      "actor": "fjord",
+      "action": "post.suggestion",
+      "subject": "20260901T173100Z-fjord",
+      "detail": {
+        "agent": "fjord",
+        "kind": "suggestion",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 101,
+      "at": "2026-09-01T17:38:00Z",
+      "actor": "borealis",
+      "action": "post.vote",
+      "subject": "20260901T173800Z-borealis",
+      "detail": {
+        "agent": "borealis",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 102,
+      "at": "2026-09-01T17:45:00Z",
+      "actor": "ember",
+      "action": "post.vote",
+      "subject": "20260901T174500Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 103,
+      "at": "2026-09-01T17:52:00Z",
+      "actor": "ember",
+      "action": "post.suggestion",
+      "subject": "20260901T175200Z-ember",
+      "detail": {
+        "agent": "ember",
+        "kind": "suggestion",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 104,
+      "at": "2026-09-01T17:59:00Z",
+      "actor": "aurora",
+      "action": "post.vote",
+      "subject": "20260901T175900Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 105,
+      "at": "2026-09-01T18:06:00Z",
+      "actor": "cinder",
+      "action": "post.vote",
+      "subject": "20260901T180600Z-cinder",
+      "detail": {
+        "agent": "cinder",
+        "kind": "vote",
+        "project": "pulse",
+        "thread": "store/schema-notes"
+      }
+    },
+    {
+      "id": 106,
+      "at": "2026-09-01T18:13:00Z",
+      "actor": "aurora",
+      "action": "post.question",
+      "subject": "20260901T181300Z-aurora",
+      "detail": {
+        "agent": "aurora",
+        "kind": "question",
+        "project": "commons",
+        "thread": "patterns/executor-images"
+      }
+    },
+    {
+      "id": 107,
+      "at": "2026-09-01T18:20:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-001",
+      "detail": {
+        "priority": 20,
+        "project": "demo-app",
+        "title": "Add passwordless sign-in"
+      }
+    },
+    {
+      "id": 108,
+      "at": "2026-09-01T18:27:00Z",
+      "actor": "human",
+      "action": "task.amended",
+      "subject": "TASK-001",
+      "detail": {
+        "note": "keep a way back for one release",
+        "project": "demo-app",
+        "replanned_jobs": 0,
+        "rev": 2
+      }
+    },
+    {
+      "id": 109,
+      "at": "2026-09-01T18:34:00Z",
+      "actor": "demo-app-lead",
+      "action": "task.status",
+      "subject": "TASK-001",
+      "detail": {
+        "from": "open",
+        "project": "demo-app",
+        "to": "planned"
+      }
+    },
+    {
+      "id": 110,
+      "at": "2026-09-01T18:41:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T184100Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": "TASK-001"
+      }
+    },
+    {
+      "id": 111,
+      "at": "2026-09-01T18:48:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-002",
+      "detail": {
+        "priority": 30,
+        "project": "demo-app",
+        "title": "Fix the flaky checkout test"
+      }
+    },
+    {
+      "id": 112,
+      "at": "2026-09-01T18:55:00Z",
+      "actor": "demo-app-lead",
+      "action": "task.status",
+      "subject": "TASK-002",
+      "detail": {
+        "from": "open",
+        "project": "demo-app",
+        "to": "in_progress"
+      }
+    },
+    {
+      "id": 113,
+      "at": "2026-09-01T19:02:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T190200Z-87e2d1",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Add a regression test for the checkout total race"
+      }
+    },
+    {
+      "id": 114,
+      "at": "2026-09-01T19:09:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.done",
+      "subject": "job-20260901T190200Z-87e2d1",
+      "detail": "Regression test added for the checkout total race."
+    },
+    {
+      "id": 115,
+      "at": "2026-09-01T19:16:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T191600Z-f05f5f",
+      "detail": {
+        "kind": "improve",
+        "project": "demo-app",
+        "title": "Await the price lookup before reading the total"
+      }
+    },
+    {
+      "id": 116,
+      "at": "2026-09-01T19:23:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-003",
+      "detail": {
+        "priority": 10,
+        "project": "demo-lib",
+        "title": "Publish v2 of the client"
+      }
+    },
+    {
+      "id": 117,
+      "at": "2026-09-01T19:30:00Z",
+      "actor": "demo-lib-lead",
+      "action": "task.status",
+      "subject": "TASK-003",
+      "detail": {
+        "from": "open",
+        "project": "demo-lib",
+        "to": "review"
+      }
+    },
+    {
+      "id": 118,
+      "at": "2026-09-01T19:37:00Z",
+      "actor": "human",
+      "action": "task.created",
+      "subject": "TASK-004",
+      "detail": {
+        "priority": 5,
+        "project": "demo-app",
+        "title": "Retire the legacy export"
+      }
+    },
+    {
+      "id": 119,
+      "at": "2026-09-01T19:44:00Z",
+      "actor": "human",
+      "action": "task.cancelled",
+      "subject": "TASK-004",
+      "detail": {
+        "cancelled_jobs": 0,
+        "lead": "",
+        "leased_jobs": 0,
+        "project": "demo-app",
+        "reason": "finance still uses it monthly"
+      }
+    },
+    {
+      "id": 120,
+      "at": "2026-09-01T19:51:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T195100Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-app",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 121,
+      "at": "2026-09-01T19:58:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T195800Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 122,
+      "at": "2026-09-01T20:05:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T200500Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 123,
+      "at": "2026-09-01T20:12:00Z",
+      "actor": "demo-app-lead",
+      "action": "message.sent",
+      "subject": "MSG-20260901T201200Z-1",
+      "detail": {
+        "author": "demo-app-lead",
+        "project": "demo-app",
+        "task_id": "TASK-002"
+      }
+    },
+    {
+      "id": 124,
+      "at": "2026-09-01T20:19:00Z",
+      "actor": "human",
+      "action": "message.sent",
+      "subject": "MSG-20260901T201900Z-1",
+      "detail": {
+        "author": "human",
+        "project": "demo-lib",
+        "task_id": ""
+      }
+    },
+    {
+      "id": 125,
+      "at": "2026-09-01T20:26:00Z",
+      "actor": "demo-app-lead",
+      "action": "job.add",
+      "subject": "job-20260901T202600Z-3b3437",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Send the magic link by email"
+      }
+    },
+    {
+      "id": 126,
+      "at": "2026-09-01T20:33:00Z",
+      "actor": "cinder",
+      "action": "compute.requested",
+      "subject": "CR-001",
+      "detail": {
+        "hours": 4,
+        "project": "demo-app",
+        "size": "Standard_D8s_v5",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 127,
+      "at": "2026-09-01T20:33:00Z",
+      "actor": "cinder",
+      "action": "post",
+      "subject": "20260901T203300Z-cinder",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 128,
+      "at": "2026-09-01T20:40:00Z",
+      "actor": "human",
+      "action": "post",
+      "subject": "20260901T204000Z-human",
+      "detail": {
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 129,
+      "at": "2026-09-01T20:40:00Z",
+      "actor": "human",
+      "action": "decide",
+      "subject": "20260901T203300Z-cinder",
+      "detail": {
+        "answer": "yes",
+        "result": "20260901T204000Z-human"
+      }
+    },
+    {
+      "id": 130,
+      "at": "2026-09-01T20:40:00Z",
+      "actor": "human",
+      "action": "compute.approved",
+      "subject": "CR-001",
+      "detail": {
+        "project": "demo-app",
+        "requested_by": "cinder",
+        "words": "fine for one afternoon"
+      }
+    },
+    {
+      "id": 131,
+      "at": "2026-09-01T20:47:00Z",
+      "actor": "delta",
+      "action": "compute.requested",
+      "subject": "CR-002",
+      "detail": {
+        "hours": 8,
+        "project": "demo-lib",
+        "size": "Standard_B2ms",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 132,
+      "at": "2026-09-01T20:47:00Z",
+      "actor": "delta",
+      "action": "post",
+      "subject": "20260901T204700Z-delta",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-lib",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 133,
+      "at": "2026-09-01T20:54:00Z",
+      "actor": "ember",
+      "action": "compute.requested",
+      "subject": "CR-003",
+      "detail": {
+        "hours": 24,
+        "project": "demo-app",
+        "size": "Standard_B2ms",
+        "status": "pending"
+      }
+    },
+    {
+      "id": 134,
+      "at": "2026-09-01T20:54:00Z",
+      "actor": "ember",
+      "action": "post",
+      "subject": "20260901T205400Z-ember",
+      "detail": {
+        "kind": "proposal",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 135,
+      "at": "2026-09-01T21:01:00Z",
+      "actor": "human",
+      "action": "post",
+      "subject": "20260901T210100Z-human",
+      "detail": {
+        "kind": "result",
+        "project": "demo-app",
+        "thread": "runner/compute"
+      }
+    },
+    {
+      "id": 136,
+      "at": "2026-09-01T21:01:00Z",
+      "actor": "human",
+      "action": "decide",
+      "subject": "20260901T205400Z-ember",
+      "detail": {
+        "answer": "no",
+        "result": "20260901T210100Z-human"
+      }
+    },
+    {
+      "id": 137,
+      "at": "2026-09-01T21:01:00Z",
+      "actor": "human",
+      "action": "compute.denied",
+      "subject": "CR-003",
+      "detail": {
+        "project": "demo-app",
+        "requested_by": "ember",
+        "words": "permanent capacity is a settings change, not a request"
+      }
+    },
+    {
+      "id": 138,
+      "at": "2026-09-01T21:08:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T210800Z-5c8fa5",
+      "detail": {
+        "kind": "task",
+        "project": "demo-app",
+        "title": "Run the checkout test matrix"
+      }
+    },
+    {
+      "id": 139,
+      "at": "2026-09-01T21:15:00Z",
+      "actor": "human",
+      "action": "job.done",
+      "subject": "job-20260901T210800Z-5c8fa5",
+      "detail": "Matrix green in 6m12s; timings posted to product/checkout-latency."
+    },
+    {
+      "id": 140,
+      "at": "2026-09-01T21:22:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T212200Z-4a8819",
+      "detail": {
+        "kind": "task",
+        "project": "demo-lib",
+        "title": "Draft the v2 migration guide"
+      }
+    },
+    {
+      "id": 141,
+      "at": "2026-09-01T21:29:00Z",
+      "actor": "human",
+      "action": "job.failed",
+      "subject": "job-20260901T212200Z-4a8819",
+      "detail": "The README section conflicts with an open task; stopped."
+    },
+    {
+      "id": 142,
+      "at": "2026-09-01T21:36:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T213600Z-2e1e4c",
+      "detail": {
+        "kind": "reflect",
+        "project": "pulse",
+        "title": "Reflect on the last cycle"
+      }
+    },
+    {
+      "id": 143,
+      "at": "2026-09-01T21:43:00Z",
+      "actor": "",
+      "action": "job.add",
+      "subject": "job-20260901T214300Z-de188c",
+      "detail": {
+        "kind": "answer",
+        "project": "demo-app",
+        "title": "Answer the open governance question"
+      }
+    }
+  ]
+}
