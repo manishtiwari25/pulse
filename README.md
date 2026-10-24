@@ -859,7 +859,7 @@ reviews, after which the suggestion goes to the owner as *Your call* rather
 than waiting forever. The owner may rule on any open suggestion at any time
 and may edit the title, brief and priority while accepting; the suggester
 may withdraw while the suggestion is still open. Suggestions are never
-deleted (`pulse forget` cascades them with the project).
+deleted (`pulse remove project SLUG --forget` cascades them with the project).
 
 Agents reach the same place from a job: a `SUGGESTION: work: <title> - <why>`
 line in any run's report is filed as a suggestion under the running agent's
