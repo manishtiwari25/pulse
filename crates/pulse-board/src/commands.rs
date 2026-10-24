@@ -545,9 +545,9 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         ));
     }
     if !contains(KINDS, &args[0]) {
-        return Err(refuse(
-            2,
-            format!("Kind must be one of: {}", KINDS.join(", ")),
+        return Err(usage(
+            "post",
+            &format!("Kind must be one of: {}", KINDS.join(", ")),
         ));
     }
     if !fs.get_string("vote").is_empty()
@@ -1314,6 +1314,42 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         register_commands();
         assert!(pulse_cli::lookup("post").is_some());
+    }
+
+    #[test]
+    fn post_bad_kind_error_names_the_fix() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _home, s, p, _repo) = fixture();
+        let ctx = || Context {
+            agent: "bob".into(),
+            project: p.slug.clone(),
+            ..test_context()
+        };
+        let (_out, err) = run_cmd(
+            &s,
+            Some(ctx()),
+            &[
+                "post",
+                "bogus",
+                "--area",
+                "A",
+                "--thread",
+                "T",
+                "--summary",
+                "S",
+            ],
+        );
+        let err = err.expect_err("bogus KIND must fail");
+        assert_eq!(code(Some(&err)), 2);
+        let cli = err
+            .downcast_ref::<pulse_cli::Error>()
+            .expect("post errors are CliError");
+        assert!(
+            cli.what.starts_with("pulse post: Kind must be one of: "),
+            "error should use the standard prefix, got: {}",
+            cli.what
+        );
+        assert_eq!(cli.fix, "pulse help post");
     }
 
     #[test]
