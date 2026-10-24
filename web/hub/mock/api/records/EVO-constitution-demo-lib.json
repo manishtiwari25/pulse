@@ -1,0 +1,46 @@
+{
+  "body": "# Demo Lib Evolution Constitution\n\nRules the loop can never change. Demo Lib ships the product.\n\n## Hard stops\n\nIdentical to the hard stops in `AGENTS.md`. The loop never crosses them and never proposes a change to them.\n\n- destructive or irreversible actions, production, deploy, publish, merge\n- credentials, hosted-data deletion, broad auth, billing, or data migration\n\n## Immutable paths\n\n| Path | Why |\n| --- | --- |\n| <product hard-stop surfaces only> | Tier 2 surfaces (ADR-NNN) |\n\n## Editable scope by stage\n\n| Stage | Paths |\n| --- | --- |\n| Product | <product paths, e.g. `src/`> |\n\n## Vote rules\n\n| Rule | Value |\n| --- | --- |\n| Suggestion expiry with no votes | <N> days |\n| Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter |\n\n## Amendments\n\nA human edits this record.\n\n## Kill switch\n\n`loop: off` in this frontmatter halts every cycle.\n",
+  "draft": {
+    "at": "2026-09-07T08:41:00Z",
+    "author": "aurora",
+    "base_rev": 1,
+    "body": "# Demo Lib Evolution Constitution\n\nRules the loop can never change. Demo Lib ships the product.\n\n## Hard stops\n\nIdentical to the hard stops in `AGENTS.md`. The loop never crosses them and never proposes a change to them.\n\n- destructive or irreversible actions, production, deploy, publish, merge\n- credentials, hosted-data deletion, broad auth, billing, or data migration\n\n## Immutable paths\n\n| Path | Why |\n| --- | --- |\n| `.github/workflows/`, `package-lock.json`, `scripts/release.sh` | Tier 2 surfaces (release and dependency surfaces) |\n\n## Editable scope by stage\n\n| Stage | Paths |\n| --- | --- |\n| Product | `src/`, `test/` |\n\n## Vote rules\n\n| Rule | Value |\n| --- | --- |\n| Suggestion expiry with no votes | 14 days |\n| Not amendable by vote | Hard stops, Kill switch, Amendments, frontmatter |\n\n## Amendments\n\nA human edits this record.\n\n## Kill switch\n\n`loop: off` in this frontmatter halts every cycle.\n",
+    "job_id": "job-20260907T081000Z-3f2a1c",
+    "note": "from the README, package.json scripts and the CI workflow"
+  },
+  "frontmatter": {
+    "date": "2026-09-01",
+    "id": "EVO-constitution-demo-lib",
+    "loop": "off",
+    "seeded_by": "human",
+    "seeded_from": "amistio-template/TPL-evolution-constitution@r1",
+    "status": "Active",
+    "title": "Demo Lib Evolution Constitution"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "EVO-constitution-demo-lib",
+    "kind": "evolution",
+    "number": 0,
+    "path": "",
+    "project": "demo-lib",
+    "slug": "constitution",
+    "status": "Active",
+    "tags": [],
+    "tier": 0,
+    "title": "Demo Lib Evolution Constitution",
+    "updated_at": "2026-09-01T09:21:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T09:21:00Z",
+      "author": "human",
+      "note": "seeded from TPL-evolution-constitution@r1 (ADR-030)",
+      "rev": 1
+    }
+  ]
+}

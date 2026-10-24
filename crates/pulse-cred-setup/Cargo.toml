@@ -1,0 +1,22 @@
+[package]
+name = "pulse-cred-setup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: credential setup: upstream remote and probe"
+
+[dependencies]
+pulse-cred.workspace = true
+pulse-gitenv.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

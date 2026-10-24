@@ -1,0 +1,22 @@
+[
+  {
+    "agent": "delta",
+    "body": "Proposal for the human: Tier 1 changes under src/checkout and src/billing need a second reviewer; the rest keep the verification command as their gate.",
+    "can_decide": true,
+    "date": "2026-09-01T15:53:00Z",
+    "decided_agent": "",
+    "decided_date": "",
+    "decided_id": "",
+    "decided_name": "",
+    "decided_summary": "",
+    "id": "20260901T155300Z-delta",
+    "kind": "answer",
+    "name": "",
+    "proposal_text": "Tier 1 changes under src/checkout and src/billing need a second reviewer; the rest keep the verification command as their gate.",
+    "rel_path": "store:20260901T155300Z-delta",
+    "session": "s-delta",
+    "status": "awaiting",
+    "summary": "Agreed: second reviewer for checkout and billing",
+    "thread_key": "governance/review-depth"
+  }
+]

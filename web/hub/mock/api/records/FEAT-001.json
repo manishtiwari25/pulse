@@ -1,0 +1,42 @@
+{
+  "body": "# Passwordless sign-in\n\n## Behavior\n\nA magic link by email replaces the password form. Links expire after ten minutes.\n\n## Verification\n\n`npm test -- auth` and a manual sign-in on the preview.\n",
+  "frontmatter": {
+    "areas": [
+      "auth"
+    ],
+    "date": "2026-09-01",
+    "id": "FEAT-001",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "Passwordless sign-in"
+  },
+  "record": {
+    "areas": [
+      "auth"
+    ],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "FEAT-001",
+    "kind": "feature",
+    "number": 1,
+    "path": "",
+    "project": "demo-app",
+    "slug": "passwordless-sign-in",
+    "status": "Draft",
+    "tags": [],
+    "tier": 2,
+    "title": "Passwordless sign-in",
+    "updated_at": "2026-09-01T13:19:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T13:19:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

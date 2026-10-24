@@ -1,0 +1,13 @@
+{
+  "transports": ["stdio", "http", "sse"],
+  "auths": [
+    { "name": "none", "explain": "No credential; the server is open or trusts the connection.", "transports": ["stdio", "http", "sse"] },
+    { "name": "bearer", "explain": "Sends `Authorization: Bearer <secret>`; the secret is the token.", "transports": ["http", "sse"] },
+    { "name": "basic", "explain": "Sends HTTP basic auth; the secret is `user:password`.", "transports": ["http", "sse"] },
+    { "name": "header", "explain": "Sends the secret in a header of your choice (auth header name, e.g. X-Api-Key).", "transports": ["http", "sse"] },
+    { "name": "query", "explain": "Appends the secret as a query parameter of your choice (auth header name is the parameter).", "transports": ["http", "sse"] },
+    { "name": "env", "explain": "Passes the secret to the stdio command as an environment variable (auth header name is the variable).", "transports": ["stdio"] },
+    { "name": "oauth", "explain": "Signs in with OAuth 2.1 the way the MCP specification describes: PULSE finds the server's authorization server, registers itself as a client when the server allows it (for GitHub, which allows none, it signs in through a public client it carries: a code typed on github.com, nothing to register), opens the sign-in page once (pulse mcp login NAME, or Sign in on the card) and keeps the tokens on this machine, refreshing them itself.", "transports": ["http", "sse"] }
+  ],
+  "cred_shapes": "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH"
+}

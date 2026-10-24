@@ -1,0 +1,114 @@
+{
+  "conversation": {
+    "id": "chat-20261018T101000-d4e5f6",
+    "title": "Refresh the getting-started docs",
+    "project": "",
+    "cwd": "/home/owner/.pulse/work/chat/chat-20261018T101000-d4e5f6/scratch",
+    "branch": "",
+    "status": "waiting",
+    "session_id": "run-20261018-chat-d4e5f6-1",
+    "provider": "copilot",
+    "model": "",
+    "auto_approve": true,
+    "created_by": "owner",
+    "created_at": "2026-10-18T10:10:00Z",
+    "updated_at": "2026-10-18T10:12:40Z",
+    "last_at": "2026-10-18T10:12:40Z",
+    "turns": 1,
+    "cost": 0.2,
+    "note": ""
+  },
+  "live": {
+    "status": "waiting",
+    "note": "",
+    "stream": "",
+    "pending": {
+      "kind": "question",
+      "id": 3,
+      "question": "Two projects ship docs: demo-app has a docs/ folder that is a year old, demo-lib has none at all. Which one should the refresh cover first?",
+      "choices": [
+        "demo-app",
+        "demo-lib",
+        "Both, demo-app first"
+      ]
+    },
+    "queued": [],
+    "turn_from": 3,
+    "turn_started_at": "2026-10-18T10:12:40Z",
+    "auto_approve": true,
+    "version": 4,
+    "session_id": "run-20261018-chat-d4e5f6-1"
+  },
+  "session_id": "run-20261018-chat-d4e5f6-1",
+  "messages": [
+    {
+      "conversation_id": "chat-20261018T101000-d4e5f6",
+      "n": 1,
+      "at": "2026-10-18T10:10:00Z",
+      "role": "user",
+      "content": "The getting-started docs are stale. Refresh them so a new contributor can go from clone to a passing test run without asking anyone.",
+      "extra": {}
+    },
+    {
+      "conversation_id": "chat-20261018T101000-d4e5f6",
+      "n": 2,
+      "at": "2026-10-18T10:12:40Z",
+      "role": "question",
+      "content": "Two projects ship docs: demo-app has a docs/ folder that is a year old, demo-lib has none at all. Which one should the refresh cover first?",
+      "extra": {
+        "choices": [
+          "demo-app",
+          "demo-lib",
+          "Both, demo-app first"
+        ],
+        "session": "run-20261018-chat-d4e5f6-1",
+        "steps": [
+          0,
+          3
+        ]
+      }
+    }
+  ],
+  "since": 0,
+  "steps": [
+    {
+      "n": 1,
+      "at": "2026-10-18T10:10:30Z",
+      "kind": "command",
+      "content": "$ pulse status --json\n{ \"projects\": [\"demo-app\", \"demo-lib\", \"pulse\"] }",
+      "command": "pulse status --json",
+      "exit_code": 0,
+      "duration_ms": 410,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": "gpt-4.1"
+    },
+    {
+      "n": 2,
+      "at": "2026-10-18T10:11:20Z",
+      "kind": "read",
+      "content": "demo-app/docs/getting-started.md",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": "gpt-4.1"
+    },
+    {
+      "n": 3,
+      "at": "2026-10-18T10:12:40Z",
+      "kind": "note",
+      "content": "Both projects could take this; asking which comes first before attaching.",
+      "command": "",
+      "exit_code": null,
+      "duration_ms": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "model": "gpt-4.1"
+    }
+  ],
+  "after": -1,
+  "artifacts": [],
+  "changes": null
+}

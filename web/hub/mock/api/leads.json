@@ -1,0 +1,172 @@
+{
+  "leads": [
+    {
+      "id": "LEAD-001",
+      "project": "demo-app",
+      "role": "rsi",
+      "agent": "demo-app-lead-rsi",
+      "title": "RSI lead",
+      "brief": "",
+      "every_minutes": 1440,
+      "status": "active",
+      "next_at": "2026-09-02T09:00:00Z",
+      "last_at": "2026-09-01T09:00:00Z",
+      "last_job": "JOB-0412",
+      "runs": 6,
+      "note": "",
+      "created_by": "you",
+      "created_at": "2026-08-26T09:00:00Z",
+      "updated_at": "2026-09-01T09:00:00Z"
+    },
+    {
+      "id": "LEAD-002",
+      "project": "demo-app",
+      "role": "docs",
+      "agent": "demo-app-lead-docs",
+      "title": "Docs lead",
+      "brief": "",
+      "every_minutes": 1440,
+      "status": "paused",
+      "next_at": "2026-09-02T09:00:00Z",
+      "last_at": "2026-08-30T09:00:00Z",
+      "last_job": "JOB-0398",
+      "runs": 4,
+      "note": "until the guide rewrite lands",
+      "created_by": "you",
+      "created_at": "2026-08-26T09:00:00Z",
+      "updated_at": "2026-08-31T09:00:00Z"
+    },
+    {
+      "id": "LEAD-003",
+      "project": "pulse",
+      "role": "security",
+      "agent": "pulse-lead-security",
+      "title": "Security lead",
+      "brief": "",
+      "every_minutes": 10080,
+      "status": "active",
+      "next_at": "2026-09-05T09:00:00Z",
+      "last_at": "2026-08-29T09:00:00Z",
+      "last_job": "JOB-0377",
+      "runs": 2,
+      "note": "",
+      "created_by": "you",
+      "created_at": "2026-08-20T09:00:00Z",
+      "updated_at": "2026-08-29T09:00:00Z"
+    }
+  ],
+  "suggestions": {
+    "demo-app": [
+      {
+        "project": "demo-app",
+        "role": "monitor",
+        "title": "Monitoring lead",
+        "about": "keeps the checks and watchers that tell when the product is broken, and reads what they say",
+        "why": "1 of 2 checks or watchers are red or broken and nobody owns them",
+        "command": "pulse lead add --project demo-app --role monitor"
+      },
+      {
+        "project": "demo-app",
+        "role": "a11y",
+        "title": "Accessibility lead",
+        "about": "uses the product the way every user does - keyboard, screen reader, zoom, a phone - and fixes what gets in the way",
+        "why": "the project ships a user interface (next) and nobody uses it the way every user does",
+        "command": "pulse lead add --project demo-app --role a11y"
+      }
+    ],
+    "demo-lib": [
+      {
+        "project": "demo-lib",
+        "role": "release",
+        "title": "Release lead",
+        "about": "prepares each release: the changelog, the version, the notes a user reads, and what must be true before shipping",
+        "why": "34 commits on the default branch since the last tag v2.3.0 and nobody prepares a release",
+        "command": "pulse lead add --project demo-lib --role release"
+      }
+    ],
+    "pulse": [
+      {
+        "project": "pulse",
+        "role": "tidy",
+        "title": "Tidy-up lead",
+        "about": "keeps the code easy to change: lint findings, dead code, duplicates, TODOs that aged, files that grew past their name",
+        "why": "the check `cargo test --workspace` runs no linter or formatter",
+        "command": "pulse lead add --project pulse --role tidy"
+      }
+    ]
+  },
+  "roles": [
+    {
+      "role": "rsi",
+      "title": "RSI lead",
+      "about": "keeps the self-improvement loop measured and moving: the evolution plan, the ballot, the experiment lane and the archive",
+      "every": "1d"
+    },
+    {
+      "role": "docs",
+      "title": "Guide docs lead",
+      "about": "keeps the guides and README true to what the code does, writing the pages a change left behind",
+      "every": "1d"
+    },
+    {
+      "role": "security",
+      "title": "Security lead",
+      "about": "watches dependencies, secrets, permissions and the attack surface, and queues the fixes",
+      "every": "1w"
+    },
+    {
+      "role": "monitor",
+      "title": "Monitoring lead",
+      "about": "keeps the checks and watchers that tell when the product is broken, and reads what they say",
+      "every": "6h"
+    },
+    {
+      "role": "tests",
+      "title": "Test lead",
+      "about": "keeps the tests worth trusting: what is untested, what is flaky, what is slow, and that the check proves what a change claims",
+      "every": "1d"
+    },
+    {
+      "role": "deps",
+      "title": "Dependencies lead",
+      "about": "keeps dependencies current and the upgrade path short: the lockfile, major versions, deprecations, the toolchain pin",
+      "every": "1w"
+    },
+    {
+      "role": "release",
+      "title": "Release lead",
+      "about": "prepares each release: the changelog, the version, the notes a user reads, and what must be true before shipping",
+      "every": "1w"
+    },
+    {
+      "role": "perf",
+      "title": "Performance lead",
+      "about": "measures what users wait for - startup, the hot paths, the size of what ships - keeps the benchmarks honest and catches regressions",
+      "every": "1w"
+    },
+    {
+      "role": "a11y",
+      "title": "Accessibility lead",
+      "about": "uses the product the way every user does - keyboard, screen reader, zoom, a phone - and fixes what gets in the way",
+      "every": "1w"
+    },
+    {
+      "role": "triage",
+      "title": "Issue triage lead",
+      "about": "reads the repository's issues and pull requests, reproduces the bugs, drafts the answers and turns the rest into jobs",
+      "every": "1d"
+    },
+    {
+      "role": "tidy",
+      "title": "Tidy-up lead",
+      "about": "keeps the code easy to change: lint findings, dead code, duplicates, TODOs that aged, files that grew past their name",
+      "every": "1w"
+    },
+    {
+      "role": "dx",
+      "title": "Developer experience lead",
+      "about": "keeps the path from clone to green short: setup, the env recipe, build and test time, the tooling every worker and newcomer touches",
+      "every": "1w"
+    }
+  ]
+}

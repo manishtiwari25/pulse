@@ -1,0 +1,53 @@
+{
+  "models": [
+    {
+      "id": "gpt-4.1",
+      "name": "GPT-4.1",
+      "vendor": "Azure OpenAI",
+      "chat": true,
+      "tool_calls": true,
+      "premium": 0,
+      "preview": false,
+      "context_window": 128000,
+      "max_output": 16384,
+      "default": true
+    },
+    {
+      "id": "claude-sonnet-4.5",
+      "name": "Claude Sonnet 4.5",
+      "vendor": "Anthropic",
+      "chat": true,
+      "tool_calls": true,
+      "premium": 1,
+      "preview": false,
+      "context_window": 200000,
+      "max_output": 32000,
+      "default": false
+    },
+    {
+      "id": "gpt-5.5",
+      "name": "GPT-5.5",
+      "vendor": "GitHub Copilot",
+      "chat": true,
+      "tool_calls": true,
+      "premium": 3,
+      "preview": false,
+      "context_window": 256000,
+      "max_output": 32000,
+      "default": false
+    },
+    {
+      "id": "gpt-6-astra-preview",
+      "name": "GPT-6 Astra Preview",
+      "vendor": "GitHub Copilot",
+      "chat": true,
+      "tool_calls": true,
+      "premium": 5,
+      "preview": true,
+      "context_window": 512000,
+      "max_output": 64000,
+      "default": false
+    }
+  ],
+  "fetched_at": "2026-09-11T07:20:00Z"
+}

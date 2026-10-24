@@ -1,0 +1,28 @@
+[package]
+name = "pulse-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the SQLite store: schema, additive DDL, records, settings, events, transactions"
+
+[dependencies]
+pulse-gitenv.workspace = true
+pulse-cred.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+erased-serde.workspace = true
+chrono.workspace = true
+regex.workspace = true
+home.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

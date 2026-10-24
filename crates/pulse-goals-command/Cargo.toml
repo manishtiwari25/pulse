@@ -1,0 +1,23 @@
+[package]
+name = "pulse-goals-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the pulse goal command"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-cli.workspace = true
+pulse-goals.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true
+rusqlite.workspace = true

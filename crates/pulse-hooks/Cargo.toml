@@ -1,0 +1,31 @@
+[package]
+name = "pulse-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: store hooks (scripts, webhooks) and harness hooks (copilot, claude)"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-bus.workspace = true
+pulse-cli.workspace = true
+pulse-evolve.workspace = true
+pulse-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+crossbeam-channel.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true
+pulse-tally.workspace = true
+pulse-goals.workspace = true

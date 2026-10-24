@@ -1,0 +1,38 @@
+{
+  "body": "# Product rules\n\n- A change the owner cannot see in the console did not happen.\n- Every setting that could hold a secret is an identifier, never a credential.\n",
+  "frontmatter": {
+    "areas": [],
+    "date": "2026-09-01",
+    "id": "MEM-product-rules",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "product rules"
+  },
+  "record": {
+    "areas": [],
+    "current_rev": 1,
+    "date": "2026-09-01",
+    "delivered": "",
+    "delivery": "",
+    "id": "MEM-product-rules",
+    "kind": "memory",
+    "number": 0,
+    "path": "",
+    "project": "pulse",
+    "slug": "product-rules",
+    "status": "Draft",
+    "tags": [],
+    "tier": 0,
+    "title": "product rules",
+    "updated_at": "2026-09-01T12:37:00Z"
+  },
+  "revisions": [
+    {
+      "at": "2026-09-01T12:37:00Z",
+      "author": "human",
+      "note": "",
+      "rev": 1
+    }
+  ]
+}

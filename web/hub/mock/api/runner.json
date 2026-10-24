@@ -1,0 +1,65 @@
+{
+  "available": true,
+  "capacity": "2 job(s) queued, 0 slot(s), 0 in flight; workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
+  "hold": "workers on this machine wait for a GitHub Copilot login: Sign in with GitHub (Settings -> Harness) or run pulse harness login",
+  "hygiene": "last sweep 2026-09-11T08:50:00Z: removed clone 2, scratch 5, worktree 1 (176.0 MB freed); held branch 3, worktree 1",
+  "daemon": {
+    "state": "never started",
+    "text": "never started"
+  },
+  "executors": [
+    {
+      "address": "",
+      "free": 4,
+      "kind": "local",
+      "last_probe_at": "",
+      "name": "local",
+      "probe_note": "this machine",
+      "projects": "*",
+      "running": 0,
+      "status": "active",
+      "workers": 4
+    },
+    {
+      "address": "agent@pulse-vm1.internal",
+      "free": 0,
+      "kind": "ssh",
+      "last_probe_at": "",
+      "name": "pulse-vm1",
+      "probe_note": "",
+      "projects": "demo-app,demo-lib",
+      "running": 0,
+      "status": "drained",
+      "workers": 1
+    }
+  ],
+  "hands": {
+    "any_project": true,
+    "executors": 2,
+    "executors_active": 1,
+    "free": 4,
+    "slots": 4
+  },
+  "jobs": {
+    "blocked": 0,
+    "cap": 2,
+    "leased": 0,
+    "queued": 8,
+    "running": 0,
+    "runs_today": 0
+  },
+  "landing": [],
+  "now": "2026-09-11T09:00:00Z",
+  "runner": {
+    "allowed": true,
+    "reason": ""
+  },
+  "workers": {
+    "busy": 0,
+    "idle": 0,
+    "idle_names": [],
+    "pool": 0,
+    "prune_after_days": 14,
+    "target": 3
+  }
+}

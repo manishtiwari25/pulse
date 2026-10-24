@@ -1,0 +1,53 @@
+[package]
+name = "pulse-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep"
+
+[dependencies]
+pulse-board.workspace = true
+pulse-bus.workspace = true
+pulse-cli.workspace = true
+pulse-codedelivery.workspace = true
+pulse-cred.workspace = true
+pulse-evolve.workspace = true
+pulse-gitenv.workspace = true
+pulse-goals.workspace = true
+pulse-hooks.workspace = true
+pulse-provider.workspace = true
+pulse-provider-copilot.workspace = true
+pulse-provider-openai.workspace = true
+pulse-provider-anthropic.workspace = true
+pulse-provider-gemini.workspace = true
+pulse-records.workspace = true
+pulse-store.workspace = true
+pulse-tally.workspace = true
+pulse-tasks.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+nix.workspace = true
+libc.workspace = true
+signal-hook.workspace = true
+which.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+rand.workspace = true
+uuid.workspace = true
+fs2.workspace = true
+crossbeam-channel.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true
+filetime.workspace = true

@@ -1,0 +1,13 @@
+# Compile flags for the SQLite bundled by libsqlite3-sys (rusqlite).
+#
+# libsqlite3-sys builds SQLite with SQLITE_ENABLE_MEMORY_MANAGEMENT, which
+# makes every connection in the process share one page-cache group behind a
+# single mutex (pcache1Fetch/pcache1Unpin take it on every page). The hub
+# snapshots projects in parallel, one connection per thread, and those threads
+# spent more time waiting on that mutex than reading pages. Undefining it gives
+# each connection its own page cache, the stock SQLite behaviour. Turning off
+# memory statistics likewise drops the global mutex around every sqlite3_malloc.
+#
+# pulse-store has a test that fails if a build loses these flags.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

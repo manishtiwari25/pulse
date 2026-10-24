@@ -1,0 +1,20 @@
+[package]
+name = "pulse-provider-fake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PULSE: the scripted fake provider used by tests"
+
+[dependencies]
+pulse-store.workspace = true
+pulse-provider.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pulse-testutil.workspace = true

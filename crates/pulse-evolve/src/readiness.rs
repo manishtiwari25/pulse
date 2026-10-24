@@ -1,0 +1,824 @@
+use anyhow::{Result, anyhow};
+use rusqlite::{OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlanningStatus {
+    pub state: String,
+    pub reason: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub job: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub suggestion: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub question: String,
+}
+
+pub(crate) fn planning_status(
+    s: &pulse_store::Store,
+    status: &crate::status::LoopStatus,
+) -> Result<PlanningStatus> {
+    if status.level != "D" {
+        return Ok(PlanningStatus {
+            state: "gated".to_string(),
+            reason: format!("{}; owner: {}", status.reason, status.next_human_step),
+            ..Default::default()
+        });
+    }
+    let project = &status.project;
+    let (job, question, reason) = crate::failed_gate::failed_experiment_gate(s, project)?;
+    if !reason.is_empty() {
+        return Ok(PlanningStatus {
+            state: "blocked".to_string(),
+            reason,
+            job,
+            question,
+            ..Default::default()
+        });
+    }
+    let (question, reason) = crate::flat_gate::flat_fixture_gate(s, project)?;
+    if !reason.is_empty() {
+        let evidence =
+            crate::flat_gate::evidence_summary(&crate::flat_gate::fixture_evidence(s, project)?);
+        let evidence = if evidence.is_empty() {
+            evidence
+        } else {
+            format!("; {evidence}")
+        };
+        let heal = match crate::heal::self_review_due(s, &question)? {
+            Some((due, _)) => format!(
+                "; the loop reviews it itself at {due} ({} {})",
+                crate::heal::FLAT_WAIT_SETTING,
+                crate::heal::flat_wait_hours(s)
+            ),
+            None if question.is_empty() && crate::heal::heal_enabled(s) => {
+                "; the loop first derives fixtures from the tree".to_string()
+            }
+            None => String::new(),
+        };
+        return Ok(PlanningStatus {
+            state: "blocked".to_string(),
+            reason: format!(
+                "{reason}{evidence}{heal}; owner: {}",
+                crate::flat_gate::flat_owner_step(project, &question)
+            ),
+            question,
+            ..Default::default()
+        });
+    }
+    if let Some(id) = crate::plan::in_flight_experiment(s, project, true)? {
+        let job = pulse_board::job_by_id(s, &id)?
+            .ok_or_else(|| anyhow!("in-flight experiment disappeared"))?;
+        let state = if job.status == "done" {
+            "finalizing".to_string()
+        } else {
+            job.status.clone()
+        };
+        let suggestion = job
+            .source
+            .strip_prefix("suggestion:")
+            .unwrap_or("")
+            .to_string();
+        return Ok(PlanningStatus {
+            state,
+            reason: format!("an experiment is in flight: {id}"),
+            job: id,
+            suggestion,
+            ..Default::default()
+        });
+    }
+    let result =
+        match pulse_tally::compute_light(s, project, "", pulse_tally::Thresholds::default()) {
+            Ok(r) => r,
+            Err(e) if e.downcast_ref::<pulse_tally::ApplyError>().is_some() => {
+                let what = e
+                    .downcast::<pulse_tally::ApplyError>()
+                    .map(|e| e.what)
+                    .unwrap_or_default();
+                return Ok(PlanningStatus {
+                    state: "blocked".to_string(),
+                    reason: format!("constitution application was refused; {what}"),
+                    ..Default::default()
+                });
+            }
+            Err(e) => return Err(e),
+        };
+    let (stop_post, stop_question) = crate::card::instruction_post_for(s, project)?;
+    if let Some(stop_post) = stop_post {
+        let stop = crate::card::InstructionStop {
+            post: Some(stop_post.clone()),
+            question: stop_question,
+        };
+        let mut reason = stop.reason();
+        if !stop.question.is_empty() {
+            reason.push_str(&format!(
+                "; owner: pulse decide {} yes if that post is not a command to agents, or close its thread",
+                stop.question
+            ));
+        } else {
+            reason.push_str("; the planner asks the owner on its next tick");
+        }
+        return Ok(PlanningStatus {
+            state: "blocked".to_string(),
+            reason,
+            suggestion: stop_post.id,
+            question: stop.question,
+            ..Default::default()
+        });
+    }
+    let mut closed = Vec::new();
+    let candidates = crate::plan::experiment_candidates(
+        s,
+        project,
+        status,
+        &result,
+        "daemon",
+        true,
+        None,
+        Some(&mut closed),
+    )?;
+    let mut cardless = None;
+    let mut refused = None;
+    for candidate in candidates {
+        match crate::card::make_card(s, &candidate.post, status) {
+            Ok(_) => {
+                if let Some(existing) =
+                    crate::plan::open_experiment_for_suggestion(s, project, &candidate.post.id)?
+                {
+                    return Ok(PlanningStatus {
+                        state: existing.status.clone(),
+                        reason: crate::plan::experiment_carrier_reason(&existing),
+                        job: existing.id,
+                        suggestion: candidate.post.id,
+                        ..Default::default()
+                    });
+                }
+                return Ok(PlanningStatus {
+                    state: "ready".to_string(),
+                    reason: "an eligible experiment card is ready; not yet dispatched".to_string(),
+                    suggestion: candidate.post.id,
+                    ..Default::default()
+                });
+            }
+            Err(e) => {
+                if let Some(v) = e.downcast_ref::<crate::clones::ViolationError>() {
+                    return Ok(PlanningStatus {
+                        state: "blocked".to_string(),
+                        reason: v.to_string(),
+                        suggestion: candidate.post.id,
+                        ..Default::default()
+                    });
+                }
+                if let Some(r) = e.downcast_ref::<crate::card::RefusedCardError>() {
+                    // The planner passes this card over; the status says so
+                    // once, for the first such card, and keeps looking.
+                    if refused.is_none() {
+                        refused = Some(PlanningStatus {
+                            state: "waiting".to_string(),
+                            suggestion: candidate.post.id.clone(),
+                            reason: r.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
+                if e.downcast_ref::<pulse_cli::Error>().is_none() {
+                    return Err(e);
+                }
+                if cardless.is_none() {
+                    cardless = Some(PlanningStatus {
+                        state: "waiting".to_string(),
+                        suggestion: candidate.post.id.clone(),
+                        reason: format!(
+                            "suggestion {} has no experiment card; the planner queues a card job for it on its next tick (ADR-044)",
+                            candidate.post.id
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+    if let Some(job) = crate::card_job::open_card_job(s, project)? {
+        return Ok(PlanningStatus {
+            state: "carding".to_string(),
+            reason: crate::plan::card_job_reason(&job),
+            job: job.id.clone(),
+            suggestion: crate::plan::card_job_suggestion(&job),
+            ..Default::default()
+        });
+    }
+    if let Some(cardless) = cardless {
+        return Ok(cardless);
+    }
+    if let Some(refused) = refused {
+        return Ok(refused);
+    }
+    if let Some((question, body)) = stop_question_open(s, project, "", "", "")? {
+        return Ok(PlanningStatus {
+            state: "blocked".to_string(),
+            reason: format!(
+                "owner review {question}: {body}; owner: pulse decide {question} yes once reviewed"
+            ),
+            question,
+            ..Default::default()
+        });
+    }
+    let mut reason =
+        "no eligible, untried, in-scope suggestion with net votes > 0; vote with pulse ballot"
+            .to_string();
+    if !status.product_scope.allowed {
+        reason.push_str("; ");
+        reason.push_str(&status.product_scope.reason);
+    }
+    reason.push_str(&crate::plan::scope_closed_note(&closed));
+    Ok(PlanningStatus {
+        state: "waiting".to_string(),
+        reason,
+        ..Default::default()
+    })
+}
+
+/// The one "is this stop question still open" verdict (ADR-036 follow-up to
+/// the 2026-10-03 drift where the console said blocked while the planner
+/// dispatched). A stop question waits for the owner until an answer follows
+/// it in its thread, the owner decides it, or a closing post dated after it
+/// resolves the thread (a closed suggestion thread is no candidate any more).
+/// Card-needed questions (ADR-044) are never open: the planner answers them
+/// with a card job. `area`, `thread` and `on` narrow the search when
+/// non-empty; empty means any. Returns the newest open question's id and body.
+pub(crate) fn stop_question_open(
+    s: &pulse_store::Store,
+    project: &str,
+    area: &str,
+    thread: &str,
+    on: &str,
+) -> Result<Option<(String, String)>> {
+    let conn = s.conn()?;
+    Ok(conn
+        .query_row(
+            r#"SELECT q.id, q.body FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary = ?
+		AND q.body NOT LIKE ? AND q.body NOT LIKE ?
+		AND (? = '' OR q.area = ?) AND (? = '' OR q.thread = ?) AND (? = '' OR q.on_post = ?)
+		AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.project = q.project AND a.kind = 'answer'
+			AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)
+		AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
+		AND NOT EXISTS (SELECT 1 FROM posts c WHERE c.project = q.project AND c.area = q.area
+			AND c.thread = q.thread AND c.resolution != '' AND c.date > q.date)
+		ORDER BY q.date DESC, q.id DESC LIMIT 1"#,
+            params![
+                project,
+                crate::cycle::STOP_SUMMARY,
+                format!("{}%", crate::card::INSTRUCTION_REASON),
+                format!("%{}%", crate::card::CARD_NEEDED),
+                area,
+                area,
+                thread,
+                thread,
+                on,
+                on
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
+pub(crate) fn experiment_finalizing(
+    s: &pulse_store::Store,
+    job: &pulse_board::Job,
+) -> Result<bool> {
+    if !job.branch.is_empty() {
+        return Ok(true);
+    }
+    let conn = s.conn()?;
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM runs WHERE job_id = ? AND status = 'running')",
+        [&job.id],
+        |r| r.get(0),
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::*;
+    use crate::test_helpers_measure::*;
+    use std::time::Duration;
+
+    #[test]
+    fn readiness_ignores_pre_adr044_card_questions() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        join_test_agent(&s, "card-writer");
+        let idea = cardless_suggestion(&s, "idea", "Shorten the README intro", &["up", "up"]);
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: idea.area.clone(),
+                thread: idea.thread.clone(),
+                kind: "question".into(),
+                agent: "tester".into(),
+                for_owner: true,
+                on: idea.id.clone(),
+                summary: crate::cycle::STOP_SUMMARY.into(),
+                body: format!(
+                    "{}; name exactly one File: and one Variable: in a new suggestion; the original post is immutable; owner: pulse post suggestion ... The workflow was not bypassed.",
+                    crate::card::CARD_NEEDED
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let res = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            res.card_created,
+            "plan = {res:?}; want a card job despite the old question"
+        );
+        finish_card_job(&s, &res.card_job, "done");
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_ne!(status.planning.state, "blocked");
+        assert!(!status.planning.reason.contains(crate::card::CARD_NEEDED));
+    }
+
+    #[test]
+    fn status_distinguishes_readiness_from_progress() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        for scenario in [
+            "no-eligible",
+            "product-gate",
+            "unsupported-card",
+            "queued",
+            "stop",
+            "cap",
+        ] {
+            let s = cycle_ready();
+            let (want_state, want_reason) = match scenario {
+                "product-gate" => {
+                    s.put_record(
+                        pulse_store::Record {
+                            id: "EVO-evaluators-demo".into(),
+                            project: "demo".into(),
+                            kind: "evolution".into(),
+                            slug: "evaluators".into(),
+                            ..Default::default()
+                        },
+                        std::collections::BTreeMap::new(),
+                        "Product scope: off\n",
+                        "human",
+                        "fixture",
+                    )
+                    .unwrap();
+                    voted_suggestion(&s, "product", "product", "value.txt", 2);
+                    ("waiting", "operating layer")
+                }
+                "unsupported-card" => {
+                    voted_post_with_votes(
+                        &s,
+                        pulse_board::PostInput {
+                            project: "demo".into(),
+                            area: "evolution".into(),
+                            thread: "incomplete".into(),
+                            kind: "suggestion".into(),
+                            agent: "proposer".into(),
+                            summary: "Not a one-variable card".into(),
+                            body: "Class: operating-layer\n".into(),
+                            ..Default::default()
+                        },
+                        &["up", "up"],
+                    );
+                    ("waiting", "no experiment card")
+                }
+                "queued" => {
+                    voted_suggestion(&s, "ready", "operating-layer", "README.md", 2);
+                    crate::plan::plan_experiment(
+                        &s,
+                        "demo",
+                        crate::plan::PlanOptions {
+                            agent: "tester".into(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    ("queued", "in flight")
+                }
+                "stop" => {
+                    s.set_setting("human", "stop", "1").unwrap();
+                    ("gated", "STOP")
+                }
+                "cap" => {
+                    s.set_setting("human", "evolve.limits", "cycles=0").unwrap();
+                    ("gated", "budget")
+                }
+                _ => ("waiting", "no eligible"),
+            };
+            let before_jobs = count_rows(&s, "jobs");
+            let before_posts = count_rows(&s, "posts");
+            let got = crate::status::status(&s, "demo").unwrap();
+            let data = serde_json::to_string(&got).unwrap();
+            let wire: serde_json::Value = serde_json::from_str(&data).unwrap();
+            assert_eq!(wire["planning"]["state"], want_state, "{scenario}: {got:?}");
+            assert!(
+                wire["planning"]["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(want_reason),
+                "{scenario}: {got:?}"
+            );
+            assert!(
+                crate::status::status_rows(&got)
+                    .iter()
+                    .any(|r| r[0] == "Experiment planning" && r[1].contains(want_reason)),
+                "{scenario}: the CLI status table omitted the planning reason"
+            );
+            assert_eq!(count_rows(&s, "jobs"), before_jobs);
+            assert_eq!(count_rows(&s, "posts"), before_posts);
+            if scenario == "unsupported-card" {
+                let res = crate::plan::plan_experiment(
+                    &s,
+                    "demo",
+                    crate::plan::PlanOptions {
+                        agent: "tester".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(
+                    res.card_created && !res.card_job.is_empty(),
+                    "plan = {res:?}"
+                );
+                let after = crate::status::status(&s, "demo").unwrap();
+                assert_eq!(after.planning.state, "carding");
+                assert_eq!(after.planning.job, res.card_job);
+                assert!(
+                    after
+                        .planning
+                        .reason
+                        .contains(&format!("card job {}", res.card_job))
+                );
+                assert!(!after.planning.reason.contains("owner:"));
+            }
+        }
+    }
+
+    #[test]
+    fn reflect_does_not_recommend_unready_cycle() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        let cancel = pulse_bus::CancellationToken::new();
+        for ready in [false, true] {
+            if ready {
+                voted_suggestion(&s, "ready", "operating-layer", "README.md", 2);
+            }
+            let r = crate::reflect::reflect(&cancel, Some(&s), "demo", "", "tester", "").unwrap();
+            let has_cycle = r.next_commands.join("\n").contains("pulse evolve cycle");
+            assert_eq!(r.level, "D");
+            assert_eq!(
+                has_cycle, ready,
+                "ready={ready}: commands {:?}",
+                r.next_commands
+            );
+        }
+    }
+
+    #[test]
+    fn stop_question_open_verdicts_match_planning_status() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        let ask = |thread: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    project: "demo".into(),
+                    kind: "question".into(),
+                    area: "evolution".into(),
+                    thread: thread.into(),
+                    agent: "tester".into(),
+                    summary: crate::cycle::STOP_SUMMARY.into(),
+                    body: "hard stop".into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let decided = ask("decided");
+        let answered = ask("answered");
+        let unresolved = ask("unresolved");
+        pulse_board::decide(&s, &decided.id, "yes", "reviewed", "human").unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        pulse_board::create_post(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                kind: "answer".into(),
+                area: "evolution".into(),
+                thread: "answered".into(),
+                on: answered.id.clone(),
+                agent: "tester".into(),
+                summary: "proceed".into(),
+                date: (now + chrono::Duration::seconds(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let open = |thread: &str| {
+            stop_question_open(&s, "demo", "evolution", thread, "")
+                .unwrap()
+                .map(|(id, _)| id)
+        };
+        assert_eq!(open("decided"), None, "a decided stop question is closed");
+        assert_eq!(
+            open("answered"),
+            None,
+            "an answered stop question is closed"
+        );
+        assert_eq!(
+            open("unresolved"),
+            Some(unresolved.id.clone()),
+            "an unresolved stop question stays open"
+        );
+        let any = stop_question_open(&s, "demo", "", "", "").unwrap();
+        assert_eq!(any.map(|(id, _)| id), Some(unresolved.id.clone()));
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "blocked");
+        assert_eq!(
+            status.planning.question, unresolved.id,
+            "planning_status reads the same verdict: {status:?}"
+        );
+    }
+
+    #[test]
+    fn owner_decision_clears_the_hard_stop_gate() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        voted_suggestion(&s, "next", "operating-layer", "README.md", 2);
+        let (job, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "demo".into(),
+                kind: "experiment".into(),
+                title: "Failed attempt".into(),
+                tier: 1,
+                created_by: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        pulse_board::finish_job(
+            &s,
+            &job.id,
+            "tester",
+            "failed",
+            "constraint violation: hard stop",
+            "",
+            None,
+        )
+        .unwrap();
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!planned.question.is_empty(), "plan = {planned:?}");
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "blocked");
+        assert_eq!(
+            status.planning.question, planned.question,
+            "the status must name the question the console decides: {status:?}"
+        );
+        let stop_questions = |s: &pulse_store::Store| -> i64 {
+            s.conn()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM posts WHERE kind = 'question' AND summary = ?",
+                    [crate::cycle::STOP_SUMMARY],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let asked = stop_questions(&s);
+        pulse_board::decide(&s, &planned.question, "yes", "reviewed", "human").unwrap();
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_ne!(
+            status.planning.state, "blocked",
+            "a decided gate question still blocks: {status:?}"
+        );
+        assert!(status.planning.question.is_empty());
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(planned.created, "decided gate did not resume: {planned:?}");
+        assert_eq!(
+            stop_questions(&s),
+            asked,
+            "the planner re-asked a decided question"
+        );
+    }
+
+    #[test]
+    fn refused_card_is_passed_over_not_fatal() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        // The top voted card carries a credential-shaped token: the loop
+        // refuses it as written, without a stop or a card job, and neither
+        // the status nor the planner falls over on it.
+        let refused = voted_post_with_votes(
+            &s,
+            pulse_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "leaky".into(),
+                kind: "suggestion".into(),
+                agent: "proposer".into(),
+                summary: "Improve one operating-layer variable".into(),
+                files: "README.md".into(),
+                body: "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: set it to AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh= and the score rises\nTier: 1\n".into(),
+                ..Default::default()
+            },
+            &["up", "up", "up"],
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "waiting", "{status:?}");
+        assert_eq!(status.planning.suggestion, refused.id);
+        assert!(
+            status.planning.reason.contains("credentials")
+                && status.planning.reason.contains("corrected card"),
+            "{}",
+            status.planning.reason
+        );
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !planned.created && planned.question.is_empty() && planned.card_job.is_empty(),
+            "a refused card must not start anything: {planned:?}"
+        );
+        // A clean card lower in the vote still gets its turn.
+        let clean = voted_suggestion(&s, "next", "operating-layer", "README.md", 2);
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "ready", "{status:?}");
+        assert_eq!(status.planning.suggestion, clean.id);
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(planned.created, "{planned:?}");
+        assert_eq!(planned.suggestion, clean.id);
+    }
+
+    #[test]
+    fn owner_decision_or_closing_post_clears_the_review_stop() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        for how in ["decide", "close"] {
+            let s = cycle_ready();
+            join_test_agent(&s, "daemon");
+            let question = pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    project: "demo".into(),
+                    area: "evolution".into(),
+                    thread: format!("job-{how}"),
+                    kind: "question".into(),
+                    agent: "daemon".into(),
+                    for_owner: true,
+                    summary: crate::cycle::STOP_SUMMARY.into(),
+                    body: "evolution constraint violation: experiment target matches an immutable path\nThe workflow was not bypassed.".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let status = crate::status::status(&s, "demo").unwrap();
+            assert_eq!(status.planning.state, "blocked", "{how}: {status:?}");
+            assert_eq!(status.planning.question, question.id, "{how}: {status:?}");
+            assert!(
+                status.planning.reason.contains("owner review")
+                    && status
+                        .planning
+                        .reason
+                        .contains(&format!("pulse decide {} yes", question.id)),
+                "{how}: {status:?}"
+            );
+            let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+            if how == "decide" {
+                pulse_board::decide(&s, &question.id, "no", "out of scope as written", "human")
+                    .unwrap();
+            } else {
+                pulse_board::create_post(
+                    &s,
+                    pulse_board::PostInput {
+                        project: "demo".into(),
+                        area: "evolution".into(),
+                        thread: format!("job-{how}"),
+                        kind: "result".into(),
+                        agent: "tester".into(),
+                        resolution: "dropped".into(),
+                        summary: "Closing the thread".into(),
+                        date: (now + chrono::Duration::seconds(1))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            let status = crate::status::status(&s, "demo").unwrap();
+            assert_eq!(status.planning.state, "waiting", "{how}: {status:?}");
+            assert!(status.planning.question.is_empty(), "{how}: {status:?}");
+        }
+    }
+
+    #[test]
+    fn readiness_matches_blocked_experiment_carrier() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = cycle_ready();
+        let suggestion = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
+        let (job, _) = pulse_board::add_job(
+            &s,
+            pulse_board::JobInput {
+                project: "demo".into(),
+                kind: "experiment".into(),
+                title: "Blocked experiment".into(),
+                source: format!("suggestion:{}", suggestion.id),
+                created_by: "tester".into(),
+                tier: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        pulse_board::finish_job(
+            &s,
+            &job.id,
+            "tester",
+            "blocked",
+            "needs an owner-provided tool",
+            "",
+            None,
+        )
+        .unwrap();
+        let planned = crate::plan::plan_experiment(
+            &s,
+            "demo",
+            crate::plan::PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!planned.created);
+        assert_eq!(planned.job_id, job.id);
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "blocked");
+        assert_eq!(status.planning.job, job.id);
+        assert_eq!(status.planning.suggestion, suggestion.id);
+        assert!(status.planning.reason.contains("blocked"));
+        assert_eq!(status.planning.reason, planned.reason);
+        let cancel = pulse_bus::CancellationToken::new();
+        let reflected =
+            crate::reflect::reflect(&cancel, Some(&s), "demo", "", "tester", "").unwrap();
+        assert!(
+            !reflected
+                .next_commands
+                .join("\n")
+                .contains("pulse evolve cycle")
+        );
+        let _ = Duration::from_secs(3);
+    }
+}

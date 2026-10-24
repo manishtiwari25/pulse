@@ -1,0 +1,126 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/manishtiwari25/pulse"
+publish = false
+
+[workspace.dependencies]
+# internal crates
+pulse-gitenv = { path = "crates/pulse-gitenv" }
+pulse-cred = { path = "crates/pulse-cred" }
+pulse-provider = { path = "crates/pulse-provider" }
+pulse-store = { path = "crates/pulse-store" }
+pulse-cli = { path = "crates/pulse-cli" }
+pulse-bus = { path = "crates/pulse-bus" }
+pulse-testutil = { path = "crates/pulse-testutil" }
+pulse-provider-copilot = { path = "crates/pulse-provider-copilot" }
+pulse-provider-fake = { path = "crates/pulse-provider-fake" }
+pulse-provider-openai = { path = "crates/pulse-provider-openai" }
+pulse-provider-anthropic = { path = "crates/pulse-provider-anthropic" }
+pulse-provider-gemini = { path = "crates/pulse-provider-gemini" }
+pulse-records = { path = "crates/pulse-records" }
+pulse-goals = { path = "crates/pulse-goals" }
+pulse-cred-setup = { path = "crates/pulse-cred-setup" }
+pulse-board = { path = "crates/pulse-board" }
+pulse-cred-command = { path = "crates/pulse-cred-command" }
+pulse-harness = { path = "crates/pulse-harness" }
+pulse-tally = { path = "crates/pulse-tally" }
+pulse-tasks = { path = "crates/pulse-tasks" }
+pulse-goals-command = { path = "crates/pulse-goals-command" }
+pulse-ask = { path = "crates/pulse-ask" }
+pulse-codedelivery = { path = "crates/pulse-codedelivery" }
+pulse-evolve = { path = "crates/pulse-evolve" }
+pulse-hooks = { path = "crates/pulse-hooks" }
+pulse-mcp = { path = "crates/pulse-mcp" }
+pulse-runner = { path = "crates/pulse-runner" }
+pulse-inspect = { path = "crates/pulse-inspect" }
+pulse-hub = { path = "crates/pulse-hub" }
+
+# errors
+anyhow = "1.0"
+thiserror = "2.0"
+# sqlite (bundled: no system library, like modernc.org/sqlite was)
+rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype", "hooks"] }
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+erased-serde = "0.4"
+# time
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# text
+regex = "1.13"
+tabwriter = "1.4"
+indexmap = { version = "2.14", features = ["serde"] }
+# ids, hashing, encoding
+uuid = { version = "1.26", features = ["v4"] }
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+base64 = "0.23"
+rand = "0.10"
+# os
+libc = "0.2"
+nix = { version = "0.31", features = ["signal", "process", "fs", "user", "hostname", "term"] }
+signal-hook = "0.4"
+# line editing and history for `pulse harness chat`
+rustyline = { version = "18.0", default-features = false, features = ["with-file-history"] }
+which = "8.0"
+walkdir = "2.5"
+home = "0.5"
+fs2 = "0.4"
+filetime = "0.2"
+# concurrency
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+once_cell = "1.21"
+# net
+url = "2.5"
+tokio = { version = "1.53", features = ["full"] }
+hyper = { version = "1.11", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
+http-body-util = "0.1"
+bytes = "1.12"
+futures = "0.3"
+# reqwest 0.13's `rustls` feature verifies with rustls-platform-verifier; its
+# `webpki-roots` / `rustls-native-certs` optional deps are not referenced by any
+# code path any more, so they are not enabled.
+reqwest = { version = "0.13", default-features = false, features = ["json", "blocking", "rustls", "charset", "http2", "stream", "gzip"] }
+# `debug-embed` bakes `web/hub/out` into the binary in debug builds too.
+# Without it, debug builds read the console bundle from the source tree at
+# run time via the absolute path captured at compile time: a test binary
+# reused from a shared CARGO_TARGET_DIR then points at another (removed)
+# worker clone and `server::tests::embedded_export` fails spuriously.
+rust-embed = { version = "8.12", features = ["debug-embed"] }
+mime_guess = "2.0"
+# test
+tempfile = "3.27"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Keep unwinding: pulse-runner's daemon, compute and landing workers supervise
+# their ticks with catch_unwind/resume_unwind; abort would turn a caught panic
+# into a process exit.
+panic = "unwind"
+debug = false
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+# file:line stays in backtraces and panics; the type/variable DWARF that made
+# every workspace rlib and test binary several times larger is dropped. macOS
+# keeps the default split-debuginfo = "unpacked" (no dsymutil pass).
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+# Dependencies carry no debuginfo. This is also what the PULSE verify command
+# builds with (CARGO_PROFILE_DEV_DEBUG=0), so both share one set of artifacts.
+debug = false
