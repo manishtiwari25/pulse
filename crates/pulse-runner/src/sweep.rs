@@ -2536,6 +2536,14 @@ fn prune_cargo_profile(
         }
     }
     for path in stale_debug_objects(profile)? {
+        // A loose object whose owner image is gone may just be in flight:
+        // a lib-test compile writes its cgu objects before the test binary
+        // that names them is linked. Skip anything touched too recently so
+        // the sweep never unlinks an object an active rustc still needs
+        // (a mid-link unlink surfaces as SIGBUS + "No such file or directory").
+        if path_recently_modified(&path, now, incremental_age) {
+            continue;
+        }
         let bytes = disk_usage(path.display().to_string());
         if !dry_run {
             remove_path(&path)?;
@@ -2861,6 +2869,14 @@ fn dir_tree_recently_modified(path: &Path, now: std::time::SystemTime, age: Dura
     let mut newest = None;
     walk(path, &mut newest);
     newest
+        .and_then(|modified| now.duration_since(modified).ok())
+        .is_none_or(|elapsed| elapsed < age)
+}
+
+fn path_recently_modified(path: &Path, now: std::time::SystemTime, age: Duration) -> bool {
+    std::fs::symlink_metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
         .and_then(|modified| now.duration_since(modified).ok())
         .is_none_or(|elapsed| elapsed < age)
 }
@@ -3289,6 +3305,12 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        // Age the stale objects past the prune's min-age so the sweep treats
+        // them as settled rather than in flight.
+        let old = FileTime::from_unix_time(1_600_000_000, 0);
+        for path in &stale {
+            filetime::set_file_mtime(path, old).unwrap();
+        }
         assert_eq!(stale_debug_objects(&target).unwrap(), stale);
         let expected_bytes: i64 = stale
             .iter()
@@ -3339,6 +3361,42 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn prune_cargo_profile_keeps_debug_objects_too_fresh_to_be_stale() {
+        // A lib-test compile writes its cgu objects before the test binary
+        // that would name them exists, so a just-written object with no owner
+        // image yet must survive the sweep (deleting it mid-link is the
+        // SIGBUS + "No such file or directory" the verify failure showed).
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("debug");
+        let deps = target.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let inflight = deps.join("lib-test-bbbb.lib_test.11-cgu.0.rcgu.o");
+        mkdir_file(&inflight, "just written by rustc, owner not yet linked");
+
+        let stats = prune_cargo_profile(
+            &target,
+            Duration::from_secs(24 * 3600),
+            std::time::SystemTime::now(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(stats.objects, 0, "no fresh object should be pruned");
+        assert!(inflight.exists(), "in-flight object must survive the sweep");
+
+        // Once it settles (mtime older than the min-age) it is pruned.
+        filetime::set_file_mtime(&inflight, FileTime::from_unix_time(1_600_000_000, 0)).unwrap();
+        let stats = prune_cargo_profile(
+            &target,
+            Duration::from_secs(24 * 3600),
+            std::time::SystemTime::now(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(stats.objects, 1, "settled object should be pruned");
+        assert!(!inflight.exists());
     }
 
     #[test]
