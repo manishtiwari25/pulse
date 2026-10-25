@@ -1353,6 +1353,16 @@ export function chatAttachments(m: ConversationMessage): ChatAttachment[] {
   return list.filter((a): a is ChatAttachment => !!a && typeof a === "object" && typeof (a as ChatAttachment).name === "string");
 }
 
+// Image extensions the hub serves with an image/* content type: these render
+// as thumbnails in the thread instead of plain download chips.
+const CHAT_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+
+export function isChatImage(a: ChatAttachment): boolean {
+  const dot = a.name.lastIndexOf(".");
+  if (dot <= 0) return false; // no extension, or a dotfile like ".png"
+  return CHAT_IMAGE_EXTENSIONS.has(a.name.slice(dot + 1).toLowerCase());
+}
+
 export interface ChatChanges {
   project: string;
   branch: string;

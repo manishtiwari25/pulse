@@ -50,7 +50,7 @@ import { PulseMascot, type PipMood } from "@/components/pulse/mascots";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
 import { ProjectLink, When } from "@/components/pulse/who";
 import type { ChatArtifact, ChatAttachment, ChatChanges, ChatListResponse, ChatPending, ChatShowResponse, Conversation, ConversationLive, ConversationMessage, HarnessModel, HarnessModelsResponse, HarnessSessionResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
-import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatUpload, enc, errorText, query, writes } from "@/lib/api";
+import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatUpload, enc, errorText, isChatImage, query, writes } from "@/lib/api";
 import { num, plural, sentence, span } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { ACTION_KINDS, beatsOf, brief, countWords, groupNotes, streamTail } from "@/lib/transcript";
@@ -441,29 +441,56 @@ function pickFiles(cur: Picked[], incoming: FileList | File[] | null | undefined
 }
 
 // The chips under a message: what was attached, each a link to the file.
+// Images (a pasted screenshot, a picked photo) show a thumbnail that opens
+// the full file in a new tab; every other file keeps the download chip.
 function AttachmentChips({ id, list, onUser }: { id: string; list: ChatAttachment[]; onUser?: boolean }) {
   if (!list.length) return null;
+  const images = list.filter(isChatImage);
+  const files = list.filter((a) => !isChatImage(a));
   return (
-    <ul className={cn("flex min-w-0 flex-wrap gap-1.5", onUser && "justify-end")} aria-label={plural(list.length, "attachment")}>
-      {list.map((a) => {
-        const Icon = fileIcon(a.name);
-        return (
-          <li key={a.name} className="min-w-0">
-            <a
-              href={chatAttachmentHref(id, a.name)}
-              target="_blank"
-              rel="noreferrer"
-              className={cn("flex min-w-0 max-w-64 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition-colors", onUser ? "border-primary-foreground/25 bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/20" : "border-border bg-card text-foreground hover:bg-muted/60")}
-              title={a.name + " (" + bytesWord(a.size) + ")"}
-            >
-              <Icon className="size-3.5 shrink-0 opacity-80" aria-hidden />
-              <span className="min-w-0 truncate font-medium">{a.name}</span>
-              <span className={cn("shrink-0 tnum", onUser ? "opacity-75" : "text-muted-foreground")}>{bytesWord(a.size)}</span>
-            </a>
-          </li>
-        );
-      })}
-    </ul>
+    <div className={cn("grid min-w-0 gap-1.5", onUser && "justify-items-end")}>
+      {images.length ? (
+        <ul className={cn("flex min-w-0 flex-wrap gap-1.5", onUser && "justify-end")} aria-label={plural(images.length, "image")}>
+          {images.map((a) => (
+            <li key={a.name} className="min-w-0">
+              <a
+                href={chatAttachmentHref(id, a.name)}
+                target="_blank"
+                rel="noreferrer"
+                className={cn("block overflow-hidden rounded-lg border transition-colors", onUser ? "border-primary-foreground/25 hover:border-primary-foreground/50" : "border-border hover:border-foreground/40")}
+                title={a.name + " (" + bytesWord(a.size) + ")"}
+              >
+                {/* plain img: the hub serves the file itself, no next/image loader involved */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={chatAttachmentHref(id, a.name)} alt={a.name} loading="lazy" className="h-28 w-auto max-w-56 object-cover" />
+              </a>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {files.length ? (
+        <ul className={cn("flex min-w-0 flex-wrap gap-1.5", onUser && "justify-end")} aria-label={plural(files.length, "attachment")}>
+          {files.map((a) => {
+            const Icon = fileIcon(a.name);
+            return (
+              <li key={a.name} className="min-w-0">
+                <a
+                  href={chatAttachmentHref(id, a.name)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={cn("flex min-w-0 max-w-64 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition-colors", onUser ? "border-primary-foreground/25 bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/20" : "border-border bg-card text-foreground hover:bg-muted/60")}
+                  title={a.name + " (" + bytesWord(a.size) + ")"}
+                >
+                  <Icon className="size-3.5 shrink-0 opacity-80" aria-hidden />
+                  <span className="min-w-0 truncate font-medium">{a.name}</span>
+                  <span className={cn("shrink-0 tnum", onUser ? "opacity-75" : "text-muted-foreground")}>{bytesWord(a.size)}</span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 

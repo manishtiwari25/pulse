@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApiError, api } from "./api.ts";
+import { ApiError, api, chatAttachments, isChatImage } from "./api.ts";
 
 function fakeFetch(status, body) {
   return async () =>
@@ -52,4 +52,22 @@ test("api still returns parsed JSON on success", async () => {
   } finally {
     globalThis.fetch = saved;
   }
+});
+
+test("isChatImage names the files that render as thumbnails in the thread", () => {
+  // A pasted screenshot and the formats the hub serves as image/*.
+  for (const name of ["shot.png", "photo.jpg", "photo.jpeg", "anim.gif", "pic.webp", "scan.bmp", "icon.svg", "SHOT.PNG"]) {
+    assert.equal(isChatImage({ name, size: 1, modified: "" }), true, name);
+  }
+  // Anything else stays a download chip: notes, archives, and a file with no extension.
+  for (const name of ["notes.md", "code.ts", "archive.zip", "README", ".png"]) {
+    assert.equal(isChatImage({ name, size: 1, modified: "" }), false, name);
+  }
+});
+
+test("chatAttachments keeps only well-formed entries from a message's extras", () => {
+  assert.deepEqual(chatAttachments({ id: "m1", role: "user", content: "", at: "", extra: undefined }), []);
+  const good = { name: "shot.png", size: 4, modified: "2026-10-25T00:00:00Z" };
+  const list = chatAttachments({ id: "m1", role: "user", content: "", at: "", extra: { attachments: [good, { size: 4 }, "nope", null] } });
+  assert.deepEqual(list, [good]);
 });

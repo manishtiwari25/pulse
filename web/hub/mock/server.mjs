@@ -1229,10 +1229,11 @@ async function handle(req, res) {
     }
     return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
   }
-  // A conversation's artifacts are real files next to its fixtures, so the
-  // viewer can be exercised offline: mock/api/chat/<id>/artifacts/<name>.
-  if (segs[0] === "chat" && segs.length === 4 && segs[2] === "artifacts") {
-    const file = normalize(join(root, "chat", segs[1], "artifacts", segs[3]));
+  // A conversation's artifacts and attachments are real files next to its
+  // fixtures, so the viewer and the image thumbnails can be exercised
+  // offline: mock/api/chat/<id>/(artifacts|attachments)/<name>.
+  if (segs[0] === "chat" && segs.length === 4 && (segs[2] === "artifacts" || segs[2] === "attachments")) {
+    const file = normalize(join(root, "chat", segs[1], segs[2], segs[3]));
     if (file.startsWith(root)) {
       try {
         const st = await stat(file);
