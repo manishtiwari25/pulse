@@ -13,7 +13,7 @@ use crate::additions::{
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::{Handler, JsonMap, write_error, write_json};
 use hyper::header::{self, HeaderValue};
-use pulse_harness::conversation::Manager;
+use pulse_harness::conversation::{ImageAttachment, Manager};
 use pulse_store::Conversation;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -94,6 +94,11 @@ impl Handler {
             [_, id, kind, name] if kind == "artifacts" || kind == "attachments" => {
                 if addition_method(w, r, vec!["GET".to_string(), "HEAD".to_string()]) {
                     self.chat_file(w, r, &chats, id, kind, name);
+                }
+            }
+            [_, id, kind, message_n, n] if kind == "image" => {
+                if addition_method(w, r, vec!["GET".to_string(), "HEAD".to_string()]) {
+                    self.chat_image(w, r, &chats, id, message_n, n);
                 }
             }
             _ => addition_not_found(w),
@@ -303,7 +308,14 @@ impl Handler {
                 let Some(attachments) = payload_names(w, &payload, "attachments") else {
                     return;
                 };
-                chats.send_with(id, &text, &attachments)
+                let Some(images) = payload_images(w, &payload, "images") else {
+                    return;
+                };
+                if images.is_empty() {
+                    chats.send_with(id, &text, &attachments)
+                } else {
+                    chats.send_with_images(id, &text, &attachments, &images)
+                }
             }
             "answer" => {
                 let (text, ok) = addition_string(w, &payload, "text", true);
@@ -475,6 +487,44 @@ impl Handler {
         crate::httpx::serve_content(w, r, name, &data);
     }
 
+    /// One image of one message: `GET /api/v1/chat/{id}/image/{n}/{i}` is
+    /// the `i`-th image of message `n`, served with the mime it arrived
+    /// with. Nothing to delete: images go with the conversation.
+    fn chat_image(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        chats: &Arc<Manager>,
+        id: &str,
+        message_n: &str,
+        n: &str,
+    ) {
+        let Ok(message_n) = message_n.parse::<i64>() else {
+            addition_not_found(w);
+            return;
+        };
+        let Ok(n) = n.parse::<usize>() else {
+            addition_not_found(w);
+            return;
+        };
+        match chats.image(id, message_n, n) {
+            Ok(Some((mime, data))) => {
+                if let Ok(v) = HeaderValue::from_str(&mime) {
+                    w.header_mut().insert(header::CONTENT_TYPE, v);
+                }
+                w.header_mut().insert(
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                );
+                w.header_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                crate::httpx::serve_content(w, r, "image", &data);
+            }
+            Ok(None) => addition_not_found(w),
+            Err(e) => addition_failure(w, e.to_string()),
+        }
+    }
+
     fn chat_row(&self, w: &mut ResponseWriter, id: &str) -> Option<Conversation> {
         let store = self.store.as_deref()?;
         match store.chat_get(id) {
@@ -577,6 +627,36 @@ fn invalid_names(w: &mut ResponseWriter, key: &str) {
         format!("{key} must be a list of file names."),
         format!("Send {key} as a JSON array of the names the upload returned."),
     );
+}
+
+/// The `images` of a message body: a list of `{mime, data}` with the bytes
+/// base64. Missing means none. `None` back (after an error is written) when
+/// the shape is wrong.
+fn payload_images(
+    w: &mut ResponseWriter,
+    payload: &JsonMap,
+    key: &str,
+) -> Option<Vec<ImageAttachment>> {
+    match payload.get(key) {
+        None | Some(Value::Null) => Some(Vec::new()),
+        Some(v) => match serde_json::from_value::<Vec<ImageAttachment>>(v.clone()) {
+            Ok(images) => Some(images),
+            Err(e) => {
+                write_error(
+                    w,
+                    400,
+                    format!("Invalid {key}"),
+                    format!(
+                        "{key} must be a list of images, each a {{mime, data}} with the bytes base64: {e}"
+                    ),
+                    format!(
+                        "Send {key} as a JSON array like [{{\"mime\": \"image/png\", \"data\": \"<base64>\"}}]."
+                    ),
+                );
+                None
+            }
+        },
+    }
 }
 
 fn query_int(

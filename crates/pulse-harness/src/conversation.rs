@@ -185,6 +185,56 @@ pub struct Attachment {
 pub const ATTACHMENT_LIMIT: usize = 8 * 1024 * 1024;
 /// How many files one message may carry.
 pub const ATTACHMENTS_PER_MESSAGE: usize = 12;
+/// The most decoded bytes one inline image may hold.
+pub const IMAGE_LIMIT: usize = 5 * 1024 * 1024;
+
+/// An image the owner pasted into a message, base64-decoded and saved into
+/// the conversation's attachments folder. The bytes are not handed to the
+/// model yet (that is a later job); the hub serves them back over
+/// `/api/v1/chat/{id}/image/...` so the thread can render them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
+pub struct ImageAttachment {
+    pub mime: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub data: String,
+}
+
+impl ImageAttachment {
+    /// The decoded bytes, or why this image is refused: a mime that is not
+    /// png, jpeg or webp, data over [`IMAGE_LIMIT`], or bad base64.
+    pub fn decode(&self) -> Result<Vec<u8>> {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        let mime = self.mime.trim().to_ascii_lowercase();
+        if !matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/webp") {
+            bail!(
+                "Invalid images: mime must be image/png, image/jpeg or image/webp, got {:?}",
+                self.mime
+            );
+        }
+        let bytes = STANDARD
+            .decode(self.data.trim())
+            .map_err(|e| anyhow!("Invalid images: {e}"))?;
+        if bytes.len() > IMAGE_LIMIT {
+            bail!(
+                "Invalid images: one image holds up to {} bytes, this one holds {}",
+                IMAGE_LIMIT,
+                bytes.len()
+            );
+        }
+        Ok(bytes)
+    }
+
+    fn ext(&self) -> &'static str {
+        match self.mime.trim().to_ascii_lowercase().as_str() {
+            "image/png" => "png",
+            "image/jpeg" => "jpeg",
+            "image/webp" => "webp",
+            _ => "bin",
+        }
+    }
+}
 
 /// What the conversation's branch holds against the project's default
 /// branch.
@@ -1289,6 +1339,113 @@ impl Manager {
         let rt = self.runtime(&row);
         rt.enqueue(message_with_attachments(&text, &files));
         Ok(())
+    }
+
+    /// Owner posts a message with inline images: each image is validated,
+    /// its bytes saved into the attachments folder, and the stored message
+    /// carries an `images` array so the hub can serve the bytes back at
+    /// `GET /api/v1/chat/{id}/image/{message}/{n}`. Only the text reaches
+    /// the agent; vision input is a later job.
+    pub fn send_with_images(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<()> {
+        if attachments.len() + images.len() > ATTACHMENTS_PER_MESSAGE {
+            bail!("Invalid attachments: one message carries up to {ATTACHMENTS_PER_MESSAGE} files");
+        }
+        let mut stored: Vec<Value> = Vec::with_capacity(images.len());
+        for (n, image) in images.iter().enumerate() {
+            let data = image.decode()?;
+            let name = if image.name.trim().is_empty() {
+                format!("image-{}.{}", n + 1, image.ext())
+            } else {
+                image.name.trim().to_string()
+            };
+            let saved = self.save_attachment(id, &name, &data)?;
+            stored.push(json!({
+                "name": saved.name,
+                "mime": image.mime.trim().to_ascii_lowercase(),
+                "size": saved.size,
+                "path": format!("image/{id}/{n}"),
+            }));
+        }
+        let text = text.trim();
+        if text.is_empty() && attachments.is_empty() && stored.is_empty() {
+            bail!("the message is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        let mut files: Vec<Attachment> = Vec::new();
+        for name in attachments {
+            let path = self.attachment_path(id, name).ok_or_else(|| {
+                anyhow!(
+                    "Invalid attachments: no file named {name:?} in this conversation; upload it first"
+                )
+            })?;
+            if files.iter().any(|f| f.name == *name) {
+                continue;
+            }
+            files.push(Attachment {
+                name: name.clone(),
+                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                path: path.display().to_string(),
+            });
+        }
+        let text = if text.is_empty() {
+            if files.len() + stored.len() == 1 {
+                "Look at the attached file.".to_string()
+            } else {
+                "Look at the attached files.".to_string()
+            }
+        } else {
+            text.to_string()
+        };
+        let extra = match (files.is_empty(), stored.is_empty()) {
+            (true, true) => Value::Null,
+            (false, true) => json!({"attachments": files}),
+            (true, false) => json!({"images": stored}),
+            (false, false) => json!({"attachments": files, "images": stored}),
+        };
+        self.store.chat_add_message(id, "user", &text, &extra)?;
+        let rt = self.runtime(&row);
+        rt.enqueue(message_with_attachments(&text, &files));
+        Ok(())
+    }
+
+    /// Reads one image back from a message `send_with_images` stored: the
+    /// `n`-th entry in its `images` array, bytes plus the mime it arrived
+    /// with. `None` when the entry or its file is gone.
+    pub fn image(&self, id: &str, message_n: i64, n: usize) -> Result<Option<(String, Vec<u8>)>> {
+        let _ = self.row(id)?;
+        let Some(m) = self.store.chat_message(id, message_n)? else {
+            return Ok(None);
+        };
+        let meta = m.extra.get("images").and_then(|v| v.as_array()).cloned();
+        let Some(entry) = meta.and_then(|a| a.into_iter().nth(n)) else {
+            return Ok(None);
+        };
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("image entry has no name"))?;
+        let Some(path) = self.attachment_path(id, name) else {
+            return Ok(None);
+        };
+        let data = std::fs::read(&path)?;
+        if data.len() > ATTACHMENT_LIMIT {
+            bail!("one attachment holds up to {ATTACHMENT_LIMIT} bytes");
+        }
+        let mime = entry
+            .get("mime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        Ok(Some((mime, data)))
     }
 
     /// Keeps a file the owner is attaching to a message, under its own
