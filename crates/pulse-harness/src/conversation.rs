@@ -2593,6 +2593,87 @@ mod tests {
     }
 
     #[test]
+    fn inline_images_validate_save_and_read_back() {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "Saw it."}]));
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m =
+            Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
+        let row = m
+            .create_with("", "", "fake", true, "watch out", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let png = b"\x89PNG fake bytes".to_vec();
+        let image = ImageAttachment {
+            mime: "image/png".into(),
+            name: "".into(),
+            data: STANDARD.encode(&png),
+        };
+        // Bad shapes are refused before anything is stored.
+        for bad in [
+            ImageAttachment {
+                mime: "image/gif".into(),
+                ..image.clone()
+            },
+            ImageAttachment {
+                data: "not base64!!!".into(),
+                ..image.clone()
+            },
+            ImageAttachment {
+                data: STANDARD.encode(vec![0u8; IMAGE_LIMIT + 1]),
+                ..image.clone()
+            },
+        ] {
+            assert!(
+                m.send_with_images(&row.id, "see", &[], std::slice::from_ref(&bad))
+                    .is_err()
+            );
+        }
+        // A good image rides the message: saved under a numbered name and
+        // read back with its mime.
+        m.send_with_images(&row.id, "look", &[], std::slice::from_ref(&image))
+            .expect("send image");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(user.content, "look");
+        assert_eq!(user.extra["images"][0]["name"], "image-1.png");
+        assert_eq!(user.extra["images"][0]["mime"], "image/png");
+        assert_eq!(
+            user.extra["images"][0]["path"],
+            format!("image/{}/0", row.id)
+        );
+        let (mime, data) = m
+            .image(&row.id, user.n, 0)
+            .expect("image")
+            .expect("present");
+        assert_eq!(mime, "image/png");
+        assert_eq!(data, png);
+        assert!(m.image(&row.id, user.n, 1).expect("none").is_none());
+        assert!(m.image(&row.id, 9999, 0).expect("none").is_none());
+        // A renamed image keeps its own name.
+        let named = ImageAttachment {
+            name: "shot.webp".into(),
+            mime: "image/webp".into(),
+            data: STANDARD.encode(b"RIFF webp"),
+        };
+        m.send_with_images(&row.id, "", &[], std::slice::from_ref(&named))
+            .expect("send named");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(user.content, "Look at the attached file.");
+        assert_eq!(user.extra["images"][0]["name"], "shot.webp");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
     fn a_question_parks_the_turn_until_the_owner_answers() {
         let _env = pulse_testutil::env_lock();
         pulse_provider_fake::register();

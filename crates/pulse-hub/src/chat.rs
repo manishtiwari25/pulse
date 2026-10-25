@@ -693,6 +693,8 @@ fn looks_like_text(data: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::test_helpers_http::{additions_project, additions_store, handler, json_body};
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use std::time::Duration;
 
     fn fake_handler(
@@ -1233,6 +1235,68 @@ mod tests {
             Value::Null,
         );
         assert_eq!(code, 200);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn images_post_stores_the_bytes_and_the_image_route_serves_them() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(&ts, json!([{"content": "ok"}, {"content": "saw it"}]));
+        let (code, body, raw) = call(&h, "POST", "/api/v1/chat", json!({"text": "hi"}));
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+        let png = b"\x89PNG fake bytes";
+        let b64 = STANDARD.encode(png);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/message"),
+            json!({"text": "see", "images": [{"mime": "image/png", "data": b64}]}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let msgs = shown["messages"].as_array().unwrap();
+        let user = msgs.iter().rev().find(|m| m["role"] == "user").unwrap();
+        assert_eq!(user["content"], "see");
+        assert_eq!(user["extra"]["images"][0]["name"], "image-1.png");
+        assert_eq!(user["extra"]["images"][0]["mime"], "image/png");
+        let n = user["n"].as_i64().unwrap();
+
+        // The image route serves the stored bytes with the stored mime.
+        let srv = crate::test_helpers_http::server(h.clone());
+        let client = crate::test_helpers::client();
+        let resp = client
+            .get(format!("{}/api/v1/chat/{id}/image/{n}/0", srv.url))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.headers()["content-type"], "image/png");
+        let got = resp.bytes().unwrap();
+        assert_eq!(got.as_ref(), png);
+        for (path, want) in [
+            (format!("/api/v1/chat/{id}/image/{n}/1"), 404),
+            (format!("/api/v1/chat/{id}/image/9999/0"), 404),
+            (format!("/api/v1/chat/{id}/image/x/0"), 404),
+            // a missing conversation answers like the rest of the chat
+            // surface: 409 with "no such conversation".
+            ("/api/v1/chat/missing/image/1/0".to_string(), 409),
+        ] {
+            let resp = client.get(format!("{}{path}", srv.url)).send().unwrap();
+            assert_eq!(resp.status().as_u16(), want, "{path}");
+        }
+
+        // Bad shapes are refused before anything is stored.
+        for body in [
+            json!({"text": "x", "images": "one.png"}),
+            json!({"text": "x", "images": [{"mime": "image/gif", "data": b64}]}),
+            json!({"text": "x", "images": [{"mime": "image/png", "data": "nope!!!"}]}),
+            json!({"text": "x", "images": [{"mime": "image/png", "data": STANDARD.encode(vec![0u8; pulse_harness::conversation::IMAGE_LIMIT + 1])}]}),
+        ] {
+            let (code, _, _) = call(&h, "POST", &format!("/api/v1/chat/{id}/message"), body);
+            assert_eq!(code, 400);
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 

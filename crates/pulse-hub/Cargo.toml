@@ -10,6 +10,7 @@ build = "build.rs"
 description = "PULSE: the HTTP API and SSE the console uses, with the embedded console"
 
 [dependencies]
+base64.workspace = true
 pulse-board.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
