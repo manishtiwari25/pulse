@@ -789,8 +789,13 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
     rows.push(vec![
         "Lineage".to_string(),
         format!(
-            "archive {} rows, {} kept, {} built on a parent, {}",
-            lineage.rows, lineage.kept, lineage.built_on_parent, best
+            "archive {} rows, {} kept ({} improved, {} neutral), {} built on a parent, {}",
+            lineage.rows,
+            lineage.kept,
+            lineage.improved,
+            lineage.neutral,
+            lineage.built_on_parent,
+            best
         ),
     ]);
     let l = &r.landings;

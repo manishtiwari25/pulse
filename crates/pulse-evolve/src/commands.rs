@@ -1034,7 +1034,11 @@ pub(crate) fn print_archive(w: &mut dyn Write, color: bool, archive: &[crate::ar
 pub(crate) fn print_lineage(w: &mut dyn Write, tree: &[crate::lineage::LineageNode]) {
     for node in tree {
         let indent = "  ".repeat(node.depth);
-        let decision = if node.kept { "kept" } else { "discarded" };
+        let decision = if node.kept {
+            format!("kept ({})", node.outcome)
+        } else {
+            "discarded".to_string()
+        };
         let hypothesis = crate::card_job::truncate(&node.hypothesis.replace('\n', " "), 80);
         let _ = writeln!(
             w,
@@ -1207,6 +1211,11 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
             }
             if !c.quiet {
                 print_lineage(&mut *c.out, &tree);
+                writeln!(
+                    c.out,
+                    "Archive: {} rows, {} kept ({} improved, {} neutral); only improvements earn cmp",
+                    summary.rows, summary.kept, summary.improved, summary.neutral
+                )?;
                 writeln!(
                     c.out,
                     "Parent rate: {:.3} - {} candidates with a saved patch",

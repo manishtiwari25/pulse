@@ -52,6 +52,53 @@ pub struct Archived {
     pub note: String,
 }
 
+/// ArchiveOutcome is what the Keep rule saw in an archived row, derived from
+/// its scores: `Improved` is a kept row whose delta reached the tolerance
+/// (`kept`), `Neutral` a kept tie or within-tolerance change (`kept (no
+/// regression)`), `Discarded` a row the rule did not keep. Lineage credits
+/// productivity to `Improved` rows only; a kept tie is still a kept branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveOutcome {
+    Improved,
+    Neutral,
+    Discarded,
+}
+
+impl ArchiveOutcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Improved => "improved",
+            Self::Neutral => "neutral",
+            Self::Discarded => "discarded",
+        }
+    }
+}
+
+impl std::fmt::Display for ArchiveOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl Archived {
+    pub fn delta(&self) -> f64 {
+        self.variant_score - self.baseline_score
+    }
+
+    /// Mirrors the boundary in [`crate::api::keep`]: `delta >= tolerance` is
+    /// `kept` (an improvement); a smaller kept delta is `kept (no regression)`.
+    pub fn outcome(&self) -> ArchiveOutcome {
+        if !self.kept {
+            ArchiveOutcome::Discarded
+        } else if self.delta() >= self.tolerance {
+            ArchiveOutcome::Improved
+        } else {
+            ArchiveOutcome::Neutral
+        }
+    }
+}
+
 pub(crate) fn public_scores(input: Option<&Scores>) -> Result<Scores> {
     let Some(input) = input else {
         return Err(anyhow!("a complete finite measurement is required"));
@@ -406,6 +453,57 @@ mod tests {
             "a regression beyond the tolerance is discarded: {regressed:?}"
         );
         assert!(!crate::api::keep(None, Some(&scores(1.0)), 0.02).0);
+    }
+
+    #[test]
+    fn outcome_mirrors_the_keep_rule_boundary() {
+        // Dyadic scores, so `delta == tolerance` is exact in binary floating point.
+        let archived = |baseline: f64, variant: f64, kept: bool| Archived {
+            baseline_score: baseline,
+            variant_score: variant,
+            tolerance: 0.25,
+            kept,
+            ..Default::default()
+        };
+        let improved = archived(0.5, 0.75, true);
+        assert_eq!(improved.delta(), 0.25);
+        assert_eq!(
+            improved.outcome(),
+            ArchiveOutcome::Improved,
+            "a delta equal to the tolerance is kept as an improvement"
+        );
+        assert_eq!(archived(0.5, 1.0, true).outcome(), ArchiveOutcome::Improved);
+        assert_eq!(
+            archived(0.5, 0.625, true).outcome(),
+            ArchiveOutcome::Neutral,
+            "a kept change inside the tolerance is a tie, not an improvement"
+        );
+        assert_eq!(
+            archived(0.875, 0.875, true).outcome(),
+            ArchiveOutcome::Neutral,
+            "pass/fail fixtures tie exactly"
+        );
+        assert_eq!(
+            archived(0.5, 0.125, false).outcome(),
+            ArchiveOutcome::Discarded
+        );
+        assert_eq!(
+            archived(0.5, 1.0, false).outcome(),
+            ArchiveOutcome::Discarded,
+            "the stored kept flag decides, not the scores alone"
+        );
+        for (outcome, label) in [
+            (ArchiveOutcome::Improved, "improved"),
+            (ArchiveOutcome::Neutral, "neutral"),
+            (ArchiveOutcome::Discarded, "discarded"),
+        ] {
+            assert_eq!(outcome.label(), label);
+            assert_eq!(outcome.to_string(), label);
+            assert_eq!(
+                serde_json::to_string(&outcome).unwrap(),
+                format!("\"{label}\"")
+            );
+        }
     }
 
     #[test]
