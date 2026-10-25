@@ -374,6 +374,15 @@ fn measure_fixture(
                 &mut sink,
             )
             .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
+            if crate::clones::detach_head(cancel, &clone)? {
+                let _ = writeln!(
+                    &mut output,
+                    "[{}/{}] {}: the harness left HEAD on a branch; detached again",
+                    i + 1,
+                    len,
+                    label
+                );
+            }
             crate::clones::check_clone(cancel, &clone, keys)?;
         }
         let score_cancel = cancel.with_timeout(timeout);
@@ -969,6 +978,85 @@ rm -f "$running/$(basename "$PWD")"
         );
         assert_no_clones(&s);
         assert_eq!(count_rows(&s, "evolution_archive"), 0);
+    }
+
+    #[test]
+    fn measure_detaches_head_a_harness_left_on_a_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        for (how, commits) in [
+            (
+                "git switch --quiet -c topic && git add value.txt && git -c user.name=t -c user.email=t@example.invalid commit --quiet -m topic",
+                1,
+            ),
+            ("git checkout --quiet main", 0),
+        ] {
+            let s = test_store();
+            let repo = test_project(&s, "demo");
+            fixture(
+                &s,
+                "demo",
+                "F01",
+                &format!(
+                    r#"
+set -eu
+if git symbolic-ref -q HEAD >/dev/null; then exit 3; fi
+test "$(git rev-list --count "$PULSE_MEASURE_COMMIT..HEAD")" = {commits}
+test "$(cat value.txt)" = improved
+printf 1
+"#
+                ),
+                1.0,
+            );
+            fake_harness(&s, &format!("printf improved > value.txt\n{how}"));
+            let mut out = Vec::new();
+            let cancel = pulse_bus::CancellationToken::new();
+            let scores = super::measure(
+                &cancel,
+                &s,
+                "demo",
+                &repo,
+                "HEAD",
+                crate::api::MeasureOptions {
+                    out: Some(&mut out),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{how}: {e}"));
+            assert_eq!(scores.fixtures.len(), 1, "{how}");
+            assert_eq!(scores.fixtures[0].score, 1.0, "{how}");
+            let out = String::from_utf8(out).unwrap();
+            assert!(
+                out.contains("F01: the harness left HEAD on a branch; detached again"),
+                "{how}: {out}"
+            );
+            assert_no_clones(&s);
+        }
+        for how in [
+            "git remote add origin \"$PWD\"",
+            "git checkout --quiet --orphan fresh",
+        ] {
+            let s = test_store();
+            let repo = test_project(&s, "demo");
+            fixture(&s, "demo", "F01", "printf 1", 1.0);
+            fake_harness(&s, how);
+            let cancel = pulse_bus::CancellationToken::new();
+            let err = super::measure(
+                &cancel,
+                &s,
+                "demo",
+                &repo,
+                "HEAD",
+                crate::api::MeasureOptions::default(),
+            )
+            .expect_err(how);
+            assert!(
+                err.downcast_ref::<crate::clones::ViolationError>()
+                    .is_some(),
+                "{how}: {err}"
+            );
+            assert_no_clones(&s);
+        }
     }
 
     #[test]

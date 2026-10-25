@@ -340,6 +340,54 @@ pub(crate) fn check_clone(
     Ok(())
 }
 
+/// Detaches a clone's HEAD again when the harness left it on a branch (`git
+/// switch -c`, `git checkout main`): HEAD keeps the commit the harness ended
+/// on and the index and tree stay as they are, so the scorer judges what the
+/// harness did instead of the measurement failing on the branch alone. Says
+/// whether HEAD had to be detached; a HEAD on an unborn branch is left for
+/// `check_clone` to report.
+pub(crate) fn detach_head(cancel: &pulse_bus::CancellationToken, dest: &str) -> Result<bool> {
+    let head = crate::process::git_output(
+        cancel,
+        dest,
+        &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
+    );
+    if let Some(err) = cancel.err() {
+        return Err(err.into());
+    }
+    if !head.is_ok_and(|h| !h.is_empty()) {
+        return Ok(false);
+    }
+    let commit = crate::process::git_output(
+        cancel,
+        dest,
+        &[
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            "HEAD^{commit}".into(),
+        ],
+    );
+    if let Some(err) = cancel.err() {
+        return Err(err.into());
+    }
+    let Ok(commit) = commit else {
+        return Ok(false);
+    };
+    crate::process::git_output(
+        cancel,
+        dest,
+        &[
+            "update-ref".into(),
+            "--no-deref".into(),
+            "HEAD".into(),
+            commit,
+        ],
+    )
+    .map_err(|_| clone_failure(cancel, "detach the clone again"))?;
+    Ok(true)
+}
+
 /// The file in a measurement's clone root naming the process that measures
 /// there; the sweep removes roots whose process is gone.
 pub const MEASURE_PID_FILE: &str = ".pulse-pid";
@@ -468,4 +516,51 @@ fn remove_tree(target: &Path) -> Result<()> {
     }
     fs::remove_dir_all(target).or_else(|_| fs::remove_file(target))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_helpers::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn detach_head_puts_a_reattached_clone_back_on_its_commit() {
+        let _serial = crate::test_helpers::serial();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let commit = test_git(&repo, &["rev-parse", "HEAD"]);
+        let keys = super::project_answer_keys(&s, "demo").unwrap();
+        let clone = crate::test_helpers::temp_path().join("clone");
+        let clone = clone.to_str().unwrap();
+        let cancel = pulse_bus::CancellationToken::new();
+        super::stripped_clone(&cancel, &repo, &commit, clone, &keys).unwrap();
+        assert!(!super::detach_head(&cancel, clone).unwrap());
+
+        test_git(clone, &["switch", "--quiet", "-c", "topic"]);
+        put_file(Path::new(clone).join("value.txt"), "edited\n", 0o644);
+        let err = super::check_clone(&cancel, clone, &keys).unwrap_err();
+        assert!(
+            err.to_string().contains("clone is no longer detached"),
+            "{err}"
+        );
+
+        assert!(super::detach_head(&cancel, clone).unwrap());
+        super::check_clone(&cancel, clone, &keys).unwrap();
+        assert_eq!(test_git(clone, &["rev-parse", "HEAD"]), commit);
+        assert_eq!(test_git(clone, &["status", "--porcelain"]), "M value.txt");
+        assert_eq!(
+            fs::read_to_string(Path::new(clone).join("value.txt")).unwrap(),
+            "edited\n"
+        );
+        assert!(!super::detach_head(&cancel, clone).unwrap());
+
+        test_git(clone, &["checkout", "--quiet", "--orphan", "fresh"]);
+        assert!(!super::detach_head(&cancel, clone).unwrap());
+        let err = super::check_clone(&cancel, clone, &keys).unwrap_err();
+        assert!(
+            err.to_string().contains("clone is no longer detached"),
+            "{err}"
+        );
+    }
 }
