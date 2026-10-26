@@ -284,6 +284,20 @@ impl Store {
         })
     }
 
+    /// One message by its sequence number within the conversation.
+    pub fn chat_message(&self, id: &str, n: i64) -> Result<Option<ConversationMessage>> {
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT {MESSAGE_COLS} FROM conversation_messages WHERE conversation_id = ? AND n = ?"
+                ),
+                params![id, n],
+                scan_message,
+            )
+            .optional()?)
+    }
+
     /// The messages after number `after`, oldest first.
     pub fn chat_messages(&self, id: &str, after: i64) -> Result<Vec<ConversationMessage>> {
         let conn = self.conn()?;

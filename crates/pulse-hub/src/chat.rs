@@ -13,7 +13,7 @@ use crate::additions::{
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::{Handler, JsonMap, write_error, write_json};
 use hyper::header::{self, HeaderValue};
-use pulse_harness::conversation::Manager;
+use pulse_harness::conversation::{ImageAttachment, Manager};
 use pulse_store::Conversation;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -94,6 +94,11 @@ impl Handler {
             [_, id, kind, name] if kind == "artifacts" || kind == "attachments" => {
                 if addition_method(w, r, vec!["GET".to_string(), "HEAD".to_string()]) {
                     self.chat_file(w, r, &chats, id, kind, name);
+                }
+            }
+            [_, id, kind, message_n, n] if kind == "image" => {
+                if addition_method(w, r, vec!["GET".to_string(), "HEAD".to_string()]) {
+                    self.chat_image(w, r, &chats, id, message_n, n);
                 }
             }
             _ => addition_not_found(w),
@@ -303,7 +308,14 @@ impl Handler {
                 let Some(attachments) = payload_names(w, &payload, "attachments") else {
                     return;
                 };
-                chats.send_with(id, &text, &attachments)
+                let Some(images) = payload_images(w, &payload, "images") else {
+                    return;
+                };
+                if images.is_empty() {
+                    chats.send_with(id, &text, &attachments)
+                } else {
+                    chats.send_with_images(id, &text, &attachments, &images)
+                }
             }
             "answer" => {
                 let (text, ok) = addition_string(w, &payload, "text", true);
@@ -475,6 +487,44 @@ impl Handler {
         crate::httpx::serve_content(w, r, name, &data);
     }
 
+    /// One image of one message: `GET /api/v1/chat/{id}/image/{n}/{i}` is
+    /// the `i`-th image of message `n`, served with the mime it arrived
+    /// with. Nothing to delete: images go with the conversation.
+    fn chat_image(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        chats: &Arc<Manager>,
+        id: &str,
+        message_n: &str,
+        n: &str,
+    ) {
+        let Ok(message_n) = message_n.parse::<i64>() else {
+            addition_not_found(w);
+            return;
+        };
+        let Ok(n) = n.parse::<usize>() else {
+            addition_not_found(w);
+            return;
+        };
+        match chats.image(id, message_n, n) {
+            Ok(Some((mime, data))) => {
+                if let Ok(v) = HeaderValue::from_str(&mime) {
+                    w.header_mut().insert(header::CONTENT_TYPE, v);
+                }
+                w.header_mut().insert(
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                );
+                w.header_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                crate::httpx::serve_content(w, r, "image", &data);
+            }
+            Ok(None) => addition_not_found(w),
+            Err(e) => addition_failure(w, e.to_string()),
+        }
+    }
+
     fn chat_row(&self, w: &mut ResponseWriter, id: &str) -> Option<Conversation> {
         let store = self.store.as_deref()?;
         match store.chat_get(id) {
@@ -579,6 +629,36 @@ fn invalid_names(w: &mut ResponseWriter, key: &str) {
     );
 }
 
+/// The `images` of a message body: a list of `{mime, data}` with the bytes
+/// base64. Missing means none. `None` back (after an error is written) when
+/// the shape is wrong.
+fn payload_images(
+    w: &mut ResponseWriter,
+    payload: &JsonMap,
+    key: &str,
+) -> Option<Vec<ImageAttachment>> {
+    match payload.get(key) {
+        None | Some(Value::Null) => Some(Vec::new()),
+        Some(v) => match serde_json::from_value::<Vec<ImageAttachment>>(v.clone()) {
+            Ok(images) => Some(images),
+            Err(e) => {
+                write_error(
+                    w,
+                    400,
+                    format!("Invalid {key}"),
+                    format!(
+                        "{key} must be a list of images, each a {{mime, data}} with the bytes base64: {e}"
+                    ),
+                    format!(
+                        "Send {key} as a JSON array like [{{\"mime\": \"image/png\", \"data\": \"<base64>\"}}]."
+                    ),
+                );
+                None
+            }
+        },
+    }
+}
+
 fn query_int(
     w: &mut ResponseWriter,
     value: String,
@@ -613,6 +693,8 @@ fn looks_like_text(data: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::test_helpers_http::{additions_project, additions_store, handler, json_body};
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use std::time::Duration;
 
     fn fake_handler(
@@ -1153,6 +1235,68 @@ mod tests {
             Value::Null,
         );
         assert_eq!(code, 200);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn images_post_stores_the_bytes_and_the_image_route_serves_them() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(&ts, json!([{"content": "ok"}, {"content": "saw it"}]));
+        let (code, body, raw) = call(&h, "POST", "/api/v1/chat", json!({"text": "hi"}));
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+        let png = b"\x89PNG fake bytes";
+        let b64 = STANDARD.encode(png);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/message"),
+            json!({"text": "see", "images": [{"mime": "image/png", "data": b64}]}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let msgs = shown["messages"].as_array().unwrap();
+        let user = msgs.iter().rev().find(|m| m["role"] == "user").unwrap();
+        assert_eq!(user["content"], "see");
+        assert_eq!(user["extra"]["images"][0]["name"], "image-1.png");
+        assert_eq!(user["extra"]["images"][0]["mime"], "image/png");
+        let n = user["n"].as_i64().unwrap();
+
+        // The image route serves the stored bytes with the stored mime.
+        let srv = crate::test_helpers_http::server(h.clone());
+        let client = crate::test_helpers::client();
+        let resp = client
+            .get(format!("{}/api/v1/chat/{id}/image/{n}/0", srv.url))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.headers()["content-type"], "image/png");
+        let got = resp.bytes().unwrap();
+        assert_eq!(got.as_ref(), png);
+        for (path, want) in [
+            (format!("/api/v1/chat/{id}/image/{n}/1"), 404),
+            (format!("/api/v1/chat/{id}/image/9999/0"), 404),
+            (format!("/api/v1/chat/{id}/image/x/0"), 404),
+            // a missing conversation answers like the rest of the chat
+            // surface: 409 with "no such conversation".
+            ("/api/v1/chat/missing/image/1/0".to_string(), 409),
+        ] {
+            let resp = client.get(format!("{}{path}", srv.url)).send().unwrap();
+            assert_eq!(resp.status().as_u16(), want, "{path}");
+        }
+
+        // Bad shapes are refused before anything is stored.
+        for body in [
+            json!({"text": "x", "images": "one.png"}),
+            json!({"text": "x", "images": [{"mime": "image/gif", "data": b64}]}),
+            json!({"text": "x", "images": [{"mime": "image/png", "data": "nope!!!"}]}),
+            json!({"text": "x", "images": [{"mime": "image/png", "data": STANDARD.encode(vec![0u8; pulse_harness::conversation::IMAGE_LIMIT + 1])}]}),
+        ] {
+            let (code, _, _) = call(&h, "POST", &format!("/api/v1/chat/{id}/message"), body);
+            assert_eq!(code, 400);
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 

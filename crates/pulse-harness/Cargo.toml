@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: the built-in agent harness: bash-tool loop, limits, deny rules, trajectories, sessions"
 
 [dependencies]
+base64.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
 pulse-cred.workspace = true
