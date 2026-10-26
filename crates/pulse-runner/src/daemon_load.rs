@@ -126,6 +126,9 @@ pub(crate) struct Pressure {
     /// The kernel itself reports memory pressure (macOS
     /// `kern.memorystatus_vm_pressure_level` at warning or critical).
     pub(crate) mem_warning: bool,
+    /// The kernel reports critical memory pressure (the level at 4): the
+    /// machine is swapping and one more run would only finish later.
+    pub(crate) mem_critical: bool,
 }
 
 /// The limits in force.
@@ -187,10 +190,12 @@ pub(crate) struct Verdict {
     /// Why the machine takes nothing new right now, when it is saturated.
     pub(crate) hold: Option<String>,
     /// One local slot stays open to the owner's work alone (the lead's runs,
-    /// answers, the jobs of owner tasks): the hold is load alone, the load is
-    /// under [`EXPRESS_LOAD_FACTOR`] times the cap, and a slot is free under
-    /// `daemon.max_jobs`. The fleet's own builds are what saturate the
-    /// machine; the owner's request should not queue behind them.
+    /// answers, the jobs of owner tasks): the hold is soft - load under
+    /// [`EXPRESS_LOAD_FACTOR`] times the cap, or the kernel's memory warning
+    /// while the daemon's own reading keeps free memory above the floor -
+    /// and a slot is free under `daemon.max_jobs`. The fleet's own builds
+    /// are what saturate the machine; the owner's request should not queue
+    /// behind them. Critical memory pressure and a floor breach shut it.
     pub(crate) express: bool,
 }
 
@@ -213,15 +218,15 @@ pub(crate) fn decide(
     } else {
         cap.saturating_sub(running).saturating_sub(reserved)
     };
-    let load_only = hold.is_some()
-        && !pressure.mem_warning
+    let soft = hold.is_some()
+        && !pressure.mem_critical
         && !pressure
             .free_mem_mb
             .is_some_and(|free| limits.min_free_mem_mb > 0 && free < limits.min_free_mem_mb)
         && pressure
             .load1
-            .is_some_and(|load| load <= limits.max_load * EXPRESS_LOAD_FACTOR);
-    let express = load_only && running + reserved < cap;
+            .is_none_or(|load| load <= limits.max_load * EXPRESS_LOAD_FACTOR);
+    let express = soft && running + reserved < cap;
     Verdict {
         room,
         hold,
@@ -240,6 +245,9 @@ pub(crate) fn hold_reason(limits: &Limits, pressure: &Pressure) -> Option<String
             "machine saturated: load {load:.1} is over daemon.max_load {:.0}",
             limits.max_load
         ));
+    }
+    if pressure.mem_critical {
+        return Some("machine saturated: the kernel reports critical memory pressure".to_string());
     }
     if pressure.mem_warning {
         return Some("machine saturated: the kernel reports memory pressure".to_string());
@@ -444,10 +452,12 @@ pub(crate) fn pressure() -> Pressure {
 /// What the hardware says; each part is None where the platform has no
 /// reading, which the decision treats as no pressure.
 pub(crate) fn read_pressure() -> Pressure {
+    let level = mem_pressure_level();
     Pressure {
         load1: load1(),
         free_mem_mb: free_mem_mb(),
-        mem_warning: mem_warning(),
+        mem_warning: level.is_some_and(|level| level >= 2),
+        mem_critical: level.is_some_and(|level| level >= 4),
     }
 }
 
@@ -457,6 +467,7 @@ pub(crate) const CALM: Pressure = Pressure {
     load1: Some(0.5),
     free_mem_mb: Some(8192),
     mem_warning: false,
+    mem_critical: false,
 };
 
 /// Tests pin the pressure the daemon sees; [`pin_pressure`] sets it and the
@@ -588,10 +599,11 @@ fn free_mem_mb() -> Option<i64> {
     Some((pages.saturating_mul(page) / (1024 * 1024)) as i64)
 }
 
+/// The kernel's own memory pressure level: 1 normal, 2 warning, 4 critical;
+/// None on older kernels.
 #[cfg(target_os = "macos")]
-fn mem_warning() -> bool {
-    // 1 normal, 2 warning, 4 critical; absent on older kernels.
-    sysctl_int("kern.memorystatus_vm_pressure_level").is_some_and(|level| level >= 2)
+fn mem_pressure_level() -> Option<i64> {
+    sysctl_int("kern.memorystatus_vm_pressure_level")
 }
 
 #[cfg(target_os = "linux")]
@@ -628,8 +640,8 @@ fn free_mem_mb() -> Option<i64> {
 }
 
 #[cfg(target_os = "linux")]
-fn mem_warning() -> bool {
-    false
+fn mem_pressure_level() -> Option<i64> {
+    None
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -648,8 +660,8 @@ fn free_mem_mb() -> Option<i64> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn mem_warning() -> bool {
-    false
+fn mem_pressure_level() -> Option<i64> {
+    None
 }
 
 #[cfg(test)]
@@ -672,6 +684,7 @@ mod tests {
             load1: Some(2.0),
             free_mem_mb: Some(6000),
             mem_warning: false,
+            mem_critical: false,
         }
     }
 
@@ -769,15 +782,40 @@ mod tests {
             v.hold.as_deref(),
             Some("machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024")
         );
-        assert!(!v.express, "memory pressure has no express lane");
+        assert!(!v.express, "memory under the floor has no express lane");
         let warned = Pressure {
             mem_warning: true,
             ..calm()
         };
+        let v = decide(&l, &warned, 0, 0);
         assert_eq!(
-            decide(&l, &warned, 0, 0).hold.as_deref(),
+            v.hold.as_deref(),
             Some("machine saturated: the kernel reports memory pressure")
         );
+        assert!(
+            v.express,
+            "the kernel's warning with memory above the floor keeps the owner's lane: {v:?}"
+        );
+        let warned_and_tight = Pressure {
+            mem_warning: true,
+            free_mem_mb: Some(512),
+            ..calm()
+        };
+        assert!(
+            !decide(&l, &warned_and_tight, 0, 0).express,
+            "the warning with memory under the floor shuts it"
+        );
+        let critical = Pressure {
+            mem_warning: true,
+            mem_critical: true,
+            ..calm()
+        };
+        let v = decide(&l, &critical, 0, 0);
+        assert_eq!(
+            v.hold.as_deref(),
+            Some("machine saturated: the kernel reports critical memory pressure")
+        );
+        assert!(!v.express, "critical memory pressure has no express lane");
     }
 
     #[test]

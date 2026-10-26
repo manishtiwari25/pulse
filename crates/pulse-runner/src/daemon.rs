@@ -1819,9 +1819,11 @@ pub(crate) fn daemon(
                 // at daemon.max_jobs and all close while the machine is saturated.
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
-                // While load alone holds the machine, one local slot stays
-                // open to the owner's work (jobs.rs OWNER_DRIVEN_SQL): the
-                // owner should not wait behind the fleet's own builds.
+                // While a soft hold (load, or the kernel's memory warning
+                // with free memory above the floor) closes the machine, one
+                // local slot stays open to the owner's work (jobs.rs
+                // OWNER_DRIVEN_SQL): the owner should not wait behind the
+                // fleet's own builds.
                 let mut express_slot = false;
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
                     let running_local = inflight

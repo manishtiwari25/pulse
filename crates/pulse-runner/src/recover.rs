@@ -282,7 +282,7 @@ pub(crate) fn recover_failed_jobs(
             }
         }
         let adds = f.class.0 != "structural" && n < limit;
-        if adds && queued >= RECOVER_QUEUE_ROOM {
+        if adds && queued >= RECOVER_QUEUE_ROOM && !owner_task_job(&job) {
             stats.queue_full = queued;
             continue;
         }
@@ -492,6 +492,13 @@ pub(crate) fn lead_followed_up(q: &Querier, job: Row) -> bool {
     )
     .0
     .is_empty()
+}
+
+/// A job the lead planned for an owner task: the owner waits on it, so the
+/// room the loop's own backlog leaves in the queue (`RECOVER_QUEUE_ROOM`)
+/// never decides whether it runs again.
+pub(crate) fn owner_task_job(job: &Row) -> bool {
+    pulse_store::task_source_id(&job.str("source")).is_some()
 }
 
 pub(crate) fn recovery_pending(s: &pulse_store::Store, job_id: String) -> bool {
@@ -723,13 +730,14 @@ pub(crate) fn recover_one(
         if now < crate::failure::recover_due(job.str("finished_at"), n) {
             return Ok(());
         }
-        if must_one(
-            q,
-            "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status = 'queued'",
-            &[&job.str("project")],
-        )
-        .int("n")
-            >= RECOVER_QUEUE_ROOM
+        if !owner_task_job(&job)
+            && must_one(
+                q,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status = 'queued'",
+                &[&job.str("project")],
+            )
+            .int("n")
+                >= RECOVER_QUEUE_ROOM
         {
             return Err(crate::util::fail(
                 2,
@@ -2823,22 +2831,43 @@ mod tests {
             "1 commit(s) touch owner-owned paths (.github/x.yml); nothing landed",
             &crate::util::plus_minutes(TEST_NOW, -30.0),
         );
+        // The owner waits on a task's job: the loop's backlog is no reason
+        // to leave it failed.
+        insert_recover_failed_job(
+            &s,
+            "job-owner",
+            "task",
+            "task:TASK-9:vision",
+            "worker exited 3: harness stopped: provider_error after 1 model calls and 0 commands; error: copilot: error sending request for url (https://api.github.com/copilot_internal/v2/token)",
+            &crate::util::plus_minutes(TEST_NOW, -30.0),
+        );
 
         let lines = super::recover_failed_jobs(&s, p.clone(), TEST_NOW.into(), "daemon".into());
-        assert_eq!(lines.len(), 1, "lines = {lines:?}");
+        assert_eq!(lines.len(), 2, "lines = {lines:?}");
         assert!(
             lines[0].contains("held job-held (structural)"),
+            "lines = {lines:?}"
+        );
+        assert!(
+            lines[1].contains("recovered job-owner (transient)"),
             "lines = {lines:?}"
         );
         assert_eq!(
             crate::jobs::job_row(&conn(&s), "job-waits".into()).str("status"),
             "failed"
         );
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), "job-owner".into()).str("status"),
+            "queued",
+            "the owner's job runs again while the queue is full"
+        );
         let notes = recover_meta(&s);
         let note = &notes.get("proj").expect("proj note").note;
+        // The owner's job joined the queue before the loop's job was weighed.
         assert!(
             note.contains(&format!(
-                "waits for the queue ({RECOVER_QUEUE_ROOM} queued)"
+                "waits for the queue ({} queued)",
+                RECOVER_QUEUE_ROOM + 1
             )),
             "note = {note}"
         );
