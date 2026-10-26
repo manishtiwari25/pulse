@@ -20,6 +20,33 @@ const LAND_RETRY_META_PREFIX: &str = "landing-retry:";
 const LAND_HELD_META_PREFIX: &str = "landing-held:";
 /// How long the daemon leaves a held branch alone before it looks again.
 pub(crate) const HELD_RECHECK_MINUTES: i64 = 30;
+/// Minutes a branch whose setup fails waits before the daemon tries it again:
+/// a branch that bumps a dependency can never pass setup against main's
+/// restored lockfile, so retrying every loop just burns a worktree each pass.
+const SETUP_RETRY_MINUTES: i64 = 20;
+
+/// The manifest files that pair with a lockfile: a branch that changes one of
+/// these relative to `before` also changes its lockfile, and main's lockfile
+/// is restored over the merge, so setup can never pass for it.
+static MANIFEST_FILES: &[&str] = &[
+    "package.json",
+    "Cargo.toml",
+    "pyproject.toml",
+    "setup.py",
+    "requirements.txt",
+    "Gemfile",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "composer.json",
+];
+
+/// True when `path` is a dependency manifest (its file name, anywhere in the
+/// tree, matches a known manifest).
+pub(crate) fn manifest_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    MANIFEST_FILES.contains(&name)
+}
 pub(crate) const RESULT_FILE: &str = "PULSE_RESULT.md";
 pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["pulse/", "evolve/"];
 pub(crate) static LAND_REFUSED_PATHS: &[&str] = &[
@@ -569,6 +596,44 @@ fn record_verify_memo_event(
     }
 }
 
+/// A branch that changes a dependency manifest while a lockfile it guards is
+/// restored from main can never pass setup: hold it for a human landing
+/// (`land.held`) instead of deferring it every daemon loop.
+pub(crate) fn hold_lockfile_branch(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    lockfiles: &[String],
+) -> (String, String) {
+    let command = format!("pulse land --project {slug} --branch {branch}");
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.held",
+            branch,
+            serde_json::json!({
+                "slug": slug,
+                "job": job_id_of(job.clone()),
+                "reason": "lockfile",
+                "lockfiles": lockfiles,
+            }),
+        );
+    }
+    set_held_branch(s, slug, branch, now);
+    (
+        "held".to_string(),
+        format!(
+            "{branch} changes the lockfile ({}); Tier 2 per the recipe; it waits for a human: {command}",
+            lockfiles.join(", "),
+        ),
+    )
+}
+
 pub(crate) fn land_branch(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -722,6 +787,22 @@ pub(crate) fn land_branch(
             ));
         }
     }
+    // A branch that bumps a dependency changes a manifest while its lockfile
+    // is guarded: main's lockfile is restored into the merged worktree and
+    // setup can never pass, so hold it for a human instead of deferring it
+    // once per daemon loop.
+    if !o.sync && !o.by_hand {
+        let lockfiles: Vec<String> = files
+            .iter()
+            .filter(|f| setup_lockfiles().contains(f))
+            .cloned()
+            .collect();
+        if !lockfiles.is_empty() && files.iter().any(|f| manifest_path(f)) {
+            return Ok(hold_lockfile_branch(
+                s, &slug, &branch, &job, &actor, &now, &lockfiles,
+            ));
+        }
+    }
     let (on_default, clean) = checkout_state_pair(&root, &def);
     // A checkout parked on another branch is the human's; the landing then moves
     // `refs/heads/{def}` itself once the merge is verified and never touches the working
@@ -810,6 +891,15 @@ pub(crate) fn land_branch(
         Duration::from_secs(60),
         &["worktree", "remove", "--force", &worktree],
     );
+    // A leftover directory from a landing that died mid-add (bulk disk went
+    // away, daemon was killed) is not registered in git's worktree list, so
+    // `worktree remove --force` misses it and `worktree add` fails with
+    // "already exists" forever. Prune stale registrations and remove any
+    // unregistered directory before adding.
+    crate::util::git_timeout(&root, Duration::from_secs(30), &["worktree", "prune"]);
+    if Path::new(&worktree).is_dir() {
+        let _ = std::fs::remove_dir_all(&worktree);
+    }
     let added = crate::util::git_timeout(
         &root,
         Duration::from_secs(120),
@@ -999,10 +1089,21 @@ pub(crate) fn land_branch(
                             }),
                         );
                     }
+                    // A setup failure is almost never transient (a manifest
+                    // that outran its lockfile, a missing tool): wait before
+                    // the daemon tries this branch again instead of burning a
+                    // worktree on every loop.
+                    let minutes: i64 = s
+                        .setting("landing.setup_retry_minutes", "")
+                        .parse()
+                        .unwrap_or(SETUP_RETRY_MINUTES)
+                        .max(1);
+                    let hold_until = crate::util::plus_minutes(&now, minutes as f64);
+                    set_landing_retry(s, &slug, &hold_until, "setup failed; retry later");
                     return Ok((
                         "deferred".into(),
                         format!(
-                            "setup from {from} failed on this machine ({prep_tail}); nothing landed, try again once it is fixed"
+                            "setup from {from} failed on this machine ({prep_tail}); nothing landed, retry after {hold_until}"
                         ),
                     ));
                 }
@@ -2631,6 +2732,72 @@ mod tests {
                 &[]
             ),
             0
+        );
+    }
+
+    #[test]
+    fn lockfile_branch_waits_for_a_human() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (project, root) = crate::test_helpers::new_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        let branch = "pulse/aurora/bump-next";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        // A branch that bumps a dependency changes both the manifest and the
+        // lockfile; main's lockfile is restored over the merge and setup can
+        // never pass for it.
+        let pkg = std::path::Path::new(&root).join("package.json");
+        std::fs::write(&pkg, "{\"dependencies\":{\"next\":\"16.4.3\"}}\n").unwrap();
+        let lock = std::path::Path::new(&root).join("pnpm-lock.yaml");
+        std::fs::write(&lock, "lockfileVersion: 9.0\n").unwrap();
+        run(&root, &["git", "add", "package.json", "pnpm-lock.yaml"]);
+        run(&root, &["git", "commit", "-q", "-m", "bump next"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "bump".into(),
+            "b".into(),
+            1,
+            30,
+            String::new(),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &job.str("id")],
+        );
+        let slug = project.str("slug");
+
+        // The first pass holds the branch for a human landing.
+        let first = super::land_pending(&s, project.clone(), "daemon", TEST_NOW, false, 0, false);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].state, "held", "{}", first[0].note);
+        assert!(
+            first[0].note.contains("changes the lockfile"),
+            "{}",
+            first[0].note
+        );
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        // The daemon's next passes skip it until the recheck comes round.
+        let soon = crate::util::plus_minutes(TEST_NOW, 15);
+        let quiet = super::land_pending(&s, project.clone(), "daemon", &soon, false, 0, false);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        // A lockfile branch never posts to the environment thread.
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question' AND area = 'runner' AND thread = 'environment'",
+                &[],
+            ),
+            0,
+            "no owner question for a lockfile hold"
         );
     }
 
