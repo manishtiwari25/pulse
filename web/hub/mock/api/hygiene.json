@@ -23,7 +23,20 @@
     }
   },
   "text": "last sweep 2026-09-11T08:50:00Z: removed clone 2, scratch 5, worktree 1 (176.0 MB freed); held branch 3, worktree 1",
-  "settings": { "sweep": "on", "grace_minutes": 30, "branch_days": 7, "keep_days": 14 },
+  "settings": { "sweep": "on", "grace_minutes": 30, "branch_days": 7, "keep_days": 14, "runners": "", "runner_keep_days": 30 },
+  "runners": {
+    "at": "2026-09-11T08:50:00Z",
+    "measured_at": "2026-09-11T08:50:00Z",
+    "keep_days": 30,
+    "setting": "",
+    "decided": false,
+    "runners": [
+      { "id": "copilot", "label": "GitHub Copilot CLI", "binary": "/opt/homebrew/bin/copilot", "version": "1.0.103", "dir": "/home/owner/.copilot", "dir_exists": true, "sessions_dir": "/home/owner/.copilot/session-state", "bytes": 5905580032, "capped": false, "sessions": 240, "stale": 61, "live": 1, "oldest": "2026-07-02T14:10:00Z", "newest": "2026-09-11T08:49:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
+      { "id": "claude", "label": "Claude Code", "binary": "/opt/homebrew/bin/claude", "version": "2.1.80 (Claude Code)", "dir": "/home/owner/.claude", "dir_exists": true, "sessions_dir": "/home/owner/.claude/projects", "bytes": 498073600, "capped": false, "sessions": 318, "stale": 140, "live": 0, "oldest": "2026-05-19T09:00:00Z", "newest": "2026-09-10T19:30:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
+      { "id": "codex", "label": "Codex CLI", "binary": "", "version": "", "dir": "/home/owner/.codex", "dir_exists": true, "sessions_dir": "/home/owner/.codex/sessions", "bytes": 54525952, "capped": false, "sessions": 37, "stale": 37, "live": 0, "oldest": "2026-04-02T11:00:00Z", "newest": "2026-06-30T16:00:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
+      { "id": "opencode", "label": "OpenCode", "binary": "/opt/homebrew/bin/opencode", "version": "1.2.0", "dir": "/home/owner/.local/share/opencode", "dir_exists": true, "sessions_dir": "/home/owner/.local/share/opencode", "bytes": 6012954624, "capped": false, "sessions": 0, "stale": 0, "live": 0, "oldest": "", "newest": "", "sweeps": false, "managed": false, "note": "keeps its history in one database, so PULSE reports the size and leaves it alone", "removed": 0, "freed": 0, "removed_at": "" }
+    ]
+  },
   "agents": [
     { "agent": "aurora", "runs": 14, "last_at": "2026-09-11T08:41:10Z", "left": 2, "removed": 2, "bytes": 6291456 },
     { "agent": "borealis", "runs": 11, "last_at": "2026-09-11T07:58:02Z", "left": 0, "removed": 0, "bytes": 0 },

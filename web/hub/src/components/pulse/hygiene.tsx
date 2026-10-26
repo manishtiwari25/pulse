@@ -7,21 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Disclosure, EmptyState, Kv, Panel } from "./panel";
 import { Mono, ToneBadge, When, Who } from "./who";
 import { invalidate, useApi, useLiveEvents } from "@/lib/use-api";
-import { andList, num, plural, type Tone } from "@/lib/format";
+import { andList, num, plural, sizeText, type Tone } from "@/lib/format";
 import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import type { AgentCleanup, Hygiene, Leftover, StoreEvent, SweptItem } from "@/lib/api";
+import { RunnersSection } from "./runners";
 
 // The cleaning events the hygiene route serves; a live one of these refreshes the panel.
 const CLEANING = new Set(["daemon.sweep", "worktree.swept", "land.swept", "agent.cleanup"]);
 
-export function sizeText(n: number | undefined | null): string {
-  const b = Number(n || 0);
-  if (b >= 1 << 30) return (b / (1 << 30)).toFixed(1) + " GB";
-  if (b >= 1 << 20) return (b / (1 << 20)).toFixed(1) + " MB";
-  if (b >= 1 << 10) return Math.round(b / (1 << 10)) + " KB";
-  return b + " B";
-}
+export { sizeText };
 
 // Kinds of things a cleanup removes or keeps, as a person would count them.
 const KIND: Record<string, [string, string]> = {
@@ -31,6 +26,7 @@ const KIND: Record<string, [string, string]> = {
   branch: ["branch", "branches"],
   patch: ["patch file", "patch files"],
   temp: ["temp folder", "temp folders"],
+  session: ["agent session", "agent sessions"],
 };
 const kindCount = (k: string, n: number) => num(n) + " " + (KIND[k] ? KIND[k][n === 1 ? 0 : 1] : k + (n === 1 ? "" : "s"));
 const kindWord = (k: string) => (KIND[k] ? KIND[k][0].charAt(0).toUpperCase() + KIND[k][0].slice(1) : k.charAt(0).toUpperCase() + k.slice(1));
@@ -241,6 +237,7 @@ export function HygienePanel({ project, limit = 30, heading = true }: { project?
         </div>
         {heading ? null : status}
       </div>
+      {project ? null : <RunnersSection note={h.runners} />}
       <Disclosure summary="Show what was cleaned" className="mt-3 border-t border-border/70 pt-3" contentClassName="mt-3">
         <div className="grid min-w-0 gap-1 [&>*]:min-w-0">
           <p className="max-w-3xl text-[13px] leading-relaxed text-muted-foreground">

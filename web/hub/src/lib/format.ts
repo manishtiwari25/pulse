@@ -6,6 +6,15 @@ export const num = (n: unknown): string => Number(n || 0).toLocaleString("en-US"
 export const plural = (n: number, word: string): string => num(n) + " " + word + (n === 1 ? "" : "s");
 // "a", "a and b", "a, b and c".
 export const andList = (items: string[]): string => (items.length < 3 ? items.join(" and ") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1]);
+
+// Bytes as a person reads them: "1.2 GB", "184 KB".
+export function sizeText(n: number | undefined | null): string {
+  const b = Number(n || 0);
+  if (b >= 1 << 30) return (b / (1 << 30)).toFixed(1) + " GB";
+  if (b >= 1 << 20) return (b / (1 << 20)).toFixed(1) + " MB";
+  if (b >= 1 << 10) return Math.round(b / (1 << 10)) + " KB";
+  return b + " B";
+}
 export const fmtDate = (d?: string | null): string => (d || "").replace("T", " ").replace("Z", " UTC");
 
 export function parseDate(d?: string | null): Date | null {

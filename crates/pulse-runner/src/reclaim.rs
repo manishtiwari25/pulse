@@ -345,6 +345,7 @@ fn under_floor(free: i32, floor: i32) -> bool {
 /// Runs the ladder. With `always` unset (the daemon), the ladder returns at
 /// once while the floor is clear and stops after the first rung that clears
 /// it; set (`pulse sweep --reclaim`), every rung runs regardless.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reclaim(
     s: &pulse_store::Store,
     projects: Vec<Row>,
@@ -353,6 +354,7 @@ pub(crate) fn reclaim(
     inflight: BTreeMap<String, bool>,
     dry_run: bool,
     always: bool,
+    user_home: String,
 ) -> Reclaim {
     let home = Path::new(&s.home).to_path_buf();
     let (free, floor) = room(s);
@@ -418,6 +420,7 @@ pub(crate) fn reclaim(
             actor: actor.clone(),
             inflight,
             pressure: true,
+            user_home: user_home.clone(),
         },
     );
     let (items, bytes) = rep
@@ -470,9 +473,18 @@ pub(crate) fn reclaim(
         }
         return out;
     }
-    // Still under: measure what is left so the owner's note names it.
+    // Still under: measure what is left so the owner's note names it - the
+    // other agent programs' state directories included, since a
+    // `~/.copilot/session-state` of 30 GB is as often the reason as a clone.
     let mut roots = roots;
     roots.push(home.clone());
+    if !user_home.is_empty() {
+        for d in crate::runners::detect(Path::new(&user_home)) {
+            if d.dir_exists && !roots.contains(&d.dir) {
+                roots.push(d.dir);
+            }
+        }
+    }
     out.largest = largest_entries(&roots, LARGEST_REPORTED);
     out.lines.push(format!(
         "reclaim: still {free} MB free under daemon.min_free_mb {floor}; largest: {}",
@@ -553,6 +565,7 @@ pub(crate) fn tend_reclaim(
     now: String,
     actor: String,
     inflight: BTreeMap<String, bool>,
+    user_home: String,
     last: &mut Option<std::time::SystemTime>,
 ) -> Vec<String> {
     if s.setting("daemon.sweep", "on") == "off" {
@@ -571,7 +584,16 @@ pub(crate) fn tend_reclaim(
         return Vec::new();
     }
     *last = Some(crate::run::wall_clock());
-    let out = reclaim(s, projects, now, actor.clone(), inflight, false, false);
+    let out = reclaim(
+        s,
+        projects,
+        now,
+        actor.clone(),
+        inflight,
+        false,
+        false,
+        user_home,
+    );
     record_reclaim(s, &out, &actor);
     out.lines
 }
@@ -750,6 +772,7 @@ mod tests {
             BTreeMap::new(),
             false,
             false,
+            String::new(),
         );
         assert!(out.cleared && out.rungs.is_empty() && out.lines.is_empty());
         let mut last = None;
@@ -760,6 +783,7 @@ mod tests {
                 TEST_NOW.into(),
                 "daemon".into(),
                 BTreeMap::new(),
+                String::new(),
                 &mut last
             )
             .is_empty()
@@ -792,6 +816,7 @@ mod tests {
             TEST_NOW.into(),
             "daemon".into(),
             BTreeMap::new(),
+            String::new(),
             &mut last,
         );
         assert!(last.is_some());
@@ -845,6 +870,7 @@ mod tests {
                 TEST_NOW.into(),
                 "daemon".into(),
                 BTreeMap::new(),
+                String::new(),
                 &mut last
             )
             .is_empty()
@@ -868,6 +894,7 @@ mod tests {
             BTreeMap::new(),
             true,
             true,
+            String::new(),
         );
         assert!(out.cleared && out.dry_run);
         assert_eq!(out.rungs.len(), 2, "{out:?}");

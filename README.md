@@ -3755,6 +3755,43 @@ never touched, and a binary the sweep cannot read keeps all of its objects.
 `pulse sweep --dry-run` shows all of it before it happens; the console's
 **Cleanup** panel lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
 
+The other agent programs on the machine follow the same settings once the
+owner says so (`crates/pulse-runner/src/runners.rs`). Copilot CLI, Claude
+Code, Codex, Gemini CLI and OpenCode each keep every conversation they ever
+ran under the owner's home and few prune them - one laptop that ran agents
+for seven months held 36 GB under `~/.copilot`, most of it transcripts of
+sessions over a month old, 4 GB of them PULSE's own from the days it drove
+Copilot CLI as its runner. Every sweep pass looks for the five (the
+executable on the PATH and the places package managers put it, or the state
+directory left behind: `~/.copilot`, `~/.claude`, `~/.codex`, `~/.gemini`,
+`~/.local/share/opencode`, each program's own override such as
+`COPILOT_HOME` or `CLAUDE_CONFIG_DIR` honoured), counts their sessions and
+how old they are, and once an hour measures each state directory and asks
+the program its version; the note is `runners` in meta, `pulse sweep --json`
+and the hub's `/api/v1/hygiene` carry it, and the console's **Cleanup**
+panel shows it as "Other agent programs on this machine" - with a question,
+while `daemon.sweep_runners` is empty, whether PULSE should clean up after
+them too ("Yes, all" lists every one it can prune; "Not now" writes `none`
+and the panel stops asking; the switch beside each program edits the list).
+For a program the owner listed, the pass removes sessions untouched for
+`daemon.runner_keep_days` (default 30; the disk-floor ladder does not shorten
+this one, since these are the owner's conversations rather than PULSE's
+leftovers): a Copilot CLI session folder under `session-state/` (its newest
+file dates it, so a transcript appended to this week is young however old
+the folder; one whose `inuse.<pid>.lock` names a live process is held with
+the reason), a Claude Code transcript `projects/<cwd>/<id>.jsonl` with the
+`<id>/` folder beside it and the session's `file-history/<id>/` and
+`session-env/<id>/`, a Codex `sessions/YYYY/MM/DD/rollout-*.jsonl` (empty
+date folders go with it) or `archived_sessions/*.jsonl`, a Gemini
+`tmp/<project>/chats/*.json`. Each goes as one `session` item carrying the
+total size (`swept session ~/.copilot/session-state/2bdc92e5-… (Copilot CLI
+session untouched for 30d, 22.1 MB)`). Never touched: the program's settings,
+credentials and cross-session index (Copilot CLI's `session-store.db` stays
+and merely answers "pruned" for the transcripts that went), and OpenCode's
+history, which lives in one database the sweep only measures. `pulse
+settings set daemon.sweep_runners copilot,claude` is the same answer from
+the shell; `all` names every program PULSE finds and knows how to prune.
+
 Each agent cleans up after itself first, and the record says whether it did.
 The brief's rule 9 tells a worker to remove every worktree it added
 (`git worktree remove`, then `git worktree prune`) and every scratch clone or

@@ -46,6 +46,7 @@ pub(crate) static SWEEP_KINDS: &[&str] = &[
     "log",
     "transcript",
     "trajectory",
+    "session",
     "brief",
     "patch",
     "binary",
@@ -65,6 +66,11 @@ pub(crate) struct SweepOpts {
     /// caches idle an hour. What the owner may still want (patches, briefs,
     /// branches) keeps its usual window.
     pub pressure: bool,
+    /// The owner's home, where the other agent programs keep their sessions
+    /// (runners.rs). Empty skips that pass, so a sweep in a test never looks
+    /// at the machine's own `~/.copilot`; the daemon and `pulse sweep` pass
+    /// `crate::util::home_dir()`.
+    pub user_home: String,
 }
 
 /// The keep windows the pressure mode shortens to.
@@ -271,6 +277,7 @@ impl Sweeper {
         }
         self.sweep_harness_steps();
         self.sweep_trajectories();
+        self.sweep_runner_sessions();
         self.sweep_briefs();
         self.sweep_files(
             Path::new(&self.home).join("logs").display().to_string(),
@@ -505,7 +512,10 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
     let mut lines = Vec::new();
     let mut bulk: BTreeMap<String, (i32, i64)> = BTreeMap::new();
     for x in &rep.removed {
-        if matches!(x.kind.as_str(), "scratch" | "log" | "patch" | "trajectory") {
+        if matches!(
+            x.kind.as_str(),
+            "scratch" | "log" | "patch" | "trajectory" | "session"
+        ) {
             let e = bulk.entry(x.kind.clone()).or_default();
             e.0 += 1;
             e.1 += x.bytes;
@@ -530,6 +540,7 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
                 "log" => "run log",
                 "patch" => "patch",
                 "trajectory" => "trajectory file",
+                "session" => "agent session",
                 _ => kind,
             };
             lines.push(format!(
@@ -671,6 +682,7 @@ pub(crate) fn tend_sweep(
         SweepOpts {
             actor: actor.clone(),
             inflight,
+            user_home: crate::util::home_dir(),
             ..Default::default()
         },
     );
@@ -1278,6 +1290,204 @@ impl Sweeper {
                 why.clone(),
             );
         }
+    }
+
+    /// Sessions of the other agent programs the owner listed in
+    /// `daemon.sweep_runners` (runners.rs) untouched for
+    /// `daemon.runner_keep_days`: Copilot CLI session folders, Claude Code
+    /// transcripts with the folders kept beside them, Codex rollouts, Gemini
+    /// chats. A session its program still holds is held with the reason.
+    /// Every pass also refreshes the note the hub shows (what is installed,
+    /// how many sessions, how old); sizes and versions hourly, since a walk
+    /// of a 16 GB `~/.copilot` is not for every ten minutes. Pressure does
+    /// not shorten this window: these are the owner's conversations, not
+    /// PULSE's leftovers.
+    pub(crate) fn sweep_runner_sessions(&mut self) {
+        if self.o.user_home.is_empty() {
+            return;
+        }
+        let home = Path::new(&self.o.user_home).to_path_buf();
+        let setting = self.s.setting(crate::runners::SETTING, "");
+        let keep_days = self
+            .s
+            .setting(crate::runners::KEEP_SETTING, "30")
+            .parse::<i64>()
+            .unwrap_or(30)
+            .max(1);
+        let keep = Duration::from_secs(keep_days as u64 * 86_400);
+        let found = crate::runners::detect(&home);
+        let managed = crate::runners::managed(&setting, &found);
+        let previous = crate::runners::RunnersNote::load(&self.s);
+        let cutoff: std::time::SystemTime = self.clock.into();
+        let cutoff = cutoff.checked_sub(keep).unwrap_or(std::time::UNIX_EPOCH);
+        let why = format!("untouched for {keep_days}d");
+        let mut note = crate::runners::RunnersNote {
+            at: self.now.clone(),
+            measured_at: previous
+                .as_ref()
+                .map(|p| p.measured_at.clone())
+                .unwrap_or_default(),
+            keep_days,
+            setting: setting.clone(),
+            decided: crate::runners::decided(&setting),
+            runners: Vec::new(),
+        };
+        let mut touched = false;
+        for d in &found {
+            let before = previous
+                .as_ref()
+                .and_then(|p| p.runner(d.runner.id).cloned());
+            let mut r = crate::runners::RunnerNote {
+                id: d.runner.id.to_string(),
+                label: d.runner.label.to_string(),
+                binary: d.binary.display().to_string(),
+                version: before
+                    .as_ref()
+                    .map(|b| b.version.clone())
+                    .unwrap_or_default(),
+                dir: d.dir.display().to_string(),
+                dir_exists: d.dir_exists,
+                sessions_dir: d.sessions_dir().display().to_string(),
+                bytes: before.as_ref().map(|b| b.bytes).unwrap_or_default(),
+                capped: before.as_ref().is_some_and(|b| b.capped),
+                sweeps: d.runner.sweeps,
+                managed: managed.contains(&d.runner.id),
+                note: d.runner.note.to_string(),
+                removed: before.as_ref().map(|b| b.removed).unwrap_or_default(),
+                freed: before.as_ref().map(|b| b.freed).unwrap_or_default(),
+                removed_at: before
+                    .as_ref()
+                    .map(|b| b.removed_at.clone())
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            let sessions = crate::runners::sessions(d);
+            r.sessions = sessions.len() as i64;
+            r.oldest = sessions
+                .first()
+                .map(|x| crate::runners::iso(x.newest))
+                .unwrap_or_default();
+            r.newest = sessions
+                .last()
+                .map(|x| crate::runners::iso(x.newest))
+                .unwrap_or_default();
+            let mut removed = 0;
+            let mut freed = 0;
+            for session in &sessions {
+                if session.newest >= cutoff {
+                    continue;
+                }
+                r.stale += 1;
+                if !session.live.is_empty() {
+                    r.live += 1;
+                    if r.managed {
+                        self.held(
+                            "session".into(),
+                            session.path().display().to_string(),
+                            String::new(),
+                            format!("{} session {}", d.runner.label, session.live),
+                        );
+                    }
+                    continue;
+                }
+                if !r.managed {
+                    continue;
+                }
+                if let Some(bytes) = self.remove_paths(
+                    "session".into(),
+                    &session.paths,
+                    format!("{} session {why}", d.runner.label),
+                ) {
+                    removed += 1;
+                    freed += bytes;
+                }
+            }
+            if removed > 0 {
+                touched = true;
+                r.stale -= removed;
+                r.sessions -= removed;
+                if !self.o.dry_run {
+                    r.removed = removed;
+                    r.freed = freed;
+                    r.removed_at = self.now.clone();
+                }
+                if d.runner.id == "codex" && !self.o.dry_run {
+                    crate::runners::prune_empty_dirs(&d.sessions_dir(), 3);
+                }
+            }
+            note.runners.push(r);
+        }
+        // Sizes and versions: hourly, after a removal, or when a program
+        // appeared or went since the last look.
+        let same_set = previous.as_ref().is_some_and(|p| {
+            p.runners.len() == note.runners.len()
+                && p.runners
+                    .iter()
+                    .zip(note.runners.iter())
+                    .all(|(a, b)| a.id == b.id && a.dir == b.dir && a.binary == b.binary)
+        });
+        let measured_age = crate::util::parse_iso(&note.measured_at)
+            .ok()
+            .map(|t| self.clock.signed_duration_since(t))
+            .and_then(|d| d.to_std().ok());
+        let stale_measure = measured_age.is_none_or(|d| d >= crate::runners::MEASURE_EVERY);
+        if touched || !same_set || stale_measure {
+            for r in &mut note.runners {
+                let m = crate::runners::measure(Path::new(&r.dir));
+                r.bytes = m.bytes;
+                r.capped = m.capped;
+                r.version = crate::runners::version_of(Path::new(&r.binary));
+            }
+            note.measured_at = self.now.clone();
+        }
+        if !self.o.dry_run
+            && let Err(err) = note.save(&self.s)
+        {
+            self.failed(
+                "runners note: {}".into(),
+                vec![serde_json::Value::String(crate::run::err_message(&err))],
+            );
+        }
+    }
+
+    /// Removes the files of one session - the main path the report names
+    /// and whatever its program keeps beside it - as one item carrying their
+    /// total size. Nothing is killed first: the processes under the owner's
+    /// home are not PULSE's. `None` when the first path could not go.
+    pub(crate) fn remove_paths(
+        &mut self,
+        kind: String,
+        paths: &[PathBuf],
+        why: String,
+    ) -> Option<i64> {
+        let main = paths.first()?;
+        let bytes: i64 = paths
+            .iter()
+            .map(|p| disk_usage(p.display().to_string()))
+            .sum();
+        if !self.o.dry_run {
+            for (i, path) in paths.iter().enumerate() {
+                match crate::retention::discard_dir(Path::new(&self.home), path) {
+                    Ok(_) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        self.failed(format!("cannot remove {}: {err}", path.display()), vec![]);
+                        if i == 0 {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+        self.rep.removed.push(Swept {
+            kind,
+            path: main.display().to_string(),
+            project: String::new(),
+            why,
+            bytes,
+            patch: String::new(),
+        });
+        Some(bytes)
     }
 
     /// The worker briefs (`briefs` rows) of runs over for more than
@@ -5156,5 +5366,190 @@ mod tests {
             why.contains("push key") && why.contains("30m"),
             "fresh push key held why = {why:?}"
         );
+    }
+
+    /// The other agent programs' sessions (runners.rs): nothing without the
+    /// owner's word, the note either way; then only the listed programs'
+    /// old sessions go, a held one stays with its reason, `all` takes every
+    /// prunable one, `none` ends it.
+    #[test]
+    fn sweep_runner_sessions_follows_the_owner_list() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let user_home = tempfile::tempdir().unwrap();
+        let home = user_home.path();
+        // The sweep ages files by the wall clock, as the trajectory test does.
+        let at = |days: u64| {
+            FileTime::from_system_time(
+                std::time::SystemTime::now() - Duration::from_secs(days * 86_400),
+            )
+        };
+        let age = |path: &Path, days: u64| {
+            filetime::set_file_mtime(path, at(days)).unwrap();
+        };
+        // Copilot CLI: an old session, a young one, an old one some process holds.
+        let sessions = home.join(".copilot/session-state");
+        let old = sessions.join("11111111-1111-1111-1111-111111111111");
+        let young = sessions.join("22222222-2222-2222-2222-222222222222");
+        let held = sessions.join("33333333-3333-3333-3333-333333333333");
+        for (dir, days) in [(&old, 45), (&young, 2), (&held, 60)] {
+            mkdir_file(dir.join("events.jsonl"), &"e".repeat(2048));
+            mkdir_file(dir.join("workspace.yaml"), "cwd: /tmp");
+            age(&dir.join("events.jsonl"), days);
+            age(&dir.join("workspace.yaml"), days);
+            age(dir, days);
+        }
+        mkdir_file(held.join(format!("inuse.{}.lock", std::process::id())), "1");
+        age(&held.join(format!("inuse.{}.lock", std::process::id())), 60);
+        age(&held, 60);
+        mkdir_file(home.join(".copilot/session-store.db"), "index");
+        // Claude Code: one old transcript with its folders.
+        let project = home.join(".claude/projects/-tmp-app");
+        let id = "41fbd579-1d85-437e-a016-b980b39295a3";
+        let transcript = project.join(format!("{id}.jsonl"));
+        mkdir_file(&transcript, &"c".repeat(1024));
+        mkdir_file(project.join(id).join("tool-results/1.txt"), "t");
+        mkdir_file(
+            home.join(".claude/file-history").join(id).join("a.bak"),
+            "b",
+        );
+        for p in [
+            transcript.clone(),
+            project.join(id).join("tool-results/1.txt"),
+            project.join(id).join("tool-results"),
+            project.join(id),
+        ] {
+            age(&p, 50);
+        }
+        // Codex: one old rollout in its date folders.
+        let rollout = home.join(".codex/sessions/2026/05/26/rollout-2026-05-26T18-23-59-abc.jsonl");
+        mkdir_file(&rollout, "r");
+        age(&rollout, 100);
+        mkdir_file(home.join(".codex/config.toml"), "model = \"x\"");
+
+        // No user home: the pass is skipped and nothing is noted.
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(swept_paths(&rep.removed, "session").is_empty());
+        assert!(crate::runners::RunnersNote::load(&s).is_none());
+
+        let opts = |dry_run: bool| SweepOpts {
+            dry_run,
+            user_home: home.display().to_string(),
+            ..Default::default()
+        };
+        // Nothing said yet: everything stays, the note says what is here.
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(false)).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(swept_paths(&rep.removed, "session").is_empty());
+        assert!(old.exists() && transcript.exists() && rollout.exists());
+        let note = crate::runners::RunnersNote::load(&s).expect("note");
+        assert!(!note.decided);
+        assert_eq!(note.keep_days, 30);
+        assert_eq!(note.at, TEST_NOW);
+        assert_eq!(note.measured_at, TEST_NOW, "the first pass measures");
+        let copilot = note.runner("copilot").expect("copilot found by its folder");
+        assert_eq!(
+            (copilot.sessions, copilot.stale, copilot.live),
+            (3, 2, 1),
+            "{copilot:#?}"
+        );
+        assert!(!copilot.managed && copilot.sweeps && copilot.dir_exists);
+        assert!(copilot.bytes > 4096, "{copilot:#?}");
+        assert_eq!(copilot.sessions_dir, sessions.display().to_string());
+        assert!(copilot.oldest < copilot.newest, "{copilot:#?}");
+        assert!(
+            crate::util::parse_iso(&copilot.oldest).is_ok(),
+            "{copilot:#?}"
+        );
+        assert_eq!(note.runner("claude").unwrap().stale, 1);
+        assert_eq!(note.runner("codex").unwrap().stale, 1);
+        assert!(note.unmanaged().len() >= 3, "{:?}", note.unmanaged());
+
+        // Copilot CLI listed: a dry run names the old session and holds the
+        // live one; the real pass removes it alone.
+        set_setting(&s, "daemon.sweep_runners", "copilot");
+        let dry = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(true)).unwrap();
+        assert_eq!(
+            swept_paths(&dry.removed, "session"),
+            vec![old.display().to_string()]
+        );
+        assert!(old.exists(), "dry run removes nothing");
+        assert_eq!(
+            held_why(&dry.held, &held),
+            format!(
+                "Copilot CLI session in use by process {}",
+                std::process::id()
+            )
+        );
+        let item = dry.removed.iter().find(|x| x.kind == "session").unwrap();
+        assert_eq!(item.why, "Copilot CLI session untouched for 30d");
+        assert!(item.bytes >= 2048, "{item:?}");
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(false)).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert_eq!(
+            swept_paths(&rep.removed, "session"),
+            vec![old.display().to_string()]
+        );
+        assert!(!old.exists() && young.exists() && held.exists());
+        assert!(
+            transcript.exists() && rollout.exists(),
+            "unlisted programs keep theirs"
+        );
+        assert!(home.join(".copilot/session-store.db").exists());
+        let note = crate::runners::RunnersNote::load(&s).unwrap();
+        let copilot = note.runner("copilot").unwrap();
+        assert!(note.decided && copilot.managed);
+        assert_eq!(
+            (copilot.sessions, copilot.stale, copilot.live),
+            (2, 1, 1),
+            "{copilot:#?}"
+        );
+        assert_eq!(
+            (copilot.removed, copilot.removed_at.as_str()),
+            (1, TEST_NOW)
+        );
+        assert!(copilot.freed >= 2048, "{copilot:#?}");
+        assert!(
+            sweep_lines(Some(rep.clone()))
+                .iter()
+                .any(|l| l.starts_with("swept 1 agent session (")),
+            "{:?}",
+            sweep_lines(Some(rep))
+        );
+
+        // `all`: Claude's transcript goes with the folders beside it, Codex's
+        // rollout with its empty date folders.
+        set_setting(&s, "daemon.sweep_runners", "all");
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(false)).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let mut gone = swept_paths(&rep.removed, "session");
+        gone.sort();
+        let mut want = vec![
+            transcript.display().to_string(),
+            rollout.display().to_string(),
+        ];
+        want.sort();
+        assert_eq!(gone, want);
+        assert!(!transcript.exists() && !project.join(id).exists());
+        assert!(!home.join(".claude/file-history").join(id).exists());
+        assert!(!rollout.exists() && !home.join(".codex/sessions/2026").exists());
+        assert!(home.join(".codex/sessions").is_dir() && home.join(".codex/config.toml").exists());
+        assert!(held.exists(), "the held session stays under `all` too");
+        let note = crate::runners::RunnersNote::load(&s).unwrap();
+        assert_eq!(note.runner("claude").unwrap().removed, 1);
+        assert_eq!(note.runner("codex").unwrap().removed, 1);
+        assert!(note.unmanaged().is_empty(), "{:?}", note.unmanaged());
+
+        // Declined: the held session would never go anyway, the note says so.
+        set_setting(&s, "daemon.sweep_runners", "none");
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(false)).unwrap();
+        assert!(swept_paths(&rep.removed, "session").is_empty());
+        assert!(
+            rep.held.iter().all(|x| x.kind != "session"),
+            "{:?}",
+            rep.held
+        );
+        let note = crate::runners::RunnersNote::load(&s).unwrap();
+        assert!(note.decided && !note.runner("copilot").unwrap().managed);
     }
 }

@@ -1002,12 +1002,50 @@ export interface ToolkitInput {
 // (daemon.sweep, worktree.swept, land.swept, agent.cleanup), newest first.
 // `?project=` narrows the events and the tally; `?action=` narrows within the
 // cleaning actions; `?limit=` caps the events (default 50, at most 500).
+// One of the other agent programs on the hub machine as the runner's sweep
+// knows it: installed or only its data left behind, how much it holds, how
+// many sessions are past the window or held open, and what PULSE removed.
+export interface RunnerNote {
+  id: string;
+  label: string;
+  binary: string;
+  version: string;
+  dir: string;
+  dir_exists: boolean;
+  sessions_dir: string;
+  bytes: number;
+  capped: boolean;
+  sessions: number;
+  stale: number;
+  live: number;
+  oldest: string;
+  newest: string;
+  sweeps: boolean;
+  managed: boolean;
+  note: string;
+  removed: number;
+  freed: number;
+  removed_at: string;
+}
+
+// `daemon.sweep_runners` as the runner last read it (`decided` once the
+// owner answered, even with "none") and every program it found.
+export interface RunnersNote {
+  at: string;
+  measured_at: string;
+  keep_days: number;
+  setting: string;
+  decided: boolean;
+  runners: RunnerNote[];
+}
+
 export interface Hygiene {
   available: boolean;
   now: string;
   sweep: SweepNote | null;
   text: string;
-  settings: { sweep: string; grace_minutes: number; branch_days: number; keep_days: number };
+  settings: { sweep: string; grace_minutes: number; branch_days: number; keep_days: number; runners: string; runner_keep_days: number };
+  runners: RunnersNote | null;
   agents: AgentHygiene[];
   agent_days: number;
   events: StoreEvent[];

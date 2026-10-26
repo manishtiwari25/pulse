@@ -318,6 +318,7 @@ impl DaemonMaintenance {
                                 s.now(),
                                 actor.clone(),
                                 inflight,
+                                crate::util::home_dir(),
                                 &mut last_reclaim.lock().unwrap_or_else(|e| e.into_inner()),
                             ));
                         }

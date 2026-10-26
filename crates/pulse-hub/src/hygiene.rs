@@ -88,6 +88,19 @@ impl Handler {
                 return;
             }
         };
+        let runners_setting = store.setting(pulse_runner::runners::SETTING, "");
+        let runner_keep_days = store.setting_int(pulse_runner::runners::KEEP_SETTING);
+        // The daemon's note (sizes, versions, what the last sweep removed), or
+        // before its first sweep a quick look without sizes so the owner can
+        // be asked right after installing.
+        let runners = pulse_runner::runners::RunnersNote::load(store).unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            pulse_runner::runners::quick_note(
+                std::path::Path::new(&home),
+                &runners_setting,
+                runner_keep_days,
+            )
+        });
         write_json(
             w,
             200,
@@ -101,7 +114,10 @@ impl Handler {
                     "grace_minutes": store.setting_int("daemon.sweep_grace_minutes"),
                     "branch_days": store.setting_int("daemon.sweep_branch_days"),
                     "keep_days": store.setting_int("daemon.sweep_keep_days"),
+                    "runners": runners_setting,
+                    "runner_keep_days": runner_keep_days,
                 },
+                "runners": runners,
                 "agents": agents,
                 "agent_days": HYGIENE_AGENT_DAYS,
                 "events": events,
@@ -168,6 +184,13 @@ mod tests {
         assert_eq!(result["events"].as_array().map(Vec::len), Some(0));
         assert_eq!(result["agents"].as_array().map(Vec::len), Some(0));
         assert_eq!(result["agent_days"], 30);
+        // Before the daemon's first sweep the other agent programs are still
+        // listed (a quick look), the owner's answer not given yet.
+        assert_eq!(result["settings"]["runners"], "");
+        assert_eq!(result["settings"]["runner_keep_days"], 30);
+        assert_eq!(result["runners"]["decided"], false);
+        assert_eq!(result["runners"]["keep_days"], 30);
+        assert!(result["runners"]["runners"].is_array(), "{result:#?}");
 
         // A sweep note with items, and the cleaning events the runner writes.
         let conn = s.conn().unwrap();
