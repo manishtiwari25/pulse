@@ -59,6 +59,10 @@ pub struct HitRate {
     pub tried: i64,
     #[serde(rename = "kept")]
     pub kept: i64,
+    /// Kept rows whose delta reached the tolerance; the rest of `kept` are
+    /// ties.
+    #[serde(rename = "improved", default)]
+    pub improved: i64,
     #[serde(rename = "rate")]
     pub rate: Option<f64>,
 }
@@ -264,6 +268,8 @@ pub struct LoopStatus {
     pub heldout: HeldoutState,
     #[serde(rename = "kept")]
     pub kept: i64,
+    #[serde(rename = "improved", default)]
+    pub improved: i64,
     #[serde(rename = "discarded")]
     pub discarded: i64,
     #[serde(rename = "voted")]
@@ -549,7 +555,7 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
     status.baseline_cache = crate::baseline_cache::baseline_cache_summary(s, project)?;
     set_headroom(s, &mut status, project)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.kept,
+        "SELECT a.kept, a.baseline_score, a.variant_score, a.tolerance,
 		CASE WHEN p.kind = 'suggestion' AND EXISTS (
 			SELECT 1 FROM posts v WHERE v.kind = 'vote' AND v.on_post = p.id
 			AND v.vote IN ('up','down') AND v.agent <> p.agent
@@ -560,12 +566,22 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
     ))?;
     let mut rows = stmt.query(params![project])?;
     while let Some(r) = rows.next()? {
-        let kept = r.get::<_, i64>(0)? != 0;
-        let voted = r.get::<_, i64>(1)? != 0;
-        if kept {
+        let row = crate::archive::Archived {
+            kept: r.get::<_, i64>(0)? != 0,
+            baseline_score: r.get(1)?,
+            variant_score: r.get(2)?,
+            tolerance: r.get(3)?,
+            ..Default::default()
+        };
+        let voted = r.get::<_, i64>(4)? != 0;
+        let improved = row.outcome() == crate::archive::ArchiveOutcome::Improved;
+        if row.kept {
             status.kept += 1;
         } else {
             status.discarded += 1;
+        }
+        if improved {
+            status.improved += 1;
         }
         let rate = if voted {
             &mut status.voted
@@ -573,8 +589,11 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
             &mut status.signal
         };
         rate.tried += 1;
-        if kept {
+        if row.kept {
             rate.kept += 1;
+        }
+        if improved {
+            rate.improved += 1;
         }
     }
     for r in [&mut status.voted, &mut status.signal] {
@@ -658,7 +677,13 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         )
     };
     let hit = |r: &HitRate| match r.rate {
-        Some(rate) => format!("{}/{} kept ({:.1}%)", r.kept, r.tried, 100.0 * rate),
+        Some(rate) => format!(
+            "{}/{} kept ({:.1}%), {} improved",
+            r.kept,
+            r.tried,
+            100.0 * rate,
+            r.improved
+        ),
         None => "0 tried; hit rate unavailable".to_string(),
     };
     let fixture_scores = if s.baseline_fixtures.is_empty() {
@@ -694,7 +719,10 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec!["Held-out fixtures".into(), heldout_label(&s.heldout)],
         vec![
             "Kept / discarded".into(),
-            format!("{} / {}", s.kept, s.discarded),
+            format!(
+                "{} / {}; {} of the kept improved, the rest tied",
+                s.kept, s.discarded, s.improved
+            ),
         ],
         vec!["Voted suggestions".into(), hit(&s.voted)],
         vec!["Signal-derived".into(), hit(&s.signal)],
@@ -1127,16 +1155,34 @@ mod tests {
         crate::api::archive_row(&s, row.clone()).unwrap();
         row.suggestion_post.clear();
         row.kept = false;
+        crate::api::archive_row(&s, row.clone()).unwrap();
+        row.kept = true;
+        row.variant = row.baseline.clone();
         crate::api::archive_row(&s, row).unwrap();
         let st = status(&s, "demo").unwrap();
         assert_eq!(
             (
                 st.voted.tried,
                 st.voted.kept,
+                st.voted.improved,
                 st.signal.tried,
-                st.signal.kept
+                st.signal.kept,
+                st.signal.improved
             ),
-            (1, 1, 1, 0)
+            (1, 1, 1, 2, 1, 0),
+            "a kept tie counts as kept, never as improved"
+        );
+        assert_eq!((st.kept, st.improved, st.discarded), (2, 1, 1));
+        let text = status_rows(&st)
+            .into_iter()
+            .map(|row| row.join(": "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("1/1 kept (100.0%), 1 improved")
+                && text.contains("1/2 kept (50.0%), 0 improved")
+                && text.contains("2 / 1; 1 of the kept improved, the rest tied"),
+            "{text}"
         );
     }
 
