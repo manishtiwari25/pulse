@@ -52,6 +52,7 @@ import { ProjectLink, When } from "@/components/pulse/who";
 import type { ChatArtifact, ChatAttachment, ChatChanges, ChatListResponse, ChatPending, ChatShowResponse, Conversation, ConversationLive, ConversationMessage, HarnessModel, HarnessModelsResponse, HarnessSessionResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
 import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatUpload, enc, errorText, isChatImage, query, writes } from "@/lib/api";
 import { num, plural, sentence, span } from "@/lib/format";
+import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import { hrefs } from "@/lib/nav";
 import { ACTION_KINDS, beatsOf, brief, countWords, groupNotes, streamTail } from "@/lib/transcript";
 import type { ActionItem } from "@/lib/transcript";
@@ -1224,8 +1225,8 @@ function Transcript({ d, loadSession }: { d: Loaded; loadSession: (sid: string) 
   const rows = pending?.kind === "question" && last.role === "question" && last.content === pending.question ? d.messages.slice(0, -1) : d.messages;
   return (
     <ol className="mx-auto grid w-full max-w-3xl min-w-0 gap-6" role="list">
-      {rows.map((m) => (
-        <MessageRow key={m.n} m={m} d={d} loadSession={loadSession} />
+      {rows.map((m, i) => (
+        <MessageRow key={m.n} m={m} status={messageStatus(m, rows.slice(i + 1))} d={d} loadSession={loadSession} />
       ))}
     </ol>
   );
@@ -1234,7 +1235,7 @@ function Transcript({ d, loadSession }: { d: Loaded; loadSession: (sid: string) 
 // The transcript reads like the Copilot app's: what you wrote on the right
 // in a quiet bubble, what the agent did and said on the left as plain text
 // and one line per tool call - no cards, no avatars, the time on hover.
-function MessageRow({ m, d, loadSession }: { m: ConversationMessage; d: Loaded; loadSession: (sid: string) => Promise<void> }) {
+function MessageRow({ m, status, d, loadSession }: { m: ConversationMessage; status: MessageStatus; d: Loaded; loadSession: (sid: string) => Promise<void> }) {
   const role = m.role;
   const when = (
     <span className="text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover/msg:opacity-100 motion-reduce:transition-none">
@@ -1253,6 +1254,7 @@ function MessageRow({ m, d, loadSession }: { m: ConversationMessage; d: Loaded; 
           <AttachmentChips id={d.conversation.id} list={files} onUser={false} />
         </div>
         {when}
+        <p className="text-[11px] text-muted-foreground">{status === "answered" ? "Answered" : "Sent"}</p>
       </li>
     );
   }
