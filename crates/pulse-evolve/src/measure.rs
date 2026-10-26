@@ -989,7 +989,7 @@ rm -f "$running/$(basename "$PWD")"
                 "git switch --quiet -c topic && git add value.txt && git -c user.name=t -c user.email=t@example.invalid commit --quiet -m topic",
                 1,
             ),
-            ("git checkout --quiet main", 0),
+            ("git checkout --quiet -b main", 0),
         ] {
             let s = test_store();
             let repo = test_project(&s, "demo");

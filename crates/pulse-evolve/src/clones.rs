@@ -196,6 +196,26 @@ pub(crate) fn stripped_clone(
         )
         .map_err(|_| clone_failure(cancel, "remove clone tags"))?;
     }
+    // Without local branches a harness's `git checkout main` has nothing to
+    // switch to, so the tree under measurement cannot be swapped for another.
+    let branches = crate::process::git_output(
+        cancel,
+        dest,
+        &[
+            "for-each-ref".into(),
+            "--format=%(refname)".into(),
+            "refs/heads/".into(),
+        ],
+    )
+    .map_err(|_| clone_failure(cancel, "inspect clone branches"))?;
+    for branch in branches.split_whitespace() {
+        crate::process::git_output(
+            cancel,
+            dest,
+            &["update-ref".into(), "-d".into(), branch.into()],
+        )
+        .map_err(|_| clone_failure(cancel, "remove clone branches"))?;
+    }
     for key in keys {
         let key = crate::fixtures::relative_path(key).map_err(|_| ViolationError {
             reason: "an answer-key path escapes the clone".to_string(),
@@ -536,6 +556,14 @@ mod tests {
         let cancel = pulse_bus::CancellationToken::new();
         super::stripped_clone(&cancel, &repo, &commit, clone, &keys).unwrap();
         assert!(!super::detach_head(&cancel, clone).unwrap());
+        assert_eq!(
+            test_git(
+                clone,
+                &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+            ),
+            "",
+            "a stripped clone keeps no branch a harness could switch to"
+        );
 
         test_git(clone, &["switch", "--quiet", "-c", "topic"]);
         put_file(Path::new(clone).join("value.txt"), "edited\n", 0o644);
