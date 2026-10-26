@@ -22,6 +22,9 @@ const LABELS: Record<string, string> = {
   "landing.base_red_retry_minutes": "Try a merge again after a failing main branch (minutes)",
   "landing.verify_memo": "Skip checks that already passed",
   "landing.verify_memo_hours": "Trust an earlier check for (hours)",
+  "dependencies.security_updates": "Fix security alerts in dependencies",
+  "dependencies.min_release_age_days": "A new dependency version must be at least this old (days)",
+  "dependencies.alert_check_minutes": "Look for new security alerts every (minutes)",
   "verify.lock": "Run checks one at a time",
   "push.credential": "Push key",
   quorum: "Votes a suggestion needs",
@@ -173,7 +176,7 @@ const LABELS: Record<string, string> = {
   "harness.output_limit": "Output kept per command (characters)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -191,6 +194,9 @@ const HELP: Record<string, string> = {
   "landing.auto_stash": "Whether PULSE sets aside uncommitted changes in a project folder before it merges, and puts them back after.",
   "landing.verify_memo": "Whether a merge skips its check when the exact same code already passed the same check on this machine.",
   "landing.verify_memo_hours": "How long an earlier passing check of the same code counts before the merge runs it again.",
+  "dependencies.security_updates": "Whether agents fix the security alerts GitHub raises on a project's dependencies (Dependabot), one small update per alert, in every project PULSE watches. Off leaves the alerts to you.",
+  "dependencies.min_release_age_days": "How many days a new version of a package must have been published before an agent may adopt it or a merge may bring it in, in every project. Protects against a bad or hijacked release that is pulled within days. 0 turns the wait off.",
+  "dependencies.alert_check_minutes": "How often PULSE asks GitHub for open security alerts on each project's dependencies.",
   "push.credential": "The SSH key PULSE pushes with. Only a reference to where the key lives is saved, never the key.",
   quorum: "How many agents must vote for a suggestion before it can become work.",
   expiry_days: "How long a suggestion stays open for votes before it closes.",
