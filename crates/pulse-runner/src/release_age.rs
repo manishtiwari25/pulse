@@ -30,6 +30,7 @@ pub(crate) enum Ecosystem {
     Cargo,
     PyPi,
     Go,
+    RubyGems,
 }
 
 impl Ecosystem {
@@ -42,6 +43,7 @@ impl Ecosystem {
             "Cargo.lock" => Some(Self::Cargo),
             "uv.lock" | "poetry.lock" | "Pipfile.lock" => Some(Self::PyPi),
             "go.sum" => Some(Self::Go),
+            "Gemfile.lock" => Some(Self::RubyGems),
             _ => None,
         }
     }
@@ -53,6 +55,7 @@ impl Ecosystem {
             "cargo" | "rust" => Some(Self::Cargo),
             "pip" | "pypi" | "python" => Some(Self::PyPi),
             "go" | "gomod" | "go_modules" => Some(Self::Go),
+            "rubygems" | "bundler" | "gem" => Some(Self::RubyGems),
             _ => None,
         }
     }
@@ -63,6 +66,7 @@ impl Ecosystem {
             Self::Cargo => "crates.io",
             Self::PyPi => "PyPI",
             Self::Go => "Go proxy",
+            Self::RubyGems => "RubyGems",
         }
     }
 
@@ -72,6 +76,7 @@ impl Ecosystem {
             Self::Cargo => "cargo",
             Self::PyPi => "pypi",
             Self::Go => "go",
+            Self::RubyGems => "rubygems",
         }
     }
 }
@@ -266,6 +271,37 @@ impl HttpRegistry {
                             .min();
                         if let Some(at) = earliest {
                             out.insert(v.clone(), at);
+                        }
+                    }
+                }
+            }
+            Ecosystem::RubyGems => {
+                let url = format!("https://rubygems.org/api/v1/versions/{name}.json");
+                let doc = fetch_json(&url)?;
+                if doc.is_null() {
+                    return Err(format!("{name} is not on RubyGems"));
+                }
+                for v in doc.as_array().into_iter().flatten() {
+                    if v.get("prerelease")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let (Some(num), Some(at)) = (
+                        v.get("number").and_then(Value::as_str),
+                        v.get("created_at").and_then(Value::as_str),
+                    ) else {
+                        continue;
+                    };
+                    if is_prerelease(num) {
+                        continue;
+                    }
+                    // Platform builds (x86_64-linux) share the version's first publish time.
+                    if let Some(at) = normalize_time(at) {
+                        let keep = out.get(num).is_none_or(|have| at < *have);
+                        if keep {
+                            out.insert(num.to_string(), at);
                         }
                     }
                 }
@@ -508,20 +544,27 @@ pub(crate) struct Pin {
 /// `None` for a lockfile format this module does not read.
 pub(crate) fn lockfile_pins(path: &str, text: &str) -> Option<Vec<Pin>> {
     match path.rsplit('/').next().unwrap_or(path) {
-        "Cargo.lock" => Some(cargo_lock_pins(text)),
+        "Cargo.lock" => Some(toml_package_pins(text, |source| !source.is_empty())),
+        // uv's workspace members carry `source = { editable = "." }` or `{ virtual = "." }`.
+        "uv.lock" => Some(toml_package_pins(text, |source| {
+            source.contains("registry")
+        })),
         "package-lock.json" => package_lock_pins(text),
+        "Gemfile.lock" => Some(gemfile_lock_pins(text)),
         _ => None,
     }
 }
 
-fn cargo_lock_pins(text: &str) -> Vec<Pin> {
+/// `[[package]]` tables with `name`, `version` and a `source` line that `is_dependency`
+/// accepts: the shape Cargo.lock and uv.lock share.
+fn toml_package_pins(text: &str, is_dependency: impl Fn(&str) -> bool) -> Vec<Pin> {
     let mut pins = Vec::new();
     let mut name = String::new();
     let mut version = String::new();
-    let mut source = false;
+    let mut source = String::new();
     let mut in_package = false;
-    let flush = |pins: &mut Vec<Pin>, name: &str, version: &str, source: bool| {
-        if source && !name.is_empty() && !version.is_empty() {
+    let flush = |pins: &mut Vec<Pin>, name: &str, version: &str, source: &str| {
+        if is_dependency(source) && !name.is_empty() && !version.is_empty() {
             pins.push(Pin {
                 name: name.to_string(),
                 version: version.to_string(),
@@ -531,10 +574,10 @@ fn cargo_lock_pins(text: &str) -> Vec<Pin> {
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with("[[") {
-            flush(&mut pins, &name, &version, source);
+            flush(&mut pins, &name, &version, &source);
             name.clear();
             version.clear();
-            source = false;
+            source.clear();
             in_package = line == "[[package]]";
             continue;
         }
@@ -545,11 +588,46 @@ fn cargo_lock_pins(text: &str) -> Vec<Pin> {
             name = v.trim_matches('"').to_string();
         } else if let Some(v) = line.strip_prefix("version = ") {
             version = v.trim_matches('"').to_string();
-        } else if line.starts_with("source = ") {
-            source = true;
+        } else if let Some(v) = line.strip_prefix("source = ") {
+            source = v.to_string();
         }
     }
-    flush(&mut pins, &name, &version, source);
+    flush(&mut pins, &name, &version, &source);
+    pins
+}
+
+/// The `specs:` entries of a Gemfile.lock: `    name (1.2.3)`, four spaces in; a
+/// platform suffix (`1.16.5-x86_64-linux`) is dropped, the gem's version is the same.
+fn gemfile_lock_pins(text: &str) -> Vec<Pin> {
+    let mut pins = Vec::new();
+    let mut in_specs = false;
+    for line in text.lines() {
+        if !line.starts_with(' ') {
+            in_specs = false;
+            continue;
+        }
+        if line.trim() == "specs:" {
+            in_specs = true;
+            continue;
+        }
+        if !in_specs || !line.starts_with("    ") || line.starts_with("      ") {
+            continue;
+        }
+        let Some((name, rest)) = line.trim().split_once(" (") else {
+            continue;
+        };
+        let Some(version) = rest.strip_suffix(')') else {
+            continue;
+        };
+        let version = version.split('-').next().unwrap_or(version);
+        if version.is_empty() || !version.starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        pins.push(Pin {
+            name: name.to_string(),
+            version: version.to_string(),
+        });
+    }
     pins
 }
 
@@ -784,9 +862,17 @@ mod tests {
             Some(Ecosystem::Cargo)
         );
         assert_eq!(Ecosystem::from_lockfile("uv.lock"), Some(Ecosystem::PyPi));
+        assert_eq!(
+            Ecosystem::from_lockfile("Gemfile.lock"),
+            Some(Ecosystem::RubyGems)
+        );
         assert_eq!(Ecosystem::from_lockfile("Makefile"), None);
         assert_eq!(Ecosystem::from_dependabot("npm"), Some(Ecosystem::Npm));
         assert_eq!(Ecosystem::from_dependabot("pip"), Some(Ecosystem::PyPi));
+        assert_eq!(
+            Ecosystem::from_dependabot("rubygems"),
+            Some(Ecosystem::RubyGems)
+        );
         assert_eq!(Ecosystem::from_dependabot("maven"), None);
     }
 
@@ -846,6 +932,42 @@ mod tests {
                 Pin {
                     name: "regex".into(),
                     version: "1.11.1".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn uv_lock_pins_leave_the_workspace_members_out() {
+        let text = "version = 1\nrevision = 3\n\n[[package]]\nname = \"ai\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\ndependencies = [\n    { name = \"requests\" },\n]\n\n[[package]]\nname = \"requests\"\nversion = \"2.32.3\"\nsource = { registry = \"https://pypi.org/simple\" }\nsdist = { url = \"x\" }\n\n[[package]]\nname = \"tool\"\nversion = \"1.0.0\"\nsource = { virtual = \".\" }\n";
+        let pins = lockfile_pins("uv.lock", text).unwrap();
+        assert_eq!(
+            pins,
+            vec![Pin {
+                name: "requests".into(),
+                version: "2.32.3".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn gemfile_lock_pins_read_the_specs_and_drop_platforms() {
+        let text = "GEM\n  remote: https://rubygems.org/\n  specs:\n    nokogiri (1.16.5-x86_64-linux)\n      racc (~> 1.4)\n    racc (1.8.1)\n    rack (3.0.9)\n\nPLATFORMS\n  x86_64-linux\n\nDEPENDENCIES\n  nokogiri\n  rack (>= 3)\n\nBUNDLED WITH\n   2.5.9\n";
+        let pins = lockfile_pins("Gemfile.lock", text).unwrap();
+        assert_eq!(
+            pins,
+            vec![
+                Pin {
+                    name: "nokogiri".into(),
+                    version: "1.16.5".into()
+                },
+                Pin {
+                    name: "racc".into(),
+                    version: "1.8.1".into()
+                },
+                Pin {
+                    name: "rack".into(),
+                    version: "3.0.9".into()
                 },
             ]
         );
@@ -1015,6 +1137,7 @@ mod tests {
             (Ecosystem::Cargo, "base64", "0.22.1"),
             (Ecosystem::PyPi, "requests", "2.32.3"),
             (Ecosystem::Go, "golang.org/x/text", "v0.14.0"),
+            (Ecosystem::RubyGems, "rack", "3.0.9"),
         ] {
             let versions = r.versions(eco, name).unwrap();
             assert!(
