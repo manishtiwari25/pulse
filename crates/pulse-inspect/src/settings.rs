@@ -18,11 +18,16 @@ Runner and evolution caps (built-in defaults):
     harness.max_cost caps what a run may spend ({} = no cap).
   worker_model     default empty (the runner's default model)
     Model of the runs that change code: task, improve and experiment jobs; also
-    every other run while light_model is empty.
+    the loop's measurements while measure_model is empty, and every other run
+    while light_model is empty.
   light_model      default empty (the same as worker_model)
     Model of the light runs: lead, answer, ballot, reflect, onboard and clean
     jobs, the sealed held-out call and the executor login check. A cheaper
     model here leaves the strong one to implementation.
+  measure_model    default empty (the same as worker_model)
+    Model the self-improvement loop measures fixtures with: every baseline,
+    experiment and landing re-measure. Part of the evaluator: a change
+    re-measures every baseline; pinned, it keeps them when worker_model changes.
   evolve.limits   default {}
     Optional loop budget: cycles=N,hours=H. none does not remove runner caps.
 

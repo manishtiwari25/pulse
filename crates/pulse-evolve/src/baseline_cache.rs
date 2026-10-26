@@ -6,8 +6,9 @@ use std::fmt::Write as _;
 
 use crate::api::Scores;
 
+/// The settings a baseline depends on besides the measurement model
+/// (`Store::measure_model`, which `baseline_fixture_hash` adds itself).
 pub const BASELINE_CACHE_SETTINGS: &[&str] = &[
-    "worker_model",
     "light_model",
     "provider",
     "harness.max_steps",
@@ -125,6 +126,10 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
         let scorer = std::fs::read_to_string(&fixture.scorer).unwrap_or_default();
         push_kv(&mut canonical, &format!("heldout.{idx}.scorer"), &scorer)?;
     }
+    // The measurement model keeps the key the cache has always used, so an
+    // empty measure_model changes no hash and a pinned one survives a
+    // worker_model change.
+    push_kv(&mut canonical, "setting.worker_model", &s.measure_model())?;
     for key in BASELINE_CACHE_SETTINGS {
         push_kv(
             &mut canonical,
@@ -345,7 +350,20 @@ mod tests {
             .unwrap();
         let model_changed = baseline_fixture_hash(&s, "demo").unwrap();
         assert_ne!(first, model_changed);
+        s.set_setting("human", "measure_model", "pinned-model")
+            .unwrap();
+        let pinned = baseline_fixture_hash(&s, "demo").unwrap();
+        assert_ne!(model_changed, pinned);
+        s.set_setting("human", "worker_model", "another-model")
+            .unwrap();
+        assert_eq!(
+            baseline_fixture_hash(&s, "demo").unwrap(),
+            pinned,
+            "a pinned measure_model keeps the baselines across a worker_model change"
+        );
+        s.set_setting("human", "measure_model", "").unwrap();
         s.set_setting("human", "worker_model", "").unwrap();
+        assert_eq!(baseline_fixture_hash(&s, "demo").unwrap(), first);
         conn.execute(
             "UPDATE evolution_fixtures SET metric = 1 WHERE project = 'demo'",
             [],

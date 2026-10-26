@@ -1191,6 +1191,14 @@ printf 1
         );
         s.set_setting("human", "harness.context_window", "0")
             .unwrap();
+        s.set_setting("human", "measure_model", "haiku").unwrap();
+        let pinned = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert!(
+            pinned.windows(2).any(|w| w == ["--model", "haiku"]),
+            "measure_model drives the measurement, not worker_model: {pinned:?}"
+        );
+        assert!(!pinned.contains(&"fable".to_string()));
+        s.set_setting("human", "measure_model", "").unwrap();
         assert!(
             crate::process::measurement_argv(&s, "", request).is_err(),
             "an unknown executable must not start a measurement"

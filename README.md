@@ -358,13 +358,15 @@ activity fold under **Details for this machine**.
   machine still running under a request that is over - a daemon restarted
   mid-create cannot leave one billing. Each executor row offers the same
   preview-then-remove as `pulse remove executor`.
-- **Settings** - runner caps, board rules, amendment quorum, the two models
+- **Settings** - runner caps, board rules, amendment quorum, the models
   the runs get (`worker_model` for the work that changes code - task, improve
   and experiment jobs; `light_model` for the rest - the lead, answers,
   ballots, reflects, onboarding, the sealed held-out call and the login check
   - which means `worker_model` while empty, so a cheaper model can take the
   routine: `pulse settings set worker_model claude-fable-5.1` and
-  `pulse settings set light_model claude-sonnet-5`), the compute
+  `pulse settings set light_model claude-sonnet-5`; `measure_model` for the
+  loop's fixture measurements, `worker_model` while empty, so the evaluator
+  can be pinned while the worker changes), the compute
   provider and its target (Azure resource group / location / VM size, AWS
   region / instance type, GCP project / zone / machine type, Multipass size),
   the self-improvement loop's gates, the harness (which harness runs the
@@ -1645,7 +1647,8 @@ network/rate-limit/database-lock/full-disk-style transient), recorded as
 `land.deferred` with the reason and `retry_after_min`. The daemon log says
 `retry in 20m` (or the configured value). The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
-so it never waits for a permission prompt. When the daemon restarts on a new
+so it never waits for a permission prompt; it runs on `measure_model`
+(`worker_model` while empty). When the daemon restarts on a new
 binary it cancels the lane at once (the next daemon measures again) and gives
 the per-project landing workers ten minutes before cancelling them too; a self-update that
 is due while the lane measures waits for the lane instead of throwing the
@@ -1798,8 +1801,9 @@ record, read with `pulse record show WF-evolve`.
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
 | `harness.deny_tools` | empty | Permission rules every run refuses outright, comma-separated: `bash(rm *)`, `read(.env*)`, `write(*.lock)`, `subagent`; a tool denied whole is not offered. Jobs get it as `--deny-tool`. |
 | `harness.allow_tools` | empty | Permission rules `pulse harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
-| `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also every other run while `light_model` is empty. |
+| `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also the loop's measurements while `measure_model` is empty, and every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
+| `measure_model` | empty (= `worker_model`) | Model the self-improvement loop measures fixtures with: every baseline, experiment and landing re-measure. It is part of the evaluator, so a change re-measures every baseline; while it is pinned, a `worker_model` change keeps them. Empty measures with the model the workers use, so the tree is tuned for the agent that ships it. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
 | `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`pulse schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
 | `schedule.scripts_per_tick` | `2` scripts (minimum `1`) | Check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated. |
@@ -2602,9 +2606,9 @@ waiting <n>s (header)`. Error bodies are capped for logs, and oversized success
 bodies fail clearly (`response exceeded 8 MiB`). Every log line and error is
 redacted of token shapes.
 
-**Models.** `worker_model` and `light_model` (Settings → Harness, or `pulse
-settings set`) choose among the models the provider lists for the signed-in
-account; empty means the provider's default chat model. The console shows
+**Models.** `worker_model`, `light_model` and `measure_model` (Settings →
+Harness, or `pulse settings set`) choose among the models the provider lists
+for the signed-in account; empty means the provider's default chat model. The console shows
 each model's vendor, tool-call support, premium multiplier and context window.
 
 **Only harness.** The built-in harness is the only way PULSE runs workers,

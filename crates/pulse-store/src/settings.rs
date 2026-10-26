@@ -69,7 +69,7 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "stale_days"=>("count",Some(1),[],None,"days after which an untouched thread counts as stale"),
         "amend_quorum"=>("count",Some(1),[],None,"distinct sessions an amendment needs; may be raised by vote, lowered only by a human"),
         "amend_majority"=>("fraction",None,[],None,"share of counted votes an amendment needs, as a fraction such as 2/3"),
-        "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - and of every other run while light_model is empty; empty means the runner's default"),
+        "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - of the loop's measurements while measure_model is empty, and of every other run while light_model is empty; empty means the runner's default"),
         "stop"=>("switch",None,["0","1"],None,"the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
         "landing"=>("choice",None,["agents","human"],None,"agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
         "records.auto_adopt"=>("switch",None,["0","1"],None,"1: when the owner is away the daemon adopts waiting record drafts on its own; 0: drafts wait for the owner (ADR-046)"),
@@ -82,10 +82,11 @@ pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"]
 /// refused, a change that slips through put back).
 pub const READ_ONLY_JOB_KINDS: &[&str] = &["answer", "ballot"];
 pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> =
-    LazyLock::new(|| map! {"light_model"=>"","ask.model"=>"",});
+    LazyLock::new(|| map! {"light_model"=>"","measure_model"=>"","ask.model"=>"",});
 pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
+        "measure_model"=>("text",None,[],None,"the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes"),
         "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model"),
     }
 });
@@ -677,6 +678,16 @@ impl Store {
             self.setting("worker_model", "").trim().to_string()
         } else {
             light
+        }
+    }
+    /// The model the loop measures fixtures with: `measure_model`, or
+    /// `worker_model` while that is empty.
+    pub fn measure_model(&self) -> String {
+        let measure = self.setting("measure_model", "").trim().to_string();
+        if measure.is_empty() {
+            self.setting("worker_model", "").trim().to_string()
+        } else {
+            measure
         }
     }
     pub fn provider_settings(&self) -> BTreeMap<String, String> {
@@ -1274,7 +1285,10 @@ mod go_settings_tests {
         }
         s.set_setting("human", "light_model", "").unwrap();
         assert_eq!(s.run_model("lead"), "claude-fable-5.1");
-        assert_eq!(&extra_setting_names()[..2], ["ask.model", "light_model"]);
+        assert_eq!(
+            &extra_setting_names()[..3],
+            ["ask.model", "light_model", "measure_model"]
+        );
         assert!(
             MODEL_RULES["light_model"]
                 .description
@@ -1292,6 +1306,39 @@ mod go_settings_tests {
             SETTING_RULES["worker_model"]
                 .description
                 .contains("light_model")
+        );
+    }
+
+    #[test]
+    fn measure_model_setting() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-10-26T10:00:00Z");
+        assert_eq!(s.measure_model(), "");
+        s.set_setting("human", "worker_model", " claude-fable-5.1 ")
+            .unwrap();
+        assert_eq!(s.measure_model(), "claude-fable-5.1");
+        s.set_setting("human", "light_model", "claude-sonnet-5.5")
+            .unwrap();
+        assert_eq!(s.measure_model(), "claude-fable-5.1");
+        s.set_setting("human", "measure_model", " claude-haiku-5.5 ")
+            .unwrap();
+        assert_eq!(s.measure_model(), "claude-haiku-5.5");
+        for kind in ["task", "improve", "experiment"] {
+            assert_eq!(s.run_model(kind), "claude-fable-5.1");
+        }
+        assert_eq!(s.run_model("lead"), "claude-sonnet-5.5");
+        s.set_setting("human", "measure_model", "").unwrap();
+        assert_eq!(s.measure_model(), "claude-fable-5.1");
+        assert!(
+            MODEL_RULES["measure_model"]
+                .description
+                .contains("worker_model")
+        );
+        assert!(
+            SETTING_RULES["worker_model"]
+                .description
+                .contains("measure_model")
         );
     }
 

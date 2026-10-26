@@ -60,6 +60,7 @@
   "models": {
     "worker": "claude-sonnet-4.5",
     "light": "gpt-4.1",
+    "measure": "",
     "ask": ""
   },
   "limits": {

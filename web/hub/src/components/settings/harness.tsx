@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the tool switches and
 // the transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "measure_model", "ask.model"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -350,11 +350,11 @@ function TokenLogin({ onDone, words, only }: { onDone: () => void; words: SignIn
   );
 }
 
-function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model" | "ask.model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
+function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model" | "measure_model" | "ask.model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
   const [custom, setCustom] = useState(current);
   const ids = new Set(models.map((m) => m.id));
-  // The light and Ask models fall back to the one above them when empty.
-  const sameAs = name === "light_model" ? "Same as the main model" : name === "ask.model" ? "Same as the light model" : null;
+  // The light, measuring and Ask models fall back to another one when empty.
+  const sameAs = name === "light_model" || name === "measure_model" ? "Same as the main model" : name === "ask.model" ? "Same as the light model" : null;
   const selectValue = sameAs && !current ? SAME_MODEL : ids.has(current) ? current : "__custom__";
   // The closed picker shows the model's name only; ids and badges stay in the list.
   const known = models.find((m) => m.id === current);
@@ -783,9 +783,10 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
                 </span>
               </Notice>
             ) : null}
-            <div className="grid gap-5 md:grid-cols-3">
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
               <ModelSelect name="worker_model" label="Main model" note="For the coding work itself." current={d.models.worker} models={currentModels} disabled={false} />
               <ModelSelect name="light_model" label="Light model" note="For smaller jobs like planning, answering and voting." current={d.models.light} models={currentModels} disabled={false} />
+              <ModelSelect name="measure_model" label="Measuring model" note="For measuring baselines, experiments and merges; a cheap, steady model keeps the loop honest and affordable." current={d.models.measure ?? ""} models={currentModels} disabled={false} />
               <ModelSelect name="ask.model" label="Ask model" note="For your questions in Ask; a fast model keeps answers quick." current={d.models.ask ?? ""} models={currentModels} disabled={false} />
             </div>
           </Block>

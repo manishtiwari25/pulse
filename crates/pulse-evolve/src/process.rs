@@ -164,7 +164,7 @@ pub(crate) fn measurement_argv(
             "run the measurement from an installed pulse",
         ));
     }
-    let model = s.run_model("task");
+    let model = s.measure_model();
     let mut argv = vec![
         exe.to_string(),
         "harness".to_string(),

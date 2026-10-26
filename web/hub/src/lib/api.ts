@@ -1148,7 +1148,7 @@ export interface HarnessProviderInfo {
 export interface HarnessStatus {
   provider: HarnessProviderInfo;
   providers: HarnessProviderInfo[];
-  models: { worker: string; light: string; ask: string };
+  models: { worker: string; light: string; measure?: string; ask: string };
   limits: { max_steps: number; step_timeout_seconds: number; output_limit: number; minutes_per_job: number; max_cost?: number; keep_observations?: number };
   sessions: { running: number; today: number; failed_today: number; submitted_today: number; cost_today: number };
   settings: Setting[];

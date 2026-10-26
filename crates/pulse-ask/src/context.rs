@@ -73,6 +73,7 @@ pub fn build(s: &Store, project: Option<&str>, question: &str) -> Result<Context
         "provider",
         "worker_model",
         "light_model",
+        "measure_model",
         "compute.auto_approve",
     ] {
         let v = s.setting(name, "");
