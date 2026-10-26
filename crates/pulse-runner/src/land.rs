@@ -596,9 +596,26 @@ fn record_verify_memo_event(
     }
 }
 
-/// A branch that changes a dependency manifest while a lockfile it guards is
-/// restored from main can never pass setup: hold it for a human landing
-/// (`land.held`) instead of deferring it every daemon loop.
+/// The lockfiles a dependency bump changes: the branch's changed `files` that
+/// are lockfiles, when a manifest changed with them. Empty for every other
+/// branch, including one that regenerates a lockfile alone.
+pub(crate) fn branch_lockfiles(files: &[String]) -> Vec<String> {
+    if !files.iter().any(|f| manifest_path(f)) {
+        return Vec::new();
+    }
+    let known = setup_lockfiles();
+    files
+        .iter()
+        .filter(|f| known.contains(f))
+        .cloned()
+        .collect()
+}
+
+/// A branch that bumps a dependency changes a manifest while its lockfile is
+/// guarded (`check_files`): main's lockfile is restored into the merged
+/// worktree and setup can never pass for it. Hold it for a human landing
+/// (`land.held`) instead of deferring it every daemon loop; the human's
+/// `pulse land --branch` keeps the branch's lockfile for the check.
 pub(crate) fn hold_lockfile_branch(
     s: &pulse_store::Store,
     slug: &str,
@@ -791,17 +808,11 @@ pub(crate) fn land_branch(
     // is guarded: main's lockfile is restored into the merged worktree and
     // setup can never pass, so hold it for a human instead of deferring it
     // once per daemon loop.
-    if !o.sync && !o.by_hand {
-        let lockfiles: Vec<String> = files
-            .iter()
-            .filter(|f| setup_lockfiles().contains(f))
-            .cloned()
-            .collect();
-        if !lockfiles.is_empty() && files.iter().any(|f| manifest_path(f)) {
-            return Ok(hold_lockfile_branch(
-                s, &slug, &branch, &job, &actor, &now, &lockfiles,
-            ));
-        }
+    let lockfiles = branch_lockfiles(&files);
+    if !o.sync && !o.by_hand && !lockfiles.is_empty() {
+        return Ok(hold_lockfile_branch(
+            s, &slug, &branch, &job, &actor, &now, &lockfiles,
+        ));
     }
     let (on_default, clean) = checkout_state_pair(&root, &def);
     // A checkout parked on another branch is the human's; the landing then moves
@@ -1037,7 +1048,13 @@ pub(crate) fn land_branch(
             );
         } else {
             let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
-            let guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
+            let mut guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
+            // The human landing a lockfile branch by hand (the hold's own command) has
+            // accepted its dependencies: the branch's lockfiles and manifests stay for
+            // the check, since main's lockfile over the branch's manifest can never set up.
+            if o.by_hand && !lockfiles.is_empty() {
+                guarded.retain(|f| !lockfiles.contains(f) && !manifest_path(f));
+            }
             if !guarded.is_empty() {
                 run_base_check_files(worktree.clone(), before.clone(), guarded.clone());
             }
@@ -2799,6 +2816,65 @@ mod tests {
             0,
             "no owner question for a lockfile hold"
         );
+    }
+
+    /// The hold's own command, `pulse land --branch`, runs the check with the
+    /// branch's lockfile and manifest in place; restoring main's (none here)
+    /// would delete both and the landing would defer like the daemon's did.
+    #[test]
+    fn lockfile_branch_landed_by_hand_keeps_its_lockfile_for_the_check() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let verify_cmd = "sh -c 'test -f package-lock.json && grep -q 16.4.3 package.json'";
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        let branch = "pulse/aurora/bump-next-by-hand";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        let pkg = std::path::Path::new(&root).join("package.json");
+        std::fs::write(&pkg, "{\"dependencies\":{\"next\":\"16.4.3\"}}\n").unwrap();
+        let lock = std::path::Path::new(&root).join("package-lock.json");
+        std::fs::write(&lock, "{\"lockfileVersion\":3}\n").unwrap();
+        run(&root, &["git", "add", "package.json", "package-lock.json"]);
+        run(&root, &["git", "commit", "-q", "-m", "bump next"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+
+        let daemon = super::land_branch(
+            &s,
+            project.clone(),
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(daemon.0, "held", "{}", daemon.1);
+        assert!(daemon.1.contains("changes the lockfile"), "{}", daemon.1);
+
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch.into(),
+            crate::util::HUMAN_AGENT.into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                by_hand: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        let landed = run(&root, &["git", "show", "main:package-lock.json"]);
+        assert!(landed.contains("lockfileVersion"), "{landed}");
     }
 
     #[test]
