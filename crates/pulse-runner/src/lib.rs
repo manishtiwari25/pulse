@@ -64,6 +64,7 @@ pub mod reclaim;
 pub mod recover;
 pub mod recovery_api;
 pub mod redbase;
+pub mod release_age;
 pub mod research;
 pub mod retention;
 pub mod retire;
