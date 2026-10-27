@@ -8,8 +8,9 @@
 //! [`DEFAULT_BASE_URL`]. The harness speaks the OpenAI chat shape, so each
 //! [`Request`] is translated: system messages are lifted into `system`,
 //! assistant tool calls become `tool_use` blocks, tool replies become
-//! `tool_result` blocks in a user turn, and consecutive same-role turns are
-//! merged because the Messages API wants strict user/assistant alternation.
+//! `tool_result` blocks in a user turn, attached images become base64 `image`
+//! blocks, and consecutive same-role turns are merged because the Messages API
+//! wants strict user/assistant alternation.
 
 use anyhow::{Result, anyhow};
 use pulse_provider::apikey::{ApiKeyLogin, KeySource};
@@ -18,9 +19,10 @@ use pulse_provider::http::{
     network_error, success_body, trim_base_url, unauthorized_error, with_retries,
 };
 use pulse_provider::{
-    CancelToken, LogFn, Login, LoginExporter, Logouter, Message, Model, Options, Provider,
-    ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage, default_http_client,
-    err_not_logged_in, provider_max_body_bytes, provider_retry_after_cap, redact, remember_secret,
+    CancelToken, ImageContent, LogFn, Login, LoginExporter, Logouter, Message, Model, Options,
+    Provider, ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage,
+    default_http_client, err_not_logged_in, provider_max_body_bytes, provider_retry_after_cap,
+    redact, remember_secret,
 };
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -459,6 +461,29 @@ enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// A base64 image: `{"type": "image", "source": {...}}` on the wire.
+    Image { source: ImageSource },
+}
+
+/// The `source` member of an image block: media type plus base64 bytes.
+#[derive(Serialize)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: String,
+    data: String,
+}
+
+impl From<ImageContent> for Block {
+    fn from(image: ImageContent) -> Self {
+        Self::Image {
+            source: ImageSource {
+                kind: "base64",
+                media_type: image.media_type,
+                data: image.data,
+            },
+        }
+    }
 }
 
 impl Block {
@@ -476,6 +501,7 @@ impl Block {
             | Self::ToolResult { cache_control, .. } => {
                 *cache_control = Some(CacheControl::Ephemeral);
             }
+            Self::Image { .. } => {}
         }
     }
 }
@@ -506,10 +532,15 @@ fn messages_request(req: &Request) -> MessagesRequest {
                 continue;
             }
             Role::User => {
-                if m.content.is_empty() {
+                if m.content.is_empty() && m.images.is_empty() {
                     continue;
                 }
-                ("user", vec![Block::text(m.content.clone())])
+                // Images precede the text; a text-only turn is one block.
+                let mut blocks: Vec<Block> = m.images.iter().cloned().map(Block::from).collect();
+                if !m.content.is_empty() {
+                    blocks.push(Block::text(m.content.clone()));
+                }
+                ("user", blocks)
             }
             Role::Assistant => {
                 let mut blocks = Vec::with_capacity(m.tool_calls.len() + 1);
@@ -1154,6 +1185,71 @@ mod tests {
                     {"type": "tool_result", "tool_use_id": "t1", "content": "", "cache_control": {"type": "ephemeral"}}
                 ]}
             ])
+        );
+    }
+
+    #[test]
+    fn request_translation_maps_images_to_base64_image_blocks() {
+        let mut one = message(Role::User, "what is in this image?");
+        one.images.push(ImageContent {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        });
+        let mut two = message(Role::User, "");
+        two.images.push(ImageContent {
+            media_type: "image/jpeg".into(),
+            data: "Zm9v".into(),
+        });
+        let req = Request {
+            model: "m".to_string(),
+            messages: vec![one, two],
+            ..Request::default()
+        };
+        let got = serde_json::to_value(messages_request(&req)).unwrap();
+        // The two user turns merge, images before text; the moving cache
+        // breakpoint lands on the text block, the last one.
+        assert_eq!(
+            got["messages"],
+            json!([
+                {"role": "user", "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aGVsbG8="
+                        }
+                    },
+                    {"type": "text", "text": "what is in this image?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "Zm9v"
+                        }
+                    }
+                ]}
+            ])
+        );
+        // An image-only turn is kept: an image block is real content even
+        // without text, and ending on it leaves no breakpoint at all.
+        let mut only = message(Role::User, "");
+        only.images.push(ImageContent {
+            media_type: "image/jpeg".into(),
+            data: "Zm9v".into(),
+        });
+        let req = Request {
+            model: "m".to_string(),
+            messages: vec![only],
+            ..Request::default()
+        };
+        let got = serde_json::to_value(messages_request(&req)).unwrap();
+        assert_eq!(got["messages"].as_array().unwrap().len(), 1);
+        assert!(
+            got["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
         );
     }
 
