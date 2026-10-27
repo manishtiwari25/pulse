@@ -1907,6 +1907,32 @@ mod tests {
     }
 
     #[test]
+    fn rename_project() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let s = open_temp(Options {
+            create: true,
+            now: "2026-09-06T10:00:00Z".into(),
+            ..Options::default()
+        });
+        let root = tempfile::tempdir().unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO projects (slug, name, path, brain, added_at) VALUES ('a', 'Old', ?, 0, ?)",
+            rusqlite::params![root.path().display().to_string(), s.now()],
+        ).unwrap();
+        s.rename_project("a", "  New Name  ").unwrap();
+        assert_eq!(s.project("a").unwrap().unwrap().name, "New Name");
+        assert!(s.rename_project("a", "").is_err());
+        assert!(s.rename_project("a", "   ").is_err());
+        assert!(s.rename_project("a", &"x".repeat(121)).is_err());
+        assert!(s.rename_project("a", &"x".repeat(120)).is_ok());
+        assert_eq!(s.project("a").unwrap().unwrap().name, "x".repeat(120));
+        assert!(s.rename_project("nope", "Name").is_err());
+        assert_eq!(s.project("a").unwrap().unwrap().name, "x".repeat(120));
+    }
+
+    #[test]
     fn read_only_open() {
         let _serial = crate::test_helpers::serial();
         let _guard = TEST_LOCK.lock().unwrap();
