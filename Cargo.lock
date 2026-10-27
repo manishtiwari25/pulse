@@ -1649,6 +1649,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "filetime",
+ "flate2",
  "fs2",
  "hex",
  "libc",

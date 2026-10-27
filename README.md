@@ -1333,6 +1333,7 @@ pulse record lead-time --project my-app       # proposed-to-delivered days
 pulse migrate --records --repo . --ref HEAD    # import a repository's committed Markdown records once
 pulse seed apply                               # write the framework's bundled records a store lacks (ADR-038)
 pulse export --db ~/pulse-backup.sqlite        # a copy outside every project
+pulse backup --to az://myaccount/pulse-backups  # a gzip copy off this machine (see Backups of the store)
 ```
 
 Numbered kinds (ADR, PLAN, FEAT, WU) keep their numbers; the rest are
@@ -2970,6 +2971,39 @@ macOS mounts it under a new name (`Kingston 1`) the daemon finds the marker on
 the sibling volume and repoints the link itself. `pulse status` prints a
 `bulk` line while anything is attached, and `pulse executor probe` names the
 missing disk instead of measuring a 0 MB floor.
+
+### Backups of the store
+
+The board, its history, every task and every job live in one file,
+`~/.pulse/pulse.sqlite`, and nothing above regenerates it. When a disk starts
+failing the only copy must already be somewhere else, so the runner can keep
+one there. Name a place with `backup.to` and the maintenance pass copies the
+store to it every `backup.every_hours` (24 by default), keeping the newest
+`backup.keep` copies (14) and removing older ones of this host's:
+
+```bash
+pulse settings set backup.to az://myaccount/pulse-backups/store   # an Azure blob container, with an optional prefix
+pulse settings set backup.to /Volumes/Backup/pulse                 # a folder that already exists (a mounted disk, a synced folder)
+pulse settings set backup.to 'run:rclone copyto {file} remote:pulse/{name}'   # any command; {file} and {name} are filled in
+pulse backup                       # one now, to backup.to
+pulse backup --to ~/Desktop --keep 3   # one now, somewhere else, pruning to 3 there
+pulse backup --status              # where copies go, the last outcome, when the next is due (also --json)
+```
+
+Each copy is a `VACUUM INTO` snapshot (writers are never blocked), checked with
+`PRAGMA quick_check` before it leaves the machine, gzipped, hashed, and named
+`pulse-<host>-<stamp>.sqlite.gz`; the folder destination writes a `.part` file
+and renames it only after the size matches, so a half-written copy is never
+mistaken for a whole one. A folder destination must already exist: a missing
+mount must never turn into a new folder on the boot disk. The Azure destination
+uses the `az` CLI you are logged in to; it fetches the account key for the
+upload and passes it to `az` through the environment only, never on a command
+line, in the store, or in a log, and falls back to `--auth-mode login` when the
+key is not readable. The `run:` destination gets no pruning - the command owns
+its remote. The outcome (size, digest, location, what was pruned, or the error)
+is recorded as `backup.done`/`backup.failed` on the bus and under the Cleanup
+panel in the console; a failed backup is tried again within the hour regardless
+of the cadence. The Settings page has the three caps under **Backups**.
 
 ### Keeping the machine awake
 

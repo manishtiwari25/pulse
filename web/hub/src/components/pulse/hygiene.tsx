@@ -10,7 +10,7 @@ import { invalidate, useApi, useLiveEvents } from "@/lib/use-api";
 import { andList, num, plural, sizeText, type Tone } from "@/lib/format";
 import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
-import type { AgentCleanup, Hygiene, Leftover, StoreEvent, SweptItem } from "@/lib/api";
+import type { AgentCleanup, BackupStatus, Hygiene, Leftover, StoreEvent, SweptItem } from "@/lib/api";
 import { RunnersSection } from "./runners";
 
 // The cleaning events the hygiene route serves; a live one of these refreshes the panel.
@@ -156,6 +156,58 @@ function LeftoverList({ left }: { left: Leftover[] }) {
 // sentence; the history folds under "Show what was cleaned" and refreshes
 // the moment a cleaning event lands in the store. `heading={false}` drops
 // the title row when the page already gives the section a heading.
+// Where the store's copies go and how the last one went. Off until the owner
+// names a place; the runner's cadence and the keep count come from Settings.
+export function BackupSection({ backup }: { backup: BackupStatus | null | undefined }) {
+  if (!backup) return null;
+  const last = backup.last;
+  const on = backup.to !== "";
+  const every = backup.every_hours > 0 ? "every " + plural(backup.every_hours, "hour") : "only when you ask for one";
+  const keep = backup.keep > 0 ? "the newest " + num(backup.keep) + " kept" : "every copy kept";
+  return (
+    <div className="mt-4 border-t border-border/70 pt-3" aria-label="Backups">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <p className="flex flex-wrap items-center gap-x-2 text-[13px] font-medium text-foreground">
+          Backups of the store
+          {on && last && !last.ok ? (
+            <ToneBadge tone="bad" dot>
+              Last backup failed
+            </ToneBadge>
+          ) : null}
+          {!on ? <ToneBadge tone="neutral">Off</ToneBadge> : null}
+        </p>
+        <p className="text-[13px] text-muted-foreground">
+          {last ? (
+            <>
+              {last.ok ? "Last copy " : "Last tried "}
+              <When d={last.at} />
+            </>
+          ) : (
+            "No copy made yet"
+          )}
+        </p>
+      </div>
+      <p className="mt-0.5 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">
+        {on ? (
+          <>
+            {"A gzip copy of the whole store goes to "}
+            <Mono>{backup.to}</Mono>
+            {" " + every + ", " + keep + "."}
+            {last?.ok ? " The last one was " + sizeText(last.bytes) + " (" + sizeText(last.store_bytes) + " before gzip) at " + last.location + "." : ""}
+            {last && !last.ok ? " " + sentence(last.error) + " The runner tries again within the hour." : ""}
+            {backup.next_due === "" ? " One is due now." : ""}
+          </>
+        ) : (
+          "Name a folder, an Azure container (az://account/container/prefix) or a command in Settings and the runner copies the store there " + every + " so a failing disk cannot take the only copy."
+        )}{" "}
+        <Link href={hrefs.settings("runner")} className="underline-offset-2 hover:text-foreground hover:underline">
+          Backup settings
+        </Link>
+      </p>
+    </div>
+  );
+}
+
 export function HygienePanel({ project, limit = 30, heading = true }: { project?: string; limit?: number; heading?: boolean }) {
   const path = "hygiene?limit=" + limit + (project ? "&project=" + encodeURIComponent(project) : "");
   const q = useApi<Hygiene>(path, { refresh: 60000 });
@@ -238,6 +290,7 @@ export function HygienePanel({ project, limit = 30, heading = true }: { project?
         {heading ? null : status}
       </div>
       {project ? null : <RunnersSection note={h.runners} />}
+      {project ? null : <BackupSection backup={h.backup} />}
       <Disclosure summary="Show what was cleaned" className="mt-3 border-t border-border/70 pt-3" contentClassName="mt-3">
         <div className="grid min-w-0 gap-1 [&>*]:min-w-0">
           <p className="max-w-3xl text-[13px] leading-relaxed text-muted-foreground">

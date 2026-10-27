@@ -118,6 +118,7 @@ impl Handler {
                     "runner_keep_days": runner_keep_days,
                 },
                 "runners": runners,
+                "backup": pulse_runner::backup::status(store),
                 "agents": agents,
                 "agent_days": HYGIENE_AGENT_DAYS,
                 "events": events,
@@ -191,6 +192,12 @@ mod tests {
         assert_eq!(result["runners"]["decided"], false);
         assert_eq!(result["runners"]["keep_days"], 30);
         assert!(result["runners"]["runners"].is_array(), "{result:#?}");
+        // Backups: off until the owner names a destination, so nothing is due.
+        assert_eq!(result["backup"]["to"], "");
+        assert_eq!(result["backup"]["every_hours"], 24);
+        assert_eq!(result["backup"]["keep"], 14);
+        assert!(result["backup"]["last"].is_null(), "{result:#?}");
+        assert!(result["backup"]["next_due"].is_null(), "{result:#?}");
 
         // A sweep note with items, and the cleaning events the runner writes.
         let conn = s.conn().unwrap();

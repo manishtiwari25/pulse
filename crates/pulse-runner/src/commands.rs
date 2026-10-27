@@ -45,6 +45,7 @@ pub fn register() {
         cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
+        cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
         cli_register(Command { name:"service".into(), group:"runner".into(), summary:"install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)".into(), usage:"pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_service, flags:Some(service_flags) });
         cli_register(Command { name:"bulk".into(), group:"runner".into(), summary:"keep the regenerable bulk (work, cache, worktrees, build dirs) on another disk; the daemon waits while that disk is away".into(), usage:"pulse bulk status | attach VOLUME [--any-folder] [--dry-run] | detach [--lost] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_bulk, flags:Some(bulk_flags) });
         cli_register(Command { name:"lead".into(), group:"agents".into(), summary:"the role leads of a project: seat one per concern (rsi, docs, security, monitor, or a word of your own), list, pause, resume, end, run, and ask which roles the project is missing".into(), usage:"pulse lead add --project SLUG --role R [--title T] [--brief B | --brief-file F] [--every 1d]\npulse lead list [--project SLUG] [--status S] [--json]\npulse lead show LEAD-NNN [--json]\npulse lead pause|resume|end|run LEAD-NNN [--note N]\npulse lead suggest --project SLUG [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::lead_cli::cmd_lead, flags:Some(crate::lead_cli::lead_flags) });
@@ -109,6 +110,24 @@ fn sweep_flags(fs: &mut FlagSet) {
         "reclaim",
         false,
         "climb the disk reclaim ladder now, floor or not: stale temp dirs of ours, then the sweep with its windows shortened; names the largest entries left",
+    );
+}
+
+fn backup_flags(fs: &mut FlagSet) {
+    fs.string_var(
+        "to",
+        "",
+        "where this copy goes, instead of backup.to: a directory, az://ACCOUNT/CONTAINER[/PREFIX], or `run: COMMAND {file} {name}`",
+    );
+    fs.int_var(
+        "keep",
+        -1,
+        "copies of this machine kept at the destination after this one, instead of backup.keep (0 keeps every copy)",
+    );
+    fs.bool_var(
+        "status",
+        false,
+        "show the last backup, the settings in force and when the daemon takes the next; copy nothing",
     );
 }
 
@@ -606,6 +625,101 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
 
 /// `pulse sweep --reclaim`: the ladder the daemon climbs under
 /// `daemon.min_free_mb`, run by hand with every rung, floor or not.
+pub(crate) fn cmd_backup(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("backup: store is needed"))?;
+    if !args.is_empty() {
+        return Err(crate::util::fail(
+            2,
+            "pulse backup takes no arguments (pulse backup [--to DEST] [--keep N] [--status] [--json])",
+        )
+        .into());
+    }
+    if bool_flag(fs, "status") {
+        let st = crate::backup::status(&s);
+        if c.json {
+            pulse_cli::write_json(&mut c.out, &st)?;
+            return Ok(());
+        }
+        let to = st["to"].as_str().unwrap_or_default();
+        if to.is_empty() {
+            c.printf(format_args!(
+                "no backups: set {} to a directory, az://ACCOUNT/CONTAINER[/PREFIX] or `run: COMMAND {{file}} {{name}}` (pulse settings set {} ...)
+",
+                crate::backup::TO,
+                crate::backup::TO
+            ))?;
+        } else {
+            c.printf(format_args!(
+                "to: {to}
+every: {} h (0: by hand only), keep: {} (0: all)
+",
+                st["every_hours"], st["keep"]
+            ))?;
+        }
+        match crate::backup::last(&s) {
+            Some(last) => c.printf(format_args!(
+                "last: {} {}
+",
+                last.at,
+                crate::backup::line(&last)
+            ))?,
+            None => c.printf(format_args!(
+                "last: none yet
+"
+            ))?,
+        }
+        match st["next_due"].as_str() {
+            Some("") => c.printf(format_args!(
+                "next: on the daemon's next pass
+"
+            ))?,
+            Some(at) => c.printf(format_args!(
+                "next: {at}
+"
+            ))?,
+            None => c.printf(format_args!(
+                "next: none (the daemon takes none)
+"
+            ))?,
+        }
+        return Ok(());
+    }
+    let keep = int_flag(fs, "keep");
+    let out = crate::backup::run_backup(
+        &s,
+        crate::backup::Opts {
+            to: str_flag(fs, "to"),
+            keep: if keep < 0 { None } else { Some(keep as i64) },
+            actor: actor_of(c),
+            now: now_of(c),
+        },
+    );
+    if c.json {
+        pulse_cli::write_json(&mut c.out, &out)?;
+    } else {
+        c.printf(format_args!(
+            "{}
+",
+            crate::backup::line(&out)
+        ))?;
+        if out.ok {
+            c.printf(format_args!(
+                "sha256 {}
+",
+                out.sha256
+            ))?;
+        }
+    }
+    if out.ok {
+        Ok(())
+    } else {
+        Err(crate::util::fail(1, format!("backup failed: {}", out.error)).into())
+    }
+}
+
 fn cmd_sweep_reclaim(
     c: &mut Context,
     s: &pulse_store::Store,

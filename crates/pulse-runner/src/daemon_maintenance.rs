@@ -353,6 +353,12 @@ impl DaemonMaintenance {
                             set_stage(Some(&stage), "binary check");
                             lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));
                         }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            // A copy of the store off this machine, on the
+                            // cadence backup.every_hours sets (backup.rs).
+                            set_stage(Some(&stage), "backup");
+                            lines.extend(crate::backup::tend_backup(&s, &s.now(), &actor));
+                        }
                     }
 
                     set_stage(Some(&stage), "finished");

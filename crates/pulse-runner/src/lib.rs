@@ -7,6 +7,7 @@ pub mod auto_adopt;
 pub mod awake;
 pub mod aws;
 pub mod azure;
+pub mod backup;
 pub mod baseline;
 pub mod board;
 pub mod brief;

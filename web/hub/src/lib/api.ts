@@ -1039,6 +1039,33 @@ export interface RunnersNote {
   runners: RunnerNote[];
 }
 
+// The last store backup the runner (or `pulse backup`) made: where the gzip
+// copy went, its size and digest, and why it failed when it did.
+export interface BackupOutcome {
+  at: string;
+  ok: boolean;
+  to: string;
+  location: string;
+  name: string;
+  bytes: number;
+  store_bytes: number;
+  sha256: string;
+  took_ms: number;
+  removed: string[];
+  error: string;
+  by: string;
+}
+
+// Backups as the store settings and the last outcome describe them. `to` is
+// empty while backups are off; `next_due` is null then, "" when one is due now.
+export interface BackupStatus {
+  to: string;
+  every_hours: number;
+  keep: number;
+  last: BackupOutcome | null;
+  next_due: string | null;
+}
+
 export interface Hygiene {
   available: boolean;
   now: string;
@@ -1046,6 +1073,7 @@ export interface Hygiene {
   text: string;
   settings: { sweep: string; grace_minutes: number; branch_days: number; keep_days: number; runners: string; runner_keep_days: number };
   runners: RunnersNote | null;
+  backup: BackupStatus;
   agents: AgentHygiene[];
   agent_days: number;
   events: StoreEvent[];
