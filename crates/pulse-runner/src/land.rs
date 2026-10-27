@@ -2462,7 +2462,7 @@ pub(crate) fn verify_hint(tail: &str) -> String {
 
 static VERIFY_FAILURE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
-        r"^(?:test \S.* \.\.\. FAILED$|error(?:\[E\d+\])?: |FAILED |FAIL |✗ |× |Error: |\S.*:\d+:\d+: [A-Z]+\d{2,4} |\d+:\d+\s+error\s)",
+        r"^(?:test \S.* \.\.\. FAILED$|thread '.*' panicked at .+:$|error(?:\[E\d+\])?: |FAILED |FAIL |✗ |× |Error: |\S.*:\d+:\d+: [A-Z]+\d{2,4} |\d+:\d+\s+error\s)",
     )
     .unwrap()
 });
@@ -2917,6 +2917,21 @@ mod tests {
         let clippy = "warning: x\nerror[E0308]: mismatched types\n --> src/a.rs:1:1\nerror: could not compile `x`\n";
         let got = super::verify_failures(clippy);
         assert_eq!(got[0], "error[E0308]: mismatched types");
+        // A red main whose tests panic names the panicking test and its panic line,
+        // so the fix brief leads with the failure instead of the last compile lines.
+        let panic = "running 2 tests\ntest a::ok ... ok\ntest brief::tests::render ... FAILED\n\nfailures:\n\n---- brief::tests::render stdout ----\n\nthread 'brief::tests::render' panicked at crates/pulse-runner/src/brief.rs:81:9:\nassertion `left == right` failed\n  left: \"red\"\n right: \"green\"\nnote: run with `RUST_BACKTRACE=1` environment variable\n\n\nfailures:\n    brief::tests::render\n\ntest result: FAILED. 1 passed; 1 failed\n";
+        let got = super::verify_failures(panic);
+        assert!(
+            got.contains(&"brief::tests::render".to_string()),
+            "names the test: {got:?}"
+        );
+        assert!(
+            got.contains(
+                &"thread 'brief::tests::render' panicked at crates/pulse-runner/src/brief.rs:81:9:"
+                    .to_string()
+            ),
+            "keeps the panic line: {got:?}"
+        );
         let misc = "FAILED tests/test_a.py::test_b - AssertionError\nsrc/a.py:3:1: E501 line too long\n  12:4  error  'x' is defined but never used  no-unused-vars\nall good\n";
         let got = super::verify_failures(misc);
         assert_eq!(got.len(), 3);
