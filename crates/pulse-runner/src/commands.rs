@@ -561,7 +561,7 @@ pub(crate) fn cmd_sweep(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resul
     if c.json {
         pulse_cli::write_json(
             &mut c.out,
-            &json!({"at": rep.at, "dry_run": rep.dry_run, "removed": rep.removed, "held": rep.held, "cargo_target": rep.cargo_target, "errors": rep.errors, "bytes": rep.bytes(), "unreadable": held, "runners": crate::runners::RunnersNote::load(&s)}),
+            &json!({"at": rep.at, "dry_run": rep.dry_run, "removed": rep.removed, "held": rep.held, "cargo_target": rep.cargo_target, "errors": rep.errors, "bytes": rep.bytes(), "unreadable": held, "runners": rep.runners.clone().or_else(|| crate::runners::RunnersNote::load(&s))}),
         )?;
         return Ok(());
     }

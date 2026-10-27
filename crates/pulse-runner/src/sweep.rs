@@ -108,6 +108,12 @@ pub(crate) struct SweepReport {
     pub errors: Vec<String>,
     #[serde(rename = "cargo_target", default)]
     pub cargo_target: Vec<CargoTargetSweep>,
+    /// The runners note this pass built (runners.rs): what the sweep saw in
+    /// the owner's home, so a `pulse sweep --dry-run --json` shows this pass's
+    /// view instead of the last saved one. None when the pass was skipped
+    /// (an empty `user_home`), and the caller falls back to the saved note.
+    #[serde(rename = "runners", default, skip_serializing_if = "Option::is_none")]
+    pub runners: Option<crate::runners::RunnersNote>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1304,6 +1310,8 @@ impl Sweeper {
     /// PULSE's leftovers.
     pub(crate) fn sweep_runner_sessions(&mut self) {
         if self.o.user_home.is_empty() {
+            // The pass is skipped; the report holds no note and the caller
+            // falls back to the last saved one.
             return;
         }
         let home = Path::new(&self.o.user_home).to_path_buf();
@@ -1448,6 +1456,7 @@ impl Sweeper {
                 vec![serde_json::Value::String(crate::run::err_message(&err))],
             );
         }
+        self.rep.runners = Some(note);
     }
 
     /// Removes the files of one session - the main path the report names
@@ -5551,5 +5560,57 @@ mod tests {
         );
         let note = crate::runners::RunnersNote::load(&s).unwrap();
         assert!(note.decided && !note.runner("copilot").unwrap().managed);
+    }
+
+    /// `pulse sweep --json` names the note this pass built: a dry run after
+    /// `pulse settings set daemon.sweep_runners copilot` prints the new
+    /// setting (decided, copilot managed) in the same command, instead of the
+    /// previous pass's view; the saved note only fills in when the pass was
+    /// skipped (an empty user home).
+    #[test]
+    fn sweep_report_carries_the_pass_own_runners_note() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let user_home = tempfile::tempdir().unwrap();
+        let home = user_home.path();
+        mkdir_file(home.join(".copilot/session-store.db"), "index");
+        let opts = |dry_run: bool| SweepOpts {
+            dry_run,
+            user_home: home.display().to_string(),
+            ..Default::default()
+        };
+
+        // The pass sees the owner list as it stands: no setting yet.
+        let before = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(true)).unwrap();
+        let note = before.runners.clone().expect("the pass's note");
+        assert!(!note.decided && !note.runner("copilot").unwrap().managed);
+        assert!(
+            crate::runners::RunnersNote::load(&s).is_none(),
+            "a dry run saves no note"
+        );
+
+        // One real pass saves its undecided view ...
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(false)).unwrap();
+        assert!(!rep.runners.clone().unwrap().decided);
+        let saved = crate::runners::RunnersNote::load(&s).expect("saved note");
+        assert!(!saved.decided);
+
+        // ... then the owner lists copilot, and a dry run reports what it saw
+        // this pass, not that saved view.
+        set_setting(&s, "daemon.sweep_runners", "copilot");
+        let dry = sweep(&s, project_rows(&s), TEST_NOW.into(), opts(true)).unwrap();
+        let note = dry.runners.clone().expect("the dry pass's note");
+        assert!(note.decided && note.runner("copilot").unwrap().managed);
+        assert_eq!(note.keep_days, 30);
+        assert!(
+            !crate::runners::RunnersNote::load(&s).unwrap().decided,
+            "the saved note still holds the previous pass's view"
+        );
+
+        // An empty user home skips the pass: the report holds no note and the
+        // caller falls back to the saved one.
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.runners.is_none());
+        assert!(crate::runners::RunnersNote::load(&s).is_some());
     }
 }
