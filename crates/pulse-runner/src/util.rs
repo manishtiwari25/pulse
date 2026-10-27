@@ -159,8 +159,21 @@ pub(crate) fn git_timeout_env(
         full.extend(["-C".into(), repo.into()]);
     }
     full.extend(args.iter().map(|s| s.to_string()));
-    let out = Command::new("git")
-        .args(&full)
+    let mut cmd = Command::new("git");
+    cmd.args(&full);
+    // Strip the hook-exported variables that redirect this command at the
+    // repository of a concurrent pulse job's pre-commit hook (GIT_DIR,
+    // GIT_INDEX_FILE, GIT_QUARANTINE_PATH, ...). `.envs` alone does not remove
+    // an inherited variable, so without this the recipe read in
+    // pulse-inspect::recipes flaked whenever another job ran git. We remove
+    // only the redirecting vars rather than clearing the whole environment so
+    // that intentional ambient credentials (e.g. GIT_SSH_COMMAND) still apply.
+    for kv in pulse_gitenv::HOOK_VARS {
+        if let Some(var) = kv.strip_suffix('=') {
+            cmd.env_remove(var);
+        }
+    }
+    let out = cmd
         .envs(git_env(env).into_iter().filter_map(|kv| {
             kv.split_once('=')
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -512,5 +525,69 @@ mod tests {
         ] {
             assert!(env.contains(want), "git env lacks {want:?}:\n{env}");
         }
+    }
+
+    #[test]
+    fn git_command_ignores_inherited_hook_git_dir() {
+        // A concurrent pulse job's pre-commit hook exports GIT_DIR/GIT_INDEX_FILE/
+        // GIT_QUARANTINE_PATH. Before the fix these leaked through `.envs` (which does
+        // not clear the inherited environment) and redirected `git` at the hook's
+        // repository; the recipe read in pulse-inspect::recipes flaked on exactly this.
+        // The command must drop the inherited hook vars before it runs.
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+
+        let repo = tempfile::tempdir().unwrap();
+        let hook = tempfile::tempdir().unwrap();
+        for dir in [repo.path(), hook.path()] {
+            let st = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(dir)
+                .env_clear()
+                .envs(pulse_testutil::git_env().into_iter().filter_map(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                }))
+                .status()
+                .unwrap();
+            assert!(st.success());
+        }
+        // Commit a file only in the target repo.
+        let file = repo.path().join("marker.txt");
+        std::fs::write(&file, b"target-repo").unwrap();
+        for args in [
+            vec!["add", "marker.txt"],
+            vec!["commit", "--quiet", "-m", "init"],
+        ] {
+            let st = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(repo.path())
+                .env_clear()
+                .envs(pulse_testutil::git_env().into_iter().filter_map(|kv| {
+                    kv.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                }))
+                .status()
+                .unwrap();
+            assert!(st.success());
+        }
+
+        // Ambient hook git state pointing at the *other* repo.
+        let _d = pulse_testutil::setenv("GIT_DIR", hook.path().join(".git").to_str().unwrap());
+        let _i = pulse_testutil::setenv(
+            "GIT_INDEX_FILE",
+            hook.path().join(".git/index").to_str().unwrap(),
+        );
+
+        // The fixed invocation must ignore the ambient GIT_DIR and read the target repo.
+        let r = git(
+            repo.path().to_str().unwrap(),
+            &["rev-parse", "--verify", "HEAD"],
+        );
+        assert!(
+            r.ok(),
+            "git rev-parse was redirected by inherited hook GIT_DIR: {:?}",
+            r.err
+        );
     }
 }
