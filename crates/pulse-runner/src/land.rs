@@ -16,7 +16,9 @@ use std::time::Duration;
 pub(crate) const LAND_LOCK_MINUTES: i32 = 30;
 pub(crate) const LAND_REQUEUE_LIMIT: i32 = 2;
 const LAND_RETRY_META_PREFIX: &str = "landing-retry:";
-/// Meta key prefix of a branch `hold_recipe_branch` left for a human.
+/// Meta key prefix of a branch the daemon holds: one `hold_recipe_branch` or
+/// `hold_lockfile_branch` left for a human, or a dependency bump that waits
+/// for its versions to age (`wait_for_release_age`).
 const LAND_HELD_META_PREFIX: &str = "landing-held:";
 /// How long the daemon leaves a held branch alone before it looks again.
 pub(crate) const HELD_RECHECK_MINUTES: i64 = 30;
@@ -611,11 +613,268 @@ pub(crate) fn branch_lockfiles(files: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// A branch that bumps a dependency changes a manifest while its lockfile is
-/// guarded (`check_files`): main's lockfile is restored into the merged
-/// worktree and setup can never pass for it. Hold it for a human landing
-/// (`land.held`) instead of deferring it every daemon loop; the human's
-/// `pulse land --branch` keeps the branch's lockfile for the check.
+/// What the owner's release-age rule (`dependencies.min_release_age_days`,
+/// `release_age::verdict`) says about a dependency bump: one verdict over
+/// every lockfile the branch changes, and the versions those lockfiles pin
+/// that the default branch's did not, for the `land.release-age` record.
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseAgeCheck {
+    pub(crate) verdict: crate::release_age::AgeVerdict,
+    pub(crate) min_days: i32,
+    /// The verdict's reason in the owner's words; a lockfile nobody can read
+    /// gets its own sentence, since no version is to blame.
+    pub(crate) note: String,
+    pub(crate) pins: Vec<(crate::release_age::Ecosystem, crate::release_age::NewPin)>,
+}
+
+impl ReleaseAgeCheck {
+    fn unknown(path: &str, why: String, min_days: i32) -> Self {
+        Self {
+            verdict: crate::release_age::AgeVerdict::Unknown {
+                name: path.to_string(),
+                version: String::new(),
+                why: why.clone(),
+            },
+            min_days,
+            note: format!("the versions {path} pins cannot be checked: {why}"),
+            pins: Vec::new(),
+        }
+    }
+
+    pub(crate) fn ready(&self) -> bool {
+        matches!(self.verdict, crate::release_age::AgeVerdict::Ready)
+    }
+
+    /// The verdict as the event detail spells it.
+    pub(crate) fn kind(&self) -> &'static str {
+        use crate::release_age::AgeVerdict;
+        match self.verdict {
+            AgeVerdict::Ready => "ready",
+            AgeVerdict::Wait { .. } => "wait",
+            AgeVerdict::MajorJump { .. } => "major",
+            AgeVerdict::Unknown { .. } => "unknown",
+        }
+    }
+
+    /// The new pins with the publish dates the check learned, read from the
+    /// store's cache only: the record never waits for a registry.
+    fn pins_json(&self, s: &pulse_store::Store) -> Vec<Value> {
+        self.pins
+            .iter()
+            .map(|(eco, p)| {
+                let mut v = serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "previous": p.previous,
+                    "registry": eco.label(),
+                });
+                if let Some(at) =
+                    crate::release_age::cached_published_at(s, *eco, &p.name, &p.version)
+                {
+                    v["published_at"] = Value::String(at);
+                }
+                v
+            })
+            .collect()
+    }
+}
+
+/// The text of `path` at `rev` in `root`; `None` when `rev` has no such file.
+fn file_at(root: &str, rev: &str, path: &str) -> Option<String> {
+    let spec = format!("{rev}:{path}");
+    let shown = crate::util::git_timeout(root, Duration::from_secs(60), &["show", &spec]);
+    shown.ok().then_some(shown.stdout)
+}
+
+/// Checks the versions `branch` pins that `def` does not against the
+/// release-age rule, lockfile by lockfile: a lockfile no registry reads, a
+/// lockfile that does not parse or a version the registry cannot date is
+/// `Unknown`; a jump past a compatible range outranks a version still too
+/// young; `Wait` names the version eligible last. With the rule off (0 days)
+/// no registry is asked and only a jump is reported.
+pub(crate) fn release_age_check(
+    s: &pulse_store::Store,
+    reg: &dyn crate::release_age::Registry,
+    root: &str,
+    def: &str,
+    branch: &str,
+    lockfiles: &[String],
+    now: &str,
+) -> ReleaseAgeCheck {
+    use crate::release_age::{AgeVerdict, Ecosystem, compat_key, lockfile_pins, new_pins};
+    let min_days = crate::release_age::min_release_age_days(s);
+    let mut pins = Vec::new();
+    let mut verdicts = Vec::new();
+    for path in lockfiles {
+        let Some(eco) = Ecosystem::from_lockfile(path) else {
+            return ReleaseAgeCheck::unknown(path, format!("no registry reads {path}"), min_days);
+        };
+        let Some(after_text) = file_at(root, branch, path) else {
+            return ReleaseAgeCheck::unknown(path, format!("{branch} removes {path}"), min_days);
+        };
+        let Some(after) = lockfile_pins(path, &after_text) else {
+            return ReleaseAgeCheck::unknown(
+                path,
+                format!("{path} on {branch} is not a lockfile this landing reads"),
+                min_days,
+            );
+        };
+        let before = match file_at(root, def, path) {
+            None => Vec::new(),
+            Some(text) if text.trim().is_empty() => Vec::new(),
+            Some(text) => match lockfile_pins(path, &text) {
+                Some(p) => p,
+                None => {
+                    return ReleaseAgeCheck::unknown(
+                        path,
+                        format!("{path} on {def} does not parse"),
+                        min_days,
+                    );
+                }
+            },
+        };
+        let fresh = new_pins(&before, &after);
+        let v = if min_days == 0 {
+            fresh
+                .iter()
+                .find(|p| {
+                    p.previous
+                        .as_deref()
+                        .is_some_and(|prev| compat_key(prev) != compat_key(&p.version))
+                })
+                .map(|p| AgeVerdict::MajorJump {
+                    name: p.name.clone(),
+                    from: p.previous.clone().unwrap_or_default(),
+                    to: p.version.clone(),
+                })
+                .unwrap_or(AgeVerdict::Ready)
+        } else {
+            crate::release_age::verdict(s, reg, eco, &fresh, now, min_days)
+        };
+        pins.extend(fresh.into_iter().map(|p| (eco, p)));
+        verdicts.push(v);
+    }
+    // A human's call first, then the latest date, then ready.
+    let verdict = verdicts
+        .iter()
+        .find(|v| matches!(v, AgeVerdict::MajorJump { .. }))
+        .or_else(|| {
+            verdicts
+                .iter()
+                .find(|v| matches!(v, AgeVerdict::Unknown { .. }))
+        })
+        .or_else(|| {
+            verdicts
+                .iter()
+                .filter(|v| matches!(v, AgeVerdict::Wait { .. }))
+                .max_by(|a, b| wait_until(a).cmp(&wait_until(b)))
+        })
+        .cloned()
+        .unwrap_or(AgeVerdict::Ready);
+    let note = verdict.note(min_days);
+    ReleaseAgeCheck {
+        verdict,
+        min_days,
+        note,
+        pins,
+    }
+}
+
+fn wait_until(v: &crate::release_age::AgeVerdict) -> String {
+    match v {
+        crate::release_age::AgeVerdict::Wait { eligible_at, .. } => eligible_at.clone(),
+        _ => String::new(),
+    }
+}
+
+/// `land.release-age`: what the rule said about a dependency bump that goes
+/// on to land - the daemon's, found old enough, or a human's, whatever the
+/// verdict - with the versions adopted, so the owner can see what moved.
+fn record_release_age(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    lockfiles: &[String],
+    check: &ReleaseAgeCheck,
+) {
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.release-age",
+            branch,
+            serde_json::json!({
+                "slug": slug,
+                "job": job_id_of(job.clone()),
+                "lockfiles": lockfiles,
+                "verdict": check.kind(),
+                "min_days": check.min_days,
+                "note": check.note,
+                "pins": check.pins_json(s),
+            }),
+        );
+    }
+}
+
+/// A dependency bump whose newest version is still too young is the
+/// calendar's wait, not a human's: the branch is held (`land.held`, reason
+/// `release-age`) until the day the version is `min_release_age_days` old,
+/// when the daemon's pass takes it up again and the rule says ready. The
+/// human's `pulse land --branch` lands it before that.
+fn wait_for_release_age(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    lockfiles: &[String],
+    check: &ReleaseAgeCheck,
+) -> (String, String) {
+    let command = format!("pulse land --project {slug} --branch {branch}");
+    let until = wait_until(&check.verdict);
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.held",
+            branch,
+            serde_json::json!({
+                "slug": slug,
+                "job": job_id_of(job.clone()),
+                "reason": "release-age",
+                "lockfiles": lockfiles,
+                "note": check.note,
+                "until": until,
+                "pins": check.pins_json(s),
+            }),
+        );
+    }
+    set_held_branch_until(s, slug, branch, now, &until);
+    (
+        "held".to_string(),
+        format!(
+            "{branch} waits for a dependency to age: {}; the daemon lands it then, {command} lands it now",
+            check.note
+        ),
+    )
+}
+
+/// A branch that bumps a dependency changes a manifest with its lockfile. The
+/// owner's release-age rule decides it (`release_age_check`): every new
+/// version old enough and within its compatible range lands like any other
+/// branch, with the branch's lockfile kept for the check; a version still too
+/// young waits for its date (`wait_for_release_age`). What is left is a
+/// human's call - a jump past a compatible range, a lockfile no registry
+/// reads, a version no registry can date - and is held here (`land.held`,
+/// reason `lockfile`, `why` from the verdict) instead of being deferred every
+/// daemon loop; the human's `pulse land --branch` keeps the branch's lockfile
+/// for the check.
 pub(crate) fn hold_lockfile_branch(
     s: &pulse_store::Store,
     slug: &str,
@@ -624,6 +883,7 @@ pub(crate) fn hold_lockfile_branch(
     actor: &str,
     now: &str,
     lockfiles: &[String],
+    check: &ReleaseAgeCheck,
 ) -> (String, String) {
     let command = format!("pulse land --project {slug} --branch {branch}");
     if let Ok(conn) = s.conn() {
@@ -637,7 +897,10 @@ pub(crate) fn hold_lockfile_branch(
                 "slug": slug,
                 "job": job_id_of(job.clone()),
                 "reason": "lockfile",
+                "why": check.kind(),
+                "note": check.note,
                 "lockfiles": lockfiles,
+                "pins": check.pins_json(s),
             }),
         );
     }
@@ -645,8 +908,9 @@ pub(crate) fn hold_lockfile_branch(
     (
         "held".to_string(),
         format!(
-            "{branch} changes the lockfile ({}); Tier 2 per the recipe; it waits for a human: {command}",
+            "{branch} changes the lockfile ({}) and {}; Tier 2 per the recipe; it waits for a human: {command}",
             lockfiles.join(", "),
+            check.note,
         ),
     )
 }
@@ -658,6 +922,29 @@ pub(crate) fn land_branch(
     actor: String,
     now: String,
     o: LandOpts,
+) -> anyhow::Result<(String, String)> {
+    land_branch_with_registry(
+        s,
+        project,
+        branch,
+        actor,
+        now,
+        o,
+        &crate::release_age::HttpRegistry::default(),
+    )
+}
+
+/// `land_branch` with the registry that dates a dependency bump's new
+/// versions (`release_age_check`) chosen by the caller: the public registries
+/// for the daemon and `pulse land`, a map for tests.
+pub(crate) fn land_branch_with_registry(
+    s: &pulse_store::Store,
+    project: crate::util::Row,
+    branch: String,
+    actor: String,
+    now: String,
+    o: LandOpts,
+    reg: &dyn crate::release_age::Registry,
 ) -> anyhow::Result<(String, String)> {
     let root = project.str("path");
     let def = {
@@ -804,16 +1091,36 @@ pub(crate) fn land_branch(
             ));
         }
     }
-    // A branch that bumps a dependency changes a manifest while its lockfile
-    // is guarded: main's lockfile is restored into the merged worktree and
-    // setup can never pass, so hold it for a human instead of deferring it
-    // once per daemon loop.
+    // A branch that bumps a dependency changes a manifest with its lockfile. The
+    // owner's release-age rule (`dependencies.min_release_age_days`) decides it
+    // before any worktree is spent: new versions old enough land like any other
+    // branch, the branch's lockfile kept for the check (main's over the branch's
+    // manifest could never set up); a version still too young waits for its
+    // date; a jump past a compatible range or a lockfile nobody can read waits
+    // for a human. A human landing the branch by hand has accepted its
+    // dependencies: the rule is only recorded for it. A sync landing is the
+    // owner's published truth and is not asked.
     let lockfiles = branch_lockfiles(&files);
-    if !o.sync && !o.by_hand && !lockfiles.is_empty() {
-        return Ok(hold_lockfile_branch(
-            s, &slug, &branch, &job, &actor, &now, &lockfiles,
-        ));
+    let mut age_check: Option<ReleaseAgeCheck> = None;
+    if !o.sync && !lockfiles.is_empty() {
+        let check = release_age_check(s, reg, &root, &def, &branch, &lockfiles, &now);
+        if o.by_hand || check.ready() {
+            record_release_age(s, &slug, &branch, &job, &actor, &now, &lockfiles, &check);
+        } else if matches!(check.verdict, crate::release_age::AgeVerdict::Wait { .. }) {
+            return Ok(wait_for_release_age(
+                s, &slug, &branch, &job, &actor, &now, &lockfiles, &check,
+            ));
+        } else {
+            return Ok(hold_lockfile_branch(
+                s, &slug, &branch, &job, &actor, &now, &lockfiles, &check,
+            ));
+        }
+        age_check = Some(check);
     }
+    // The branch's lockfiles and manifests stay for the check when the human
+    // landing it by hand accepted them or the rule found them old enough.
+    let keep_lockfiles =
+        !lockfiles.is_empty() && (o.by_hand || age_check.as_ref().is_some_and(|c| c.ready()));
     let (on_default, clean) = checkout_state_pair(&root, &def);
     // A checkout parked on another branch is the human's; the landing then moves
     // `refs/heads/{def}` itself once the merge is verified and never touches the working
@@ -1049,10 +1356,10 @@ pub(crate) fn land_branch(
         } else {
             let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
             let mut guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
-            // The human landing a lockfile branch by hand (the hold's own command) has
-            // accepted its dependencies: the branch's lockfiles and manifests stay for
-            // the check, since main's lockfile over the branch's manifest can never set up.
-            if o.by_hand && !lockfiles.is_empty() {
+            // A lockfile branch's lockfiles and manifests stay for the check once the
+            // human landing it by hand or the release-age rule accepted its
+            // dependencies: main's lockfile over the branch's manifest can never set up.
+            if keep_lockfiles {
                 guarded.retain(|f| !lockfiles.contains(f) && !manifest_path(f));
             }
             if !guarded.is_empty() {
@@ -1710,9 +2017,33 @@ pub(crate) fn land_pending(
     limit: i32,
     force: bool,
 ) -> Vec<LandResult> {
+    land_pending_with_registry(
+        s,
+        project,
+        actor,
+        now,
+        verify,
+        limit,
+        force,
+        &crate::release_age::HttpRegistry::default(),
+    )
+}
+
+/// `land_pending` with the registry a dependency bump is checked against
+/// (`land_branch_with_registry`) chosen by the caller.
+pub(crate) fn land_pending_with_registry(
+    s: &pulse_store::Store,
+    project: impl IntoLandProject,
+    actor: impl Into<String>,
+    now: impl Into<String>,
+    verify: bool,
+    limit: i32,
+    force: bool,
+    reg: &dyn crate::release_age::Registry,
+) -> Vec<LandResult> {
     let ctx = pulse_bus::CancellationToken::new();
     let project = project.into_land_project(s);
-    land_pending_context(
+    land_pending_pass_with_registry(
         &ctx,
         s,
         project,
@@ -1721,6 +2052,8 @@ pub(crate) fn land_pending(
         verify,
         limit,
         force,
+        true,
+        reg,
     )
 }
 
@@ -1751,6 +2084,32 @@ pub(crate) fn land_pending_pass(
     limit: i32,
     force: bool,
     experiments: bool,
+) -> Vec<LandResult> {
+    land_pending_pass_with_registry(
+        ctx,
+        s,
+        project,
+        actor,
+        now,
+        verify,
+        limit,
+        force,
+        experiments,
+        &crate::release_age::HttpRegistry::default(),
+    )
+}
+
+pub(crate) fn land_pending_pass_with_registry(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    project: crate::util::Row,
+    actor: String,
+    now: String,
+    verify: bool,
+    limit: i32,
+    force: bool,
+    experiments: bool,
+    reg: &dyn crate::release_age::Registry,
 ) -> Vec<LandResult> {
     if !force && s.setting("landing", "") != "agents" {
         return Vec::new();
@@ -1785,7 +2144,7 @@ pub(crate) fn land_pending_pass(
         if !force && held_branch_waits(s, &project.str("slug"), &job.str("branch"), &now) {
             continue;
         }
-        let lr = land_job_context(ctx, s, &project, &job, &actor, &now, verify);
+        let lr = land_job_context_with_registry(ctx, s, &project, &job, &actor, &now, verify, reg);
         let held = crate::landing_hold::landing_held(lr.state.clone());
         out.push(lr);
         if held {
@@ -1807,6 +2166,28 @@ pub(crate) fn land_job_context(
     now: &str,
     verify: bool,
 ) -> LandResult {
+    land_job_context_with_registry(
+        ctx,
+        s,
+        project,
+        job,
+        actor,
+        now,
+        verify,
+        &crate::release_age::HttpRegistry::default(),
+    )
+}
+
+pub(crate) fn land_job_context_with_registry(
+    ctx: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    project: &crate::util::Row,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    verify: bool,
+    reg: &dyn crate::release_age::Registry,
+) -> LandResult {
     let (state, note) = if job.str("kind") == "experiment" {
         crate::experiment::land_experiment_context(
             ctx,
@@ -1818,7 +2199,7 @@ pub(crate) fn land_job_context(
             verify,
         )
     } else {
-        match land_branch(
+        match land_branch_with_registry(
             s,
             project.clone(),
             job.str("branch"),
@@ -1830,6 +2211,7 @@ pub(crate) fn land_job_context(
                 ctx: Some(ctx.clone()),
                 ..Default::default()
             },
+            reg,
         ) {
             Ok(v) => v,
             Err(e) => ("error".into(), crate::run::err_message(&e)),
@@ -2204,10 +2586,13 @@ fn held_branch_key(slug: &str, branch: &str) -> String {
     format!("{LAND_HELD_META_PREFIX}{slug}:{branch}")
 }
 
-/// Whether the daemon held `branch` for a human within the last
-/// `HELD_RECHECK_MINUTES`. Its passes skip such a branch until then: each look
-/// was the same half-dozen git commands and the same log line, fifteen seconds
-/// apart, for as long as the human took. `pulse land` by hand never asks.
+/// Whether the daemon holds `branch` until a time still ahead: for a human's
+/// call (`hold_recipe_branch`, `hold_lockfile_branch`) the last look plus
+/// `HELD_RECHECK_MINUTES`, for a dependency still too young
+/// (`wait_for_release_age`) the day it is old enough. The daemon's passes
+/// skip such a branch until then: each look was the same half-dozen git
+/// commands and the same log line, fifteen seconds apart, for as long as the
+/// human took. `pulse land` by hand never asks.
 pub(crate) fn held_branch_waits(
     s: &pulse_store::Store,
     slug: &str,
@@ -2225,13 +2610,30 @@ pub(crate) fn held_branch_waits(
 }
 
 pub(crate) fn set_held_branch(s: &pulse_store::Store, slug: &str, branch: &str, now: &str) {
+    set_held_branch_until(
+        s,
+        slug,
+        branch,
+        now,
+        &crate::util::plus_minutes(now, HELD_RECHECK_MINUTES as f64),
+    );
+}
+
+/// Holds `branch` for the daemon's passes until `until` (`held_branch_waits`).
+pub(crate) fn set_held_branch_until(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    now: &str,
+    until: &str,
+) {
     if let Ok(conn) = s.conn() {
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             rusqlite::params![
                 held_branch_key(slug, branch),
                 serde_json::json!({
-                    "until": crate::util::plus_minutes(now, HELD_RECHECK_MINUTES as f64),
+                    "until": until,
                     "held_at": now,
                 })
                 .to_string()
@@ -2752,6 +3154,9 @@ mod tests {
         );
     }
 
+    /// A dependency bump the release-age rule cannot judge - here a
+    /// `pnpm-lock.yaml`, whose pins no registry lookup reads - waits for a
+    /// human as every lockfile branch once did.
     #[test]
     fn lockfile_branch_waits_for_a_human() {
         let _serial = crate::test_helpers::serial();
@@ -2801,7 +3206,24 @@ mod tests {
             "{}",
             first[0].note
         );
+        assert!(
+            first[0].note.contains(
+                "pnpm-lock.yaml on pulse/aurora/bump-next is not a lockfile this landing reads"
+            ),
+            "{}",
+            first[0].note
+        );
         assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        let held = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.held'",
+            &[],
+        );
+        assert_eq!(held.len(), 1, "{held:?}");
+        let detail: serde_json::Value = serde_json::from_str(&held[0].str("detail")).unwrap();
+        assert_eq!(detail["reason"], "lockfile");
+        assert_eq!(detail["why"], "unknown");
+        assert_eq!(detail["lockfiles"], serde_json::json!(["pnpm-lock.yaml"]));
         // The daemon's next passes skip it until the recheck comes round.
         let soon = crate::util::plus_minutes(TEST_NOW, 15);
         let quiet = super::land_pending(&s, project.clone(), "daemon", &soon, false, 0, false);
@@ -2838,6 +3260,7 @@ mod tests {
         run(&root, &["git", "switch", "-q", "-c", branch]);
         let pkg = std::path::Path::new(&root).join("package.json");
         std::fs::write(&pkg, "{\"dependencies\":{\"next\":\"16.4.3\"}}\n").unwrap();
+        // No `packages` map: a lockfile the rule cannot read, so the daemon holds it.
         let lock = std::path::Path::new(&root).join("package-lock.json");
         std::fs::write(&lock, "{\"lockfileVersion\":3}\n").unwrap();
         run(&root, &["git", "add", "package.json", "package-lock.json"]);
@@ -2875,6 +3298,505 @@ mod tests {
         assert_eq!(state, "landed", "{note}");
         let landed = run(&root, &["git", "show", "main:package-lock.json"]);
         assert!(landed.contains("lockfileVersion"), "{landed}");
+        // The human's landing still records what the rule said.
+        let recorded = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.release-age'",
+            &[],
+        );
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        let detail: serde_json::Value = serde_json::from_str(&recorded[0].str("detail")).unwrap();
+        assert_eq!(detail["verdict"], "unknown");
+        assert_eq!(
+            detail["lockfiles"],
+            serde_json::json!(["package-lock.json"])
+        );
+    }
+
+    /// A `package-lock.json` (v3) that pins `next` at `version`.
+    fn npm_lock(version: &str) -> String {
+        format!(
+            "{{\"name\":\"x\",\"lockfileVersion\":3,\"packages\":{{\"\":{{\"name\":\"x\",\"version\":\"1.0.0\"}},\"node_modules/next\":{{\"version\":\"{version}\"}}}}}}\n"
+        )
+    }
+
+    /// npm as the release-age tests see it from TEST_NOW (2026-09-06): 16.4.1
+    /// is seventeen days old, 16.4.2 one day, 17.0.0 another major.
+    fn next_registry() -> crate::release_age::MapRegistry {
+        crate::release_age::MapRegistry::default().with(
+            crate::release_age::Ecosystem::Npm,
+            "next",
+            &[
+                ("16.3.8", "2026-08-01T10:00:00Z"),
+                ("16.4.1", "2026-08-20T10:00:00Z"),
+                ("16.4.2", "2026-09-05T10:00:00Z"),
+                ("17.0.0", "2026-08-15T10:00:00Z"),
+            ],
+        )
+    }
+
+    /// main pins next 16.3.8 in `package.json` and `package-lock.json`, with a
+    /// recipe whose setup is empty so the landing's worktree needs no `npm ci`;
+    /// `branch` moves the manifest to `version` and writes `lock_text` to
+    /// `lockfile`, and a done job of aurora's waits to land it. The project's
+    /// check asserts the branch's files are the ones checked.
+    fn bump_next_fixture(
+        s: &pulse_store::Store,
+        project: &mut crate::util::Row,
+        root: &str,
+        branch: &str,
+        version: &str,
+        lockfile: &str,
+        lock_text: &str,
+    ) -> crate::util::Row {
+        let verify_cmd =
+            format!("sh -c 'grep -q {version} package.json && grep -q {version} {lockfile}'");
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        let dir = std::path::Path::new(root);
+        let recipe = dir.join(crate::recipe::RECIPE_PATH);
+        std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+        std::fs::write(&recipe, "---\nrecipe: 1\nsetup: []\n---\n").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            "{\"dependencies\":{\"next\":\"16.3.8\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("package-lock.json"), npm_lock("16.3.8")).unwrap();
+        run(root, &["git", "add", "-A"]);
+        run(root, &["git", "commit", "-q", "-m", "pin next 16.3.8"]);
+        run(root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(
+            dir.join("package.json"),
+            format!("{{\"dependencies\":{{\"next\":\"{version}\"}}}}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(lockfile), lock_text).unwrap();
+        run(root, &["git", "add", "-A"]);
+        run(root, &["git", "commit", "-q", "-m", "bump next"]);
+        run(root, &["git", "switch", "-q", "main"]);
+        join(s, "aurora");
+        set_setting(s, "landing", "agents");
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            "bump next".into(),
+            "b".into(),
+            1,
+            30,
+            String::new(),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        exec1(
+            s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &job.str("id")],
+        );
+        job
+    }
+
+    fn event_details(s: &pulse_store::Store, action: &str) -> Vec<serde_json::Value> {
+        must_rows(
+            s,
+            "SELECT detail FROM events WHERE action = ? ORDER BY seq",
+            &[&action],
+        )
+        .iter()
+        .map(|r| serde_json::from_str(&r.str("detail")).unwrap())
+        .collect()
+    }
+
+    /// The daemon lands a dependency bump whose every new version is at least
+    /// `dependencies.min_release_age_days` old, the branch's lockfile and
+    /// manifest in place for the check, and records what it adopted.
+    #[test]
+    fn lockfile_branch_lands_when_every_new_version_is_old_enough() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-aged";
+        let job = bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "16.4.1",
+            "package-lock.json",
+            &npm_lock("16.4.1"),
+        );
+        let slug = project.str("slug");
+        let reg = next_registry();
+
+        let got = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].state, "landed", "{}", got[0].note);
+        assert!(!super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        assert_eq!(job_row(&s, &job.str("id")).str("status"), "done");
+        let landed = run(&root, &["git", "show", "main:package-lock.json"]);
+        assert!(landed.contains("16.4.1"), "{landed}");
+        assert!(
+            run(&root, &["git", "show", "main:package.json"]).contains("16.4.1"),
+            "main's manifest is the branch's"
+        );
+        assert!(event_details(&s, "land.held").is_empty());
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        let d = &recorded[0];
+        assert_eq!(d["slug"], "proj");
+        assert_eq!(d["job"], job.str("id"));
+        assert_eq!(d["verdict"], "ready");
+        assert_eq!(d["lockfiles"], serde_json::json!(["package-lock.json"]));
+        assert_eq!(d["pins"].as_array().map(Vec::len), Some(1), "{d}");
+        assert_eq!(d["pins"][0]["name"], "next");
+        assert_eq!(d["pins"][0]["version"], "16.4.1");
+        assert_eq!(d["pins"][0]["previous"], "16.3.8");
+        assert_eq!(d["pins"][0]["published_at"], "2026-08-20T10:00:00Z");
+    }
+
+    /// A version younger than the rule allows waits for its date, not for a
+    /// human: the daemon's passes skip the branch until then and land it after.
+    #[test]
+    fn lockfile_branch_waits_until_the_version_is_old_enough() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-young";
+        // 16.4.2 came out a day before TEST_NOW; with three days it is eligible on the 8th.
+        bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "16.4.2",
+            "package-lock.json",
+            &npm_lock("16.4.2"),
+        );
+        let slug = project.str("slug");
+        let reg = next_registry();
+        let eligible_at = "2026-09-08T10:00:00Z";
+
+        let first = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].state, "held", "{}", first[0].note);
+        assert!(
+            first[0]
+                .note
+                .contains(&format!("can land from {eligible_at}")),
+            "{}",
+            first[0].note
+        );
+        assert!(
+            first[0].note.contains("next 16.4.2 was published"),
+            "{}",
+            first[0].note
+        );
+        let held = event_details(&s, "land.held");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0]["reason"], "release-age");
+        assert_eq!(held[0]["until"], eligible_at);
+        assert_eq!(held[0]["pins"][0]["version"], "16.4.2");
+        assert!(event_details(&s, "land.release-age").is_empty());
+        // Nothing merged; the branch is the daemon's to retry, no human asked.
+        assert!(!run(&root, &["git", "show", "main:package.json"]).contains("16.4.2"));
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question' AND area = 'runner' AND thread = 'environment'",
+                &[],
+            ),
+            0,
+            "no owner question for a dependency that only has to age"
+        );
+
+        // Until the date the passes skip it, well past the usual recheck.
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        let hour_before = crate::util::plus_hours(eligible_at, -1.0);
+        assert!(super::held_branch_waits(&s, &slug, branch, &hour_before));
+        assert_eq!(
+            crate::landing_workers::ready_landings(&s, &slug, &hour_before),
+            0
+        );
+        let quiet = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            &hour_before,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert!(quiet.is_empty(), "{quiet:?}");
+
+        // From the date on the rule says ready and the branch lands.
+        let after = crate::util::plus_minutes(eligible_at, 1);
+        assert!(!super::held_branch_waits(&s, &slug, branch, &after));
+        assert_eq!(crate::landing_workers::ready_landings(&s, &slug, &after), 1);
+        let landed = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            &after,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(landed.len(), 1, "{landed:?}");
+        assert_eq!(landed[0].state, "landed", "{}", landed[0].note);
+        assert!(run(&root, &["git", "show", "main:package-lock.json"]).contains("16.4.2"));
+        assert!(!super::held_branch_waits(&s, &slug, branch, &after));
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["verdict"], "ready");
+    }
+
+    /// A dependency that moves past its compatible range is a human's call,
+    /// however old the version; the human's `pulse land --branch` lands it.
+    #[test]
+    fn lockfile_branch_with_a_major_jump_waits_for_a_human() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-major";
+        bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "17.0.0",
+            "package-lock.json",
+            &npm_lock("17.0.0"),
+        );
+        let slug = project.str("slug");
+        let reg = next_registry();
+
+        let first = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].state, "held", "{}", first[0].note);
+        assert!(
+            first[0]
+                .note
+                .contains("changes the lockfile (package-lock.json)"),
+            "{}",
+            first[0].note
+        );
+        assert!(
+            first[0]
+                .note
+                .contains("next moves from 16.3.8 to 17.0.0, past its compatible range"),
+            "{}",
+            first[0].note
+        );
+        assert!(
+            first[0]
+                .note
+                .contains(&format!("pulse land --project {slug} --branch {branch}")),
+            "{}",
+            first[0].note
+        );
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        let held = event_details(&s, "land.held");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0]["reason"], "lockfile");
+        assert_eq!(held[0]["why"], "major");
+        assert_eq!(held[0]["pins"][0]["previous"], "16.3.8");
+        assert!(event_details(&s, "land.release-age").is_empty());
+
+        let (state, note) = super::land_branch_with_registry(
+            &s,
+            project.clone(),
+            branch.into(),
+            crate::util::HUMAN_AGENT.into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                by_hand: true,
+                ..Default::default()
+            },
+            &reg,
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        assert!(run(&root, &["git", "show", "main:package-lock.json"]).contains("17.0.0"));
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["verdict"], "major");
+    }
+
+    /// A lockfile the rule cannot read, and a registry that cannot date a
+    /// version, both leave the branch to a human: the safe default.
+    #[test]
+    fn lockfile_branch_with_an_unknown_lockfile_waits_for_a_human() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-pnpm";
+        // The branch moves the project to pnpm: its lockfile is one no registry lookup reads.
+        bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "16.4.1",
+            "pnpm-lock.yaml",
+            "lockfileVersion: 9.0\npackages:\n  next@16.4.1: {}\n",
+        );
+        let slug = project.str("slug");
+        let reg = next_registry();
+
+        let first = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!(first[0].state, "held", "{}", first[0].note);
+        assert!(
+            first[0]
+                .note
+                .contains("changes the lockfile (pnpm-lock.yaml)"),
+            "{}",
+            first[0].note
+        );
+        assert!(
+            first[0].note.contains(
+                "pnpm-lock.yaml on pulse/aurora/bump-next-pnpm is not a lockfile this landing reads"
+            ),
+            "{}",
+            first[0].note
+        );
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        let held = event_details(&s, "land.held");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0]["reason"], "lockfile");
+        assert_eq!(held[0]["why"], "unknown");
+
+        // A registry that does not know the package holds a readable lockfile the same way.
+        let other = "pulse/aurora/bump-next-unlisted";
+        run(&root, &["git", "switch", "-q", "-c", other]);
+        std::fs::write(
+            std::path::Path::new(&root).join("package.json"),
+            "{\"dependencies\":{\"next\":\"16.4.1\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(&root).join("package-lock.json"),
+            npm_lock("16.4.1"),
+        )
+        .unwrap();
+        run(&root, &["git", "add", "-A"]);
+        run(&root, &["git", "commit", "-q", "-m", "bump next again"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        let empty = crate::release_age::MapRegistry::default();
+        let (state, note) = super::land_branch_with_registry(
+            &s,
+            project.clone(),
+            other.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(state, "held", "{note}");
+        assert!(
+            note.contains("the publish date of next 16.4.1 is unknown: next is not on npm"),
+            "{note}"
+        );
+        let held = event_details(&s, "land.held");
+        assert_eq!(held.len(), 2, "{held:?}");
+        assert_eq!(held[1]["why"], "unknown");
+        assert_eq!(held[1]["pins"][0]["version"], "16.4.1");
+        assert!(held[1]["pins"][0].get("published_at").is_none());
+        assert!(!run(&root, &["git", "show", "main:package.json"]).contains("16.4.1"));
+    }
+
+    /// `dependencies.min_release_age_days` 0 turns the rule off: a version
+    /// published yesterday lands, and no registry is asked.
+    #[test]
+    fn release_age_rule_off_lands_a_young_version() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-rule-off";
+        bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "16.4.2",
+            "package-lock.json",
+            &npm_lock("16.4.2"),
+        );
+        set_setting(&s, crate::release_age::MIN_RELEASE_AGE_DAYS, "0");
+        let empty = crate::release_age::MapRegistry::default();
+
+        let got = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &empty,
+        );
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].state, "landed", "{}", got[0].note);
+        assert!(run(&root, &["git", "show", "main:package-lock.json"]).contains("16.4.2"));
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["verdict"], "ready");
+        assert_eq!(recorded[0]["min_days"], 0);
+        assert_eq!(recorded[0]["pins"][0]["version"], "16.4.2");
     }
 
     #[test]
