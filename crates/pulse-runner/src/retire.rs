@@ -1355,12 +1355,18 @@ mod tests {
         let got = pulse_tasks::get_compute(&later, &req.id).unwrap_or_default();
         assert_eq!(got.status, "approved", "held request: {got:?}");
         // With a source the same request goes on to provisioning (az answers, so it fails there - not a hold).
+        // The hands binary is faked: the real default cross-builds pulse from the checkout on any
+        // machine with the musl target installed, minutes of release build inside a unit test.
         write_executor_token(&later);
+        let old_hands = crate::pair::set_hands_binary(Box::new(|_| {
+            Ok((b"fake pulse".to_vec(), "fixture".to_string()))
+        }));
         let _az_2 = install_run_az(|_, _, _| Ok((1, String::new(), "no subscription".into())));
         w2.tick(&cancel, &crate::util::plus_hours(&next_day, 2.0));
         w2.wait(std::time::Duration::ZERO);
+        let _ = crate::pair::set_hands_binary(old_hands);
         let got = pulse_tasks::get_compute(&later, &req.id).unwrap_or_default();
-        assert_ne!(got.status, "approved", "still held with a source: {got:?}");
+        assert_eq!(got.status, "failed", "provisioning reached az: {got:?}");
         later.close().unwrap();
     }
 
