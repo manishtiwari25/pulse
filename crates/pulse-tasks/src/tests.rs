@@ -524,6 +524,138 @@ fn work_for_summarizes_task_jobs() {
 }
 
 #[test]
+fn lead_work_for_tells_the_owner_where_the_lead_is() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let insert = |id: &str,
+                  source: &str,
+                  status: &str,
+                  agent: &str,
+                  lease_until: &str,
+                  created: &str,
+                  finished: &str| {
+        s.conn().unwrap().execute("INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, lease_until, created_at, finished_at) VALUES (?, 'demo', 'lead', ?, ?, ?, ?, ?, ?, ?)", params![id, format!("Lead: {id}"), source, status, agent, lease_until, created, finished]).unwrap();
+    };
+    let lease = |id: &str, agent: &str, at: &str| {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO events(at, actor, action, subject, detail) VALUES (?, ?, 'job.lease', ?, '{}')",
+                params![at, agent, id],
+            )
+            .unwrap();
+    };
+    // Nothing of the lead's yet: idle, never sat down.
+    assert_eq!(
+        lead_work_for(&s, "demo").unwrap(),
+        LeadWork {
+            state: "idle".into(),
+            ..LeadWork::default()
+        }
+    );
+    // A role lead's sitting is not the owner's.
+    insert(
+        "JOB-role",
+        "lead-role:demo:ops:20260906T200000Z",
+        "leased",
+        "demo-ops",
+        "2026-09-06T23:00:00Z",
+        "2026-09-06T20:00:00Z",
+        "",
+    );
+    lease("JOB-role", "demo-ops", "2026-09-06T20:00:30Z");
+    assert_eq!(lead_work_for(&s, "demo").unwrap().state, "idle");
+    // The lead's earlier sitting finished: it read the chat when it began.
+    insert(
+        "JOB-earlier",
+        "lead:demo:20260906T190000Z",
+        "done",
+        "",
+        "",
+        "2026-09-06T19:00:00Z",
+        "2026-09-06T19:20:00Z",
+    );
+    lease("JOB-earlier", "demo-lead", "2026-09-06T19:05:00Z");
+    let idle = lead_work_for(&s, "demo").unwrap();
+    assert_eq!(
+        (
+            idle.state.as_str(),
+            idle.read_at.as_str(),
+            idle.job.as_str()
+        ),
+        ("idle", "2026-09-06T19:05:00Z", "")
+    );
+    // The owner wrote: the lead's answer waits for a slot.
+    insert(
+        "JOB-next",
+        "lead:demo:20260906T210000Z",
+        "queued",
+        "",
+        "",
+        "2026-09-06T21:00:00Z",
+        "",
+    );
+    let queued = lead_work_for(&s, "demo").unwrap();
+    assert_eq!(
+        queued,
+        LeadWork {
+            state: "queued".into(),
+            job: "JOB-next".into(),
+            title: "Lead: JOB-next".into(),
+            agent: String::new(),
+            since: "2026-09-06T21:00:00Z".into(),
+            read_at: "2026-09-06T19:05:00Z".into(),
+        }
+    );
+    // Leased and running: reading since the run began.
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET status = 'leased', lease_agent = 'demo-lead', lease_until = '2026-09-06T23:00:00Z' WHERE id = 'JOB-next'",
+            [],
+        )
+        .unwrap();
+    lease("JOB-next", "demo-lead", "2026-09-06T21:01:00Z");
+    let leased = lead_work_for(&s, "demo").unwrap();
+    assert_eq!(
+        (
+            leased.state.as_str(),
+            leased.agent.as_str(),
+            leased.since.as_str()
+        ),
+        ("running", "demo-lead", "2026-09-06T21:01:00Z")
+    );
+    s.conn().unwrap().execute("INSERT INTO runs (id, job_id, agent, project, started_at, status, mode, executor) VALUES ('RUN-lead', 'JOB-next', 'demo-lead', 'demo', '2026-09-06T21:01:30Z', 'running', 'real', 'local')", []).unwrap();
+    assert_eq!(
+        lead_work_for(&s, "demo").unwrap().since,
+        "2026-09-06T21:01:30Z"
+    );
+    // An expired lease is no sitting: the job waits again.
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET lease_until = '2026-09-06T20:00:00Z' WHERE id = 'JOB-next'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(lead_work_for(&s, "demo").unwrap().state, "queued");
+    // Finished: idle again, and the chat was read when this sitting began.
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET status = 'done', finished_at = '2026-09-06T21:10:00Z' WHERE id = 'JOB-next'",
+            [],
+        )
+        .unwrap();
+    let after = lead_work_for(&s, "demo").unwrap();
+    assert_eq!(
+        (after.state.as_str(), after.read_at.as_str()),
+        ("idle", "2026-09-06T21:01:00Z")
+    );
+    assert_eq!(lead_work_for(&s, "other").unwrap().state, "idle");
+}
+
+#[test]
 fn messages_since_unread_and_immutable() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();

@@ -195,7 +195,11 @@ activity fold under **Details for this machine**.
   on you: a task the lead parked comes back to it on a doubling schedule (15
   min for urgent, then 30, 60, ...) until the blocker is gone, a failed job
   goes back to the lead to re-plan, and a task whose jobs are done and landed
-  closes itself. `review` means the lead could not finish without you - the
+  comes back to you once with the question that matters - *the work landed.
+  Have a look - is it what you wanted?* with what landed under it and the
+  choices *Yes, close it*, *Not what I meant* and *Change what I asked* -
+  while a task an agent opened for itself closes on its own (`done: 2 job(s)
+  landed`). `review` means the lead could not finish without you - the
   conversation says why - and the lead's brief tells it that your answer,
   however short (`use your judgement`, `do not ask me`), is final: it decides,
   writes the decision in one message and plans; a task that mixes a reserved
@@ -213,11 +217,23 @@ activity fold under **Details for this machine**.
   (up to six; `=done` closes the task with that label as your words, `=amend`
   opens the brief, plain labels reply). The daemon writes the stop to the
   chat itself - `I stopped TASK-012 (...): three jobs failed ...` - and the
-  close too (`every step landed, so I closed it`), so nothing shows *waits
-  for your decision* unless a message of yours would change what happens
-  next: a review whose jobs are still running or waiting to land goes back
-  to in progress on the next tick, and one you have answered stays with the
-  lead until it replies.
+  landing too, so nothing shows *waits for your decision* unless a message
+  of yours would change what happens next: a review whose jobs are still
+  running or waiting to land goes back to in progress on the next tick, and
+  one you have answered stays with the lead until it replies - *Not what I
+  meant* tells the lead to ask in one message what fell short, or to plan
+  the fix when your words already say. The daemon asks once per landing;
+  a second landing on the same task asks again, a reply of yours does not.
+  Under your latest message in a task's chat one line says where it stands,
+  so you never type into silence: *Sent* when nobody has it, *Sent · ember
+  reads it next* while the lead's sitting waits for a slot (or is busy in
+  another one), the typing dots with *ember is reading it…* while its
+  sitting runs, *Seen by ember* once a sitting that had it in its brief
+  finished, and after two minutes with no pick-up *Sent · nobody has picked
+  it up yet* in amber - the daemon's own doing, not the lead's: the project's
+  lead sitting (`lead_work` on `GET /api/v1/tasks/<id>` and `GET
+  /api/v1/messages?project=`) and the message's read marks are what it reads.
+  An answer under your message replaces the line.
 - **Suggested work** - the agents propose the next task; another agent
   judges it before it reaches you. The Work tab's **Suggested next** panel
   lists each suggestion with who made it and where its review stands; a
@@ -3130,7 +3146,16 @@ answers, `task:` jobs - while the load stays under twice `daemon.max_load`
 and the run cap has room; the idle line adds `one express slot stays open for
 the owner's work`. The fleet's own builds and landings are what push the
 load over the line, and without the lane they held the owner's tasks behind
-themselves.
+themselves. The cap itself is the other way they did it: with
+`daemon.max_jobs 2` and both slots on fleet verifies, the lead sitting your
+*Try again another way* queued waited forty minutes for a slot. So when every
+slot under the cap is busy with the fleet's work, none of it is the owner's,
+no slot is reserved for a restart and the machine is not hard-pressed (memory,
+the floor, twice the load line), the daemon lends one slot over the cap to the
+owner's work alone - one at a time, never while an owner run is already in
+flight, and only when `workers` leaves a hand to lend - with the line `every
+slot under daemon.max_jobs is busy with the fleet's work; one express slot
+stays open for the owner's work`.
 Remote hands carry their own load and are not capped by this machine's
 governor. Every run the daemon starts here - the worker, its `npm ci`, its
 test suite, the clone's removal - runs at nice 10, so the owner's own work and

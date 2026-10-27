@@ -48,7 +48,8 @@ export const TOUCHES: [RegExp, PathMatch][] = [
   // The Transcript panel consumes harness.step from the live buffer and fetches ?after=N itself; the sessions list polls.
   [/^harness\.step$/, never],
   [/^harness\./, starts("harness/sessions", "roster")],
-  [/^(job|run)\.|^decide\.job$/, any(starts("runner", "jobs/failed", "roster", "tasks", "code-deliveries", "org"), registry, projectView("overview", "evolution"))],
+  // messages: the task chat's "reads it next / reading / seen" line follows the lead's job.
+  [/^(job|run)\.|^decide\.job$/, any(starts("runner", "jobs/failed", "roster", "tasks", "messages", "code-deliveries", "org"), registry, projectView("overview", "evolution"))],
   [/^task\./, starts("tasks", "messages", "code-deliveries", "roster")],
   [/^(message|msg)\.|^mention$/, starts("messages", "tasks")],
   [/^post(\.|$)|^question\./, BOARD],

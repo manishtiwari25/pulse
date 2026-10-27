@@ -1,5 +1,6 @@
 use crate::tasks::Task;
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -248,4 +249,98 @@ fn work_key(project: &str, value: &str) -> String {
 
 fn work_placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
+}
+
+/// The lead's sitting for the owner, as the task chat shows it under the
+/// owner's latest message: `queued` (the lead's job waits for a slot),
+/// `running` (the lead is reading, `since` the run began) or `idle`
+/// (nothing of the lead's in flight). `read_at` is when the lead last sat
+/// down - the start of its latest finished sitting - so a message older
+/// than it was in that sitting's brief: seen, whether or not it drew a
+/// reply. A role lead's sittings (`lead-role:` sources) are not the owner's
+/// and do not count.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct LeadWork {
+    pub state: String,
+    pub job: String,
+    pub title: String,
+    pub agent: String,
+    pub since: String,
+    pub read_at: String,
+}
+
+pub const LEAD_IDLE: &str = "idle";
+pub const LEAD_QUEUED: &str = "queued";
+pub const LEAD_RUNNING: &str = "running";
+
+const LEAD_SITTING_SQL: &str = "kind = 'lead' AND source NOT LIKE 'lead-role:%'";
+
+pub fn lead_work_for(s: &pulse_store::Store, project: &str) -> Result<LeadWork> {
+    let conn = s.conn()?;
+    let mut out = LeadWork {
+        state: LEAD_IDLE.to_string(),
+        ..LeadWork::default()
+    };
+    let now = s.now();
+    let open = conn
+        .query_row(
+            &format!(
+                "SELECT id, title, status, lease_agent, lease_until, created_at,\n\t\tCOALESCE((SELECT MAX(at) FROM events WHERE action = 'job.lease' AND subject = jobs.id AND actor = jobs.lease_agent), created_at)\n\t\tFROM jobs WHERE project = ? AND {LEAD_SITTING_SQL} AND status IN ('queued', 'leased')\n\t\tORDER BY CASE status WHEN 'leased' THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 1"
+            ),
+            [project],
+            |r| {
+                Ok((
+                    WorkJob {
+                        id: r.get(0)?,
+                        project: project.to_string(),
+                        kind: "lead".to_string(),
+                        title: r.get(1)?,
+                        status: r.get(2)?,
+                        source: String::new(),
+                        agent: r.get(3)?,
+                        lease_until: r.get(4)?,
+                        since: r.get(6)?,
+                    },
+                    r.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((j, created_at)) = open {
+        out.job = j.id.clone();
+        out.title = j.title.clone();
+        if work_is_active(&j, &now) {
+            out.state = LEAD_RUNNING.to_string();
+            out.agent = j.agent.clone();
+            out.since = j.since.clone();
+            let mut ids = BTreeSet::new();
+            ids.insert(j.id.clone());
+            if let Some(run) = work_running_runs(s, &ids)?.get(&j.id) {
+                out.since = run.started_at.clone();
+            }
+        } else {
+            out.state = LEAD_QUEUED.to_string();
+            out.since = created_at;
+        }
+    }
+    let last: Option<String> = conn
+        .query_row(
+            &format!(
+                "SELECT id FROM jobs WHERE project = ? AND {LEAD_SITTING_SQL} AND status IN ('done', 'failed')\n\t\tORDER BY finished_at DESC, id DESC LIMIT 1"
+            ),
+            [project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = last {
+        out.read_at = conn
+            .query_row(
+                "SELECT COALESCE((SELECT MAX(at) FROM events WHERE action = 'job.lease' AND subject = ?), '')",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+    }
+    Ok(out)
 }

@@ -37,8 +37,9 @@ test("harness.step is silent: it is neither queued nor does it touch any view", 
 
 test("each action refreshes the views it can change and nothing else", () => {
   const job = hit(touches("job.done"));
-  for (const p of ["runner", "roster", "org", "projects", "tasks", "tasks/TASK-001", "jobs/failed?project=demo&limit=20", "code-deliveries?limit=20", "projects/demo/overview"]) assert.ok(job.includes(p), p);
-  for (const p of ["settings", "harness/models", "events?limit=40", "projects/demo/threads", "records", "messages?project=demo&task=TASK-001"]) assert.ok(!job.includes(p), p);
+  // messages too: the task chat's "reads it next / reading / seen" line follows the lead's job.
+  for (const p of ["runner", "roster", "org", "projects", "tasks", "tasks/TASK-001", "jobs/failed?project=demo&limit=20", "code-deliveries?limit=20", "projects/demo/overview", "messages?project=demo&task=TASK-001"]) assert.ok(job.includes(p), p);
+  for (const p of ["settings", "harness/models", "events?limit=40", "projects/demo/threads", "records"]) assert.ok(!job.includes(p), p);
 
   const post = hit(touches("post.question"));
   for (const p of ["org", "timeline", "votes", "roster", "projects/demo/questions", "projects/demo/overview", "projects/demo/threads/k1"]) assert.ok(post.includes(p), p);

@@ -370,7 +370,7 @@ impl Handler {
                 pulse_store::task_source_clause("source")
             ),
             vec![
-                SqlValue::Text(project),
+                SqlValue::Text(project.clone()),
                 SqlValue::Text(exact),
                 SqlValue::Text(like),
                 SqlValue::Text(job_id.clone()),
@@ -383,11 +383,33 @@ impl Handler {
                 return;
             }
         };
+        let lead_work = match self.addition_lead_work(&project) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
         write_json(
             w,
             200,
-            json!({"task": task, "revisions": revisions, "messages": messages, "jobs": jobs}),
+            json!({"task": task, "revisions": revisions, "messages": messages, "jobs": jobs, "lead_work": lead_work}),
         );
+    }
+
+    /// Where the project's lead is (`pulse_tasks::lead_work_for`): the task
+    /// chat reads it under the owner's latest message - in line, reading,
+    /// or seen. Null without a project or a store.
+    pub(crate) fn addition_lead_work(&self, project: &str) -> Result<Value> {
+        let Some(store) = self.store.as_deref() else {
+            return Ok(Value::Null);
+        };
+        if project.is_empty() {
+            return Ok(Value::Null);
+        }
+        Ok(serde_json::to_value(pulse_tasks::lead_work_for(
+            store, project,
+        )?)?)
     }
 
     pub(crate) fn addition_messages(
@@ -433,7 +455,18 @@ impl Handler {
                 return;
             }
         };
-        write_json(w, 200, json!({"messages": messages}));
+        let lead_work = match self.addition_lead_work(&self.addition_project(r)) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        write_json(
+            w,
+            200,
+            json!({"messages": messages, "lead_work": lead_work}),
+        );
     }
 
     pub(crate) fn addition_compute(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
@@ -2085,6 +2118,33 @@ mod tests {
             .map(|j| j["id"].as_str().unwrap_or_default().to_string())
             .collect::<Vec<_>>();
         assert_eq!(jobs, vec!["job-plain", "job-ui"], "{result:?}");
+        // Where the lead is, for the status line under the owner's message:
+        // idle until its answer job is queued, then in line.
+        assert_eq!(result["lead_work"]["state"], "idle", "{result:?}");
+        s.store
+            .conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES ('job-lead', 'one', 'lead', 'Lead: answer 1 message(s)', 'lead:one:20260101T000100Z', 'queued', '2026-01-01T00:01:00Z')",
+                [],
+            )
+            .unwrap();
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200);
+        assert_eq!(result["lead_work"]["state"], "queued", "{result:?}");
+        assert_eq!(result["lead_work"]["job"], "job-lead");
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/messages?project=one", "");
+        assert_eq!(status, 200);
+        assert_eq!(result["lead_work"]["state"], "queued", "{result:?}");
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", "/api/v1/messages", "");
+        assert_eq!(status, 200);
+        assert!(
+            result["lead_work"].is_null(),
+            "no project, no lead: {result:?}"
+        );
         let (status, result) = http::additions_request(
             http::handler(&s),
             "POST",

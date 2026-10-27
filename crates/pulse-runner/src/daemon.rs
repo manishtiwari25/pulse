@@ -1823,15 +1823,20 @@ pub(crate) fn daemon(
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
                 // While a soft hold (load, or the kernel's memory warning
-                // with free memory above the floor) closes the machine, one
-                // local slot stays open to the owner's work (jobs.rs
-                // OWNER_DRIVEN_SQL): the owner should not wait behind the
-                // fleet's own builds.
+                // with free memory above the floor) closes the machine, or
+                // the fleet's own work fills daemon.max_jobs, one local slot
+                // stays open to the owner's work (jobs.rs OWNER_DRIVEN_SQL):
+                // the owner should not wait behind the fleet's own builds.
                 let mut express_slot = false;
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
-                    let running_local = inflight
+                    let local = inflight
                         .values()
                         .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                        .collect::<Vec<_>>();
+                    let running_local = local.len();
+                    let owner_running = local
+                        .iter()
+                        .filter(|d| crate::jobs::is_owner_driven(&d.job))
                         .count();
                     let reserved = usize::from(crate::selfupdate::update_pending());
                     let verdict = crate::daemon_load::decide(
@@ -1839,6 +1844,7 @@ pub(crate) fn daemon(
                         &crate::daemon_load::pressure(),
                         running_local,
                         reserved,
+                        owner_running,
                     );
                     if let Some(hold) = verdict.hold {
                         // Not during a restart window: the lane's job could
@@ -1855,6 +1861,17 @@ pub(crate) fn daemon(
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
                             load_hold = Some(hold);
                         }
+                    } else if verdict.express && restart_kinds.is_empty() {
+                        // The cap is full of the fleet's work and none of it
+                        // is the owner's: one slot over daemon.max_jobs takes
+                        // owner-driven jobs alone, so an answer to the owner
+                        // does not wait out two verifies.
+                        load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
+                        express_slot = true;
+                        load_hold = Some(
+                            "every slot under daemon.max_jobs is busy with the fleet's work; one express slot stays open for the owner's work"
+                                .to_string(),
+                        );
                     } else {
                         // Over the cap is capacity the owner chose not to use, not
                         // a hold: those slots are simply not there this tick.
@@ -2903,6 +2920,119 @@ mod tests {
             3,
             "{out}"
         );
+    }
+
+    #[test]
+    fn daemon_lends_the_owner_one_slot_over_a_cap_full_of_fleet_work() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        join(&s, "cirrus");
+        join(&s, "drizzle");
+        for (k, v) in [
+            ("workers", "4"),
+            ("parallel_per_project", "4"),
+            ("daemon.max_jobs", "2"),
+            ("daemon.pass_seconds", "3600"),
+            ("daemon.min_free_mb", "0"),
+            ("daemon.setup_mb", "0"),
+            ("jobs_per_day", "none"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let add = |title: &str, source: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                source.into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+            .str("id")
+        };
+        add("Fleet one", "test");
+        add("Fleet two", "test");
+        let out = OutBuf::new();
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(out.writer()),
+            worker_cmd: "sh -c 'sleep 8; echo SUMMARY: ok'".into(),
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let wait_for = |want: &dyn Fn(&str) -> bool, what: &str| {
+            let since = std::time::Instant::now();
+            loop {
+                let text = out.string();
+                if want(&text) {
+                    return text;
+                }
+                assert!(
+                    since.elapsed() < test_wait(Duration::from_secs(60)),
+                    "{what} never came:\n{text}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_for(
+                &|t| t.matches("leased job-").count() >= 2,
+                "the fleet's two runs",
+            );
+            // The cap is full of the fleet's work. The owner's job and one
+            // more of the fleet's arrive: job.add wakes the loop for a tick.
+            let fleet_three = add("Fleet three", "test");
+            let owners = add("Owner's step", "task:TASK-001");
+            let text = wait_for(&|t| t.matches("leased job-").count() >= 3, "a third lease");
+            assert!(
+                text.contains(
+                    "every slot under daemon.max_jobs is busy with the fleet's work; one express slot stays open for the owner's work"
+                ),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("leased {owners}"))
+                    && !text.contains(&format!("leased {fleet_three}")),
+                "the slot over the cap is the owner's alone:\n{text}"
+            );
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND source = 'test'",
+                    &[]
+                ),
+                1,
+                "{text}"
+            );
+            // No second one while the owner's run is in flight.
+            let owners_next = add("Owner's next step", "task:TASK-001:next");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = out.string();
+            assert!(!text.contains(&format!("leased {owners_next}")), "{text}");
+        }));
+        cancel.cancel();
+        let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(30)));
+        if let Err(panic) = result {
+            panic!("{}\n{}", panic_message(&panic), out.string());
+        }
     }
 
     #[test]

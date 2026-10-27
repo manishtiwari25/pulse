@@ -123,6 +123,15 @@ pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
 /// owner's, and queue with the fleet.
 pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
 
+/// [`OWNER_DRIVEN_SQL`] over a job row already in hand (a run in flight).
+pub(crate) fn is_owner_driven(job: &Row) -> bool {
+    let kind = job.str("kind");
+    let source = job.str("source");
+    ((kind == "lead" || kind == "answer") && !source.starts_with("lead-role:"))
+        || source.starts_with("task:")
+        || source.starts_with("security:")
+}
+
 /// The `fits` entry that opens a slot to owner-driven jobs alone: the
 /// express lane the load governor keeps open while the machine is saturated.
 const OWNER_LANE: (&str, &str) = ("*", "owner");
@@ -528,6 +537,61 @@ mod tests {
     const RECIPE_TEMPLATE: &str = "---\nrecipe: 1\ntools: []\nenv: {}\nservices: []\n---\n\n# Environment\n\nWhat a clone needs.\n";
     static PROBE_REPLY: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
     static PAIR_SCRIPTS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+    #[test]
+    fn is_owner_driven_reads_the_same_jobs_as_the_sql() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let add = |kind: &str, source: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                format!("{kind} {source}"),
+                "x".into(),
+                1,
+                10,
+                source.into(),
+                "proj-lead".into(),
+                false,
+            )
+            .unwrap()
+            .0
+        };
+        let jobs = [
+            ("lead", "lead:proj:20260906T100000Z"),
+            ("lead", "lead-idle:proj:20260906T100000Z"),
+            ("lead", "lead-role:proj:ops:20260906T100000Z"),
+            ("answer", "chat:CONV-1"),
+            ("task", "task:TASK-001"),
+            ("task", "task:TASK-001:vision"),
+            ("task", "security:proj:lockfile"),
+            ("task", "test"),
+            ("improve", "evolve"),
+        ]
+        .map(|(kind, source)| add(kind, source));
+        let mut by_sql = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            &format!(
+                "SELECT j.id FROM jobs j WHERE {}",
+                crate::jobs::OWNER_DRIVEN_SQL
+            ),
+            &[],
+        )
+        .iter()
+        .map(|r| r.str("id"))
+        .collect::<Vec<_>>();
+        by_sql.sort();
+        let mut by_row = jobs
+            .iter()
+            .filter(|j| crate::jobs::is_owner_driven(j))
+            .map(|j| j.str("id"))
+            .collect::<Vec<_>>();
+        by_row.sort();
+        assert_eq!(by_sql, by_row);
+        assert_eq!(by_row.len(), 6, "{by_row:?}");
+    }
 
     #[test]
     fn lease_event_records_queue_wait_seconds() {
@@ -3957,17 +4021,125 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW.into(),
             "daemon".into(),
         );
-        assert_eq!(pulse_tasks::get(&s, &landed.id).unwrap().0.status, "done");
+        // The owner's own task is not closed over their head: what landed is
+        // put to them once, with the answers to pick.
+        assert_eq!(pulse_tasks::get(&s, &landed.id).unwrap().0.status, "review");
         let landed_posts = crate::util::must_rows(
             &*s.conn().unwrap(),
             "SELECT * FROM posts WHERE kind = 'result' AND thread = ?",
             &[&landed.id.to_lowercase()],
         );
         assert!(
-            landed_posts
+            landed_posts.iter().any(|p| p
+                .str("summary")
+                .contains("2 job(s) done, 0 failed - review")
+                && p.str("summary").contains("what they asked for")),
+            "landed jobs go to the owner: {landed_posts:?}"
+        );
+        let asks = pulse_tasks::messages(&s, "proj", &landed.id, "", "").unwrap();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks[0].author, "proj-lead");
+        assert!(
+            asks[0].body.contains("the work landed")
+                && asks[0].body.contains("What landed:")
+                && asks[0].body.contains("landed abc from x"),
+            "{}",
+            asks[0].body
+        );
+        assert_eq!(
+            asks[0]
+                .choices
                 .iter()
-                .any(|p| p.str("summary").contains("done: 2 job(s) landed")),
-            "landed jobs close the task: {landed_posts:?}"
+                .map(|c| (c.label.as_str(), c.action.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Yes, close it", "done"),
+                ("Not what I meant", "reply"),
+                ("Change what I asked", "amend")
+            ]
+        );
+        // Asked once: the standing review stays quiet.
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::messages(&s, "proj", &landed.id, "", "")
+                .unwrap()
+                .len(),
+            1
+        );
+        // "Not what I meant" puts it back in progress; the lead owes the
+        // next move, so the daemon does not ask again.
+        pulse_tasks::send_message(
+            &s,
+            "proj",
+            &landed.id,
+            crate::util::HUMAN_AGENT,
+            "Not what I meant",
+        )
+        .unwrap();
+        assert_eq!(
+            pulse_tasks::get(&s, &landed.id).unwrap().0.status,
+            "in_progress"
+        );
+        let lines = crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::get(&s, &landed.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        assert_eq!(
+            pulse_tasks::messages(&s, "proj", &landed.id, "", "")
+                .unwrap()
+                .len(),
+            2
+        );
+        // A task an agent opened has no owner to ask: it closes itself.
+        let agents_own =
+            pulse_tasks::new(&s, "proj", "Agent's own", "do it", 20, "proj-lead").unwrap();
+        let own_job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Agent's own a".into(),
+            "do a".into(),
+            1,
+            20,
+            format!("task:{}", agents_own.id),
+            "proj-lead".into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        finish(&own_job, "done", "");
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::get(&s, &agents_own.id).unwrap().0.status,
+            "done"
+        );
+        let own_posts = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'result' AND thread = ?",
+            &[&agents_own.id.to_lowercase()],
+        );
+        assert!(
+            own_posts
+                .iter()
+                .any(|p| p.str("summary").contains("done: 1 job(s) landed")),
+            "landed jobs close an agent's task: {own_posts:?}"
         );
         let (hopeless, jobs) = new_task("Hopeless");
         finish(&jobs[0], "failed", "");
@@ -4078,10 +4250,32 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW.into(),
             "daemon".into(),
         );
-        assert_eq!(pulse_tasks::get(&s, &hopeless.id).unwrap().0.status, "done");
-        let closed = pulse_tasks::messages(&s, "proj", &hopeless.id, "", "").unwrap();
-        assert_eq!(closed.len(), 2, "{closed:?}");
-        assert!(closed[1].body.contains("I closed it") && closed[1].choices.is_empty());
+        // The fix landing is the owner's to judge: asked, not closed.
+        assert_eq!(
+            pulse_tasks::get(&s, &hopeless.id).unwrap().0.status,
+            "review"
+        );
+        let asked = pulse_tasks::messages(&s, "proj", &hopeless.id, "", "").unwrap();
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        assert!(
+            asked[1].body.contains("the work landed") && asked[1].body.contains("Fixed b again"),
+            "{}",
+            asked[1].body
+        );
+        assert_eq!(asked[1].choices[0].label, "Yes, close it");
+        // Asked once.
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::messages(&s, "proj", &hopeless.id, "", "")
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

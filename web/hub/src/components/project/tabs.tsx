@@ -464,7 +464,7 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
           </Button>
         ) : null}
       </Toolbar>
-      {msgs.error && !msgs.data ? <ErrorNotice error={msgs.error} onRetry={() => void msgs.reload()} /> : msgs.data === undefined ? <SkeletonRows n={6} /> : <ChatPane project={slug} taskId={taskId} messages={msgs.data.messages} tasks={tasks.data?.tasks} lead={lead} />}
+      {msgs.error && !msgs.data ? <ErrorNotice error={msgs.error} onRetry={() => void msgs.reload()} /> : msgs.data === undefined ? <SkeletonRows n={6} /> : <ChatPane project={slug} taskId={taskId} messages={msgs.data.messages} tasks={tasks.data?.tasks} lead={lead} leadWork={msgs.data.lead_work} />}
     </div>
   );
 }

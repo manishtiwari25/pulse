@@ -15,8 +15,10 @@ import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { writes, type Message, type MessageChoice, type Task } from "@/lib/api";
-import { invalidate } from "@/lib/use-api";
+import { writes, type LeadWork, type Message, type MessageChoice, type Task } from "@/lib/api";
+import { invalidate, useNow } from "@/lib/use-api";
+import { Ago } from "@/components/tasks/task-work";
+import { isOwner, taskMessageLine, taskMessageState } from "@/lib/task-message-status";
 
 const SEEN_KEY = "pulse.chat.seen";
 
@@ -102,9 +104,13 @@ function dayLabel(at: string): string {
 // message sent with `taskId` is pinned to that task. The send wakes the lead.
 // An agent's latest message on an open task may carry choices: they show as
 // buttons under it, so the owner taps an answer instead of typing one.
+// Under the owner's latest message of each thread a line says whether the
+// lead has it: Sent, in line, reading (with the dots), seen - from
+// `leadWork` (where the lead's sitting is) and the message's read marks;
+// an answer below it replaces the line.
 // Only the message list scrolls to the newest message, never the page, and
 // it follows new messages only while the owner is already at the bottom.
-export function ChatPane({ project, taskId, task, messages, tasks, lead, embedded, className }: { project: string; taskId?: string | null; task?: Task; messages: Message[]; tasks?: Task[]; lead?: string; embedded?: boolean; className?: string }) {
+export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWork, embedded, className }: { project: string; taskId?: string | null; task?: Task; messages: Message[]; tasks?: Task[]; lead?: string; leadWork?: LeadWork | null; embedded?: boolean; className?: string }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [amending, setAmending] = useState<Task | null>(null);
@@ -129,6 +135,16 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, embedde
   const lastOfTask = useMemo(() => {
     const m = new Map<string, string>();
     for (const g of groups) if (g.task) m.set(g.task, g.items[g.items.length - 1]!.id);
+    return m;
+  }, [groups]);
+  // The owner's latest message of each thread: the only one whose delivery
+  // is still a question.
+  const lastOwnerOf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups) {
+      const last = [...g.items].reverse().find((x) => isOwner(x.author));
+      if (last) m.set(g.key, last.id);
+    }
     return m;
   }, [groups]);
   const firstUnread = useMemo(() => {
@@ -243,7 +259,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, embedde
               ) : null}
               <ol className="grid gap-3">
                 {g.items.map((m, i) => {
-                  const human = m.author === "human" || m.author === "owner";
+                  const human = isOwner(m.author);
                   const prev = g.items[i - 1];
                   const newDay = !prev || dayLabel(prev.at) !== dayLabel(m.at);
                   // Consecutive messages from the same author share one name line.
@@ -271,6 +287,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, embedde
                           >
                             <Markdown source={m.body} className="[&>:last-child]:mb-0" />
                           </div>
+                          {human && lastOwnerOf.get(g.key) === m.id ? <DeliveryLine m={m} later={g.items.slice(i + 1)} lead={lead} work={leadWork} /> : null}
                           {!human && m.task_id && m.choices?.length && lastOfTask.get(m.task_id) === m.id && isOpen(byId.get(m.task_id)) ? (
                             <div className="mt-2 flex max-w-full flex-wrap gap-2 px-1" role="group" aria-label="Answers to pick">
                               {m.choices.map((c, ci) => {
@@ -334,6 +351,40 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, embedde
 }
 
 const sentenceStart = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// Under the owner's latest message: whether the lead has picked it up
+// (task-message-status.ts). The dots run while the lead's sitting reads it;
+// "seen" and "sent" carry the time; an answer below it says nothing here.
+function DeliveryLine({ m, later, lead, work }: { m: Message; later: Message[]; lead?: string; work?: LeadWork | null }) {
+  const now = useNow();
+  const state = taskMessageState(m, later, lead, work, now);
+  if (state.kind === "answered") return null;
+  const line = taskMessageLine(state);
+  return (
+    <div className={cn("mt-1 flex items-center gap-1.5 px-1 text-xs", state.kind === "reading" ? "text-primary" : state.kind === "sent" && state.stale ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role="status">
+      {state.kind === "reading" ? <TypingDots className="shrink-0" /> : null}
+      <span>{line}</span>
+      {state.kind === "reading" ? (
+        <>
+          <span aria-hidden>·</span>
+          <Ago d={state.since} />
+        </>
+      ) : state.kind === "seen" ? (
+        <Ago d={state.at} />
+      ) : null}
+    </div>
+  );
+}
+
+function TypingDots({ className }: { className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-0.5", className)} aria-hidden>
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+      <span className="typing-dot size-1.5 rounded-full bg-current" />
+    </span>
+  );
+}
 
 // Choices stay live while the task can still take the answer. Without the
 // task at hand (an older hub, a project-wide chat without the list) the

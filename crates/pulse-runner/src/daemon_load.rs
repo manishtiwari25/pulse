@@ -190,12 +190,17 @@ pub(crate) struct Verdict {
     /// Why the machine takes nothing new right now, when it is saturated.
     pub(crate) hold: Option<String>,
     /// One local slot stays open to the owner's work alone (the lead's runs,
-    /// answers, the jobs of owner tasks): the hold is soft - load under
-    /// [`EXPRESS_LOAD_FACTOR`] times the cap, or the kernel's memory warning
-    /// while the daemon's own reading keeps free memory above the floor -
-    /// and a slot is free under `daemon.max_jobs`. The fleet's own builds
-    /// are what saturate the machine; the owner's request should not queue
-    /// behind them. Critical memory pressure and a floor breach shut it.
+    /// answers, the jobs of owner tasks), in two cases. Under a soft hold -
+    /// load under [`EXPRESS_LOAD_FACTOR`] times the cap, or the kernel's
+    /// memory warning while the daemon's own reading keeps free memory above
+    /// the floor - while a slot is free under `daemon.max_jobs`. And when
+    /// the fleet's own work fills `daemon.max_jobs` with no owner-driven run
+    /// among it: one slot over the cap, so the owner's answer does not wait
+    /// out the fleet's verifies (never a second one; never while a
+    /// self-update build waits). The fleet's own builds are what saturate
+    /// the machine; the owner's request should not queue behind them.
+    /// Critical memory pressure, a floor breach and a load over twice the
+    /// cap shut it.
     pub(crate) express: bool,
 }
 
@@ -203,13 +208,15 @@ pub(crate) struct Verdict {
 /// twice the cap is swapping, and one more run would not finish sooner.
 pub(crate) const EXPRESS_LOAD_FACTOR: f64 = 2.0;
 
-/// The pure decision: `running` local runs are in flight, `reserved` slots
-/// are kept free for something else (a self-update build that waits).
+/// The pure decision: `running` local runs are in flight, `owner_running` of
+/// them owner-driven (`jobs::is_owner_driven`), `reserved` slots are kept
+/// free for something else (a self-update build that waits).
 pub(crate) fn decide(
     limits: &Limits,
     pressure: &Pressure,
     running: usize,
     reserved: usize,
+    owner_running: usize,
 ) -> Verdict {
     let hold = hold_reason(limits, pressure);
     let cap = limits.max_jobs.max(0) as usize;
@@ -218,19 +225,20 @@ pub(crate) fn decide(
     } else {
         cap.saturating_sub(running).saturating_sub(reserved)
     };
-    let soft = hold.is_some()
-        && !pressure.mem_critical
-        && !pressure
+    let hard = pressure.mem_critical
+        || pressure
             .free_mem_mb
             .is_some_and(|free| limits.min_free_mem_mb > 0 && free < limits.min_free_mem_mb)
-        && pressure
+        || pressure
             .load1
-            .is_none_or(|load| load <= limits.max_load * EXPRESS_LOAD_FACTOR);
-    let express = soft && running + reserved < cap;
+            .is_some_and(|load| load > limits.max_load * EXPRESS_LOAD_FACTOR);
+    let under_cap = running + reserved < cap;
+    let soft_hold = hold.is_some() && !hard && under_cap;
+    let fleet_full = !hard && !under_cap && reserved == 0 && owner_running == 0;
     Verdict {
         room,
         hold,
-        express,
+        express: soft_hold || fleet_full,
     }
 }
 
@@ -738,31 +746,31 @@ mod tests {
     fn decide_admits_the_room_under_the_cap_and_nothing_under_pressure() {
         let l = limits(4, 12.0, 1024);
         assert_eq!(
-            decide(&l, &calm(), 0, 0),
+            decide(&l, &calm(), 0, 0, 0),
             Verdict {
                 room: 4,
                 hold: None,
                 express: false
             }
         );
-        assert_eq!(decide(&l, &calm(), 3, 0).room, 1);
-        assert_eq!(decide(&l, &calm(), 4, 0).room, 0, "the cap is full");
+        assert_eq!(decide(&l, &calm(), 3, 0, 0).room, 1);
+        assert_eq!(decide(&l, &calm(), 4, 0, 0).room, 0, "the cap is full");
         assert_eq!(
-            decide(&l, &calm(), 7, 0).room,
+            decide(&l, &calm(), 7, 0, 0).room,
             0,
             "over the cap never underflows"
         );
         assert_eq!(
-            decide(&l, &calm(), 2, 1).room,
+            decide(&l, &calm(), 2, 1, 0).room,
             1,
             "a reserved slot is not offered"
         );
-        assert_eq!(decide(&l, &calm(), 3, 1).room, 0);
+        assert_eq!(decide(&l, &calm(), 3, 1, 0).room, 0);
         let loaded = Pressure {
             load1: Some(40.1),
             ..calm()
         };
-        let v = decide(&l, &loaded, 0, 0);
+        let v = decide(&l, &loaded, 0, 0, 0);
         assert_eq!(v.room, 0, "load over the cap holds every slot: {v:?}");
         assert_eq!(
             v.hold.as_deref(),
@@ -776,7 +784,7 @@ mod tests {
             free_mem_mb: Some(512),
             ..calm()
         };
-        let v = decide(&l, &tight, 0, 0);
+        let v = decide(&l, &tight, 0, 0, 0);
         assert_eq!(v.room, 0);
         assert_eq!(
             v.hold.as_deref(),
@@ -787,7 +795,7 @@ mod tests {
             mem_warning: true,
             ..calm()
         };
-        let v = decide(&l, &warned, 0, 0);
+        let v = decide(&l, &warned, 0, 0, 0);
         assert_eq!(
             v.hold.as_deref(),
             Some("machine saturated: the kernel reports memory pressure")
@@ -802,7 +810,7 @@ mod tests {
             ..calm()
         };
         assert!(
-            !decide(&l, &warned_and_tight, 0, 0).express,
+            !decide(&l, &warned_and_tight, 0, 0, 0).express,
             "the warning with memory under the floor shuts it"
         );
         let critical = Pressure {
@@ -810,7 +818,7 @@ mod tests {
             mem_critical: true,
             ..calm()
         };
-        let v = decide(&l, &critical, 0, 0);
+        let v = decide(&l, &critical, 0, 0, 0);
         assert_eq!(
             v.hold.as_deref(),
             Some("machine saturated: the kernel reports critical memory pressure")
@@ -825,33 +833,83 @@ mod tests {
             load1: Some(15.0),
             ..calm()
         };
-        let v = decide(&l, &busy, 2, 0);
+        let v = decide(&l, &busy, 2, 0, 0);
         assert_eq!(v.room, 0, "the hold still closes the ordinary slots");
         assert!(v.hold.is_some());
         assert!(v.express, "load alone, under the cap: {v:?}");
         assert!(
-            !decide(&l, &busy, 4, 0).express,
-            "a full cap has no slot to lend"
+            decide(&l, &busy, 4, 0, 0).express,
+            "a full cap under a soft hold lends one slot over it"
         );
         assert!(
-            !decide(&l, &busy, 3, 1).express,
-            "a reserved slot counts against the cap"
+            !decide(&l, &busy, 4, 0, 1).express,
+            "and never a second while an owner's run is in flight"
+        );
+        assert!(
+            !decide(&l, &busy, 3, 1, 0).express,
+            "a reserved slot counts against the cap and keeps the lane shut"
         );
         let swamped = Pressure {
             load1: Some(24.1),
             ..calm()
         };
-        assert!(!decide(&l, &swamped, 0, 0).express);
+        assert!(!decide(&l, &swamped, 0, 0, 0).express);
         let loaded_and_tight = Pressure {
             load1: Some(15.0),
             free_mem_mb: Some(512),
             ..calm()
         };
-        assert!(!decide(&l, &loaded_and_tight, 0, 0).express);
+        assert!(!decide(&l, &loaded_and_tight, 0, 0, 0).express);
         assert!(
-            !decide(&l, &calm(), 0, 0).express,
-            "no hold, no lane needed"
+            !decide(&l, &calm(), 0, 0, 0).express,
+            "no hold, room under the cap: no lane needed"
         );
+    }
+
+    #[test]
+    fn decide_lends_one_slot_over_a_full_cap_to_the_owner_alone() {
+        let l = limits(2, 12.0, 1024);
+        // The fleet's own work fills daemon.max_jobs on a calm machine: one
+        // express slot opens over the cap, restricted to owner-driven jobs.
+        let v = decide(&l, &calm(), 2, 0, 0);
+        assert_eq!(v.room, 0, "nothing ordinary starts over the cap");
+        assert_eq!(v.hold, None, "a full cap is not a hold");
+        assert!(v.express, "{v:?}");
+        assert!(
+            !decide(&l, &calm(), 1, 0, 0).express,
+            "room under the cap needs no lane"
+        );
+        assert!(
+            !decide(&l, &calm(), 3, 0, 1).express,
+            "the owner's run in flight is the lane in use: no second one"
+        );
+        assert!(
+            !decide(&l, &calm(), 2, 0, 1).express,
+            "an owner-driven run among the two is the owner served"
+        );
+        assert!(
+            !decide(&l, &calm(), 1, 1, 0).express,
+            "a self-update build waiting for room keeps the lane shut"
+        );
+        assert!(
+            decide(&l, &calm(), 5, 0, 0).express,
+            "over the cap (lowered while runs were in flight) the owner still gets one"
+        );
+        let swamped = Pressure {
+            load1: Some(24.1),
+            ..calm()
+        };
+        assert!(!decide(&l, &swamped, 2, 0, 0).express);
+        let critical = Pressure {
+            mem_critical: true,
+            ..calm()
+        };
+        assert!(!decide(&l, &critical, 2, 0, 0).express);
+        let tight = Pressure {
+            free_mem_mb: Some(512),
+            ..calm()
+        };
+        assert!(!decide(&l, &tight, 2, 0, 0).express);
     }
 
     #[test]
@@ -859,7 +917,7 @@ mod tests {
         let l = limits(2, 8.0, 1024);
         let blind = Pressure::default();
         assert_eq!(
-            decide(&l, &blind, 0, 0),
+            decide(&l, &blind, 0, 0, 0),
             Verdict {
                 room: 2,
                 hold: None,
@@ -871,13 +929,13 @@ mod tests {
             free_mem_mb: Some(10),
             ..calm()
         };
-        assert_eq!(decide(&off, &tight, 0, 0).hold, None, "floor 0 is off");
+        assert_eq!(decide(&off, &tight, 0, 0, 0).hold, None, "floor 0 is off");
         let at_the_line = Pressure {
             load1: Some(8.0),
             ..calm()
         };
         assert_eq!(
-            decide(&l, &at_the_line, 0, 0).hold,
+            decide(&l, &at_the_line, 0, 0, 0).hold,
             None,
             "a load equal to the cap is not over it"
         );

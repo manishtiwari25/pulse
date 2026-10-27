@@ -1941,11 +1941,26 @@ export interface Message {
   choices?: MessageChoice[];
 }
 
+// Where a project's lead is, for the line under the owner's latest message
+// in a task chat (task-message-status.ts): its sitting is `queued` (waits
+// for a slot), `running` (reading, `since` the run began) or `idle`;
+// `read_at` is when its latest finished sitting began, so an older message
+// was in that sitting's brief.
+export interface LeadWork {
+  state: "idle" | "queued" | "running";
+  job: string;
+  title: string;
+  agent: string;
+  since: string;
+  read_at: string;
+}
+
 export interface TaskDetail {
   task: Task;
   revisions: TaskRevision[];
   messages: Message[];
   jobs: TaskJob[];
+  lead_work?: LeadWork | null;
 }
 
 export interface TasksPayload {
@@ -2037,6 +2052,7 @@ export function codeDeliveriesPath({ project, limit, before }: { project?: strin
 
 export interface MessagesPayload {
   messages: Message[];
+  lead_work?: LeadWork | null;
 }
 
 export interface NewTaskInput {
