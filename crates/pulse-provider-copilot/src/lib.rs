@@ -1913,6 +1913,7 @@ mod tests {
                         tool_calls: Vec::new(),
                         tool_call_id: String::new(),
                         name: String::new(),
+                        images: Vec::new(),
                     }],
                     ..Request::default()
                 },
@@ -1980,6 +1981,7 @@ mod tests {
                             tool_call_id: "call-1".to_string(),
                             name: "lookup".to_string(),
                             tool_calls: Vec::new(),
+                            images: Vec::new(),
                         },
                     ],
                     tools: vec![Tool {
@@ -2918,6 +2920,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            images: Vec::new(),
         }
     }
 }

@@ -1727,6 +1727,7 @@ impl Agent {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         });
     }
 
@@ -1793,6 +1794,7 @@ impl Agent {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         }];
         if !resumed.is_empty() {
             let note = format!(
@@ -2191,6 +2193,7 @@ impl Agent {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             });
             if submit {
                 return (true, true, sub, false);
@@ -2207,6 +2210,7 @@ impl Agent {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             });
             self.emit(Step {
                 kind: StepKind::Error,
@@ -2232,6 +2236,7 @@ impl Agent {
                     tool_calls: Vec::new(),
                     tool_call_id: String::new(),
                     name: String::new(),
+                    ..Default::default()
                 });
                 self.emit(Step {
                     kind: StepKind::FormatRetry,
@@ -2257,6 +2262,7 @@ impl Agent {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         });
         self.emit(Step {
             kind: if free_format_retry {
@@ -4649,6 +4655,7 @@ fn tool_message(call: &ToolCall, content: &str) -> Message {
         tool_calls: Vec::new(),
         tool_call_id: call.id.clone(),
         name: call.name.clone(),
+        ..Default::default()
     }
 }
 
@@ -6562,6 +6569,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         }
     }
 
@@ -6576,6 +6584,7 @@ mod tests {
             }],
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         }
     }
 
@@ -7344,6 +7353,7 @@ mod tests {
                 .collect(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         }
     }
 
@@ -9065,6 +9075,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         };
         // The carried conversation ends in a tool round the hold cut:
         // the assistant's call has no result, so it goes.
@@ -9078,6 +9089,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: "call-1".into(),
                 name: "bash".into(),
+                ..Default::default()
             },
             plain(Role::Assistant, "I will look at the test file"),
             tool("cat tests/flaky.rs"),
@@ -9162,6 +9174,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         };
         let result = |id: &str| Message {
             role: Role::Tool,
@@ -9169,6 +9182,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: id.into(),
             name: "bash".into(),
+            ..Default::default()
         };
         let two_calls = Message {
             tool_calls: vec![
@@ -9474,6 +9488,7 @@ mod tests {
             name: "bash".into(),
             content,
             tool_calls: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -9487,6 +9502,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -9494,6 +9510,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             obs(format_observation(
                 &Observation {
@@ -9525,7 +9542,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let msgs = vec![
             msg("system"),
-            Message { role: Role::User, content: "task".into(), tool_calls: Vec::new(), tool_call_id: String::new(), name: String::new() },
+            Message { role: Role::User, content: "task".into(), tool_calls: Vec::new(), tool_call_id: String::new(), name: String::new(), ..Default::default() },
             obs("<returncode>0</returncode>\n<output>\na\n[10 characters elided - rerun the command to see them]\nz\n</output>".into()),
             obs(format_observation(&Observation { output: "new".into(), exit_code: 0, ..Observation::default() }, 0)),
         ];
@@ -9546,6 +9563,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_call_id: String::new(),
                     name: String::new(),
+                    ..Default::default()
                 },
                 obs(format_observation(
                     &Observation {
@@ -9581,6 +9599,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             obs(format_observation(
                 &Observation {
@@ -9617,6 +9636,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -9624,6 +9644,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             Message {
                 role: Role::Tool,
@@ -9638,6 +9659,7 @@ mod tests {
                     0,
                 ),
                 tool_calls: Vec::new(),
+                ..Default::default()
             },
             obs(format_observation(
                 &Observation {
@@ -9667,6 +9689,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -9681,6 +9704,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             },
             obs(format_observation(
                 &Observation {
@@ -12045,6 +12069,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            ..Default::default()
         };
         h.resume_messages(vec![
             plain(Role::System, "an old prompt"),

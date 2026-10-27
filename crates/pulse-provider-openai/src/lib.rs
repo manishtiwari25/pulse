@@ -1260,8 +1260,10 @@ struct GitHubUser {
 struct OpenAIMessage {
     #[serde(rename = "role")]
     role: Role,
+    /// A plain string, or - when the turn carries images - an array of
+    /// content parts (text + image_url data: URLs).
     #[serde(rename = "content", skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<Value>,
     #[serde(rename = "tool_calls", default, skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<OpenAIToolCall>,
     #[serde(
@@ -1378,10 +1380,26 @@ fn open_ai_request(req: Request) -> OpenAIChatRequest {
         stream_options: None,
     };
     for m in req.messages {
-        let content = if m.content.is_empty() {
-            None
+        let content = if m.images.is_empty() {
+            if m.content.is_empty() {
+                None
+            } else {
+                Some(Value::String(m.content))
+            }
         } else {
-            Some(m.content)
+            let mut parts = Vec::new();
+            if !m.content.is_empty() {
+                parts.push(serde_json::json!({ "type": "text", "text": m.content }));
+            }
+            for image in m.images {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", image.media_type, image.data)
+                    }
+                }));
+            }
+            Some(Value::Array(parts))
         };
         let tool_calls = m
             .tool_calls

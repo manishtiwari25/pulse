@@ -3355,6 +3355,7 @@ esac
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                images: Vec::new(),
             },
             Message {
                 role: Role::User,
@@ -3362,6 +3363,7 @@ esac
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                images: Vec::new(),
             },
             Message {
                 role: Role::Tool,
@@ -3369,6 +3371,7 @@ esac
                 tool_calls: Vec::new(),
                 tool_call_id: "1".into(),
                 name: "bash".into(),
+                images: Vec::new(),
             },
             Message {
                 role: Role::Assistant,
@@ -3376,6 +3379,7 @@ esac
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                images: Vec::new(),
             },
         ];
         let md = transcript_markdown(&msgs, "S1", "m");

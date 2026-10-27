@@ -106,6 +106,7 @@ fn user_request(content: &str) -> Request {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            images: Vec::new(),
         }],
         ..Request::default()
     }
@@ -218,6 +219,7 @@ fn chat_tool_call_round_trip() {
                         tool_calls: Vec::new(),
                         tool_call_id: String::new(),
                         name: String::new(),
+                        images: Vec::new(),
                     },
                     Message {
                         role: Role::Assistant,
@@ -234,6 +236,7 @@ fn chat_tool_call_round_trip() {
                         name: "lookup".to_string(),
                         content: r#"{"ok":true}"#.to_string(),
                         tool_calls: Vec::new(),
+                        images: Vec::new(),
                     },
                 ],
                 tools: vec![Tool {
@@ -624,6 +627,48 @@ fn request_json_carries_reasoning_effort_only_when_asked() {
     });
     let got = serde_json::to_value(req).unwrap();
     assert_eq!(got["reasoning_effort"], "high");
+}
+
+#[test]
+fn request_json_maps_images_to_content_parts_only_when_asked() {
+    // Without images the string content keeps its shape.
+    let text_only = open_ai_request(Request {
+        model: "m".to_string(),
+        messages: vec![Message {
+            role: Role::User,
+            content: "hi".to_string(),
+            ..Message::new(Role::User)
+        }],
+        ..Request::default()
+    });
+    let got = serde_json::to_value(text_only).unwrap();
+    assert_eq!(got["messages"][0]["content"], "hi");
+
+    // With images the content becomes text + image_url data: URL parts.
+    let with_image = open_ai_request(Request {
+        model: "m".to_string(),
+        messages: vec![Message {
+            role: Role::User,
+            content: "what is in this picture?".to_string(),
+            images: vec![pulse_provider::ImageContent {
+                media_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            }],
+            ..Message::new(Role::User)
+        }],
+        ..Request::default()
+    });
+    let got = serde_json::to_value(with_image).unwrap();
+    assert_eq!(
+        got["messages"][0]["content"],
+        json!([
+            { "type": "text", "text": "what is in this picture?" },
+            {
+                "type": "image_url",
+                "image_url": { "url": "data:image/png;base64,aGVsbG8=" }
+            }
+        ])
+    );
 }
 
 #[test]
