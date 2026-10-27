@@ -27,6 +27,11 @@ pub(crate) trait Executor {
     fn result_text(&self) -> Option<String>;
     fn commit_count(&self, base: &str) -> i32;
     fn dirty(&self) -> String;
+    /// New files the worker left in the clone (untracked, not ignored), one
+    /// path per line; an executor that cannot say reports none.
+    fn untracked(&self) -> String {
+        String::new()
+    }
     /// Commits what the worker left staged or modified (tracked files only,
     /// like `git commit -a`) with the clone's own identity and hooks minus
     /// the pre-commit check, which is what killed the worker's commit. The
@@ -355,6 +360,15 @@ impl Executor for LocalExec {
         crate::util::git(
             &self.clone_dir,
             &["status", "--porcelain", "--untracked-files=no"],
+        )
+        .stdout
+        .trim()
+        .to_string()
+    }
+    fn untracked(&self) -> String {
+        crate::util::git(
+            &self.clone_dir,
+            &["ls-files", "--others", "--exclude-standard"],
         )
         .stdout
         .trim()

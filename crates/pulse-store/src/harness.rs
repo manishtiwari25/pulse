@@ -10,6 +10,9 @@ pub const HARNESS_HELD: &str = "held";
 /// The process exit code of a held `pulse harness run`: EX_TEMPFAIL, "try
 /// again later".
 pub const HARNESS_HELD_EXIT_CODE: i32 = 75;
+/// The status of a harness session the step budget (`harness.max_steps`)
+/// stopped before the model finished.
+pub const HARNESS_STEP_LIMIT: &str = "step_limit";
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct HarnessSession {
@@ -351,6 +354,41 @@ impl Store {
             params![note, self.now(), id],
         )?;
         Ok(n > 0)
+    }
+    /// Holds the session of run `run_id` for job `job_id` that the step
+    /// budget stopped (`step_limit`) and whose trajectory is written: it
+    /// reads `held` with `note` as its reason, so the job's next run carries
+    /// it on (`held_harness_session_for_job`) instead of starting over.
+    /// Returns the session now held, or None when the run has no such
+    /// session.
+    pub fn hold_step_limit_harness_session(
+        &self,
+        run_id: &str,
+        job_id: &str,
+        note: &str,
+    ) -> Result<Option<HarnessSession>> {
+        if run_id.trim().is_empty() || job_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM harness_sessions WHERE run_id = ? AND job_id = ? AND status = ? AND trajectory != '' ORDER BY started_at DESC, id DESC LIMIT 1",
+                params![run_id, job_id, HARNESS_STEP_LIMIT],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let n = conn.execute(
+            "UPDATE harness_sessions SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?",
+            params![HARNESS_HELD, note, self.now(), id, HARNESS_STEP_LIMIT],
+        )?;
+        if n == 0 {
+            return Ok(None);
+        }
+        self.harness_session_head(&id)
     }
     pub fn harness_session_head(&self, id: &str) -> Result<Option<HarnessSession>> {
         let conn = self.conn()?;
@@ -1163,6 +1201,99 @@ mod go_harness_tests {
         let h = s.harness_session_head("h-run").unwrap().unwrap();
         assert_eq!(h.status, "resumed");
         assert_eq!(h.error, "carried on by run run-c");
+    }
+
+    #[test]
+    fn a_step_limit_session_with_a_trajectory_is_held_for_the_next_run() {
+        let _serial = crate::test_helpers::serial();
+        let s = store("2026-10-27T18:00:00Z");
+        for (id, run, status, trajectory) in [
+            ("h-first", "run-a", HARNESS_STEP_LIMIT, "/t/h-first.json"),
+            ("h-last", "run-a", HARNESS_STEP_LIMIT, "/t/h-last.json"),
+            ("h-bare", "run-b", HARNESS_STEP_LIMIT, ""),
+            ("h-done", "run-c", "submitted", "/t/h-done.json"),
+        ] {
+            s.begin_harness_session(HarnessSession {
+                id: id.into(),
+                run_id: run.into(),
+                job_id: "job-1".into(),
+                ..HarnessSession::default()
+            })
+            .unwrap();
+            s.finish_harness_session(id, status, status, "", "stopped", 0.0, trajectory)
+                .unwrap();
+        }
+        // Nothing is held until the runner says so.
+        assert!(s.held_harness_session_for_job("job-1").unwrap().is_none());
+        // The newest step-limit session of the run with a trajectory holds.
+        let held = s
+            .hold_step_limit_harness_session("run-a", "job-1", "held: step budget")
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.id, "h-last");
+        assert_eq!(held.status, HARNESS_HELD);
+        assert_eq!(
+            held.exit_status, HARNESS_STEP_LIMIT,
+            "the stop stays on record"
+        );
+        assert_eq!(held.error, "held: step budget");
+        assert_eq!(
+            s.held_harness_session_for_job("job-1").unwrap().unwrap().id,
+            "h-last"
+        );
+        assert_eq!(
+            s.harness_session_head("h-first").unwrap().unwrap().status,
+            HARNESS_STEP_LIMIT
+        );
+        // The older stop of the same run is next in line; then nothing is
+        // left to hold. A session without a trajectory, a submitted one, or
+        // another job's run is not held.
+        assert_eq!(
+            s.hold_step_limit_harness_session("run-a", "job-1", "again")
+                .unwrap()
+                .unwrap()
+                .id,
+            "h-first"
+        );
+        assert!(
+            s.hold_step_limit_harness_session("run-a", "job-1", "again")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.hold_step_limit_harness_session("run-b", "job-1", "bare")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.hold_step_limit_harness_session("run-c", "job-1", "done")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.hold_step_limit_harness_session("run-a", "job-2", "other job")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.hold_step_limit_harness_session("", "job-1", "blank")
+                .unwrap()
+                .is_none()
+        );
+        // The held sessions are carried on like one the restart held.
+        assert!(
+            s.mark_harness_session_resumed("h-last", "carried on by run run-d")
+                .unwrap()
+        );
+        assert_eq!(
+            s.held_harness_session_for_job("job-1").unwrap().unwrap().id,
+            "h-first"
+        );
+        assert!(
+            s.mark_harness_session_resumed("h-first", "not carried on: run run-d started over")
+                .unwrap()
+        );
+        assert!(s.held_harness_session_for_job("job-1").unwrap().is_none());
     }
 
     #[test]

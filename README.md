@@ -2303,7 +2303,20 @@ rather than a number when the vendor did not say - and a run whose provider
 reports no cost is bounded by the other two budgets alone. Whichever budget
 trips ends the
 run with `cost_limit`, `step_limit` or `time_limit` and a one-line reason on
-the session (`stopped at the cost budget: 2.10 of 2`).
+the session (`stopped at the cost budget: 2.10 of 2`). A run the step budget
+stops with work in its clone - commits since the base, uncommitted edits or
+new files - is not failed on a task cut off mid-way: the run settles `held`
+the way a run the runner's restart holds does (below), its job returns to
+the queue with the attempt refunded and the clone kept, and the job's next
+run - the same agent, which the runner dispatches first - carries the
+conversation on in that clone with a fresh step budget and a note saying it
+stopped at the budget, that this is the only continuation the job gets, and
+to finish from where it stands without widening the scope. A job gets that
+hold once: a second stop at the budget is judged and recovered as before
+(`step_limit` in the failure class, the corrected brief carrying the stop's
+reason).
+A stop with nothing in the clone, under a custom worker command or on a
+remote executor is judged as it stands.
 
 **Context discipline.** Command output is what fills a context window, so
 the harness keeps only the last `harness.keep_observations` (5; Settings →
@@ -2905,6 +2918,9 @@ each on by itself, so a chat mid-work needs no "continue" after an update
 that brings the hub down cannot loop). A daemon older than this build does
 not hear the ask and restarts once its runs finish, as before; the console
 shows the ask as pending only while the running daemon started before it.
+The same hold carries a run on that the step budget (`harness.max_steps`)
+stopped with work in its clone, once per job, with a continuation note of
+its own (see **Three budgets** under the harness).
 
 A conversation whose turn a transport `provider_error` cut short (a failed
 send or a broken reply body) resumes once by itself after

@@ -19,6 +19,14 @@ pub(crate) const MAX_ATTEMPTS: i32 = 3;
 /// not hold and had to cut when the hold cap ran out.
 pub(crate) const LOST_RUN_SUMMARY: &str = "the runner stopped while this run was in progress";
 
+/// The note on a harness session held because its run stopped at the step
+/// budget with work in the clone; `continuation_message` reads it back to
+/// tell the carried-on run why it stopped.
+pub(crate) const STEP_BUDGET_HELD_REASON: &str = "held: stopped at the step budget with work in the clone; the next run carries on from here with a fresh budget";
+/// The opening words of a held run's summary after a step-budget stop; a
+/// job gets that hold once, and the count of such runs says whether it had it.
+const STEP_BUDGET_HELD_SUMMARY: &str = "stopped at the step budget";
+
 /// What a run carries on from when its job's earlier run was held for the
 /// runner's restart: the held harness session (its trajectory holds the
 /// conversation) and the base the clone was made from.
@@ -97,10 +105,41 @@ fn resumable_held_run(
 /// The opening message of a run that carries a held run on; the brief is
 /// already in the carried conversation, so this is what changed since.
 fn continuation_message(run_id: &str, held: &HeldResume, clone: &str) -> String {
+    if held.session.error.starts_with(STEP_BUDGET_HELD_REASON) {
+        return format!(
+            "Your earlier session {} ({} steps), whose conversation is above, stopped at the step budget before the task was finished; this is run {run_id}, carrying it on with a fresh step budget - the only continuation this job gets. The checkout at {clone} is the same one, with the commits you made and your uncommitted edits; a command that was running when you stopped did not finish, so run it again. Read a file again before relying on what you saw of it, do not start over and do not widen the scope: finish the task from where it stands with the same report rules - the targeted check, the commit, the SUMMARY line - and commit what passes before the budget notice comes, so finished work lands even if the rest does not.",
+            held.session.id, held.session.steps
+        );
+    }
     format!(
         "The runner restarted for an update while you worked; this is run {run_id}, carrying on your earlier session {} ({} steps) whose conversation is above. The checkout at {clone} is the same one, with your uncommitted edits and the commits you made; a command that was running when you stopped did not finish, so run it again. Read a file again before relying on what you saw of it, do not start over, and finish the task with the same report rules. This run has a fresh step budget.",
         held.session.id, held.session.steps
     )
+}
+
+/// Whether the worker's exit is the harness stopping at the step budget
+/// (`harness.max_steps`): exit code 1 with the harness's own stop report,
+/// not a timeout, a cancel or a verdict of the worker's.
+pub(crate) fn step_budget_stop(timeout: bool, exit_code: i32, summary: &str) -> bool {
+    !timeout
+        && exit_code == 1
+        && summary.trim_start().starts_with(&format!(
+            "harness stopped: {}",
+            pulse_store::HARNESS_STEP_LIMIT
+        ))
+}
+
+/// Whether a run of `job_id` already held at the step budget: the hold is
+/// given once per job, so a task two budgets cannot finish is judged and
+/// recovered as before instead of being carried on without end.
+fn step_budget_carried_on(c: &(impl crate::util::Querier + ?Sized), job_id: &str) -> bool {
+    crate::util::must_one(
+        c,
+        "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'held' AND summary LIKE ?",
+        &[&job_id, &format!("{STEP_BUDGET_HELD_SUMMARY}%")],
+    )
+    .int("n")
+        > 0
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1212,6 +1251,59 @@ pub(crate) fn run_job(
                 current_job.str("status"),
                 current_job.str("result")
             ));
+        }
+        // The step budget stopped the worker with work in the clone: the
+        // run is not judged on a task cut off mid-way. Like one the runner's
+        // restart held, it holds, and the next run of the job - the same
+        // agent, the same clone, the conversation carried on - gets a fresh
+        // budget to finish. Once per job: a second stop is judged and
+        // recovered as before. A custom worker or a remote executor keeps
+        // no session or clone to carry on, so it is judged as it stands.
+        if step_budget_stop(out.timeout, out.exit_code, &parsed.summary)
+            && !custom_worker
+            && !ex.remote()
+            && worker_reported.is_empty()
+            && !owner_cancelled.load(Ordering::SeqCst)
+            && !step_budget_carried_on(&*c, &job.str("id"))
+        {
+            let made = ex.commit_count(&base);
+            let left = ex.dirty();
+            let new = ex.untracked();
+            if made > 0 || !left.trim().is_empty() || !new.trim().is_empty() {
+                match s.hold_step_limit_harness_session(
+                    &run_id,
+                    &job.str("id"),
+                    STEP_BUDGET_HELD_REASON,
+                ) {
+                    Ok(Some(h)) => {
+                        let mut kept = vec![format!("{made} commit(s)")];
+                        if !left.trim().is_empty() {
+                            kept.push("uncommitted edits".into());
+                        }
+                        if !new.trim().is_empty() {
+                            kept.push("new files".into());
+                        }
+                        status = "held".into();
+                        summary = format!(
+                            "{STEP_BUDGET_HELD_SUMMARY} after {} steps with {} in the clone; the next run carries on from harness session {} with a fresh budget",
+                            h.steps,
+                            kept.join(", "),
+                            h.id
+                        );
+                        log.put(&summary);
+                        return Ok(());
+                    }
+                    Ok(None) => log.add(
+                        "stopped at the step budget with work in the clone, but no harness session with a trajectory to carry on; judged as it stands",
+                    ),
+                    Err(e) => log.add(format!(
+                        "stopped at the step budget with work in the clone; the hold failed ({}); judged as it stands",
+                        err_message(&e)
+                    )),
+                }
+            } else {
+                log.add("stopped at the step budget with nothing in the clone: no hold, judged as it stands");
+            }
         }
         let lease_ok = |mins: i32| -> bool {
             if !worker_reported.is_empty() {
@@ -3993,6 +4085,134 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn step_budget_stop_is_the_harness_step_limit_exit_alone() {
+        let stopped = "harness stopped: step_limit after 150 model calls and 158 commands; format_errors=0; error: stopped at the step budget: 150 model calls";
+        assert!(step_budget_stop(false, 1, stopped));
+        assert!(step_budget_stop(false, 1, &format!("  {stopped}")));
+        // A timeout, another exit code, or another stop reason is not it.
+        assert!(!step_budget_stop(true, 1, stopped));
+        assert!(!step_budget_stop(false, 0, stopped));
+        assert!(!step_budget_stop(false, 75, stopped));
+        assert!(!step_budget_stop(
+            false,
+            1,
+            "harness stopped: time_limit after 40 model calls and 30 commands; format_errors=0"
+        ));
+        assert!(!step_budget_stop(
+            false,
+            1,
+            "failed: the check is red and I could not fix it"
+        ));
+        assert!(!step_budget_stop(false, 1, ""));
+    }
+
+    #[test]
+    fn run_job_judges_a_custom_workers_step_limit_report_without_a_hold() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, _root) = new_repo(&s);
+        let job = staged_work_job(&s);
+        // The worker leaves work in the clone and stops as the harness would
+        // at the step budget; a custom worker has no session to carry on.
+        let worker = "printf 'partial\\n' >> README.md && echo 'SUMMARY: harness stopped: step_limit after 2 model calls and 1 commands; format_errors=0' && exit 1";
+        let r = run_job(
+            &s,
+            job.clone(),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}");
+        assert!(
+            r.str("summary")
+                .starts_with("worker exited 1: harness stopped: step_limit"),
+            "run: {r:?}"
+        );
+        assert!(
+            crate::test_helpers::work_leftovers(&s.home).is_empty(),
+            "clone kept for a run that is not held"
+        );
+        assert!(
+            s.held_harness_session_for_job(&job.str("id"))
+                .unwrap()
+                .is_none()
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+        assert_eq!(j.str("status"), "failed", "job: {j:?}");
+    }
+
+    #[test]
+    fn a_step_budget_hold_is_given_once_and_opens_with_its_own_continuation() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let c = s.conn().unwrap();
+        assert!(!step_budget_carried_on(&c, "job-x"));
+        // A restart's hold on the job is not the step budget's.
+        crate::util::exec1(
+            &c,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, summary) VALUES ('run-r', 'job-x', 'aurora', 'proj', ?, 'held', 'held for the runner''s restart after 12 steps; the next run carries on from harness session h-r')",
+            &[&TEST_NOW],
+        );
+        assert!(!step_budget_carried_on(&c, "job-x"));
+        crate::util::exec1(
+            &c,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, summary) VALUES ('run-s', 'job-x', 'aurora', 'proj', ?, 'held', ?)",
+            &[
+                &TEST_NOW,
+                &format!(
+                    "{STEP_BUDGET_HELD_SUMMARY} after 150 steps with 3 commit(s) in the clone; the next run carries on from harness session h-s with a fresh budget"
+                ),
+            ],
+        );
+        assert!(step_budget_carried_on(&c, "job-x"));
+        assert!(!step_budget_carried_on(&c, "job-y"));
+
+        // The carried-on run is told why it stopped and what not to do.
+        let held = HeldResume {
+            session: pulse_store::HarnessSession {
+                id: "h-s".into(),
+                steps: 150,
+                error: STEP_BUDGET_HELD_REASON.into(),
+                ..Default::default()
+            },
+            base: "abc".into(),
+        };
+        let opening = continuation_message("run-next", &held, "/work/job-x");
+        assert!(
+            opening.contains("earlier session h-s (150 steps)"),
+            "{opening}"
+        );
+        assert!(opening.contains("stopped at the step budget"), "{opening}");
+        assert!(
+            opening.contains("the only continuation this job gets"),
+            "{opening}"
+        );
+        assert!(opening.contains("do not widen the scope"), "{opening}");
+        assert!(opening.contains("/work/job-x"), "{opening}");
+        assert!(!opening.contains("restarted for an update"), "{opening}");
+        let restart = HeldResume {
+            session: pulse_store::HarnessSession {
+                id: "h-r".into(),
+                steps: 12,
+                error: "held: the runner restarts and the next run carries on from here".into(),
+                ..Default::default()
+            },
+            base: "abc".into(),
+        };
+        let opening = continuation_message("run-next", &restart, "/work/job-x");
+        assert!(opening.contains("restarted for an update"), "{opening}");
+        assert!(!opening.contains("step budget before"), "{opening}");
     }
 
     /// A held session of `job` by `agent` from run `run`, with the
