@@ -5,20 +5,20 @@ use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use pulse_provider::sse::{StreamMode, stream_chat_completion, stream_mode_after};
 use pulse_provider::{
     BodyReadError, CancelToken, DEVICE_COMPLETE, DEVICE_DENIED, DEVICE_EXPIRED, DEVICE_PENDING,
-    DEVICE_SLOW_DOWN, DeviceFlow, DeviceLogin, ERROR_BODY_LIMIT_BYTES, Login, LoginExporter,
-    Logouter, Message, Model, Options, Provider, ProviderError, Request, Response, Role,
-    TokenLogin, Usage, default_http_client, err_not_logged_in, is_not_logged_in, is_retryable,
-    private_provider_path, provider_error, provider_max_body_bytes, provider_retry_after_cap,
-    read_body_capped, read_body_up_to, read_private_json, redact as provider_redact,
-    register as register_provider, remember_secret, retry_after_hint, retry_wait, squeeze,
-    write_private_json,
+    DEVICE_SLOW_DOWN, DeviceFlow, DeviceLogin, ERROR_BODY_LIMIT_BYTES, ImageContent, Login,
+    LoginExporter, Logouter, Message, Model, Options, Provider, ProviderError, Request, Response,
+    Role, TokenLogin, Usage, default_http_client, err_not_logged_in, is_not_logged_in,
+    is_retryable, private_provider_path, provider_error, provider_max_body_bytes,
+    provider_retry_after_cap, read_body_capped, read_body_up_to, read_private_json,
+    redact as provider_redact, register as register_provider, remember_secret, retry_after_hint,
+    retry_wait, squeeze, write_private_json,
 };
 use rand::RngExt;
 use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -1143,8 +1143,10 @@ struct EditorHost {
 struct OpenAIMessage {
     #[serde(rename = "role")]
     role: Role,
+    /// Plain string content, or text + image_url content parts when the
+    /// message carries images.
     #[serde(rename = "content", skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<Value>,
     #[serde(rename = "tool_calls", default, skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<OpenAIToolCall>,
     #[serde(
@@ -1298,11 +1300,7 @@ fn open_ai_request(req: &Request) -> OpenAIChatRequest {
     for m in &req.messages {
         let mut om = OpenAIMessage {
             role: m.role.clone(),
-            content: if m.content.is_empty() {
-                None
-            } else {
-                Some(m.content.clone())
-            },
+            content: open_ai_content(&m.content, &m.images),
             tool_calls: Vec::new(),
             tool_call_id: m.tool_call_id.clone(),
             name: m.name.clone(),
@@ -1336,6 +1334,30 @@ fn open_ai_request(req: &Request) -> OpenAIChatRequest {
         out.tool_choice = "auto".to_string();
     }
     out
+}
+
+/// Content in the shape Copilot's OpenAI-compatible endpoint accepts: a
+/// plain string while the message is text-only, or an array of content
+/// parts (text + image_url data: URLs) once images ride along.
+fn open_ai_content(text: &str, images: &[ImageContent]) -> Option<Value> {
+    if images.is_empty() {
+        return if text.is_empty() {
+            None
+        } else {
+            Some(Value::String(text.to_string()))
+        };
+    }
+    let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+    if !text.is_empty() {
+        parts.push(json!({ "type": "text", "text": text }));
+    }
+    for img in images {
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:{};base64,{}", img.media_type, img.data) },
+        }));
+    }
+    Some(Value::Array(parts))
 }
 
 #[derive(Deserialize)]
@@ -2039,6 +2061,64 @@ mod tests {
         });
         let got = serde_json::to_value(thinking).unwrap();
         assert_eq!(got["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn request_serializes_images_as_content_parts() {
+        // Text plus image becomes text + image_url content parts.
+        let req = open_ai_request(&Request {
+            model: "gpt-4o".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: "what is in this image?".to_string(),
+                images: vec![ImageContent {
+                    media_type: "image/png".to_string(),
+                    data: "aGVsbG8=".to_string(),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let v = serde_json::to_value(&req).expect("request serializes");
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                { "type": "text", "text": "what is in this image?" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,aGVsbG8=" } }
+            ])
+        );
+        // An image-only message keeps content as just the image parts.
+        let req = open_ai_request(&Request {
+            model: "gpt-4o".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                images: vec![ImageContent {
+                    media_type: "image/jpeg".to_string(),
+                    data: "AAEC".to_string(),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let v = serde_json::to_value(&req).expect("request serializes");
+        assert_eq!(
+            v["messages"][0]["content"],
+            json!([
+                { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,AAEC" } }
+            ])
+        );
+        // Text-only messages keep the plain string content.
+        let req = open_ai_request(&Request {
+            model: "gpt-4o".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: "hi".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let v = serde_json::to_value(&req).expect("request serializes");
+        assert_eq!(v["messages"][0]["content"], json!("hi"));
     }
 
     #[test]
