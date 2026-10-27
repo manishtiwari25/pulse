@@ -1134,6 +1134,8 @@ pub(crate) fn tend_tasks(
             // A review ends on its own when the work goes on: a job queued
             // or running, or a branch waiting to land, means the lead took
             // the owner's answer up. A later job that finished closes it.
+            // One the lead stopped on purpose, with nothing failed, stands:
+            // its own message holds the ask.
             if status == "review" {
                 if active > 0 || tally.waiting > 0 {
                     match pulse_tasks::set_status(s, &t.id, "in_progress", &actor) {
@@ -1147,7 +1149,32 @@ pub(crate) fn tend_tasks(
                     }
                     continue;
                 }
-                if !(failed == 0 || tally.fixed) {
+                if failed == 0 {
+                    continue;
+                }
+                if !tally.fixed {
+                    // A job failed while the task already sat in review
+                    // (queued from an earlier answer): said nowhere, the
+                    // chat's last word stays a stale "queued" and the owner
+                    // cannot tell what the review is for. Tell it once, in
+                    // the lead's name, with the choices.
+                    if !lead_spoke_since(s, t.id.clone(), lead.clone(), tally.last_failed.clone()) {
+                        let told = format!(
+                            "{} at it failed and I have no new way forward on my own",
+                            tries(failed)
+                        );
+                        match tell_owner(s, &t, &lead, "review", &told, &tally) {
+                            Ok(()) => lines.push(format!(
+                                "task {} still in review: told the owner of {} failed job(s)",
+                                t.id, failed
+                            )),
+                            Err(e) => lines.push(format!(
+                                "task {}: owner not told: {}",
+                                t.id,
+                                crate::run::err_message(&e)
+                            )),
+                        }
+                    }
                     continue;
                 }
             }
@@ -1189,7 +1216,8 @@ pub(crate) fn tend_tasks(
                     "review".to_string(),
                     format!("{} jobs failed; the owner decides how to go on", failed),
                     format!(
-                        "{failed} tries at it failed in a row and I have no new way forward on my own"
+                        "{} at it failed in a row and I have no new way forward on my own",
+                        tries(failed)
                     ),
                 )
             } else {
@@ -1227,9 +1255,8 @@ pub(crate) fn tend_tasks(
                         follow_up.str("id")
                     ),
                     format!(
-                        "{} {} failed and my follow-up found nothing else worth trying",
-                        failed,
-                        plural(failed, "try")
+                        "{} failed and my follow-up found nothing else worth trying",
+                        tries(failed)
                     ),
                 )
             };
@@ -1310,6 +1337,15 @@ pub(crate) fn tend_tasks(
     lines
 }
 
+/// "1 try" or "3 tries": the lead's word for a failed job in the chat.
+fn tries(n: i32) -> String {
+    if n == 1 {
+        "1 try".into()
+    } else {
+        format!("{n} tries")
+    }
+}
+
 /// When the owner last wrote on the task (empty: never).
 fn owner_spoke_at(s: &pulse_store::Store, task_id: String) -> String {
     let Ok(conn) = s.conn() else {
@@ -1326,12 +1362,30 @@ fn owner_spoke_at(s: &pulse_store::Store, task_id: String) -> String {
 /// Whether the lead wrote on the task after `since`: it answered the owner
 /// without queueing work, so the next word is the owner's again.
 fn lead_spoke_after(s: &pulse_store::Store, task_id: String, lead: String, since: String) -> bool {
+    lead_spoke(s, task_id, lead, since, ">")
+}
+
+/// Whether the lead wrote on the task at or after `since`: the ask the
+/// daemon writes the second a job fails postdates that failure.
+fn lead_spoke_since(s: &pulse_store::Store, task_id: String, lead: String, since: String) -> bool {
+    lead_spoke(s, task_id, lead, since, ">=")
+}
+
+fn lead_spoke(
+    s: &pulse_store::Store,
+    task_id: String,
+    lead: String,
+    since: String,
+    cmp: &str,
+) -> bool {
     let Ok(conn) = s.conn() else {
         return false;
     };
     !must_one(
         &conn,
-        "SELECT 1 AS x FROM messages WHERE task_id = ? AND author = ? AND at > ? LIMIT 1",
+        &format!(
+            "SELECT 1 AS x FROM messages WHERE task_id = ? AND author = ? AND at {cmp} ? LIMIT 1"
+        ),
         &[&task_id, &lead, &since],
     )
     .0

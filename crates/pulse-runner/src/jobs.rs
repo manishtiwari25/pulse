@@ -4205,6 +4205,142 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert_eq!(asks, 2, "{msgs:?}");
     }
 
+    // TASK-038's shape: the task already sat in review when the job queued
+    // from the owner's answer died, so no status moved and the chat's last
+    // word stayed "queued". The daemon tells the owner once, with the
+    // choices; a review the lead chose with nothing failed is left alone.
+    #[test]
+    fn a_job_that_fails_under_a_standing_review_is_told_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let task = pulse_tasks::new(
+            &s,
+            "proj",
+            "Vision",
+            "see images",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let chosen = pulse_tasks::new(
+            &s,
+            "proj",
+            "Chosen stop",
+            "a decision",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let run = |title: &str, source: &str, outcome: &str| {
+            let j = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                title.into(),
+                1,
+                50,
+                source.into(),
+                "proj-lead".into(),
+                false,
+            )
+            .unwrap()
+            .0;
+            crate::jobs::lease_job(
+                &s,
+                "w1".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: j.str("id"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crate::jobs::finish_job(
+                &s,
+                j.str("id"),
+                "w1".into(),
+                outcome.into(),
+                format!("{title}: {outcome}"),
+                "".into(),
+                -1,
+            )
+            .unwrap();
+            j.str("id")
+        };
+        // The lead's own stop: one job landed, then a question for the owner.
+        run("Chosen 1", &format!("task:{}", chosen.id), "done");
+        pulse_tasks::set_status(&s, &chosen.id, "in_progress", "daemon").unwrap();
+        pulse_tasks::set_status(&s, &chosen.id, "review", "proj-lead").unwrap();
+        pulse_tasks::reply(&s, &chosen.id, "proj-lead", "Which name?").unwrap();
+        // The owner's task: queued, in progress, in review before this rule
+        // existed; the lead's "queued" (08:30) is the chat's last word, and
+        // the job it names died at 09:00 (the store's clock stands at 10:00,
+        // so the ask the daemon writes postdates the failure).
+        let early = run("Vision 0", &format!("task:{}", task.id), "failed");
+        pulse_tasks::set_status(&s, &task.id, "in_progress", "daemon").unwrap();
+        pulse_tasks::set_status(&s, &task.id, "review", "daemon").unwrap();
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-queued-1', 'proj', ?, 'proj-lead', 'Queued job 1 of 2.', '2026-09-06T08:30:00Z', '[\"proj-lead\"]')",
+            &[&task.id],
+        );
+        let late = run("Vision 1/2", &format!("task:{}:vision", task.id), "failed");
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET created_at = '2026-09-06T07:00:00Z', finished_at = '2026-09-06T07:30:00Z' WHERE id = ?",
+            &[&early],
+        );
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET created_at = '2026-09-06T08:45:00Z', finished_at = '2026-09-06T09:00:00Z' WHERE id = ?",
+            &[&late],
+        );
+        let lines = crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&task.id) && l.contains("still in review")),
+            "{lines:?}"
+        );
+        assert_eq!(pulse_tasks::get(&s, &task.id).unwrap().0.status, "review");
+        let asks = |id: &str| {
+            pulse_tasks::messages(&s, "proj", id, "", "")
+                .unwrap()
+                .into_iter()
+                .filter(|m| m.author == "proj-lead" && !m.choices.is_empty())
+                .collect::<Vec<_>>()
+        };
+        let told = asks(&task.id);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(
+            told[0].body.contains("2 tries at it failed")
+                && told[0].body.contains("Vision 1/2: failed"),
+            "{}",
+            told[0].body
+        );
+        // The ask postdates the failure: no second one on the next tick.
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(asks(&task.id).len(), 1);
+        // The lead's deliberate stop keeps its own question and its status.
+        assert_eq!(pulse_tasks::get(&s, &chosen.id).unwrap().0.status, "review");
+        assert!(asks(&chosen.id).is_empty());
+        let chosen_msgs = pulse_tasks::messages(&s, "proj", &chosen.id, "", "").unwrap();
+        assert_eq!(chosen_msgs.len(), 1, "{chosen_msgs:?}");
+    }
+
     #[test]
     fn parked_tasks_wake_the_lead_on_a_doubling_schedule() {
         let _serial = crate::test_helpers::serial();
