@@ -1365,6 +1365,11 @@ export interface ConversationMessage {
   role: ConversationRole | string;
   content: string;
   extra: Record<string, unknown>;
+  // Delivery state of an owner message: "sent", "seen" (an agent read it) or
+  // "answered" (a reply follows). Stores that do not track it omit the field.
+  status?: string;
+  // When an agent first read the message; only set once it was seen.
+  seen_at?: string;
 }
 
 export interface ChatArtifact {

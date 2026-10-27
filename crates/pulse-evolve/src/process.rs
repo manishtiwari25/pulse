@@ -258,6 +258,14 @@ pub(crate) fn isolated_env(home: &str) -> Vec<String> {
     env
 }
 
+/// The recipe's CARGO_TARGET_DIR when the daemon runs with one that already
+/// exists; `None` keeps the per-home cache so a bare environment stays isolated.
+pub(crate) fn inherited_cargo_target_dir() -> Option<String> {
+    let dir = std::env::var("CARGO_TARGET_DIR").ok()?;
+    let path = Path::new(&dir);
+    (path.is_absolute() && path.is_dir()).then_some(dir)
+}
+
 const MEASUREMENT_CACHE_KEYS: &[&str] = &[
     "CARGO_TARGET_DIR",
     "npm_config_cache",
@@ -269,7 +277,26 @@ const MEASUREMENT_CACHE_KEYS: &[&str] = &[
 ];
 
 pub(crate) fn prepare_measurement_caches(home: &str) -> std::io::Result<()> {
-    for (_, dir) in measurement_cache_dirs(home) {
+    for (key, dir) in measurement_cache_dirs(home) {
+        // Reuse the recipe's already-built dependencies: an empty per-home
+        // cargo target rebuilt the whole workspace for every fixture clone,
+        // and those rebuilds queued behind the single verify lock until the
+        // job timed out. The per-home path stays the one the scorer sees;
+        // it just points at the shared target so only the clone's own
+        // crates (whose source paths differ) recompile.
+        if key == "CARGO_TARGET_DIR"
+            && let Some(shared) = inherited_cargo_target_dir()
+            && std::fs::symlink_metadata(&dir).is_err()
+        {
+            if let Some(parent) = dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&shared, &dir)?;
+                continue;
+            }
+        }
         std::fs::create_dir_all(dir)?;
     }
     Ok(())
@@ -559,6 +586,28 @@ mod tests {
             assert!(value.ends_with(suffix), "{key}={value}");
             assert!(std::path::Path::new(value).is_dir(), "{key}={value}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn measurement_cargo_target_reuses_the_recipe_target_dir() {
+        let _guard = crate::test_helpers_e2::e2_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared-target");
+        std::fs::create_dir_all(&shared).unwrap();
+        let home = dir.path().join("home");
+        crate::test_helpers_e2::set_env("CARGO_TARGET_DIR", &shared.display().to_string());
+        let result = prepare_measurement_caches(&home.display().to_string());
+        crate::test_helpers_e2::unset_env("CARGO_TARGET_DIR");
+        result.unwrap();
+        let link = home.join("build").join("cargo-target");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "per-home target links to the recipe's"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), shared);
+        assert!(home.join("build").join("npm-cache").is_dir());
     }
 
     #[test]

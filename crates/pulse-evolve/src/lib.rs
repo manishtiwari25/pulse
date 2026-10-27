@@ -77,6 +77,8 @@ pub(crate) mod test_helpers;
 #[cfg(test)]
 pub(crate) mod test_helpers_cycle;
 #[cfg(test)]
+pub(crate) mod test_helpers_e2;
+#[cfg(test)]
 pub(crate) mod test_helpers_measure;
 #[cfg(test)]
 pub(crate) mod test_helpers_plan;
