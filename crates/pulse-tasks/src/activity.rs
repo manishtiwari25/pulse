@@ -655,7 +655,13 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
                 "status" => {
                     item.title = field("from");
                     item.status = field("to");
-                    item.text = clip(&field("message"), TEXT_CAP).0;
+                    // An owner's reply moves a review back to in progress and
+                    // the event names the message; the message is already a
+                    // line of its own, so the id would only repeat it.
+                    let message = field("message");
+                    if !message.starts_with("MSG-") {
+                        item.text = clip(&message, TEXT_CAP).0;
+                    }
                 }
                 "lead" => {
                     item.title = field("lead");
