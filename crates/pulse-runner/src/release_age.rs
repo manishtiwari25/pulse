@@ -138,10 +138,13 @@ impl Registry for MapRegistry {
     }
 }
 
+/// version -> published for one package, or why the registry had no answer.
+type Doc = Result<BTreeMap<String, String>, String>;
+
 /// The public registries, one HTTP document per package per process.
 #[derive(Default)]
 pub(crate) struct HttpRegistry {
-    docs: RefCell<BTreeMap<(Ecosystem, String), Result<BTreeMap<String, String>, String>>>,
+    docs: RefCell<BTreeMap<(Ecosystem, String), Doc>>,
 }
 
 static CLIENT: LazyLock<Option<reqwest::blocking::Client>> = LazyLock::new(|| {
@@ -383,10 +386,10 @@ pub(crate) fn published_at(
     version: &str,
 ) -> Result<Option<String>, String> {
     let key = cache_key(eco, name, version);
-    if let Ok((v, true)) = s.meta(&key) {
-        if !v.is_empty() {
-            return Ok(Some(v));
-        }
+    if let Ok((v, true)) = s.meta(&key)
+        && !v.is_empty()
+    {
+        return Ok(Some(v));
     }
     let at = reg.published_at(eco, name, version)?;
     if let (Some(at), Ok(conn)) = (&at, s.conn()) {
@@ -396,6 +399,20 @@ pub(crate) fn published_at(
         );
     }
     Ok(at)
+}
+
+/// The publish time of `version` of `name` when a registry answered before
+/// (`published_at` caches it); never asks a registry.
+pub(crate) fn cached_published_at(
+    s: &pulse_store::Store,
+    eco: Ecosystem,
+    name: &str,
+    version: &str,
+) -> Option<String> {
+    match s.meta(&cache_key(eco, name, version)) {
+        Ok((v, true)) if !v.is_empty() => Some(v),
+        _ => None,
+    }
 }
 
 /// Days from `published_at` to `now`, fractional; negative for a clock ahead of the registry.
@@ -501,6 +518,7 @@ pub(crate) struct Candidate {
 /// minor for `0.x`), at least `floor`, and published `min_days` or more before
 /// `now`. `None` when nothing qualifies yet; `Err` when the registry could not
 /// answer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn newest_eligible(
     s: &pulse_store::Store,
     reg: &dyn Registry,
@@ -759,14 +777,14 @@ pub(crate) fn verdict(
     min_days: i32,
 ) -> AgeVerdict {
     for p in pins {
-        if let Some(prev) = &p.previous {
-            if compat_key(prev) != compat_key(&p.version) {
-                return AgeVerdict::MajorJump {
-                    name: p.name.clone(),
-                    from: prev.clone(),
-                    to: p.version.clone(),
-                };
-            }
+        if let Some(prev) = &p.previous
+            && compat_key(prev) != compat_key(&p.version)
+        {
+            return AgeVerdict::MajorJump {
+                name: p.name.clone(),
+                from: prev.clone(),
+                to: p.version.clone(),
+            };
         }
     }
     let mut wait: Option<AgeVerdict> = None;
@@ -1054,7 +1072,7 @@ mod tests {
             previous: Some("16.4.1".into()),
         };
         assert_eq!(
-            verdict(&s, &r, Ecosystem::Npm, &[old.clone()], NOW, 3),
+            verdict(&s, &r, Ecosystem::Npm, std::slice::from_ref(&old), NOW, 3),
             AgeVerdict::Ready
         );
         let v = verdict(
