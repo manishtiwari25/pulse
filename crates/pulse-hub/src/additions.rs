@@ -16,6 +16,9 @@ pub(crate) static ADDITION_WRITES: Mutex<()> = Mutex::new(());
 pub(crate) const ADDITION_TASK_COLUMNS: &str = "t.id,t.project,t.title,t.status,t.priority,t.lead,t.job_id,t.created_by,t.created_at,t.updated_at,t.current_rev,rv.brief";
 pub(crate) const ADDITION_TASK_FROM: &str =
     " FROM tasks t JOIN task_revisions rv ON rv.task_id=t.id AND rv.rev=t.current_rev";
+/// The message columns the hub returns; `choices` is stored as JSON text and
+/// handed out as an array (see `addition_messages_rows`).
+pub(crate) const ADDITION_MESSAGE_COLUMNS: &str = "id,project,task_id,author,body,at,choices";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AdditionEvent {
@@ -144,6 +147,28 @@ impl Handler {
         self.query_rows(&r.ctx, query, args)
     }
 
+    /// Message rows with `choices` parsed from its JSON text into an array,
+    /// so the hub renders the answers as buttons without parsing.
+    pub(crate) fn addition_messages_rows(
+        &self,
+        r: &Request,
+        query: &str,
+        args: Vec<SqlValue>,
+    ) -> Result<Vec<JsonMap>> {
+        let mut rows = self.addition_rows(r, query, args)?;
+        for row in &mut rows {
+            let parsed = match row.get("choices") {
+                Some(Value::String(text)) => {
+                    serde_json::to_value(pulse_tasks::parse_choices(text))?
+                }
+                Some(Value::Array(a)) => Value::Array(a.clone()),
+                _ => Value::Array(Vec::new()),
+            };
+            row.insert("choices".to_string(), parsed);
+        }
+        Ok(rows)
+    }
+
     pub(crate) fn query_rows(
         &self,
         _ctx: &pulse_bus::CancellationToken,
@@ -229,7 +254,12 @@ impl Handler {
             self.addition_suggested(w, r, parts);
             return;
         }
-        if parts.len() > 3 || (parts.len() == 3 && parts[2] != "amend" && parts[2] != "cancel") {
+        if parts.len() > 3
+            || (parts.len() == 3
+                && parts[2] != "amend"
+                && parts[2] != "cancel"
+                && parts[2] != "status")
+        {
             addition_not_found(w);
             return;
         }
@@ -313,9 +343,11 @@ impl Handler {
                 return;
             }
         };
-        let messages = match self.addition_rows(
+        let messages = match self.addition_messages_rows(
             r,
-            "SELECT id,project,task_id,author,body,at FROM messages WHERE task_id=? ORDER BY rowid",
+            &format!(
+                "SELECT {ADDITION_MESSAGE_COLUMNS} FROM messages WHERE task_id=? ORDER BY rowid"
+            ),
             vec![SqlValue::Text(parts[1].clone())],
         ) {
             Ok(v) => v,
@@ -377,8 +409,7 @@ impl Handler {
             self.addition_message_write(w, r);
             return;
         }
-        let mut query =
-            "SELECT id,project,task_id,author,body,at FROM messages WHERE 1=1".to_string();
+        let mut query = format!("SELECT {ADDITION_MESSAGE_COLUMNS} FROM messages WHERE 1=1");
         let mut args = Vec::new();
         let project = self.addition_project(r);
         if !project.is_empty() {
@@ -395,7 +426,7 @@ impl Handler {
             query.push_str(" AND rowid>(SELECT rowid FROM messages WHERE id=?)");
             args.push(SqlValue::Text(since));
         }
-        let messages = match self.addition_rows(r, &(query + " ORDER BY rowid"), args) {
+        let messages = match self.addition_messages_rows(r, &(query + " ORDER BY rowid"), args) {
             Ok(v) => v,
             Err(e) => {
                 addition_failure(w, e.to_string());
@@ -532,6 +563,10 @@ impl Handler {
             write_json(w, 201, json!({"task": task}));
             return;
         }
+        if parts[2] == "status" {
+            self.addition_task_status(w, r, store, &parts[1], &payload);
+            return;
+        }
         let (title, brief, note, reason, ok) = if parts[2] == "amend" {
             let has_title = payload.contains_key("title");
             let (title, ok1) = addition_string(w, &payload, "title", has_title);
@@ -589,6 +624,86 @@ impl Handler {
         write_json(w, 200, json!({"task": task}));
     }
 
+    /// `POST /api/v1/tasks/{id}/status` `{status, words?}`: the owner moves
+    /// a task on - `done` after picking "good enough", `in_progress` to hand
+    /// a review back to the lead. `words` go to the task's chat first as the
+    /// owner's message, so the lead reads why.
+    fn addition_task_status(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        store: &pulse_store::Store,
+        id: &str,
+        payload: &JsonMap,
+    ) {
+        let (status, ok) = addition_string(w, payload, "status", true);
+        if !ok {
+            return;
+        }
+        if !pulse_tasks::STATUSES.contains(&status.as_str()) {
+            write_error(
+                w,
+                400,
+                "Invalid task status".to_string(),
+                "The requested status is not a task state.".to_string(),
+                "Use open, planned, in_progress, review, done, or cancelled.".to_string(),
+            );
+            return;
+        }
+        let (words, ok) = addition_string(w, payload, "words", false);
+        if !ok {
+            return;
+        }
+        let task = match self.addition_task(r, id) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        let current = addition_row_string(&task, "status");
+        if current == "done" || current == "cancelled" {
+            write_error(
+                w,
+                409,
+                "Task is closed".to_string(),
+                "Completed or cancelled work does not change status.".to_string(),
+                "Create a new task instead.".to_string(),
+            );
+            return;
+        }
+        if !words.trim().is_empty()
+            && let Err(e) =
+                pulse_tasks::send_message(store, "", id, pulse_store::HUMAN_AGENT, &words)
+        {
+            addition_failure(w, e.to_string());
+            return;
+        }
+        // The owner's words may already have moved a review on; only the
+        // remaining step is taken.
+        let now = match pulse_tasks::get(store, id) {
+            Ok((t, _)) => t.status,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        if now != status
+            && let Err(e) = pulse_tasks::set_status(store, id, &status, pulse_store::HUMAN_AGENT)
+        {
+            addition_failure(w, e.to_string());
+            return;
+        }
+        let task = match self.addition_task(r, id) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        write_json(w, 200, json!({"task": task}));
+    }
+
     pub(crate) fn addition_message_write(&self, w: &mut ResponseWriter, r: &Request) {
         let (payload, ok) = crate::server::read_payload(w, r);
         if !ok {
@@ -636,9 +751,9 @@ impl Handler {
                 return;
             }
         };
-        let mut messages = match self.addition_rows(
+        let mut messages = match self.addition_messages_rows(
             r,
-            "SELECT id,project,task_id,author,body,at FROM messages WHERE id=?",
+            &format!("SELECT {ADDITION_MESSAGE_COLUMNS} FROM messages WHERE id=?"),
             vec![SqlValue::Text(message.id)],
         ) {
             Ok(v) => v,
@@ -1978,6 +2093,102 @@ mod tests {
         );
         assert_eq!(status, 200);
         assert_eq!(result["task"]["status"], "cancelled");
+    }
+
+    #[test]
+    fn additions_task_status_and_message_choices() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/tasks",
+            r#"{"project":"one","title":"Owner task","brief":"Build the thing","priority":3}"#,
+        );
+        assert!(status == 200 || status == 201);
+        let id = result["task"]["id"].as_str().unwrap().to_string();
+        for st in ["planned", "in_progress", "review"] {
+            pulse_tasks::set_status(&s.store, &id, st, "one-lead").unwrap();
+        }
+        // The lead's ask carries choices; the API hands them out as an array.
+        pulse_tasks::reply_with_choices(
+            &s.store,
+            &id,
+            "one-lead",
+            "Two tries failed. How do we go on?",
+            &[
+                pulse_tasks::Choice::reply("Try again another way"),
+                pulse_tasks::Choice::with_action("Good enough, close it", "done"),
+            ],
+        )
+        .unwrap();
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200);
+        let messages = arr(&result, "messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["choices"][0]["label"], "Try again another way");
+        assert_eq!(messages[0]["choices"][1]["action"], "done");
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "GET",
+            &format!("/api/v1/messages?project=one&task={id}"),
+            "",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(
+            arr(&result, "messages")[0]["choices"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        // A plain owner message carries no choices and ends the review.
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/messages",
+            &format!(r#"{{"project":"one","task_id":"{id}","body":"Try again another way"}}"#),
+        );
+        assert!(status == 200 || status == 201);
+        assert_eq!(result["message"]["choices"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            pulse_tasks::get(&s.store, &id).unwrap().0.status,
+            "in_progress"
+        );
+        // The owner closes it with words: the words reach the chat first.
+        for (body, want) in [
+            (r#"{"status":"sideways"}"#, 400),
+            (r#"{"status":5}"#, 400),
+            (r#"{"status":"open"}"#, 400),
+        ] {
+            let (status, _) = http::additions_request(
+                http::handler(&s),
+                "POST",
+                &format!("/api/v1/tasks/{id}/status"),
+                body,
+            );
+            assert_eq!(status, want, "{body}");
+        }
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/status"),
+            r#"{"status":"done","words":"Good enough, close it"}"#,
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["task"]["status"], "done");
+        let msgs = pulse_tasks::messages(&s.store, "one", &id, "", "").unwrap();
+        assert_eq!(msgs.last().unwrap().body, "Good enough, close it");
+        assert_eq!(msgs.last().unwrap().author, "human");
+        let (status, _) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/status"),
+            r#"{"status":"in_progress"}"#,
+        );
+        assert_eq!(status, 409);
     }
 
     #[test]

@@ -4006,15 +4006,42 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             review_posts
                 .iter()
                 .any(|p| p.str("summary").contains("3 jobs failed")
-                    && p.str("body").contains("Mark it done")),
+                    && p.str("body").contains("picks an answer in the chat")),
             "review posts: {review_posts:?}"
+        );
+        // The owner hears it in the chat, in the lead's name, with answers to
+        // pick; the review post on the board is for the agents.
+        let asks = pulse_tasks::messages(&s, "proj", &hopeless.id, "", "").unwrap();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks[0].author, "proj-lead");
+        assert!(asks[0].body.contains("I stopped") && asks[0].body.contains("3 tries"));
+        assert_eq!(
+            asks[0]
+                .choices
+                .iter()
+                .map(|c| c.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reply", "done", "amend"]
+        );
+        // A review stays quiet while nothing changes: no second ask.
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::messages(&s, "proj", &hopeless.id, "", "")
+                .unwrap()
+                .len(),
+            1
         );
         crate::util::exec1(
             &*s.conn().unwrap(),
-            "UPDATE jobs SET finished_at = '2026-09-06T09:00:00Z' WHERE id = ?",
-            &[&jobs[1].str("id")],
+            "UPDATE jobs SET finished_at = '2026-09-06T09:00:00Z' WHERE status = 'failed'",
+            &[],
         );
-        let _ = crate::jobs::add_job(
+        let fix = crate::jobs::add_job(
             &s,
             "proj".into(),
             "task".into(),
@@ -4026,7 +4053,156 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "proj-lead".into(),
             false,
         )
+        .unwrap()
+        .0;
+        // Work going on ends the review by itself; the fix landing closes it.
+        let lines = crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::get(&s, &hopeless.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("back in progress")),
+            "{lines:?}"
+        );
+        finish(&fix, "done", "");
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(pulse_tasks::get(&s, &hopeless.id).unwrap().0.status, "done");
+        let closed = pulse_tasks::messages(&s, "proj", &hopeless.id, "", "").unwrap();
+        assert_eq!(closed.len(), 2, "{closed:?}");
+        assert!(closed[1].body.contains("I closed it") && closed[1].choices.is_empty());
+    }
+
+    #[test]
+    fn review_waits_for_the_lead_once_the_owner_answered() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let task = pulse_tasks::new(
+            &s,
+            "proj",
+            "Stubborn",
+            "do it",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
         .unwrap();
+        for name in ["a", "b", "c"] {
+            let j = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                format!("Stubborn {name}"),
+                format!("do {name}"),
+                1,
+                50,
+                format!("task:{}", task.id),
+                "proj-lead".into(),
+                false,
+            )
+            .unwrap()
+            .0;
+            crate::jobs::lease_job(
+                &s,
+                "w1".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: j.str("id"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crate::jobs::finish_job(
+                &s,
+                j.str("id"),
+                "w1".into(),
+                "failed".into(),
+                format!("{name} failed"),
+                "".into(),
+                -1,
+            )
+            .unwrap();
+        }
+        // The failures happened before the owner's answer below.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET created_at = '2026-09-06T08:00:00Z', finished_at = '2026-09-06T09:00:00Z' WHERE project = 'proj'",
+            &[],
+        );
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(pulse_tasks::get(&s, &task.id).unwrap().0.status, "review");
+        // The owner picks the first choice: the review ends, the lead is
+        // next, and the daemon does not ask again meanwhile.
+        pulse_tasks::reply(
+            &s,
+            &task.id,
+            crate::util::HUMAN_AGENT,
+            "Try again another way",
+        )
+        .unwrap();
+        assert_eq!(
+            pulse_tasks::get(&s, &task.id).unwrap().0.status,
+            "in_progress"
+        );
+        let lines = crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            pulse_tasks::get(&s, &task.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        let (owner_msgs, due, _) = crate::lead::lead_due(
+            &s,
+            "proj".into(),
+            "proj-lead".into(),
+            crate::test_helpers::TEST_NOW.into(),
+        )
+        .unwrap();
+        assert!(
+            owner_msgs.iter().any(|m| m.body == "Try again another way"),
+            "the lead reads the answer: {owner_msgs:?} {due:?}"
+        );
+        // The lead answers without queueing anything: the owner is asked
+        // once more, with the choices.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-later-1', 'proj', ?, 'proj-lead', 'I see no other way.', '2026-09-06T11:00:00Z', '[\"proj-lead\"]')",
+            &[&task.id],
+        );
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(pulse_tasks::get(&s, &task.id).unwrap().0.status, "review");
+        let msgs = pulse_tasks::messages(&s, "proj", &task.id, "", "").unwrap();
+        let asks = msgs
+            .iter()
+            .filter(|m| m.author == "proj-lead" && !m.choices.is_empty())
+            .count();
+        assert_eq!(asks, 2, "{msgs:?}");
     }
 
     #[test]

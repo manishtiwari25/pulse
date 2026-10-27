@@ -35,7 +35,8 @@ pub const TASKS_DDL: &[&str] = &[
   author TEXT NOT NULL,
   body TEXT NOT NULL,
   at TEXT NOT NULL,
-  read_by TEXT NOT NULL DEFAULT '[]'  -- JSON list of agent names
+  read_by TEXT NOT NULL DEFAULT '[]', -- JSON list of agent names
+  choices TEXT NOT NULL DEFAULT '[]'  -- JSON list of answers the owner can pick: [{"label": "...", "action": "reply|done|amend"}]
 );"####,
     r####"CREATE INDEX IF NOT EXISTS messages_project_task ON messages (project, task_id, id);"####,
     r####"CREATE TRIGGER IF NOT EXISTS messages_immutable_update BEFORE UPDATE OF id, project, task_id, author, body, at ON messages BEGIN SELECT RAISE(ABORT, 'messages are immutable: send another'); END;"####,
@@ -168,3 +169,12 @@ pub const SCHEDULE_COLUMNS: &[Column] = &[
         ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
     },
 ];
+
+/// Columns added after the messages table shipped: the answers a message
+/// offers the owner to pick from instead of writing. `ensure_records` adds
+/// each one that is missing, so an older store gains them on first open.
+pub const MESSAGE_COLUMNS: &[Column] = &[Column {
+    table: r####"messages"####,
+    name: r####"choices"####,
+    ddl: r####"TEXT NOT NULL DEFAULT '[]'"####,
+}];

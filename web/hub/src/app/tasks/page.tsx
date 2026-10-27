@@ -66,7 +66,7 @@ function summary(scope: Task[]): string {
   if (!active.length) return "No open task right now. Everything you gave the agents is done or cancelled.";
   const review = active.filter((t) => t.status === "review").length;
   const working = active.filter((t) => taskProgress(t).working.length > 0).length;
-  const bits = [review ? (review === 1 ? "1 needs your answer" : review + " need your answer") : "", working ? (working === 1 ? "agents are working on 1 right now" : "agents are working on " + working + " right now") : ""].filter(Boolean);
+  const bits = [review ? (review === 1 ? "1 waits for your decision" : review + " wait for your decision") : "", working ? (working === 1 ? "agents are working on 1 right now" : "agents are working on " + working + " right now") : ""].filter(Boolean);
   return plural(active.length, "open task") + (bits.length ? ": " + andList(bits) + "." : ".");
 }
 

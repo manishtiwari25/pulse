@@ -80,8 +80,8 @@ pub fn set_stdin_for_tests(data: Option<Vec<u8>>) {
 
 pub fn register() {
     REGISTER.call_once(|| {
-        pulse_cli::register(Command { name:"task".into(), group:"agents".into(), summary:"the owner's tasks for a project: new, list, show, amend, cancel, status, reply; and suggested work any agent proposes and another reviews: suggest, suggestions, review, withdraw".into(), usage:"pulse task new --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]\npulse task list [--project P] [--status S] [--json]\npulse task show TASK-NNN|SUG-NNN [--json]\npulse task amend TASK-NNN [--title T] [--brief-file F | --brief TEXT | stdin] [--note WHY]\npulse task cancel TASK-NNN [--reason WHY]\npulse task status TASK-NNN <open|planned|in_progress|review|done|cancelled>\npulse task reply TASK-NNN <text> | --file F\npulse task suggest --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]   (any agent; another one reviews it)\npulse task suggestions [--project P] [--status open|suggested|reviewing|accepted|declined|owner|withdrawn] [--json]\npulse task review SUG-NNN <accept|decline|owner> --reason WHY [--title T] [--brief-file F | --brief TEXT] [--priority N]   (not your own)\npulse task withdraw SUG-NNN [--reason WHY]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_task, flags:Some(task_flags) });
-        pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
+        pulse_cli::register(Command { name:"task".into(), group:"agents".into(), summary:"the owner's tasks for a project: new, list, show, amend, cancel, status, reply; and suggested work any agent proposes and another reviews: suggest, suggestions, review, withdraw".into(), usage:"pulse task new --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]\npulse task list [--project P] [--status S] [--json]\npulse task show TASK-NNN|SUG-NNN [--json]\npulse task amend TASK-NNN [--title T] [--brief-file F | --brief TEXT | stdin] [--note WHY]\npulse task cancel TASK-NNN [--reason WHY]\npulse task status TASK-NNN <open|planned|in_progress|review|done|cancelled>\npulse task reply TASK-NNN <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse task suggest --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]   (any agent; another one reviews it)\npulse task suggestions [--project P] [--status open|suggested|reviewing|accepted|declined|owner|withdrawn] [--json]\npulse task review SUG-NNN <accept|decline|owner> --reason WHY [--title T] [--brief-file F | --brief TEXT] [--priority N]   (not your own)\npulse task withdraw SUG-NNN [--reason WHY]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_task, flags:Some(task_flags) });
+        pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
         pulse_cli::register(Command { name:"compute".into(), group:"agents".into(), summary:"more machines for agents: request (agents), list, approve|deny (the owner)".into(), usage:"pulse compute request --project P [--size S] --hours N --reason WHY\npulse compute list [--project P] [--status S] [--json]\npulse compute approve CR-NNN [--words WHY]   (owner)\npulse compute deny CR-NNN [--words WHY]      (owner)\npulse compute providers [--json]             (the providers this binary can provision with)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_compute, flags:Some(compute_flags) });
         pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
         pulse_cli::register(Command { name:"watch".into(), group:"agents".into(), summary:"stream store events as they happen (Ctrl-C exits 0)".into(), usage:"pulse watch [--project P] [--area A] [--thread T] [--action GLOB] [--since ID] [--detail] [--interval 1s] [--json]".into(), aliases:vec![], no_store:false, read_only:true, raw:false, run:run_watch, flags:Some(watch_flags) });
@@ -145,6 +145,10 @@ fn task_flags(fs: &mut FlagSet) {
     fs.string_var("note", "", "why this revision (amend)");
     fs.string_var("reason", "", "why (cancel, review, withdraw)");
     fs.string_var("file", "", "file holding the reply text (reply)");
+    fs.strings_var(
+        "choice",
+        "an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (reply)",
+    );
 }
 
 fn msg_flags(fs: &mut FlagSet) {
@@ -156,6 +160,10 @@ fn msg_flags(fs: &mut FlagSet) {
         "only messages the acting agent has not read (list)",
     );
     fs.string_var("file", "", "file holding the message text (send)");
+    fs.strings_var(
+        "choice",
+        "an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (send, needs --task)",
+    );
 }
 
 fn compute_flags(fs: &mut FlagSet) {
@@ -252,6 +260,23 @@ fn need(cmd: &str, args: &[String], n: usize, fix: &str) -> Result<()> {
 
 fn printf(c: &mut Context, args: std::fmt::Arguments<'_>) -> Result<()> {
     c.printf(args)?;
+    Ok(())
+}
+
+/// Prints the answers a message offers, one numbered line each, so a reader
+/// of the terminal sees what the hub shows as buttons.
+fn print_choices(c: &mut Context, choices: &[Choice], indent: &str) -> Result<()> {
+    for (i, ch) in choices.iter().enumerate() {
+        let action = if ch.action == "reply" {
+            String::new()
+        } else {
+            format!("  ({})", ch.action)
+        };
+        printf(
+            c,
+            format_args!("{indent}[{}] {}{action}\n", i + 1, ch.label),
+        )?;
+    }
     Ok(())
 }
 
@@ -805,6 +830,7 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     c,
                     format_args!("  {} {} {}: {}\n", m.at, m.id, m.author, m.body),
                 )?;
+                print_choices(c, &m.choices, "    ")?;
             }
             c.println("")?;
             c.println(c.style().bold("JOBS"))?;
@@ -868,11 +894,13 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         "reply" => {
             need("task", rest, 1, "a task id")?;
             let body = read_body(&rest[1..].join(" "), &fs.get_string("file"))?;
-            let m = reply(store(c)?, &rest[0], &actor(c), &body)?;
+            let choices = choices_from_flags(&fs.get_strings("choice"))?;
+            let m = reply_with_choices(store(c)?, &rest[0], &actor(c), &body, &choices)?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &MessageOut { message: &m });
             }
-            printf(c, format_args!("{} sent on {}\n", m.id, m.task_id))
+            printf(c, format_args!("{} sent on {}\n", m.id, m.task_id))?;
+            print_choices(c, &m.choices, "")
         }
         "suggest" => {
             let brief = read_body(&fs.get_string("brief"), &fs.get_string("brief-file"))?;
@@ -992,17 +1020,20 @@ pub fn run_msg(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     match sub.as_str() {
         "send" => {
             let body = read_body(&rest.join(" "), &fs.get_string("file"))?;
-            let m = send_message(
+            let choices = choices_from_flags(&fs.get_strings("choice"))?;
+            let m = send_message_with_choices(
                 store(c)?,
                 &c.project,
                 &fs.get_string("task"),
                 &actor(c),
                 &body,
+                &choices,
             )?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &MessageOut { message: &m });
             }
-            printf(c, format_args!("{} sent in {}\n", m.id, m.project))
+            printf(c, format_args!("{} sent in {}\n", m.id, m.project))?;
+            print_choices(c, &m.choices, "")
         }
         "list" => {
             let unread = if fs.get_bool("unread") {
@@ -1042,6 +1073,7 @@ pub fn run_msg(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                         m.body
                     ),
                 )?;
+                print_choices(c, &m.choices, "  ")?;
             }
             Ok(())
         }

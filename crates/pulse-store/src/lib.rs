@@ -47,7 +47,7 @@ pub use settings::*;
 pub use skills::*;
 pub use store::*;
 pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, task_source_params};
-pub use tasks_ddl::{SCHEDULE_COLUMNS, TASKS_DDL};
+pub use tasks_ddl::{MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASKS_DDL};
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

@@ -180,9 +180,95 @@ fn state_machine() {
     assert_eq!(evs.len(), 1);
     assert!(evs[0].detail.contains(r#""from": "open""#));
     assert!(evs[0].detail.contains(r#""to": "in_progress""#));
+    // The one step back: review goes to in_progress when the work goes on.
+    let r = set_status(&s, &a.id, "review", "demo-lead").unwrap();
+    assert_eq!(r.status, "review");
+    assert!(set_status(&s, &a.id, "planned", "demo-lead").is_err());
+    let back = set_status(&s, &a.id, "in_progress", "demo-lead").unwrap();
+    assert_eq!(back.status, "in_progress");
+    assert!(set_status(&s, &a.id, "review", "demo-lead").is_ok());
     let c = set_status(&s, &a.id, "cancelled", "human").unwrap();
     assert_eq!(c.status, "cancelled");
     assert!(set_status(&s, &a.id, "done", "human").is_err());
+    assert!(set_status(&s, &a.id, "in_progress", "human").is_err());
+}
+
+#[test]
+fn owner_answer_ends_review_and_choices_are_checked() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let a = new(&s, "demo", "T", "", 0, "human").unwrap();
+    for st in ["planned", "in_progress", "review"] {
+        set_status(&s, &a.id, st, "demo-lead").unwrap();
+    }
+    // The lead asks with choices; the message keeps them in order.
+    let ask = reply_with_choices(
+        &s,
+        &a.id,
+        "demo-lead",
+        "Two steps failed. How do we go on?",
+        &[
+            Choice::reply("Try again another way"),
+            Choice::with_action("Good enough, close it", "done"),
+            Choice::with_action("Change what I asked", "amend"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(ask.choices.len(), 3);
+    assert_eq!(
+        (
+            ask.choices[1].label.as_str(),
+            ask.choices[1].action.as_str()
+        ),
+        ("Good enough, close it", "done")
+    );
+    assert_eq!(get_message(&s, &ask.id).unwrap().choices, ask.choices);
+    assert_eq!(get(&s, &a.id).unwrap().0.status, "review");
+    // An agent's message changes nothing; the owner's answer ends the review.
+    reply(&s, &a.id, "demo-lead", "still waiting").unwrap();
+    assert_eq!(get(&s, &a.id).unwrap().0.status, "review");
+    let answer = reply(&s, &a.id, "human", "Try again another way").unwrap();
+    assert!(answer.choices.is_empty());
+    assert_eq!(get(&s, &a.id).unwrap().0.status, "in_progress");
+    let evs = events(&s, "task.status");
+    let last = evs.last().unwrap();
+    assert!(last.detail.contains(r#""from": "review""#));
+    assert!(last.detail.contains(r#""to": "in_progress""#));
+    assert!(
+        last.detail
+            .contains(&format!(r#""message": "{}""#, answer.id))
+    );
+    // The owner writing on a task in progress leaves its status alone.
+    reply(&s, &a.id, "human", "and hurry").unwrap();
+    assert_eq!(get(&s, &a.id).unwrap().0.status, "in_progress");
+    assert_eq!(events(&s, "task.status").len(), evs.len());
+    // Choices the hub could not show are refused.
+    assert!(check_choices(&[Choice::reply("")]).is_err());
+    assert!(check_choices(&[Choice::reply("a".repeat(MAX_CHOICE_LABEL + 1))]).is_err());
+    assert!(check_choices(&[Choice::with_action("x", "explode")]).is_err());
+    assert!(check_choices(&[Choice::reply("Yes"), Choice::reply("yes")]).is_err());
+    let many = (0..=MAX_CHOICES)
+        .map(|i| Choice::reply(format!("c{i}")))
+        .collect::<Vec<_>>();
+    assert!(check_choices(&many).is_err());
+    assert!(
+        send_message_with_choices(&s, "demo", "", "demo-lead", "x", &[Choice::reply("y")]).is_err()
+    );
+    // --choice values: a bare label replies; label=action names the action.
+    let parsed = choices_from_flags(&[
+        "Ship it".into(),
+        "Close it=done".into(),
+        "a=b".into(),
+        "  ".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed
+            .iter()
+            .map(|c| format!("{}:{}", c.label, c.action))
+            .collect::<Vec<_>>(),
+        vec!["Ship it:reply", "Close it:done", "a=b:reply"]
+    );
 }
 
 #[test]
@@ -782,6 +868,51 @@ fn commands_end_to_end() {
     let (mut c, out) = ctx_for(&s, "demo-lead", "", false);
     run_cmd(&mut c, "msg", &["read", msg_id]).unwrap();
     assert!(out.string().contains("1 marked read for demo-lead"));
+    // The lead asks with choices; the terminal lists them, the owner's pick
+    // (a plain reply) ends the review.
+    let (mut c, out) = ctx_for(&s, "demo-lead", "", false);
+    run_cmd(&mut c, "task", &["status", "TASK-001", "review"]).unwrap();
+    run_cmd(
+        &mut c,
+        "task",
+        &[
+            "reply",
+            "TASK-001",
+            "The check fails twice. How do we go on?",
+            "--choice",
+            "Try again another way",
+            "--choice",
+            "Good enough, close it=done",
+        ],
+    )
+    .unwrap();
+    let text = out.string();
+    assert!(text.contains("[1] Try again another way\n"), "{text}");
+    assert!(
+        text.contains("[2] Good enough, close it  (done)\n"),
+        "{text}"
+    );
+    let (mut c, _) = ctx_for(&s, "demo-lead", "demo", false);
+    let err = run_cmd(&mut c, "msg", &["send", "no task", "--choice", "x"]).unwrap_err();
+    assert!(err.to_string().contains("belong to a task"), "{err}");
+    let (mut c, out) = ctx_for(&s, "", "", true);
+    run_cmd(&mut c, "task", &["show", "TASK-001"]).unwrap();
+    let show: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(show["task"]["status"], "review");
+    let msgs = show["messages"].as_array().unwrap();
+    let asked = msgs.last().unwrap();
+    assert_eq!(asked["choices"][1]["action"], "done");
+    let (mut c, _) = ctx_for(&s, "", "", false);
+    run_cmd(
+        &mut c,
+        "task",
+        &["reply", "TASK-001", "Try again another way"],
+    )
+    .unwrap();
+    let (mut c, out) = ctx_for(&s, "", "", true);
+    run_cmd(&mut c, "task", &["show", "TASK-001"]).unwrap();
+    let show: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(show["task"]["status"], "in_progress");
     let (mut c, out) = ctx_for(&s, "demo-lead", "demo", false);
     run_cmd(
         &mut c,

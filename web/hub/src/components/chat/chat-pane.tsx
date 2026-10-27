@@ -11,10 +11,11 @@ import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState } from "@/components/pulse/panel";
 import { Avatar, When } from "@/components/pulse/who";
+import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { writes, type Message, type Task } from "@/lib/api";
+import { writes, type Message, type MessageChoice, type Task } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 
 const SEEN_KEY = "pulse.chat.seen";
@@ -99,11 +100,14 @@ function dayLabel(at: string): string {
 // arrived since this browser last looked. Enter sends (Shift+Enter for a new
 // line; on a touch screen the return key is a new line and Send sends); a
 // message sent with `taskId` is pinned to that task. The send wakes the lead.
+// An agent's latest message on an open task may carry choices: they show as
+// buttons under it, so the owner taps an answer instead of typing one.
 // Only the message list scrolls to the newest message, never the page, and
 // it follows new messages only while the owner is already at the bottom.
-export function ChatPane({ project, taskId, messages, tasks, lead, embedded, className }: { project: string; taskId?: string | null; messages: Message[]; tasks?: Task[]; lead?: string; embedded?: boolean; className?: string }) {
+export function ChatPane({ project, taskId, task, messages, tasks, lead, embedded, className }: { project: string; taskId?: string | null; task?: Task; messages: Message[]; tasks?: Task[]; lead?: string; embedded?: boolean; className?: string }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [amending, setAmending] = useState<Task | null>(null);
   const hintId = useId();
   const list = useRef<HTMLDivElement>(null);
   // Whether the owner is at (or near) the newest message; starts true so the
@@ -114,7 +118,19 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
   const latest = messages.length ? [...messages].sort((a, b) => (a.at < b.at ? 1 : -1))[0]!.id : undefined;
   const [seen, markSeen] = useSeen(seenKey, latest);
   const groups = useMemo(() => groupByTask(messages), [messages]);
-  const titles = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t.title])), [tasks]);
+  const byId = useMemo(() => {
+    const m = new Map((tasks ?? []).map((t) => [t.id, t]));
+    if (task) m.set(task.id, task);
+    return m;
+  }, [tasks, task]);
+  const titles = useMemo(() => new Map([...byId.values()].map((t) => [t.id, t.title])), [byId]);
+  // The newest message of each task: choices are live only there, and only
+  // while the task is still open - an older ask has been answered or overtaken.
+  const lastOfTask = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of groups) if (g.task) m.set(g.task, g.items[g.items.length - 1]!.id);
+    return m;
+  }, [groups]);
   const firstUnread = useMemo(() => {
     if (!seen) return null;
     const sorted = [...messages].sort((a, b) => (a.at < b.at ? -1 : 1));
@@ -135,6 +151,8 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latest, seen]);
 
+  const refresh = () => invalidate((p) => p.startsWith("messages") || p.startsWith("tasks") || p.startsWith("events"));
+
   const send = async () => {
     const body = draft.trim();
     if (!body || busy) return;
@@ -145,7 +163,7 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
       toast.success("Sent. " + sentenceStart(lead || "the lead agent") + " will reply here.", { id, duration: 3000 });
       setDraft("");
       stick.current = true;
-      invalidate((p) => p.startsWith("messages") || p.startsWith("tasks") || p.startsWith("events"));
+      refresh();
     } catch (e) {
       toast.dismiss(id);
       showApiError(e, "Your message wasn't sent");
@@ -154,9 +172,40 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
     }
   };
 
+  // One tap answers: a reply goes to the chat as the owner's words (and by
+  // itself ends a review), "done" closes the task with them, "amend" opens
+  // the brief.
+  const pick = async (m: Message, c: MessageChoice) => {
+    if (busy || !m.task_id) return;
+    const t = byId.get(m.task_id);
+    if (c.action === "amend") {
+      if (t) setAmending(t);
+      return;
+    }
+    setBusy(true);
+    const id = toast.loading(c.action === "done" ? "Closing…" : "Sending…");
+    try {
+      if (c.action === "done") {
+        await writes.setTaskStatus(m.task_id, "done", c.label);
+        toast.success("Closed " + (t?.title || m.task_id) + ".", { id, duration: 3000 });
+      } else {
+        await writes.sendMessage(project, c.label, m.task_id);
+        toast.success("Answered. " + sentenceStart(lead || "the lead agent") + " carries on.", { id, duration: 3000 });
+      }
+      stick.current = true;
+      refresh();
+    } catch (e) {
+      toast.dismiss(id);
+      showApiError(e, c.action === "done" ? "The task wasn't closed" : "Your answer wasn't sent");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const leadName = lead || "the lead agent";
   return (
     <div className={cn("flex min-h-0 flex-col", embedded ? "h-full" : "h-[calc(100vh-14rem)] min-h-[420px] overflow-hidden rounded-2xl border bg-card", className)}>
+      {amending ? <AmendTaskDialog key={amending.id} task={amending} open onOpenChange={(o) => (o ? null : setAmending(null))} /> : null}
       <div
         ref={list}
         onScroll={(e) => {
@@ -222,6 +271,20 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
                           >
                             <Markdown source={m.body} className="[&>:last-child]:mb-0" />
                           </div>
+                          {!human && m.task_id && m.choices?.length && lastOfTask.get(m.task_id) === m.id && isOpen(byId.get(m.task_id)) ? (
+                            <div className="mt-2 flex max-w-full flex-wrap gap-2 px-1" role="group" aria-label="Answers to pick">
+                              {m.choices.map((c, ci) => {
+                                const t = byId.get(m.task_id!);
+                                if (c.action === "amend" && !t) return null;
+                                return (
+                                  <Button key={c.label} type="button" size="sm" variant={ci === 0 ? "default" : "outline"} className="h-8 rounded-full" disabled={busy} onClick={() => void pick(m, c)}>
+                                    {c.label}
+                                  </Button>
+                                );
+                              })}
+                              <span className="self-center text-xs text-muted-foreground">or write below</span>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     </li>
@@ -271,3 +334,8 @@ export function ChatPane({ project, taskId, messages, tasks, lead, embedded, cla
 }
 
 const sentenceStart = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// Choices stay live while the task can still take the answer. Without the
+// task at hand (an older hub, a project-wide chat without the list) the
+// answer is still offered: the lead asked, and a reply never hurts.
+const isOpen = (t?: Task) => !t || (t.status !== "done" && t.status !== "cancelled");

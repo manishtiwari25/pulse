@@ -102,7 +102,8 @@ export function TaskProgressBar({ t, className }: { t: Task; className?: string 
   );
 }
 
-// The ask on a task in review: the lead got stuck and waits in the chat.
+// The ask on a task in review: the lead got stuck and waits in the chat,
+// where its last message offers answers to tap.
 // `onChat` opens the conversation in place (the task sheet) instead of
 // following the link to the project's Work tab.
 export function TaskNeedsYou({ t, className, onChat }: { t: Task; className?: string; onChat?: () => void }) {
@@ -110,7 +111,7 @@ export function TaskNeedsYou({ t, className, onChat }: { t: Task; className?: st
     <div className={cn("surface-you flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-3.5 py-3", className)}>
       <p className="flex min-w-0 flex-1 basis-52 items-start gap-2 text-sm leading-relaxed text-foreground">
         <MessageCircleQuestionIcon className="mt-0.5 size-4 shrink-0 text-you-ink" aria-hidden />
-        <span className="min-w-0 anywhere">The lead agent couldn&apos;t finish without you. Read the chat and answer.</span>
+        <span className="min-w-0 anywhere">The lead agent stopped and waits for your decision. Pick an answer in the chat, or write one.</span>
       </p>
       {onChat ? (
         <Button size="sm" onClick={onChat}>

@@ -1916,6 +1916,15 @@ export interface TaskJob {
   harness_session?: string;
 }
 
+// An answer the owner can pick under an agent's message instead of writing:
+// `reply` sends the label back as the owner's words (which by itself ends a
+// review), `done` closes the task with them, `amend` opens the brief.
+export type MessageChoiceAction = "reply" | "done" | "amend";
+export interface MessageChoice {
+  label: string;
+  action?: MessageChoiceAction;
+}
+
 export interface Message {
   id: string;
   project: string;
@@ -1924,6 +1933,7 @@ export interface Message {
   body: string; // Markdown
   at: string;
   read_by?: string[];
+  choices?: MessageChoice[];
 }
 
 export interface TaskDetail {
@@ -2459,6 +2469,9 @@ export const writes = {
   newTask: (input: NewTaskInput) => post<{ task: Task }>("tasks", input),
   amendTask: (id: string, input: AmendTaskInput) => post<{ task: Task }>("tasks/" + enc(id) + "/amend", input),
   cancelTask: (id: string, reason: string) => post<{ task: Task }>("tasks/" + enc(id) + "/cancel", { reason }),
+  // The owner moves a task on (done after "good enough", in_progress to hand a
+  // review back); `words` reach the task's chat first so the lead reads why.
+  setTaskStatus: (id: string, status: TaskStatus, words?: string) => post<{ task: Task }>("tasks/" + enc(id) + "/status", words ? { status, words } : { status }),
   // Suggested work: the owner suggests the next item (an agent reviews it) or rules on one.
   suggestWork: (input: SuggestWorkInput) => post<{ suggestion: WorkSuggestion }>("tasks/suggested", input),
   acceptSuggestion: (id: string, input: SuggestionVerdictInput) => post<{ suggestion: WorkSuggestion; task: Task | null }>("tasks/suggested/" + enc(id) + "/accept", input),

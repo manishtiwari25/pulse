@@ -200,7 +200,24 @@ activity fold under **Details for this machine**.
   however short (`use your judgement`, `do not ask me`), is final: it decides,
   writes the decision in one message and plans; a task that mixes a reserved
   decision with ordinary work gets its Tier 0/1 parts planned now and one doc
-  job drafting the decision record, never a second round of questions.
+  job drafting the decision record, never a second round of questions. A
+  review is a decision, not a form: the message that stops a task carries
+  **choices** (*Try again another way*, *Good enough, close it*, *Change
+  what I asked*) shown as buttons under it in the chat, so you tap one or
+  write your own words; either way your message returns the task to *in
+  progress*, the only backward move a task can make, and the lead takes it
+  from there (a tapped *close* posts `POST /api/v1/tasks/<id>/status`
+  `{status, words?}`, the words reaching the chat first so the lead reads
+  why). Agents offer choices on their own messages with `pulse task
+  reply TASK-012 --choice "Keep both" --choice "Drop the old one=done"`
+  (up to six; `=done` closes the task with that label as your words, `=amend`
+  opens the brief, plain labels reply). The daemon writes the stop to the
+  chat itself - `I stopped TASK-012 (...): three jobs failed ...` - and the
+  close too (`every step landed, so I closed it`), so nothing shows *waits
+  for your decision* unless a message of yours would change what happens
+  next: a review whose jobs are still running or waiting to land goes back
+  to in progress on the next tick, and one you have answered stays with the
+  lead until it replies.
 - **Suggested work** - the agents propose the next task; another agent
   judges it before it reaches you. The Work tab's **Suggested next** panel
   lists each suggestion with who made it and where its review stands; a
@@ -480,6 +497,7 @@ pulse schedule add --project my-app --title "Weekly dependency audit" --every 1w
 pulse lead suggest --project my-app          # which role leads the project is missing, and the command that seats each
 pulse lead add --project my-app --role docs  # seat a lead that owns one concern (rsi, docs, security, monitor, or a word of your own)
 pulse msg list --project my-app --unread     # what the owner said
+pulse task reply TASK-012 --file ask.md --choice "Keep both" --choice "Drop the old one=done"   # ask with answers to tap; a plain label replies, =done closes, =amend opens the brief
 pulse compute request --project my-app --hours 4 --reason "parallel fixture runs"
 pulse reflect --project my-app               # what the gates allow next, and the human step that opens the next one
 ```

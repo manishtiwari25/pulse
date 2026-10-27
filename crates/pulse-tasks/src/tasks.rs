@@ -432,12 +432,15 @@ pub fn set_status(s: &pulse_store::Store, id: &str, status: &str, actor: &str) -
             format!("pulse task new --project {} --title '...'", cur.project),
         ));
     }
-    if to <= from {
+    // One step back is allowed: a task waiting in review goes on when the
+    // owner answers or the lead picks the work up again.
+    let back_to_work = cur.status == "review" && status == "in_progress";
+    if to <= from && !back_to_work {
         return Err(input(
             2,
             format!("{id} is {}; {status} is not a step forward", cur.status),
             format!(
-                "tasks move {} or to cancelled, never back",
+                "tasks move {} or to cancelled; only review goes back, to in_progress",
                 STATUSES[..5].join(" -> ")
             ),
             format!("pulse task status {id} {}", STATUSES[from as usize + 1]),
