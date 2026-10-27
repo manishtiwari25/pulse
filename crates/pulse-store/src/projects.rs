@@ -95,6 +95,25 @@ impl Store {
             .query_map([], scan_project)?
             .collect::<rusqlite::Result<_>>()?)
     }
+    pub fn rename_project(&self, slug: &str, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(crate::store::input_err("project name cannot be empty"));
+        }
+        if name.chars().count() > 120 {
+            return Err(crate::store::input_err(
+                "project name cannot exceed 120 characters",
+            ));
+        }
+        let conn = self.conn()?;
+        let n = conn.execute("UPDATE projects SET name = ? WHERE slug = ?", [name, slug])?;
+        if n == 0 {
+            return Err(crate::store::input_err(format!(
+                "no project with slug '{slug}'"
+            )));
+        }
+        Ok(())
+    }
     pub fn project(&self, slug: &str) -> Result<Option<Project>> {
         let conn = self.conn()?;
         Ok(conn
