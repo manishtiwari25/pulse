@@ -166,6 +166,11 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     let project = &o.project;
     let agent = &o.agent;
     let jid = job.str("id");
+    // The owner's standing security update (`security.rs`): the one job
+    // whose work is a lockfile change.
+    let security = job
+        .str("source")
+        .starts_with(crate::security::SOURCE_PREFIX);
     let finish = format!(
         "`pulse job finish {jid} done --result '<SUMMARY line>' --branch pulse/{agent}/{jid}`"
     );
@@ -298,23 +303,41 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   privacy, migrations, dependencies, deploy, publish, security posture, or a surface no ADR covers)"
     );
     w!("   or crosses a hard stop, stop and explain that in your report instead of doing it.");
-    w!(
-        "3. Never push, never add remotes, never call gh, never touch credentials, never install packages."
-    );
-    if !o.setup.is_empty() && o.recipe.as_ref().is_some_and(|r| r.has_setup) {
+    if security {
         w!(
-            "   The runner already ran the environment recipe's setup in this clone (`{}`); use what it installed as it is",
-            o.setup
-        );
-        w!("   and never change a lockfile - dependencies are Tier 2.");
-    } else if !o.setup.is_empty() {
-        w!(
-            "   The runner already installed the dependencies the lockfile pins (it ran `{}`); use them as they are",
-            o.setup
+            "3. Never push, never add remotes, never call gh, never touch credentials; install nothing beyond the task's own package manager commands."
         );
         w!(
-            "   (`uv run`, `corepack pnpm`, `npm exec` and the like) and never change a lockfile - dependencies are Tier 2."
+            "   This job is the owner's standing security update: change only the named packages' manifest and lockfile entries, nothing else."
         );
+        w!(
+            "   The owner took the dependency decision (rule 2) with the rule that chose these versions; do not stop for it."
+        );
+        if !o.setup.is_empty() {
+            w!(
+                "   The runner already ran `{}` in this clone; the task's commands move the named packages from there.",
+                o.setup
+            );
+        }
+    } else {
+        w!(
+            "3. Never push, never add remotes, never call gh, never touch credentials, never install packages."
+        );
+        if !o.setup.is_empty() && o.recipe.as_ref().is_some_and(|r| r.has_setup) {
+            w!(
+                "   The runner already ran the environment recipe's setup in this clone (`{}`); use what it installed as it is",
+                o.setup
+            );
+            w!("   and never change a lockfile - dependencies are Tier 2.");
+        } else if !o.setup.is_empty() {
+            w!(
+                "   The runner already installed the dependencies the lockfile pins (it ran `{}`); use them as they are",
+                o.setup
+            );
+            w!(
+                "   (`uv run`, `corepack pnpm`, `npm exec` and the like) and never change a lockfile - dependencies are Tier 2."
+            );
+        }
     }
     if let Some(r) = &o.recipe {
         if !r.tools.is_empty() {
@@ -1372,6 +1395,62 @@ mod tests {
                 "remote={remote}: brief carries a section with nothing to list:\n{brief}"
             );
         }
+    }
+
+    #[test]
+    fn a_security_jobs_brief_allows_the_named_lockfile_change_and_nothing_else() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let mut job = brief_job();
+        job.insert(
+            "source",
+            serde_json::json!("security:proj:web/hub/package-lock.json:16,17"),
+        );
+        job.insert(
+            "title",
+            serde_json::json!("Security: update next in web/hub (Dependabot #16, #17)"),
+        );
+        let standing = "This job is the owner's standing security update: change only the named packages' manifest and lockfile entries, nothing else.";
+        for setup in ["", "npm ci"] {
+            let brief = must_write_brief(BriefOpts {
+                job: job.clone(),
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 10,
+                setup: setup.into(),
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                ..Default::default()
+            });
+            assert!(brief.contains(standing), "setup={setup:?}:\n{brief}");
+            assert!(
+                !brief.contains("never change a lockfile")
+                    && !brief.contains("never install packages"),
+                "setup={setup:?}: the security brief forbids its own work:\n{brief}"
+            );
+            assert_eq!(
+                brief.contains("The runner already ran `npm ci` in this clone"),
+                !setup.is_empty(),
+                "setup={setup:?}:\n{brief}"
+            );
+        }
+        // Any other job keeps the lockfile rule.
+        let brief = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            setup: "npm ci".into(),
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        assert!(brief.contains("never change a lockfile - dependencies are Tier 2"));
+        assert!(brief.contains("never install packages"));
+        assert!(!brief.contains(standing));
     }
 
     #[test]
