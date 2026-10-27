@@ -255,6 +255,8 @@ fn pinned_versions(root: &str, manifest: &str, name: &str) -> Vec<String> {
     let lockfiles: Vec<&str> = match file {
         "package.json" => vec!["package-lock.json"],
         "Cargo.toml" => vec!["Cargo.lock"],
+        "pyproject.toml" => vec!["uv.lock"],
+        "Gemfile" => vec!["Gemfile.lock"],
         other => vec![other],
     };
     for lock in lockfiles {
@@ -495,6 +497,14 @@ fn job_brief(
             for f in fixes {
                 b.push(format!(
                     "  go get {}@{} && go mod tidy",
+                    f.name, f.target.version
+                ));
+            }
+        }
+        Ecosystem::RubyGems => {
+            for f in fixes {
+                b.push(format!(
+                    "  bundle update --conservative {} (then make sure Gemfile.lock pins {})",
                     f.name, f.target.version
                 ));
             }
@@ -941,7 +951,7 @@ impl Pass<'_> {
             alerts[0].name
         );
         let body = format!(
-            "The security watcher reads npm, Cargo, pip and Go alerts and queues their updates itself; {eco} it leaves to a human. Open alerts: {}.",
+            "The security watcher reads npm, Cargo, pip, Go and RubyGems alerts and queues their updates itself; {eco} it leaves to a human. Open alerts: {}.",
             numbers_text(&numbers)
         );
         if let Some(post) = self.tell(summary, body) {

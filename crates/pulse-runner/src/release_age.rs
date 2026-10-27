@@ -6,9 +6,6 @@
 //! version it pins is that old. The dates come from each ecosystem's registry
 //! and are cached in `meta` once known, since a publish date never changes.
 
-// Consumed by the security watcher and the landing; the allowance goes with their integration.
-#![allow(dead_code)]
-
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -98,9 +95,11 @@ pub(crate) trait Registry {
 }
 
 /// A fixed set of releases, for tests: (ecosystem, name) -> [(version, published)].
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct MapRegistry(pub(crate) BTreeMap<(Ecosystem, String), Vec<(String, String)>>);
 
+#[cfg(test)]
 impl MapRegistry {
     pub(crate) fn with(mut self, eco: Ecosystem, name: &str, releases: &[(&str, &str)]) -> Self {
         self.0.insert(
@@ -114,6 +113,7 @@ impl MapRegistry {
     }
 }
 
+#[cfg(test)]
 impl Registry for MapRegistry {
     fn versions(&self, eco: Ecosystem, name: &str) -> Result<Vec<String>, String> {
         match self.0.get(&(eco, name.to_string())) {

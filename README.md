@@ -49,6 +49,7 @@ The only Markdown in this repository is this file.
   - [Bulk storage on another disk](#bulk-storage-on-another-disk)
   - [Keeping the machine awake](#keeping-the-machine-awake)
   - [Workers, landing and the load governor](#workers-landing-and-the-load-governor)
+  - [Dependencies: security alerts and the release-age rule](#dependencies-security-alerts-and-the-release-age-rule)
   - [Credentials](#credentials)
   - [Pairing hands](#pairing-hands)
   - [Heartbeats and presence](#heartbeats-and-presence)
@@ -740,7 +741,10 @@ repos/<owner>/<repo>/dependabot/alerts` command that lists the open alerts
 (the lead reads them first, bumps what has a fixed version - critical and
 high first, one commit per lockfile - and leaves dismissing to you; a 403
 or 404 means the signed-in `gh` account cannot read them, which the lead
-says instead of asking for a token); for `monitor` the checks, watchers and the red among
+says instead of asking for a token; since the daemon's own
+[dependency watcher](#dependencies-security-alerts-and-the-release-age-rule)
+queues those updates hourly, a sitting mostly finds what the watcher left
+for the owner); for `monitor` the checks, watchers and the red among
 them; for `tests` the verify command and the landings it failed; for `deps`
 the lockfiles and their age; for `release` the last tag and the commits since;
 for `perf` the benchmark folders and schedules; for `a11y` the UI framework
@@ -1775,6 +1779,9 @@ record, read with `pulse record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
+| `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
+| `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age, and a landing that bumps a lockfile is held until every new version it pins is this old. `0` turns the wait off. |
+| `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
 | `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
@@ -3266,6 +3273,72 @@ The daemon can tend multiple projects' finished branches at once with
 `landing.parallel` (default `4`); landings within one project remain serial
 behind that project's landing lock, and `landing.parallel=1` keeps the old
 single-project maintenance-pass behaviour.
+
+### Dependencies: security alerts and the release-age rule
+
+One rule governs every dependency change in every project PULSE manages: **a
+version is adopted only once it is `dependencies.min_release_age_days` old**
+(default `3` days, a store-wide setting, `0` turns the wait off). A package
+that is hijacked or shipped broken is usually pulled within days; waiting
+that long costs little against a known vulnerability and nothing against a
+routine bump. The publish dates come from the package's own registry - npm,
+crates.io, PyPI, the Go module proxy, RubyGems - and are cached in the store
+once known (`release_age:<ecosystem>:<name>:<version>` in `meta`), since a
+publish date never changes. The rule is applied twice, so neither an agent
+nor a branch can slip a younger version past it.
+
+**The watcher.** Once per `dependencies.alert_check_minutes` (default `60`)
+the daemon reads each active project's open Dependabot alerts through the
+`gh` CLI it already uses (`gh api repos/<owner>/<repo>/dependabot/alerts`,
+GitHub remotes only), groups them by manifest and asks the registry, for
+every vulnerable package, for the newest patched version that stays within
+the installed version's compatible range - same major, same minor below
+`1.0` - and is at least the rule's age. Those become **one Tier 1 `task` job
+per manifest** (source `security:<slug>:<manifest>:<alert numbers>`, priority
+`90`, `security.queued` in the log) whose brief is the exact versions and the
+package-manager commands that adopt them - `npm install next@16.4.2`, `cargo
+update -p x --precise 1.2.3`, `uv lock --upgrade-package`, `go get`, `bundle
+update --conservative` - and nothing else: change no other package, never a
+blanket update, rebuild a committed bundle when the repository has one, run
+the project's check, one commit. Because the owner is waiting on it, a
+security job leases with the owner's own work, ahead of the fleet's and
+alone through the load governor's express lane; its worker brief names the
+lockfile change as the job instead of forbidding it (every other job still
+reads "never change a lockfile - dependencies are Tier 2"). A patched version
+younger than the rule is not queued yet: the daemon logs the date it becomes
+eligible (`security.waiting`) and queues it on the first pass after that.
+Alerts a job already covers - queued, running, or finished within the last
+24 hours, while its branch may still be landing - are not queued again.
+What the watcher cannot take it hands to you, once each, as a `finding` marked
+for the owner on the project's `security/dependabot` thread: a fix that
+needs a **major upgrade** (`security.major`; a Tier 2 change by the
+constitution, yours by hand or through an ADR), an alert whose advisory
+names **no patched version** yet (`security.unfixable`; the update is queued
+the moment one is published and old enough), an **ecosystem the watcher does
+not read** (`security.unsupported`: it reads npm, Cargo, pip, Go and
+RubyGems), and alerts **switched off** on GitHub or unreadable to the
+signed-in `gh` account (`security.disabled`, with the setting to turn on).
+`dependencies.security_updates off` stops the watcher; the watcher's memory
+per project is the `meta` row `dependabot:<slug>`.
+
+**The landing.** A branch that changes a lockfile together with its manifest
+used to wait for a human landing in every case. Now the landing diffs the
+pins between the default branch and the branch (`Cargo.lock`,
+`package-lock.json`, `uv.lock`, `Gemfile.lock`) and asks the registry how
+old every new version is. When each one is at least the rule's age the
+branch lands like any other, with its lockfile and manifests kept for the
+check (the recipe's `cargo fetch --locked` or `npm ci` must see the branch's
+lockfile, not main's) and a `land.release-age` event naming the versions
+adopted. When a version is too young the branch is held with reason
+`release-age` and the date it can land from (`can land from
+2026-10-26T13:40Z`); the daemon lands it on the first tick after that, no
+human needed. A jump past the compatible range (`next 16.3.8 -> 17.0.0`), a
+lockfile the landing does not read (`pnpm-lock.yaml`, `yarn.lock`,
+`poetry.lock`, `go.sum`) or a registry that cannot be asked keep the human
+hold as before, with why in the `land.held` event, and `pulse land --project
+X --branch B` by hand still lands whatever you ask for, recording the verdict
+only. With the rule at `0` days no registry is asked and only the
+compatible-range check remains.
 
 ### Credentials
 
