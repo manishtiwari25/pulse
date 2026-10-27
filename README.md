@@ -3367,7 +3367,17 @@ landing of their own (`pulse/sync/<remote>/<branch>`, merged in the throwaway
 worktree and judged by the project's check like any other landing, `land.synced`
 in the log), then pushes the result. A merge conflict or a red check holds the
 push with the reason and `git pull --no-rebase` spelled out, and is not tried
-again until either side moves. A push url that is `https://` and takes a
+again until either side moves. One remote move is not merged at all: an
+upstream rewritten by hand into a squash of history the daemon had already
+pushed - a root commit, or any commit the local branch shares no ancestor
+with, whose tree equals a commit on the local branch's first-parent line. The
+daemon copies the local commits made since that point onto the squash with
+their trees, authors, dates and messages (a landing's merge becomes one
+commit carrying its tree, up to 2000 commits), points the local branch at the
+copy - the tree is unchanged, so the working tree, the index and the check's
+verdict are untouched - and pushes the fast-forward, `land.synced` with
+`replayed` in the log. A remembered conflict from an earlier merge attempt is
+retired the same pass. A push url that is `https://` and takes a
 password the daemon has none of (`could not read Username`, `unable to get
 password from user`) is moved to its
 ssh form (`git@github.com:owner/repo.git`) when that form answers to the

@@ -435,10 +435,215 @@ fn sync_waits(state: &str) -> bool {
     )
 }
 
+/// What `replay_onto_squashed_upstream` did: the default branch's commit the
+/// upstream is a squash of, the new tip, how many commits were copied, and
+/// the line that says so.
+pub(crate) struct Replayed {
+    pub(crate) squash_of: String,
+    pub(crate) tip: String,
+    pub(crate) commits: i32,
+    pub(crate) note: String,
+}
+
+/// The most commits the replay copies; a default branch further ahead of the
+/// squash than this is left to the merge path and its hold line.
+const REPLAY_MAX_COMMITS: usize = 2000;
+
+/// An upstream rewritten by hand to a squash of what pulse had pushed - a
+/// root commit whose tree equals a commit on the default branch - shares no
+/// ancestor with the branch, so merging the two conflicts on every file and
+/// the landed work waits for days (distillery, 2026-10-22: four commits held
+/// behind "340 commits landed but not pushed"). The tree says what to do: the
+/// commits after that point are copied onto the upstream tip along the
+/// branch's first-parent line, each with its own tree, author, date and
+/// message, and the branch is moved to the copy. The result's tree is the
+/// branch's own, so the checkout and its index already match it and nothing
+/// needs verifying again; the push that follows is a fast-forward. Returns
+/// `Ok(None)` when the upstream is not that case (a shared ancestor, or no
+/// commit of the branch has the upstream's tree) and the merge path applies.
+pub(crate) fn replay_onto_squashed_upstream(
+    t: &PushTarget,
+    up_sha: &str,
+    def_sha: &str,
+) -> std::result::Result<Option<Replayed>, String> {
+    let git = |timeout: u64, args: &[&str]| {
+        crate::util::git_timeout(&t.root, Duration::from_secs(timeout), args)
+    };
+    if up_sha.is_empty() || def_sha.is_empty() {
+        return Ok(None);
+    }
+    let base = git(30, &["merge-base", up_sha, def_sha]);
+    if base.ok() && !base.stdout.trim().is_empty() {
+        return Ok(None);
+    }
+    let up_tree = git(10, &["rev-parse", &format!("{up_sha}^{{tree}}")])
+        .stdout
+        .trim()
+        .to_string();
+    if up_tree.is_empty() {
+        return Ok(None);
+    }
+    let def_ref = format!("refs/heads/{}", t.def);
+    let line = git(
+        60,
+        &[
+            "log",
+            "--first-parent",
+            "--format=%H %T",
+            &format!("-n{}", REPLAY_MAX_COMMITS + 1),
+            &def_ref,
+        ],
+    );
+    let Some(squash_of) = line.stdout.lines().find_map(|l| {
+        let (sha, tree) = l.trim().split_once(' ')?;
+        (tree == up_tree).then(|| sha.to_string())
+    }) else {
+        return Ok(None);
+    };
+    let listed = git(
+        60,
+        &[
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            &format!("{squash_of}..{def_ref}"),
+        ],
+    );
+    if !listed.ok() {
+        return Err(crate::util::trunc(listed.stderr.trim(), 200));
+    }
+    let shas = listed
+        .stdout
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if shas.len() > REPLAY_MAX_COMMITS {
+        return Err(format!(
+            "{} commits to copy, more than {REPLAY_MAX_COMMITS}",
+            shas.len()
+        ));
+    }
+    let mut parent = up_sha.to_string();
+    for sha in &shas {
+        let shown = git(10, &["log", "-1", "--format=%T%n%an%n%ae%n%aI", sha]);
+        let mut fields = shown.stdout.lines();
+        let (Some(tree), Some(name), Some(email), Some(date)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!(
+                "could not read {}: {}",
+                crate::recipe::short(sha, 12),
+                crate::util::trunc(shown.stderr.trim(), 160)
+            ));
+        };
+        let message = git(10, &["log", "-1", "--format=%B", sha]).stdout;
+        let message = message.trim_end();
+        let made = crate::util::git_timeout_env(
+            &t.root,
+            Duration::from_secs(30),
+            &[
+                format!("GIT_AUTHOR_NAME={name}"),
+                format!("GIT_AUTHOR_EMAIL={email}"),
+                format!("GIT_AUTHOR_DATE={date}"),
+            ],
+            &[
+                "-c",
+                "user.name=pulse",
+                "-c",
+                "user.email=pulse@pulse.local",
+                "-c",
+                "commit.gpgsign=false",
+                "commit-tree",
+                tree,
+                "-p",
+                &parent,
+                "-m",
+                if message.is_empty() {
+                    "(no message)"
+                } else {
+                    message
+                },
+            ],
+        );
+        if !made.ok() {
+            return Err(format!(
+                "copying {} failed: {}",
+                crate::recipe::short(sha, 12),
+                crate::util::trunc(made.stderr.trim(), 200)
+            ));
+        }
+        parent = made.stdout.trim().to_string();
+    }
+    let tip = parent;
+    let tip_tree = git(10, &["rev-parse", &format!("{tip}^{{tree}}")])
+        .stdout
+        .trim()
+        .to_string();
+    let def_tree = git(10, &["rev-parse", &format!("{def_sha}^{{tree}}")])
+        .stdout
+        .trim()
+        .to_string();
+    if tip_tree.is_empty() || tip_tree != def_tree {
+        return Err(format!(
+            "the copy's tree {} is not {}'s {}",
+            crate::recipe::short(&tip_tree, 12),
+            t.def,
+            crate::recipe::short(&def_tree, 12)
+        ));
+    }
+    // The old value guards the move: a branch that moved meanwhile is left
+    // alone and the next pass starts over from what it finds.
+    let moved = git(
+        30,
+        &[
+            "update-ref",
+            "-m",
+            &format!(
+                "pulse: {} commits copied onto the squashed {}/{}",
+                shas.len(),
+                t.remote,
+                t.remote_branch
+            ),
+            &def_ref,
+            &tip,
+            def_sha,
+        ],
+    );
+    if !moved.ok() {
+        return Err(format!(
+            "moving {} failed: {}",
+            t.def,
+            crate::util::trunc(moved.stderr.trim(), 200)
+        ));
+    }
+    let commits = shas.len() as i32;
+    let note = if commits == 0 {
+        format!(
+            "{} now points at it (same tree, nothing to copy); no verify needed",
+            t.def
+        )
+    } else {
+        format!(
+            "{commits} {} copied onto it with their trees, authors and messages ({}..{}); the tree is unchanged, so no verify is needed and the push is a fast-forward",
+            crate::util::plural(commits, "commit"),
+            crate::recipe::short(def_sha, 12),
+            crate::recipe::short(&tip, 12)
+        )
+    };
+    Ok(Some(Replayed {
+        squash_of,
+        tip,
+        commits,
+        note,
+    }))
+}
+
 /// The remote moved under the local default branch. Merge `<remote>/<branch>`
 /// into it through the landing path - a throwaway worktree, the project's
 /// check on the merged result, a fast-forward of the checkout - so the push
-/// that follows is a plain fast-forward. Returns the log line of a landed
+/// that follows is a plain fast-forward. An upstream that is a squash of the
+/// branch's own history is not merged but replayed onto
+/// (`replay_onto_squashed_upstream`). Returns the log line of a landed
 /// sync and the hold note of anything else; a conflict or a red check is
 /// remembered for this pair of shas, so it is not re-run every pass and goes
 /// away when either side moves.
@@ -470,6 +675,44 @@ pub(crate) fn sync_upstream(
         return (None, Some(format!("{what}; merging them waits: {hold}")));
     }
     let key = format!("push-sync:{slug}");
+    // Before the memo of a remembered conflict: a squashed upstream that
+    // conflicted on an earlier pass is exactly what the replay resolves.
+    match replay_onto_squashed_upstream(t, &up_sha, &def_sha) {
+        Ok(Some(replayed)) => {
+            if let Ok(conn) = s.conn() {
+                crate::util::exec1(&conn, "DELETE FROM meta WHERE key = ?", &[&key]);
+                crate::util::event_at(
+                    &conn,
+                    &now,
+                    &actor,
+                    "land.synced",
+                    &slug,
+                    serde_json::json!({"project": slug, "remote": t.remote, "branch": t.remote_branch, "commits": behind, "upstream": up_sha, "base": def_sha, "replayed": replayed.commits, "squash_of": replayed.squash_of, "tip": replayed.tip, "note": replayed.note}),
+                );
+            }
+            return (
+                Some(format!(
+                    "landing synced {slug}: {}/{} is a squash of {}'s {}; {}",
+                    t.remote,
+                    t.remote_branch,
+                    t.def,
+                    crate::recipe::short(&replayed.squash_of, 12),
+                    replayed.note
+                )),
+                None,
+            );
+        }
+        Ok(None) => {}
+        Err(why) => {
+            return (
+                None,
+                Some(format!(
+                    "{what}; {}/{} is a squash of {} but the replay failed: {why}",
+                    t.remote, t.remote_branch, t.def
+                )),
+            );
+        }
+    }
     if let Ok(conn) = s.conn() {
         let r = crate::util::must_one(&conn, "SELECT value FROM meta WHERE key = ?", &[&key]);
         if !r.0.is_empty()
@@ -966,6 +1209,29 @@ mod tests {
         run(repo, &["git", "commit", "-q", "-m", msg]);
     }
 
+    /// Rewrites the remote's main by hand to one root commit holding its
+    /// current tree, the way an owner squashes a history; returns its sha.
+    fn squash_remote(clone: &str, msg: &str) -> String {
+        let tree = run(clone, &["git", "rev-parse", "origin/main^{tree}"])
+            .trim()
+            .to_string();
+        let squash = run(clone, &["git", "commit-tree", &tree, "-m", msg])
+            .trim()
+            .to_string();
+        run(
+            clone,
+            &[
+                "git",
+                "push",
+                "-q",
+                "-f",
+                "origin",
+                &format!("{squash}:refs/heads/main"),
+            ],
+        );
+        squash
+    }
+
     #[test]
     fn landing_syncs_a_remote_that_moved_then_pushes() {
         let _serial = crate::test_helpers::serial();
@@ -1175,6 +1441,239 @@ mod tests {
                 &[]
             ),
             0
+        );
+        assert!(!push_owed(&s, "proj".into()));
+    }
+
+    /// The owner squashed the remote by hand to one root commit holding what
+    /// pulse had pushed. Merging that into main conflicts on every file; the
+    /// landed commits are copied onto the squash instead, main moves to the
+    /// copy with its tree unchanged, and the push is a fast-forward.
+    #[test]
+    fn landing_replays_onto_a_squashed_upstream_then_pushes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        let pushed = ref_of(&repo, "refs/heads/main");
+        commit_file(&repo, "README.md", "# proj\nlocal\n", "local readme");
+        run(
+            &repo,
+            &[
+                "git",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "--author=someone <someone@example.com>",
+                "-m",
+                "an empty commit by someone else",
+            ],
+        );
+        let before = ref_of(&repo, "refs/heads/main");
+        // The squash: a root commit with the pushed tip's tree, force-pushed.
+        let other = other_clone(&bare);
+        let squash = squash_remote(&other, "Squashed history: full project state");
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), squash);
+        assert_eq!(
+            run(&other, &["git", "rev-parse", &format!("{squash}^{{tree}}")]),
+            run(&repo, &["git", "rev-parse", &format!("{pushed}^{{tree}}")]),
+            "the fixture's squash must hold the pushed tree"
+        );
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 3, "lines {lines:?}");
+        assert!(lines[0].starts_with("landing landed"), "lines {lines:?}");
+        assert!(
+            lines[1].starts_with(&format!(
+                "landing synced proj: origin/main is a squash of main's {}; 3 commits copied onto it with their trees, authors and messages (",
+                crate::recipe::short(&pushed, 12)
+            )),
+            "lines {lines:?}"
+        );
+        assert!(
+            lines[2].starts_with("landing pushed proj: main -> origin/main (3 commits, "),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        let now = ref_of(&repo, "refs/heads/main");
+        assert_ne!(now, before);
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), now);
+        assert!(
+            run(&repo, &["git", "ls-tree", "--name-only", "main"])
+                .lines()
+                .any(|f| f == "pulse_worker_1.txt"),
+            "the landed work is in the tree"
+        );
+        assert_eq!(
+            run(
+                &repo,
+                &[
+                    "git",
+                    "rev-list",
+                    "--max-parents=0",
+                    "--first-parent",
+                    "main"
+                ]
+            )
+            .trim(),
+            squash.trim(),
+            "the squash is now main's root"
+        );
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "rev-list", "--count", "--first-parent", "main"]
+            )
+            .trim(),
+            "4"
+        );
+        let author = run(&repo, &["git", "log", "-1", "--format=%an", &pushed])
+            .trim()
+            .to_string();
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "log", "--format=%an %s", "--first-parent", "main"]
+            ),
+            format!(
+                "{author} work on pulse/worker/1\nsomeone an empty commit by someone else\n{author} local readme\n{} Squashed history: full project state\n",
+                run(&other, &["git", "log", "-1", "--format=%an", &squash]).trim()
+            ),
+            "authors and messages travel with the copies"
+        );
+        assert_eq!(
+            run(&repo, &["git", "log", "-1", "--format=%cn", "main"]).trim(),
+            "pulse",
+            "the copies are pulse's commits"
+        );
+        assert!(
+            run(&repo, &["git", "status", "--porcelain"])
+                .trim()
+                .is_empty(),
+            "the checkout stays clean"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&repo).join("README.md")).expect("readme"),
+            "# proj\nlocal\n"
+        );
+        assert!(
+            run(&repo, &["git", "branch", "--list", "pulse/sync/*"])
+                .trim()
+                .is_empty(),
+            "no sync branch is left"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.synced' AND subject = 'proj' AND detail LIKE '%\"replayed\": 3%'",
+                &[]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict'",
+                &[]
+            ),
+            0
+        );
+        assert!(!push_owed(&s, "proj".into()));
+    }
+
+    /// A conflict remembered by an earlier pass for the same pair of shas
+    /// does not stop the replay: the memo is what the merge path left behind.
+    #[test]
+    fn landing_replays_over_a_remembered_sync_conflict() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let pushed = ref_of(&repo, "refs/heads/main");
+        // Landed with the push off: one merge commit on main, a push owed.
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, _) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 1, "lines {lines:?}");
+        assert!(push_owed(&s, "proj".into()));
+        let landed = ref_of(&repo, "refs/heads/main");
+        // Meanwhile the remote became a squash of what had been pushed.
+        let other = other_clone(&bare);
+        let squash = squash_remote(&other, "Squashed history");
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), squash);
+        assert_eq!(
+            run(&other, &["git", "rev-parse", &format!("{squash}^{{tree}}")]),
+            run(&repo, &["git", "rev-parse", &format!("{pushed}^{{tree}}")])
+        );
+        // What an earlier pass's merge attempt would have left for this pair.
+        let data = pulse_store::gojson::to_string(&serde_json::json!({
+            "upstream": squash, "base": landed, "state": "conflict", "note": "remembered conflict", "at": TEST_NOW
+        }))
+        .expect("memo");
+        exec1(
+            &s,
+            "INSERT INTO meta (key, value) VALUES ('push-sync:proj', ?)",
+            &[&data],
+        );
+
+        set_setting(&s, "landing.push", "main");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 2, "lines {lines:?}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "landing synced proj: origin/main is a squash of main's {}; 1 commit copied onto it",
+                crate::recipe::short(&pushed, 12)
+            )),
+            "lines {lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("landing pushed proj: main -> origin/main (1 commit, "),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM meta WHERE key = 'push-sync:proj'",
+                &[]
+            ),
+            0,
+            "the memo of the old conflict is gone"
+        );
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "rev-list", "--count", "--first-parent", "main"]
+            )
+            .trim(),
+            "2"
+        );
+        assert_eq!(
+            run(&repo, &["git", "log", "-1", "--format=%s", "main"]).trim(),
+            "work on pulse/worker/1"
+        );
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/main"),
+            ref_of(&repo, "refs/heads/main")
         );
         assert!(!push_owed(&s, "proj".into()));
     }
