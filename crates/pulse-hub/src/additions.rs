@@ -254,6 +254,10 @@ impl Handler {
             self.addition_suggested(w, r, parts);
             return;
         }
+        if parts.len() == 3 && parts[2] == "activity" {
+            self.addition_task_activity(w, r, &parts[1]);
+            return;
+        }
         if parts.len() > 3
             || (parts.len() == 3
                 && parts[2] != "amend"
@@ -395,6 +399,58 @@ impl Handler {
             200,
             json!({"task": task, "revisions": revisions, "messages": messages, "jobs": jobs, "lead_work": lead_work}),
         );
+    }
+
+    /// `GET /api/v1/tasks/{id}/activity?limit=N`: the task's story in order
+    /// (`pulse_tasks::activity_for`) - what the owner wrote, what the lead
+    /// and its workers did step by step, what landed. `limit` keeps the
+    /// newest lines (default 400; 0 for all).
+    pub(crate) fn addition_task_activity(&self, w: &mut ResponseWriter, r: &Request, id: &str) {
+        if !addition_method(w, r, vec!["GET".to_string()])
+            || !self.addition_available(
+                w,
+                r,
+                vec![
+                    "tasks".to_string(),
+                    "task_revisions".to_string(),
+                    "messages".to_string(),
+                ],
+            )
+        {
+            return;
+        }
+        let Some(store) = self.store.as_deref() else {
+            addition_failure(w, "store is not available".to_string());
+            return;
+        };
+        if let Err(e) = self.addition_task(r, id) {
+            addition_failure(w, e.to_string());
+            return;
+        }
+        let limit = if r.query_all("limit").is_empty() {
+            pulse_tasks::ACTIVITY_DEFAULT_LIMIT
+        } else {
+            match r.query("limit").parse::<usize>() {
+                Ok(n) if n <= 100_000 => n,
+                _ => {
+                    write_error(
+                        w,
+                        400,
+                        "Invalid limit".to_string(),
+                        "limit must be a whole number of lines, 0 for all.".to_string(),
+                        "Use ?limit=400 or leave it out.".to_string(),
+                    );
+                    return;
+                }
+            }
+        };
+        match pulse_tasks::activity_for(store, id, limit) {
+            Ok(a) => match serde_json::to_value(a) {
+                Ok(v) => write_json(w, 200, v),
+                Err(e) => addition_failure(w, e.to_string()),
+            },
+            Err(e) => addition_failure(w, e.to_string()),
+        }
     }
 
     /// Where the project's lead is (`pulse_tasks::lead_work_for`): the task
@@ -1755,6 +1811,50 @@ mod tests {
             assert_ne!(result["why"], "");
             assert_ne!(result["fix"], "");
         }
+    }
+
+    #[test]
+    fn additions_task_activity_route() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "proj");
+        let task = pulse_tasks::new(&s, "proj", "Ship it", "the brief", 0, "human").unwrap();
+        pulse_tasks::send_message(&s, "proj", &task.id, "human", "go ahead").unwrap();
+        let call =
+            |method: &str, path: &str| http::additions_request(http::handler(&s), method, path, "");
+        let (status, v) = call("GET", &format!("/api/v1/tasks/{}/activity", task.id));
+        assert_eq!(status, 200, "{v:?}");
+        assert_eq!(v["task_id"], task.id);
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["has_more"], false);
+        assert_eq!(v["running"], false);
+        assert_eq!(v["items"][0]["what"], "created");
+        assert_eq!(v["items"][0]["title"], "Ship it");
+        assert_eq!(v["items"][1]["kind"], "message");
+        assert_eq!(v["items"][1]["text"], "go ahead");
+        assert!(v["runs"].as_array().unwrap().is_empty());
+        let (status, v) = call(
+            "GET",
+            &format!("/api/v1/tasks/{}/activity?limit=1", task.id),
+        );
+        assert_eq!(status, 200, "{v:?}");
+        assert_eq!(v["has_more"], true);
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        assert_eq!(v["items"][0]["kind"], "message");
+        let (status, v) = call(
+            "GET",
+            &format!("/api/v1/tasks/{}/activity?limit=x", task.id),
+        );
+        assert_eq!(status, 400, "{v:?}");
+        let (status, _) = call("GET", "/api/v1/tasks/TASK-999/activity");
+        assert_eq!(status, 404);
+        let (status, _) = call("POST", &format!("/api/v1/tasks/{}/activity", task.id));
+        assert_eq!(status, 405);
+        let (status, _) = call(
+            "GET",
+            &format!("/api/v1/tasks/{}/activity?project=other", task.id),
+        );
+        assert_eq!(status, 404);
     }
 
     #[test]

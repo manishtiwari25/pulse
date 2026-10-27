@@ -2622,3 +2622,269 @@ fn suggestion_commands_end_to_end() {
     let err = run_cmd(&mut c, "task", &["review", "SUG-002"]).unwrap_err();
     assert!(err.to_string().contains("Missing argument"), "{err}");
 }
+
+fn activity_step(
+    session: &str,
+    n: i64,
+    at: &str,
+    kind: &str,
+    content: &str,
+) -> pulse_store::HarnessStep {
+    pulse_store::HarnessStep {
+        session_id: session.into(),
+        n,
+        at: at.into(),
+        kind: kind.into(),
+        content: content.into(),
+        ..pulse_store::HarnessStep::default()
+    }
+}
+
+#[test]
+fn activity_tells_the_task_story_in_order() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let task = new(&s, "demo", "Ship it", "the brief", 0, "human").unwrap();
+    let id = task.id.clone();
+    // 21:00 created; 21:01 the lead's planning job; 21:02 a worker job.
+    s.conn().unwrap().execute(
+        "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+         ('JOB-plan', 'demo', 'task', 'Plan the work', ?, 'done', '2026-09-06T21:01:00Z', 'daemon', ''), \
+         ('JOB-work', 'demo', 'task', 'Do the work', ?, 'running', '2026-09-06T21:02:00Z', 'demo-lead', 'pulse/cinder/JOB-work')",
+        params![format!("task:{id}"), format!("task:{id}:work")],
+    ).unwrap();
+    set_lead(&s, &id, "demo-lead", "JOB-plan", "runner").unwrap();
+    set_status(&s, &id, "in_progress", "demo-lead").unwrap();
+    s.conn().unwrap().execute(
+        "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, exit_code, summary, branch, commits, mode, executor) VALUES \
+         ('RUN-1', 'JOB-work', 'cinder', 'demo', '2026-09-06T21:03:00Z', '2026-09-06T21:10:00Z', 'done', 0, 'did the work', 'pulse/cinder/JOB-work', 2, 'real', 'local'), \
+         ('RUN-2', 'JOB-work', 'cinder', 'demo', '2026-09-06T21:12:00Z', '', 'running', NULL, '', '', 0, 'real', 'local')",
+        [],
+    ).unwrap();
+    s.begin_harness_session(pulse_store::HarnessSession {
+        id: "HS-1".into(),
+        run_id: "RUN-1".into(),
+        job_id: "JOB-work".into(),
+        agent: "cinder".into(),
+        project: "demo".into(),
+        started_at: "2026-09-06T21:03:00Z".into(),
+        ..pulse_store::HarnessSession::default()
+    })
+    .unwrap();
+    let long = "x".repeat(2500);
+    for step in [
+        activity_step("HS-1", 0, "2026-09-06T21:03:01Z", "note", "read memory"),
+        activity_step("HS-1", 1, "2026-09-06T21:03:02Z", "note", "MCP connected"),
+        activity_step("HS-1", 2, "2026-09-06T21:03:05Z", "assistant", &long),
+        activity_step("HS-1", 3, "2026-09-06T21:03:06Z", "read", "src/lib.rs:1-40"),
+        activity_step("HS-1", 4, "2026-09-06T21:03:06Z", "observation", "fn main"),
+        activity_step("HS-1", 5, "2026-09-06T21:03:07Z", "grep", "fn main"),
+        activity_step(
+            "HS-1",
+            6,
+            "2026-09-06T21:03:07Z",
+            "observation",
+            "src/lib.rs:3",
+        ),
+        activity_step("HS-1", 7, "2026-09-06T21:03:08Z", "assistant", ""),
+        pulse_store::HarnessStep {
+            command: "cargo test -q".into(),
+            title: "Run the tests".into(),
+            ..activity_step("HS-1", 8, "2026-09-06T21:03:09Z", "command", "")
+        },
+        pulse_store::HarnessStep {
+            exit_code: Some(101),
+            duration_ms: 4200,
+            ..activity_step(
+                "HS-1",
+                9,
+                "2026-09-06T21:03:13Z",
+                "observation",
+                "test failed",
+            )
+        },
+        activity_step(
+            "HS-1",
+            10,
+            "2026-09-06T21:03:20Z",
+            "edit",
+            "src/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE",
+        ),
+        activity_step("HS-1", 11, "2026-09-06T21:03:20Z", "observation", "edited"),
+        activity_step("HS-1", 12, "2026-09-06T21:09:59Z", "exit", "submitted"),
+    ] {
+        s.append_harness_step(step).unwrap();
+    }
+    s.finish_harness_session("HS-1", "ended", "submitted", "", "", 0.0, "")
+        .unwrap();
+    send_message(&s, "demo", &id, "human", "How is it going?").unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.landed",
+        "pulse/cinder/JOB-work",
+        r#"{"before": "aaa", "code_delivery": {"after": "bbb"}}"#,
+    )
+    .unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.held",
+        "pulse/other/JOB-else",
+        r#"{"job": "JOB-else", "reason": "not ours"}"#,
+    )
+    .unwrap();
+    s.conn().unwrap().execute(
+        "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, resolution, created_at) VALUES \
+         ('20260906T211100Z-cinder', 'demo', 'jobs', 'job-work', 'result', 'cinder', '2026-09-06', 'done: the work', 'proceeded', '2026-09-06T21:11:00Z'), \
+         ('20260906T211200Z-other', 'demo', 'jobs', 'job-other', 'result', 'other', '2026-09-06', 'not this task', '', '2026-09-06T21:12:00Z')",
+        [],
+    ).unwrap();
+
+    let a = activity_for(&s, &id, 0).unwrap();
+    assert_eq!(a.task_id, id);
+    assert!(a.running);
+    assert!(!a.has_more);
+    assert_eq!(a.total, a.items.len());
+    let ids: Vec<&str> = a.items.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            // Everything the test wrote through the API happened "now", 21:00:
+            // the task, the lead and status events, the message, the landing.
+            "task:created",
+            "msg:MSG-20260906T210000Z-1",
+            "land:6",
+            "task:3",
+            "task:4",
+            "job:add:JOB-plan",
+            "job:add:JOB-work",
+            "run:start:RUN-1",
+            "quiet:HS-1:0",
+            "step:HS-1:2",
+            "quiet:HS-1:3",
+            "step:HS-1:8",
+            "step:HS-1:10",
+            "step:HS-1:12",
+            "run:end:RUN-1",
+            "post:20260906T211100Z-cinder",
+            "run:start:RUN-2",
+        ],
+        "{:#?}",
+        a.items
+    );
+    let by_id = |want: &str| a.items.iter().find(|i| i.id == want).unwrap();
+    let created = by_id("task:created");
+    assert_eq!(
+        (
+            created.kind.as_str(),
+            created.what.as_str(),
+            created.who.as_str()
+        ),
+        ("task", "created", "human")
+    );
+    assert_eq!(
+        (created.title.as_str(), created.text.as_str()),
+        ("Ship it", "the brief")
+    );
+    let lead = a.items.iter().find(|i| i.what == "lead").unwrap();
+    assert_eq!(
+        (lead.title.as_str(), lead.job_id.as_str()),
+        ("demo-lead", "JOB-plan")
+    );
+    let status = a.items.iter().find(|i| i.what == "status").unwrap();
+    assert_eq!(
+        (status.title.as_str(), status.status.as_str()),
+        ("open", "in_progress")
+    );
+    let quiet = by_id("quiet:HS-1:0");
+    assert_eq!((quiet.title.as_str(), quiet.count), ("note ×2", 2));
+    assert_eq!(by_id("quiet:HS-1:3").title, "read · grep");
+    let words = by_id("step:HS-1:2");
+    assert!(words.truncated);
+    assert_eq!(words.text.chars().count(), 2001);
+    assert_eq!(words.who, "cinder");
+    let cmd = by_id("step:HS-1:8");
+    assert_eq!(
+        (cmd.title.as_str(), cmd.text.as_str()),
+        ("Run the tests", "cargo test -q")
+    );
+    assert_eq!((cmd.exit_code, cmd.duration_ms), (Some(101), 4200));
+    assert_eq!(by_id("step:HS-1:10").title, "src/lib.rs");
+    assert_eq!(by_id("step:HS-1:12").status, "submitted");
+    let end = by_id("run:end:RUN-1");
+    assert_eq!(
+        (
+            end.status.as_str(),
+            end.exit_code,
+            end.count,
+            end.text.as_str()
+        ),
+        ("done", Some(0), 2, "did the work")
+    );
+    let landed = by_id("land:6");
+    assert_eq!(
+        (
+            landed.what.as_str(),
+            landed.title.as_str(),
+            landed.status.as_str()
+        ),
+        ("landed", "pulse/cinder/JOB-work", "bbb")
+    );
+    let post = by_id("post:20260906T211100Z-cinder");
+    assert_eq!(
+        (
+            post.what.as_str(),
+            post.who.as_str(),
+            post.job_id.as_str(),
+            post.status.as_str()
+        ),
+        ("result", "cinder", "JOB-work", "proceeded")
+    );
+    let msg = by_id("msg:MSG-20260906T210000Z-1");
+    assert_eq!(
+        (msg.who.as_str(), msg.text.as_str()),
+        ("human", "How is it going?")
+    );
+
+    assert_eq!(a.runs.len(), 2);
+    let r1 = &a.runs[0];
+    assert_eq!(
+        (
+            r1.id.as_str(),
+            r1.job_title.as_str(),
+            r1.session_id.as_str()
+        ),
+        ("RUN-1", "Do the work", "HS-1")
+    );
+    assert_eq!((r1.calls, r1.commands, r1.edits, r1.steps), (2, 1, 1, 13));
+    assert_eq!(
+        (
+            a.runs[1].id.as_str(),
+            a.runs[1].status.as_str(),
+            a.runs[1].session_id.as_str()
+        ),
+        ("RUN-2", "running", "")
+    );
+
+    // The limit keeps the newest lines and says what it cut.
+    let cut = activity_for(&s, &id, 3).unwrap();
+    assert!(cut.has_more);
+    assert_eq!(cut.total, 17);
+    assert_eq!(
+        cut.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        vec![
+            "run:end:RUN-1",
+            "post:20260906T211100Z-cinder",
+            "run:start:RUN-2"
+        ]
+    );
+    assert!(activity_for(&s, "TASK-999", 0).is_err());
+}
+
+#[test]
+fn activity_clip_cuts_on_character_boundaries() {
+    assert_eq!(clip("héllo wörld", 5), ("héllo…".to_string(), true));
+    assert_eq!(clip("short  \n", 50), ("short".to_string(), false));
+    assert_eq!(clip("", 0), (String::new(), false));
+}

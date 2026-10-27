@@ -1991,6 +1991,61 @@ export interface TaskDetail {
   lead_work?: LeadWork | null;
 }
 
+// GET /tasks/{id}/activity: the task's story in order - what the owner
+// wrote, what the lead and its workers did step by step, what landed. The
+// task sheet's Activity tab reads it like a chat and follows a live run.
+export type ActivityKind = "task" | "message" | "job" | "run" | "step" | "quiet" | "land" | "post";
+
+export interface ActivityItem {
+  id: string; // stable across fetches: task:created, msg:ID, run:start:ID, step:SESSION:N, quiet:SESSION:N, land:SEQ, post:ID
+  at: string;
+  kind: ActivityKind;
+  // task: created|revised|status|lead|cancelled|followup|nudged; job: added;
+  // run: started|ended; step: the harness step kind; land: landed|held|…; post: its kind
+  what: string;
+  who: string;
+  job_id?: string;
+  run_id?: string;
+  session_id?: string;
+  title?: string;
+  text?: string;
+  status?: string;
+  exit_code?: number | null;
+  duration_ms?: number;
+  count?: number;
+  choices?: string[];
+  reference?: string;
+  truncated?: boolean;
+}
+
+export interface ActivityRun {
+  id: string;
+  job_id: string;
+  job_title: string;
+  agent: string;
+  executor: string;
+  status: string;
+  exit_code?: number | null;
+  started_at: string;
+  finished_at: string;
+  summary: string;
+  session_id?: string;
+  calls: number;
+  commands: number;
+  edits: number;
+  steps: number;
+}
+
+export interface TaskActivity {
+  task_id: string;
+  items: ActivityItem[];
+  runs: ActivityRun[];
+  total: number;
+  has_more: boolean;
+  running: boolean;
+  now: string;
+}
+
 export interface TasksPayload {
   tasks: Task[];
 }

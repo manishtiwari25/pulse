@@ -19,6 +19,7 @@ import { priorityWord, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { enc, taskProgress, type Task, type TaskDetail, type TaskJob } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { TaskActivityPane } from "./task-activity";
 import { CancelTaskDialog, TaskNeedsYou, TaskProgressBar } from "./task-card";
 import { AmendTaskDialog } from "./task-dialogs";
 import { Ago, idleLine, TaskWorkerInline, TaskWorkingLine } from "./task-work";
@@ -164,8 +165,11 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
   const idle = idleLine(t);
   const revisions = [...data.revisions].sort((a, b) => b.rev - a.rev);
   const by = (a: string) => (a === "human" || a === "owner" ? "you" : a);
-  const current = tab ?? (review ? "chat" : "brief");
-  const chat = current === "chat";
+  // The feed is the first thing to see while agents work; a review puts the
+  // conversation first, where the question waits.
+  const current = tab ?? (review ? "chat" : "activity");
+  // On a phone the conversation and the feed need the room (see the header).
+  const chat = current === "chat" || current === "activity";
   return (
     <>
       {/* On a phone the conversation needs the room: on that tab the header
@@ -233,6 +237,9 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
       </SheetHeader>
       <Tabs value={current} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
         <TabsList variant="line" className="w-full justify-start px-4">
+          <TabsTrigger value="activity" className="flex-none">
+            Activity{progress.working.length ? <span className="ml-1 inline-block size-1.5 rounded-full bg-primary align-middle" aria-label="Agents are working on it right now" /> : null}
+          </TabsTrigger>
           <TabsTrigger value="brief" className="flex-none">
             Overview
           </TabsTrigger>
@@ -240,6 +247,9 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
             Conversation <span className="tnum rounded-full bg-muted px-1.5 text-xs font-normal leading-5 text-muted-foreground">{data.messages.length}</span>
           </TabsTrigger>
         </TabsList>
+        <TabsContent value="activity" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TaskActivityPane task={t} onChat={() => setTab("chat")} />
+        </TabsContent>
         <TabsContent value="brief" className="scroll-thin min-h-0 flex-1 overflow-y-auto px-5 py-5">
           <div className="grid gap-8">
             {review ? <TaskNeedsYou t={t} onChat={() => setTab("chat")} /> : null}

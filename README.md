@@ -233,7 +233,21 @@ activity fold under **Details for this machine**.
   it up yet* in amber - the daemon's own doing, not the lead's: the project's
   lead sitting (`lead_work` on `GET /api/v1/tasks/<id>` and `GET
   /api/v1/messages?project=`) and the message's read marks are what it reads.
-  An answer under your message replaces the line.
+  An answer under your message replaces the line. A task opens on its
+  **Activity** tab (the conversation first while a review waits for you):
+  one feed, in order, of everything that happened to it - your brief and
+  messages, the jobs the lead cut, each run as a chapter under the agent
+  who did it with the commands it ran (✓/✗ and how long), the files it
+  edited, its plans and what it said between tools, the quiet stretches
+  folded into one line (*read ×3 · grep*), the landing and the status
+  changes, and the posts agents wrote about it on the board. A running
+  chapter shows the typing dots and its last step's age and the feed
+  follows the work live; a finished one folds to a line (*cinder worked 11
+  minutes: 12 commands, 4 files changed — finished*) you open when you want
+  it. **Full run** on a
+  chapter opens the whole harness session; the feed keeps the newest 400
+  lines and *Show everything* fetches the rest (`GET
+  /api/v1/tasks/<id>/activity?limit=0`).
 - **Suggested work** - the agents propose the next task; another agent
   judges it before it reaches you. The Work tab's **Suggested next** panel
   lists each suggestion with who made it and where its review stands; a

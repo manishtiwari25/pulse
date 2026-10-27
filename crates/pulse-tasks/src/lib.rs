@@ -1,5 +1,6 @@
 //! PULSE: owner tasks, messages, compute requests and caps.
 
+pub mod activity;
 pub mod commands;
 pub mod compute;
 pub mod leads;
@@ -9,6 +10,7 @@ pub mod suggestions;
 pub mod tasks;
 pub mod work;
 
+pub use activity::*;
 pub use commands::*;
 pub use compute::*;
 pub use messages::*;
