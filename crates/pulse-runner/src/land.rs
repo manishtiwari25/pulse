@@ -3170,7 +3170,7 @@ mod tests {
     }
 
     /// A dependency bump the release-age rule cannot judge - here a
-    /// `pnpm-lock.yaml`, whose pins no registry lookup reads - waits for a
+    /// `bun.lock`, whose pins this landing does not read - waits for a
     /// human as every lockfile branch once did.
     #[test]
     fn lockfile_branch_waits_for_a_human() {
@@ -3187,9 +3187,9 @@ mod tests {
         // never pass for it.
         let pkg = std::path::Path::new(&root).join("package.json");
         std::fs::write(&pkg, "{\"dependencies\":{\"next\":\"16.4.3\"}}\n").unwrap();
-        let lock = std::path::Path::new(&root).join("pnpm-lock.yaml");
-        std::fs::write(&lock, "lockfileVersion: 9.0\n").unwrap();
-        run(&root, &["git", "add", "package.json", "pnpm-lock.yaml"]);
+        let lock = std::path::Path::new(&root).join("bun.lock");
+        std::fs::write(&lock, "{\"lockfileVersion\": 1}\n").unwrap();
+        run(&root, &["git", "add", "package.json", "bun.lock"]);
         run(&root, &["git", "commit", "-q", "-m", "bump next"]);
         run(&root, &["git", "switch", "-q", "main"]);
         let (job, _) = crate::jobs::add_job(
@@ -3223,7 +3223,7 @@ mod tests {
         );
         assert!(
             first[0].note.contains(
-                "pnpm-lock.yaml on pulse/aurora/bump-next is not a lockfile this landing reads"
+                "bun.lock on pulse/aurora/bump-next is not a lockfile this landing reads"
             ),
             "{}",
             first[0].note
@@ -3238,7 +3238,7 @@ mod tests {
         let detail: serde_json::Value = serde_json::from_str(&held[0].str("detail")).unwrap();
         assert_eq!(detail["reason"], "lockfile");
         assert_eq!(detail["why"], "unknown");
-        assert_eq!(detail["lockfiles"], serde_json::json!(["pnpm-lock.yaml"]));
+        assert_eq!(detail["lockfiles"], serde_json::json!(["bun.lock"]));
         // The daemon's next passes skip it until the recheck comes round.
         let soon = crate::util::plus_minutes(TEST_NOW, 15);
         let quiet = super::land_pending(&s, project.clone(), "daemon", &soon, false, 0, false);
@@ -3684,16 +3684,16 @@ mod tests {
         let _env = pulse_testutil::env_lock();
         let s = test_helpers::new_store();
         let (mut project, root) = crate::test_helpers::new_repo(&s);
-        let branch = "pulse/aurora/bump-next-pnpm";
-        // The branch moves the project to pnpm: its lockfile is one no registry lookup reads.
+        let branch = "pulse/aurora/bump-next-bun";
+        // The branch moves the project to bun: its lockfile is one this landing does not read.
         bump_next_fixture(
             &s,
             &mut project,
             &root,
             branch,
             "16.4.1",
-            "pnpm-lock.yaml",
-            "lockfileVersion: 9.0\npackages:\n  next@16.4.1: {}\n",
+            "bun.lock",
+            "{\"lockfileVersion\": 1, \"packages\": {\"next\": [\"next@16.4.1\"]}}\n",
         );
         let slug = project.str("slug");
         let reg = next_registry();
@@ -3711,15 +3711,13 @@ mod tests {
         assert_eq!(first.len(), 1, "{first:?}");
         assert_eq!(first[0].state, "held", "{}", first[0].note);
         assert!(
-            first[0]
-                .note
-                .contains("changes the lockfile (pnpm-lock.yaml)"),
+            first[0].note.contains("changes the lockfile (bun.lock)"),
             "{}",
             first[0].note
         );
         assert!(
             first[0].note.contains(
-                "pnpm-lock.yaml on pulse/aurora/bump-next-pnpm is not a lockfile this landing reads"
+                "bun.lock on pulse/aurora/bump-next-bun is not a lockfile this landing reads"
             ),
             "{}",
             first[0].note

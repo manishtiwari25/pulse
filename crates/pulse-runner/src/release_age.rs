@@ -568,9 +568,132 @@ pub(crate) fn lockfile_pins(path: &str, text: &str) -> Option<Vec<Pin>> {
             source.contains("registry")
         })),
         "package-lock.json" => package_lock_pins(text),
+        "pnpm-lock.yaml" => pnpm_lock_pins(text),
+        "yarn.lock" => yarn_lock_pins(text),
         "Gemfile.lock" => Some(gemfile_lock_pins(text)),
         _ => None,
     }
+}
+
+/// Splits a `name@version` package key, scoped names (`@scope/name@1.2.3`)
+/// included; `None` when there is no version or it is not a registry one
+/// (a git or file reference, a workspace member).
+fn name_at_version(key: &str) -> Option<Pin> {
+    // The name's own `@` is the first one past a scope marker.
+    let at = key.get(1..)?.find('@')? + 1;
+    let (name, version) = (&key[..at], &key[at + 1..]);
+    (!name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit())).then(|| Pin {
+        name: name.to_string(),
+        version: version.to_string(),
+    })
+}
+
+/// pnpm's `packages:` section, one key per resolved package in any of the
+/// three shapes pnpm has written: `/name/1.2.3` (lockfile 5), `/name@1.2.3`
+/// (6) and `name@1.2.3` (9), each with an optional peer suffix
+/// (`_react@18.0.0` or `(react@18.0.0)`) that is not part of the version.
+/// `None` when the text is not a pnpm lockfile at all.
+fn pnpm_lock_pins(text: &str) -> Option<Vec<Pin>> {
+    let major = text
+        .lines()
+        .find_map(|l| l.strip_prefix("lockfileVersion:"))?
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"')
+        .split('.')
+        .next()
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(0);
+    let mut pins = Vec::new();
+    let mut in_packages = false;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !line.starts_with(' ') {
+            in_packages = line.trim_end() == "packages:";
+            continue;
+        }
+        if !in_packages || !line.starts_with("  ") || line.starts_with("   ") {
+            continue;
+        }
+        let Some(key) = line.trim().strip_suffix(':') else {
+            continue;
+        };
+        let key = key.trim_matches(|c| c == '\'' || c == '"');
+        let key = key.strip_prefix('/').unwrap_or(key);
+        let pin = if major < 6 {
+            // Lockfile 5: the version after the last slash, a peer suffix
+            // after an underscore (`/next/16.3.8_react@18.0.0`).
+            key.rsplit_once('/').and_then(|(name, rest)| {
+                let version = rest.split('_').next().unwrap_or("");
+                (!name.is_empty() && version.starts_with(|c: char| c.is_ascii_digit())).then(|| {
+                    Pin {
+                        name: name.to_string(),
+                        version: version.to_string(),
+                    }
+                })
+            })
+        } else {
+            name_at_version(key.split('(').next().unwrap_or(key))
+        };
+        pins.extend(pin);
+    }
+    Some(pins)
+}
+
+/// yarn's lockfile, classic (`# yarn lockfile v1`, `version "1.2.3"`) or
+/// berry (`__metadata:`, `version: 1.2.3`): each entry's first spec names the
+/// package and the `version` line under it the pin. Workspace members, files,
+/// links, portals and patches are not registry versions and are left out.
+/// `None` when the text is neither.
+fn yarn_lock_pins(text: &str) -> Option<Vec<Pin>> {
+    let berry = text.lines().any(|l| l.trim_end() == "__metadata:");
+    if !berry && !text.contains("# yarn lockfile v1") {
+        return None;
+    }
+    let mut pins = Vec::new();
+    let mut name: Option<String> = None;
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if !line.starts_with(' ') {
+            name = None;
+            let Some(key) = line.trim_end().strip_suffix(':') else {
+                continue;
+            };
+            let first = key.split(',').next().unwrap_or(key).trim();
+            let first = first.trim_matches('"');
+            let at = first.get(1..).and_then(|s| s.find('@')).map(|i| i + 1);
+            let range = at.map(|i| &first[i + 1..]).unwrap_or("");
+            let range = range.strip_prefix("npm:").unwrap_or(range);
+            let local = ["workspace:", "file:", "link:", "portal:", "patch:", "exec:"]
+                .iter()
+                .any(|p| range.starts_with(p));
+            if !local {
+                name = at.map(|i| first[..i].to_string());
+            }
+            continue;
+        }
+        let Some(package) = name.as_deref() else {
+            continue;
+        };
+        let rest = line.trim();
+        let version = rest
+            .strip_prefix("version:")
+            .or_else(|| rest.strip_prefix("version "))
+            .map(|v| v.trim().trim_matches('"'));
+        if let Some(version) = version
+            && version.starts_with(|c: char| c.is_ascii_digit())
+        {
+            pins.push(Pin {
+                name: package.to_string(),
+                version: version.to_string(),
+            });
+            name = None;
+        }
+    }
+    Some(pins)
 }
 
 /// `[[package]]` tables with `name`, `version` and a `source` line that `is_dependency`
@@ -1008,8 +1131,111 @@ mod tests {
                 },
             ]
         );
-        assert!(lockfile_pins("pnpm-lock.yaml", "lockfileVersion: 9.0").is_none());
+        assert!(lockfile_pins("bun.lockb", "lockfileVersion: 9.0").is_none());
         assert!(lockfile_pins("package-lock.json", "{\"lockfileVersion\":1}").is_none());
+    }
+
+    #[test]
+    fn pnpm_lock_pins_read_every_lockfile_shape_and_drop_peer_suffixes() {
+        let v9 = "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n\nimporters:\n\n  .:\n    dependencies:\n      next:\n        specifier: ^16.0.0\n        version: 16.3.8(react@19.2.0)\n\npackages:\n\n  '@alloc/quick-lru@5.2.0':\n    resolution: {integrity: sha512-x}\n    engines: {node: '>=10'}\n\n  next@16.3.8:\n    resolution: {integrity: sha512-y}\n    peerDependencies:\n      react: ^19.0.0\n\n  local-tool@file:tools/local:\n    resolution: {directory: tools/local, type: directory}\n\n  'tiny@https://codeload.github.com/o/tiny/tar.gz/abc':\n    resolution: {tarball: https://codeload.github.com/o/tiny/tar.gz/abc}\n\nsnapshots:\n\n  '@alloc/quick-lru@5.2.0': {}\n\n  next@16.3.8(react@19.2.0):\n    dependencies:\n      react: 19.2.0\n";
+        assert_eq!(
+            lockfile_pins("pnpm-lock.yaml", v9).unwrap(),
+            vec![
+                Pin {
+                    name: "@alloc/quick-lru".into(),
+                    version: "5.2.0".into()
+                },
+                Pin {
+                    name: "next".into(),
+                    version: "16.3.8".into()
+                },
+            ],
+            "lockfile 9: snapshots, importers, file and git entries are not pins"
+        );
+        let v6 = "lockfileVersion: '6.0'\n\npackages:\n\n  /@babel/runtime@7.26.0:\n    resolution: {integrity: sha512-x}\n    dev: false\n\n  /next@16.3.8(react@19.2.0):\n    resolution: {integrity: sha512-y}\n";
+        assert_eq!(
+            lockfile_pins("web/pnpm-lock.yaml", v6).unwrap(),
+            vec![
+                Pin {
+                    name: "@babel/runtime".into(),
+                    version: "7.26.0".into()
+                },
+                Pin {
+                    name: "next".into(),
+                    version: "16.3.8".into()
+                },
+            ],
+            "lockfile 6: a leading slash and a peer suffix in parentheses"
+        );
+        let v5 = "lockfileVersion: 5.4\n\npackages:\n\n  /@babel/runtime/7.26.0:\n    resolution: {integrity: sha512-x}\n\n  /next/16.3.8_react@19.2.0:\n    resolution: {integrity: sha512-y}\n\n  /string_decoder/1.3.0:\n    resolution: {integrity: sha512-z}\n";
+        assert_eq!(
+            lockfile_pins("pnpm-lock.yaml", v5).unwrap(),
+            vec![
+                Pin {
+                    name: "@babel/runtime".into(),
+                    version: "7.26.0".into()
+                },
+                Pin {
+                    name: "next".into(),
+                    version: "16.3.8".into()
+                },
+                Pin {
+                    name: "string_decoder".into(),
+                    version: "1.3.0".into()
+                },
+            ],
+            "lockfile 5: the version after a slash, a peer suffix after an underscore"
+        );
+        assert_eq!(
+            lockfile_pins(
+                "pnpm-lock.yaml",
+                "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n"
+            ),
+            Some(Vec::new()),
+            "a project without dependencies pins nothing"
+        );
+        assert!(
+            lockfile_pins("pnpm-lock.yaml", "<<<<<<< ours\n").is_none(),
+            "not a pnpm lockfile"
+        );
+    }
+
+    #[test]
+    fn yarn_lock_pins_read_classic_and_berry_and_skip_workspaces() {
+        let classic = "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\n\"@babel/runtime@^7.20.0\", \"@babel/runtime@^7.26.0\":\n  version \"7.26.0\"\n  resolved \"https://registry.yarnpkg.com/@babel/runtime/-/runtime-7.26.0.tgz#abc\"\n  integrity sha512-x\n\nnext@^16.0.0:\n  version \"16.3.8\"\n  resolved \"https://registry.yarnpkg.com/next/-/next-16.3.8.tgz#def\"\n  dependencies:\n    \"@swc/helpers\" \"0.5.15\"\n\n\"local-tool@file:tools/local\":\n  version \"0.0.1\"\n";
+        assert_eq!(
+            lockfile_pins("yarn.lock", classic).unwrap(),
+            vec![
+                Pin {
+                    name: "@babel/runtime".into(),
+                    version: "7.26.0".into()
+                },
+                Pin {
+                    name: "next".into(),
+                    version: "16.3.8".into()
+                },
+            ],
+            "classic: the first spec names the package; file entries are not pins"
+        );
+        let berry = "# This file is generated by running \"yarn install\" inside your project.\n\n__metadata:\n  version: 8\n  cacheKey: 10c0\n\n\"@babel/runtime@npm:^7.20.0, @babel/runtime@npm:^7.26.0\":\n  version: 7.26.0\n  resolution: \"@babel/runtime@npm:7.26.0\"\n  checksum: 10c0/abc\n  languageName: node\n  linkType: hard\n\n\"hub@workspace:.\":\n  version: 0.0.0-use.local\n  resolution: \"hub@workspace:.\"\n  languageName: unknown\n  linkType: soft\n\n\"next@npm:^16.0.0\":\n  version: 16.3.8\n  resolution: \"next@npm:16.3.8\"\n  dependencies:\n    \"@swc/helpers\": \"npm:0.5.15\"\n  linkType: hard\n\n\"patched@patch:patched@npm%3A1.0.0#./.yarn/patches/patched.patch\":\n  version: 1.0.0\n";
+        assert_eq!(
+            lockfile_pins("web/yarn.lock", berry).unwrap(),
+            vec![
+                Pin {
+                    name: "@babel/runtime".into(),
+                    version: "7.26.0".into()
+                },
+                Pin {
+                    name: "next".into(),
+                    version: "16.3.8".into()
+                },
+            ],
+            "berry: npm specs only; the workspace member and the patch are not pins"
+        );
+        assert!(
+            lockfile_pins("yarn.lock", "next@^16.0.0:\n  version \"16.3.8\"\n").is_none(),
+            "neither header: not a yarn lockfile this landing reads"
+        );
     }
 
     #[test]

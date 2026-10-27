@@ -3446,8 +3446,9 @@ per project is the `meta` row `dependabot:<slug>`.
 **The landing.** A branch that changes a lockfile together with its manifest
 used to wait for a human landing in every case. Now the landing diffs the
 pins between the default branch and the branch (`Cargo.lock`,
-`package-lock.json`, `uv.lock`, `Gemfile.lock`) and asks the registry how
-old every new version is. When each one is at least the rule's age the
+`package-lock.json`, `pnpm-lock.yaml` in every shape pnpm has written,
+`yarn.lock` classic and berry, `uv.lock`, `Gemfile.lock`) and asks the
+registry how old every new version is. When each one is at least the rule's age the
 branch lands like any other, with its lockfile and manifests kept for the
 check (the recipe's `cargo fetch --locked` or `npm ci` must see the branch's
 lockfile, not main's) and a `land.release-age` event naming the versions
@@ -3455,9 +3456,8 @@ adopted. When a version is too young the branch is held with reason
 `release-age` and the date it can land from (`can land from
 2026-10-26T13:40Z`); the daemon lands it on the first tick after that, no
 human needed. A jump past the compatible range (`next 16.3.8 -> 17.0.0`), a
-lockfile the landing does not read (`pnpm-lock.yaml`, `yarn.lock`,
-`poetry.lock`, `go.sum`) or a registry that cannot be asked keep the human
-hold as before, with why in the `land.held` event, and `pulse land --project
+lockfile the landing does not read (`poetry.lock`, `go.sum`, `bun.lock`) or
+a registry that cannot be asked keep the human hold as before, with why in the `land.held` event, and `pulse land --project
 X --branch B` by hand still lands whatever you ask for, recording the verdict
 only. With the rule at `0` days no registry is asked and only the
 compatible-range check remains.
