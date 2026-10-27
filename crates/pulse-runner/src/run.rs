@@ -2048,6 +2048,7 @@ pub(crate) fn run_job(
         },
     ) {
         log.put(&err_message(&e));
+        eprintln!("{}", err_message(&e));
         write_run_log(&run_id, &log_path, &log.text());
         status = "stale".into();
         summary = format!("{} ({})", summary, err_message(&e));
