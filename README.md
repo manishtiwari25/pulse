@@ -404,7 +404,10 @@ activity fold under **Details for this machine**.
   a request that fails later releases what it created first (on Azure the VM
   and its public IP, VNet and NSG), and a sweep every 30 minutes releases any
   machine still running under a request that is over - a daemon restarted
-  mid-create cannot leave one billing. Each executor row offers the same
+  mid-create cannot leave one billing. A request that failed before a
+  machine was ready gives its hours back to the day's
+  `compute.max_hours_per_day`: nothing was bought, so the retry that fixes
+  the cause is not held by the attempt that found it. Each executor row offers the same
   preview-then-remove as `pulse remove executor`.
 - **Settings** - runner caps, board rules, amendment quorum, the models
   the runs get (`worker_model` for the work that changes code - task, improve

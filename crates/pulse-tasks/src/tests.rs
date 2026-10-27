@@ -895,6 +895,44 @@ fn compute_auto_approve_under_caps_else_proposal() {
     assert_eq!(list_compute(&s, "demo", "pending").unwrap().len(), 2);
 }
 
+#[test]
+fn a_request_that_failed_before_a_machine_was_ready_does_not_spend_the_day() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "1"),
+        ("compute.max_hours_per_day", "4"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let r1 = request_compute(&s, "demo", "demo-lead", "", 4, "first try").unwrap();
+    assert_eq!(r1.status, "approved");
+    assert_eq!(get_caps(&s).unwrap().hours_today, 4);
+    // Provisioning never produced a machine: the probe failed, the executor
+    // stays empty. The day's hours come back and the retry is approved.
+    set_compute_status(&s, &r1.id, "provisioning", "", "runner").unwrap();
+    let failed = set_compute_status(&s, &r1.id, "failed", "", "runner").unwrap();
+    assert_eq!(
+        (failed.status.as_str(), failed.executor.as_str()),
+        ("failed", "")
+    );
+    assert_eq!(get_caps(&s).unwrap().hours_today, 0);
+    let r2 = request_compute(&s, "demo", "demo-lead", "", 4, "second try").unwrap();
+    assert_eq!(r2.status, "approved");
+    assert_eq!(get_caps(&s).unwrap().hours_today, 4);
+    // A machine that was ready and then failed did run: its hours stay spent.
+    set_compute_status(&s, &r2.id, "ready", "hand-2", "runner").unwrap();
+    let ran = set_compute_status(&s, &r2.id, "failed", "", "runner").unwrap();
+    assert_eq!(
+        (ran.status.as_str(), ran.executor.as_str()),
+        ("failed", "hand-2")
+    );
+    assert_eq!(get_caps(&s).unwrap().hours_today, 4);
+    let r3 = request_compute(&s, "demo", "demo-lead", "", 1, "over the day").unwrap();
+    assert_eq!(r3.status, "pending");
+}
+
 fn ctx_for(s: &pulse_store::Store, agent: &str, project: &str, json: bool) -> (Context, Buffer) {
     let out = Buffer::new();
     let err = out.clone();

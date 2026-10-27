@@ -132,8 +132,12 @@ pub fn get_caps(s: &pulse_store::Store) -> Result<Caps> {
         [],
         |r| r.get(0),
     )?;
+    // Machine-hours the day has spent or reserved: every request of the day
+    // but a denied one and one that failed before a machine was ready
+    // (its executor never set) - that one consumed nothing, as its own
+    // finding says, so it does not block the retry that fixes the cause.
     c.hours_today = conn.query_row(
-        "SELECT COALESCE(SUM(hours), 0) FROM compute_requests WHERE substr(at, 1, 10) = ? AND status NOT IN ('denied')",
+        "SELECT COALESCE(SUM(hours), 0) FROM compute_requests WHERE substr(at, 1, 10) = ? AND status NOT IN ('denied') AND NOT (status = 'failed' AND executor = '')",
         [&s.now()[..10]],
         |r| r.get(0),
     )?;
