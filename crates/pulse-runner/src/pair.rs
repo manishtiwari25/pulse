@@ -204,6 +204,62 @@ pub(crate) fn pair_host_block(name: String, host: String, port: i32) -> String {
     .join("\n")
 }
 
+/// The machine ssh itself reaches for `user@host`: when `host` is an alias in the hub's
+/// ssh config (compute writes `Host NAME-admin` with the machine's address), the `Host NAME`
+/// block the pairing writes must carry that address, not the alias - OpenSSH does not resolve
+/// a `HostName` through another `Host` block, so `ssh NAME` would fail with "Could not
+/// resolve hostname" right after the apply step succeeded through the alias. `ssh -G` answers
+/// from the same config without connecting; anything but a clean answer keeps the input.
+pub(crate) fn pair_resolve_target(
+    hub_home: &str,
+    user: &str,
+    host: &str,
+    port: i32,
+) -> (String, i32) {
+    let config = Path::new(hub_home).join(".ssh").join("config");
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-G").arg("-F");
+    if config.is_file() {
+        cmd.arg(&config);
+    } else {
+        cmd.arg("none");
+    }
+    if port != 22 {
+        cmd.arg("-p").arg(port.to_string());
+    }
+    cmd.arg(format!("{user}@{host}"));
+    let Ok(out) = cmd.output() else {
+        return (host.to_string(), port);
+    };
+    if !out.status.success() {
+        return (host.to_string(), port);
+    }
+    pair_resolved_target(&String::from_utf8_lossy(&out.stdout), host, port)
+}
+
+/// The `hostname` and `port` lines of `ssh -G` output, with the input as the fallback.
+pub(crate) fn pair_resolved_target(text: &str, host: &str, port: i32) -> (String, i32) {
+    let mut target = host.to_string();
+    let mut target_port = port;
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next()) {
+            (Some(k), Some(v)) if k.eq_ignore_ascii_case("hostname") && !v.is_empty() => {
+                target = v.to_string();
+            }
+            (Some(k), Some(v)) if k.eq_ignore_ascii_case("port") => {
+                if let Ok(p) = v.parse::<i32>()
+                    && p > 0
+                {
+                    target_port = p;
+                }
+            }
+            _ => {}
+        }
+    }
+    (target, target_port)
+}
+
 pub(crate) fn pair_known_host_prefix(host: String, port: i32) -> String {
     if port == 22 {
         host
@@ -1025,6 +1081,10 @@ struct PairLive<'a> {
     name: &'a str,
     host: &'a str,
     port: i32,
+    /// What the `Host NAME` block and known_hosts carry: the admin address resolved through
+    /// the hub's ssh config (pair_resolve_target), the same as `host` when it is no alias.
+    target: &'a str,
+    target_port: i32,
     workdir: &'a str,
     now: &'a str,
     actor: &'a str,
@@ -1066,6 +1126,8 @@ fn pair_apply_live(
         name,
         host,
         port,
+        target,
+        target_port,
         workdir,
         now,
         actor,
@@ -1102,8 +1164,8 @@ fn pair_apply_live(
         config_text,
         alias_block.as_deref(),
         name.to_string(),
-        host.to_string(),
-        port,
+        target.to_string(),
+        target_port,
         hostkeys,
     )?;
     rep.lines.extend(local_lines);
@@ -1386,8 +1448,14 @@ pub(crate) fn pair_executor(
     };
     let (key_path, pubkey, key_ready) =
         pair_inspection_pubkey(hub_home.clone(), o.dry_run, &mut rep.lines);
+    let (target, target_port) = pair_resolve_target(&hub_home, &user, &host, port);
+    if target != host || target_port != port {
+        rep.lines.push(format!(
+            "ssh alias {host} resolves to {target} port {target_port}; the Host {name} block and known_hosts use that address"
+        ));
+    }
     let (config, config_text, alias_block) =
-        pair_check_alias(hub_home.clone(), name.clone(), host.clone())?;
+        pair_check_alias(hub_home.clone(), name.clone(), target.clone())?;
     let dropin = pair_dropin_text();
     let inspect_script = pair_inspect_script(
         workdir.clone(),
@@ -1473,7 +1541,7 @@ pub(crate) fn pair_executor(
             rep.lines.push(format!("  keep existing Host {name} block"));
         } else {
             rep.lines.push(
-                pair_host_block(name.clone(), host.clone(), port)
+                pair_host_block(name.clone(), target.clone(), target_port)
                     .trim_end()
                     .into(),
             );
@@ -1481,7 +1549,7 @@ pub(crate) fn pair_executor(
         for hk in hostkeys {
             rep.lines.push(format!(
                 "  known_hosts: {} {}",
-                pair_known_host_prefix(host.clone(), port),
+                pair_known_host_prefix(target.clone(), target_port),
                 hk
             ));
         }
@@ -1499,6 +1567,8 @@ pub(crate) fn pair_executor(
             name: &name,
             host: &host,
             port,
+            target: &target,
+            target_port,
             workdir: &workdir,
             now: &now,
             actor: &actor,
@@ -2359,6 +2429,137 @@ mod tests {
             "executor.update events"
         );
         assert_eq!(pair_applied_events(&s).len(), 2, "pair.applied events");
+    }
+
+    #[test]
+    fn pair_resolved_target_reads_the_ssh_g_answer() {
+        let text = "user admin\nhostname 203.0.113.7\nport 2200\naddressfamily any\n";
+        assert_eq!(
+            pair_resolved_target(text, "two-admin", 22),
+            ("203.0.113.7".to_string(), 2200)
+        );
+        // a plain host comes back as ssh lowercased it, on the port given
+        assert_eq!(
+            pair_resolved_target("hostname example.invalid\nport 22\n", "Example.invalid", 22),
+            ("example.invalid".to_string(), 22)
+        );
+        // anything short of a clean answer keeps the input
+        assert_eq!(
+            pair_resolved_target("hostname\nport zero\n", "two-admin", 2022),
+            ("two-admin".to_string(), 2022)
+        );
+        assert_eq!(
+            pair_resolved_target("", "two-admin", 22),
+            ("two-admin".to_string(), 22)
+        );
+    }
+
+    fn ssh_available() -> bool {
+        Command::new("ssh")
+            .arg("-V")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    #[test]
+    fn pair_resolve_target_follows_the_hub_config_alias() {
+        if !ssh_available() {
+            eprintln!("skipped: no ssh on this machine");
+            return;
+        }
+        let hub = hub_with_key();
+        let home = hub.path().display().to_string();
+        // no config: the address is what was given
+        assert_eq!(
+            pair_resolve_target(&home, "admin", "example.invalid", 22),
+            ("example.invalid".to_string(), 22)
+        );
+        std::fs::write(
+            hub.path().join(".ssh/config"),
+            "Host two-admin\n    HostName 203.0.113.7\n    Port 2200\n    User pulseadmin\n",
+        )
+        .expect("config");
+        assert_eq!(
+            pair_resolve_target(&home, "pulseadmin", "two-admin", 22),
+            ("203.0.113.7".to_string(), 2200),
+            "the alias block's address and port"
+        );
+        assert_eq!(
+            pair_resolve_target(&home, "pulseadmin", "two-admin", 2222),
+            ("203.0.113.7".to_string(), 2222),
+            "a port given on the command line wins over the block"
+        );
+        assert_eq!(
+            pair_resolve_target(&home, "admin", "example.invalid", 22),
+            ("example.invalid".to_string(), 22),
+            "a host that is no alias is unchanged"
+        );
+    }
+
+    /// Compute pairs through the admin alias it wrote (`Host NAME-admin`); the hands block and
+    /// known_hosts must carry the machine's address or `ssh NAME` cannot resolve it (CR-003).
+    #[test]
+    fn pair_live_writes_the_address_behind_an_admin_alias() {
+        if !ssh_available() {
+            eprintln!("skipped: no ssh on this machine");
+            return;
+        }
+        let _serial = crate::test_helpers::serial();
+        let _guard = PAIR_TEST_LOCK.lock().expect("pair test lock");
+        let s = new_store();
+        let hub = hub_with_key();
+        let admin_block =
+            "Host hands-two-admin\n    HostName example.invalid\n    Port 22\n    User admin\n";
+        std::fs::write(hub.path().join(".ssh/config"), admin_block).expect("config");
+        let old_binary = set_hands_binary(fake_hands_binary());
+        let (ssh, calls) = install_live_fake(LiveReplies::default());
+        let rep = pair_executor(
+            &s,
+            "admin@hands-two-admin".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            live_opts(&hub, 1),
+        )
+        .unwrap_or_else(|e| panic!("live pair: {e}"))
+        .expect("report");
+        drop(ssh);
+        let _ = set_hands_binary(old_binary);
+        let text = rep.lines.join("\n");
+        assert!(rep.ok, "report not ok:\n{text}");
+        let got = calls.lock().expect("calls").clone();
+        assert_eq!(
+            got.iter().map(|c| c.kind).collect::<Vec<_>>(),
+            vec!["inspect", "apply", "probe", "commit"],
+            "ssh sequence"
+        );
+        assert!(
+            got.iter()
+                .filter(|c| c.kind != "probe")
+                .all(|c| c.argv.iter().any(|a| a == "admin@hands-two-admin")),
+            "admin steps still go through the alias: {got:?}"
+        );
+        assert!(
+            text.contains(
+                "ssh alias hands-two-admin resolves to example.invalid port 22; the Host hands-two block and known_hosts use that address"
+            ),
+            "missing the resolution line in:\n{text}"
+        );
+        let config = std::fs::read_to_string(hub.path().join(".ssh/config")).expect("config");
+        assert_eq!(
+            config,
+            format!(
+                "{admin_block}\n{}",
+                pair_host_block("hands-two".into(), "example.invalid".into(), 22)
+            ),
+            "the hands block names the address, not the alias"
+        );
+        let known =
+            std::fs::read_to_string(hub.path().join(".ssh/known_hosts")).expect("known_hosts");
+        assert_eq!(
+            known,
+            "example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEHOSTKEY root@example\n",
+            "known_hosts is keyed by the address"
+        );
     }
 
     #[test]

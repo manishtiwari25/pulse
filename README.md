@@ -3519,7 +3519,12 @@ block is printed). Then, in this order:
   missing; a `Host NAME` block (HostName, Port, `User pulse`, that key) is
   appended to `~/.ssh/config` only if an identical block is not there yet (the
   previous file is kept as `~/.ssh/config.bak` on the first change); the
-  machine's host keys are added to `~/.ssh/known_hosts` only if absent. A
+  machine's host keys are added to `~/.ssh/known_hosts` only if absent. When
+  HOST is itself an alias in that config (compute pairs through the
+  `Host NAME-admin` block it wrote), the block and the known_hosts lines carry
+  the address `ssh -G` resolves it to - OpenSSH does not follow a `HostName`
+  into another `Host` block, so `ssh NAME` would otherwise fail to resolve the
+  alias right after the apply step reached the machine through it. A
   second run changes none of them.
 - **There, as root**: the apply script `--dry-run` prints is streamed to `ssh
   -p PORT ADMIN@HOST sudo -n sh -s` (ten minutes at most). It creates the
