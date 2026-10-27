@@ -329,6 +329,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: String::new(),
                 name: String::new(),
+                images: Vec::new(),
             }],
             ..Request::default()
         }
@@ -412,6 +413,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_call_id: String::new(),
                     name: String::new(),
+                    images: Vec::new(),
                 },
                 Message {
                     role: Role::Assistant,
@@ -423,6 +425,7 @@ mod tests {
                     }],
                     tool_call_id: String::new(),
                     name: String::new(),
+                    images: Vec::new(),
                 },
             ],
             ..Request::default()

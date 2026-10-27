@@ -2869,6 +2869,7 @@ mod tests {
                     tool_calls,
                     tool_call_id: String::new(),
                     name: String::new(),
+                    images: Vec::new(),
                 }),
                 finish_reason: finish.into(),
                 usage: Usage {

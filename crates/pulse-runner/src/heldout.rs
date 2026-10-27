@@ -50,6 +50,7 @@ pub(crate) fn run_sealed_call(
                 tool_calls: vec![],
                 tool_call_id: String::new(),
                 name: String::new(),
+                ..Default::default()
             }],
             tools: vec![],
             initiator: "user".into(),
@@ -480,6 +481,7 @@ mod tests {
                     tool_calls: vec![],
                     tool_call_id: String::new(),
                     name: String::new(),
+                    ..Default::default()
                 }),
                 finish_reason: "stop".into(),
                 ..Default::default()

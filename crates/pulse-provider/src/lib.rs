@@ -127,6 +127,19 @@ impl std::fmt::Display for Role {
     }
 }
 
+/// ImageContent is one image attached to a [`Message`]: its media type (for
+/// example `image/png`) and the bytes as base64. Providers that accept images
+/// map it to their own wire shape (OpenAI: an `image_url` content part with a
+/// `data:` URL); providers that do not ignore it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImageContent {
+    #[serde(rename = "media_type")]
+    pub media_type: String,
+    /// Base64-encoded image bytes, no `data:` prefix.
+    #[serde(rename = "data")]
+    pub data: String,
+}
+
 /// Message is one turn of the conversation, in the OpenAI chat shape every vendor understands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -144,6 +157,14 @@ pub struct Message {
     pub tool_call_id: String,
     #[serde(rename = "name", default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(rename = "images", default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageContent>,
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self::new(Role::User)
+    }
 }
 
 impl Message {
@@ -154,6 +175,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -1082,6 +1104,7 @@ mod tests {
             }],
             tool_call_id: String::new(),
             name: String::new(),
+            images: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&msg).unwrap(),
