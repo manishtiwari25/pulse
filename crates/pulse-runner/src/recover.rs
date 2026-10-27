@@ -1346,11 +1346,20 @@ pub(crate) fn corrected_brief(job: Row, run: Row, f: crate::failure::Failure) ->
             600
         )
     ));
+    let step_limit_zero_commits = f.reason.contains("step_limit")
+        && !run.0.is_empty()
+        && run.str("commits").trim().parse::<i64>().unwrap_or(-1) == 0;
+    let retry_focus = if step_limit_zero_commits {
+        "The failed job hit the step limit without a single commit: it read too widely. This brief names at most 3 files and exactly one test; do not read other crates. "
+    } else {
+        ""
+    };
     base + RECOVERY_BRIEF_HEADING
         + &previous.join("\n")
         + "\n\nLast lines of its run log:\n\n```\n"
         + &recovery_log_evidence(run)
         + "\n```\n\n"
+        + retry_focus
         + "First look at the default branch: when the work above already landed another way, stop and say so in SUMMARY:. "
         + "Inspect the earlier attempts and start from the cause: reproduce the failing check, make a small safe correction, then deliver the original task above. "
         + "For a transient failure, first check whether the temporary cause has cleared rather than rewriting the work. "
@@ -3942,6 +3951,55 @@ mod tests {
         assert!(
             !brief.contains("old log"),
             "legacy log was recursively copied into the corrected brief"
+        );
+    }
+
+    #[test]
+    fn recovery_brief_step_limit_zero_commits_bounds_retry_scope() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let job = Row::new(); // no legacy heading: brief ends at the summary + one retry line
+        let f = crate::failure::classify_failure(
+            "worker exited 1: harness stopped: step_limit after 150 model calls".into(),
+            String::new(),
+            String::new(),
+            false,
+        );
+        assert_eq!(
+            f.class,
+            crate::failure::FailureClass("deterministic".into())
+        );
+
+        let mut run = Row::new();
+        run.insert("commits", json!(0));
+        let brief = super::corrected_brief(job, run, f.clone());
+        assert!(
+            brief.contains("at most 3 files and exactly one test; do not read other crates"),
+            "step_limit + 0 commits retry did not bound the scope:\n{brief}"
+        );
+
+        // A run that committed keeps the usual brief.
+        let mut committed = Row::new();
+        committed.insert("commits", json!(1));
+        let brief = super::corrected_brief(Row::new(), committed, f.clone());
+        assert!(
+            !brief.contains("at most 3 files"),
+            "a run with commits gained the scope bound:\n{brief}"
+        );
+
+        // A non-step_limit failure with 0 commits keeps the usual brief.
+        let mut run = Row::new();
+        run.insert("commits", json!(0));
+        let other = crate::failure::classify_failure(
+            "worker exited 1: check failed".into(),
+            String::new(),
+            String::new(),
+            false,
+        );
+        let brief = super::corrected_brief(Row::new(), run, other);
+        assert!(
+            !brief.contains("at most 3 files"),
+            "a non-step_limit failure gained the scope bound:\n{brief}"
         );
     }
 
