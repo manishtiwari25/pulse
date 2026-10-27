@@ -1544,6 +1544,9 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    for line in crate::security::tend_dependency_alerts(s, &slug, &now, &actor) {
+                        say(&o, line);
+                    }
                     for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
                         say(&o, line);
                     }

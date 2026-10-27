@@ -115,12 +115,13 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
 
 /// The jobs the owner is waiting on, as a clause over `j`: the lead's own
-/// runs, answers, and the jobs a lead planned for an owner task
-/// (`task:TASK-NNN` or `task:TASK-NNN:label`). They lease before the
-/// fleet's own work and alone through the express lane.
+/// runs, answers, the jobs a lead planned for an owner task
+/// (`task:TASK-NNN` or `task:TASK-NNN:label`), and the security updates the
+/// owner's standing rule queues (`security:` sources, `security.rs`). They
+/// lease before the fleet's own work and alone through the express lane.
 /// A role lead's sittings (`lead-role:` sources) are standing work, not the
 /// owner's, and queue with the fleet.
-pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%')";
+pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
 
 /// The `fits` entry that opens a slot to owner-driven jobs alone: the
 /// express lane the load governor keeps open while the machine is saturated.
@@ -854,7 +855,7 @@ mod tests {
         add_second_project(&s, "other");
         s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
             .unwrap();
-        for name in ["aurora", "borealis", "cinder"] {
+        for name in ["aurora", "borealis", "cinder", "dusk"] {
             join(&s, name);
         }
         // `proj` ran most recently, so project fairness alone would send the
@@ -894,6 +895,22 @@ mod tests {
         let answer = queue(&s, "other", "answer", "question:Q-1", 1);
         let lane = lease("cinder", super::owner_lane_fits());
         assert_eq!(lane.str("id"), answer, "{lane:?}");
+        // So does a security update the owner's standing rule queued
+        // (`security.rs`), ahead of the fleet's improve job.
+        let fleet_2 = queue(&s, "other", "improve", "lead-idle:other:2", 95);
+        let security = queue(
+            &s,
+            "other",
+            "task",
+            "security:other:Cargo.lock:3",
+            crate::security::JOB_PRIORITY,
+        );
+        let lane = lease("dusk", super::owner_lane_fits());
+        assert_eq!(lane.str("id"), security, "{lane:?}");
+        assert_eq!(
+            crate::jobs::job_row(&s.conn().unwrap(), fleet_2).str("status"),
+            "queued"
+        );
     }
 
     fn fake_probe_ssh(
