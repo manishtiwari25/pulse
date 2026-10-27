@@ -163,12 +163,14 @@ pub(crate) struct Lanes {
 
 /// With `verify.lock` on, a project's checks take turns on this machine, so N work
 /// jobs in flight mean a clone's commit waits for up to N checks before its own; past
-/// `harness.step_timeout` the harness kills the command, the run retries and the
-/// lanes burn their budget waiting on each other. The lanes that fit are
-/// `step_timeout / verify_seconds` (never below 1, never above `parallel_per_project`),
-/// with the check's own run time from the last landings (`land.landed`,
-/// `verify_seconds`). A project with no lock, no recorded landing, or a quick check
-/// keeps every lane.
+/// the gated-commit cap the harness kills the command, the run retries and the
+/// lanes burn their budget waiting on each other. That cap is what the harness
+/// gives a `git commit` whose pre-commit hook is the verify gate:
+/// `harness.commit_timeout`, never below `harness.step_timeout`. The lanes that
+/// fit are `cap / verify_seconds` (never below 1, never above
+/// `parallel_per_project`), with the check's own run time from the last landings
+/// (`land.landed`, `verify_seconds`). A project with no lock, no recorded landing,
+/// or a quick check keeps every lane.
 pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     let base = parallel_per_project(s);
     let open = Lanes {
@@ -180,10 +182,17 @@ pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     if base <= 1 || crate::verify_lock::lock_name(s, slug).is_none() {
         return open;
     }
-    let cap = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
+    let step = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
+    let commit = i64::from(crate::util::setting_int(s, "harness.commit_timeout"));
+    let cap = step.max(commit);
     if cap <= 0 {
         return open;
     }
+    let cap_name = if commit >= step {
+        "commit cap (harness.commit_timeout)"
+    } else {
+        "step cap (harness.step_timeout)"
+    };
     let Ok(conn) = s.conn() else {
         return open;
     };
@@ -211,19 +220,19 @@ pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     }
     let reason = if median > cap {
         format!(
-            "1 of {base} work lanes open: the check alone takes ~{} min, over the {} min step cap (harness.step_timeout)",
+            "1 of {base} work lanes open: the check alone takes ~{} min, over the {} min {cap_name}",
             minutes_up(median),
             minutes_up(cap)
         )
     } else if fit == 1 {
         format!(
-            "1 of {base} work lanes open: the check takes ~{} min and only one fits the {} min step cap (harness.step_timeout)",
+            "1 of {base} work lanes open: the check takes ~{} min and only one fits the {} min {cap_name}",
             minutes_up(median),
             minutes_up(cap)
         )
     } else {
         format!(
-            "{fit} of {base} work lanes open: the check takes ~{} min and {fit} in a row fit the {} min step cap (harness.step_timeout)",
+            "{fit} of {base} work lanes open: the check takes ~{} min and {fit} in a row fit the {} min {cap_name}",
             minutes_up(median),
             minutes_up(cap)
         )
@@ -330,7 +339,7 @@ pub(crate) fn lease_job(
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many work jobs as fit the
-        // step cap (project_lanes); its research, ballots and answers keep the plain limit.
+        // commit cap (project_lanes); its research, ballots and answers keep the plain limit.
         let work_kinds = WORK_KINDS
             .iter()
             .map(|k| format!("'{k}'"))
@@ -647,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn project_lanes_fit_the_step_cap_only_while_checks_take_turns() {
+    fn project_lanes_fit_the_commit_cap_only_while_checks_take_turns() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
@@ -655,8 +664,10 @@ mod tests {
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "1500")
+            .unwrap();
         // No lock: checks may overlap, every lane stays open whatever they take.
-        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 450);
+        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 600);
         let lanes = super::project_lanes(&s, "proj");
         assert_eq!((lanes.lanes, lanes.base), (4, 4));
         assert!(lanes.reason.is_empty(), "{lanes:?}");
@@ -666,14 +677,27 @@ mod tests {
             crate::verify_lock::PROJECT,
         )
         .unwrap();
-        // One 7.5-minute check: two in a row fit the 15-minute step cap.
+        // One 10-minute check: two in a row fit the 25-minute commit cap, the cap a
+        // gated commit really gets - not the 15-minute step cap, which would leave one.
         let lanes = super::project_lanes(&s, "proj");
         assert_eq!(lanes.lanes, 2, "{lanes:?}");
-        assert_eq!(lanes.verify_seconds, Some(450));
+        assert_eq!(lanes.verify_seconds, Some(600));
         assert_eq!(
             lanes.reason,
-            "2 of 4 work lanes open: the check takes ~8 min and 2 in a row fit the 15 min step cap (harness.step_timeout)"
+            "2 of 4 work lanes open: the check takes ~10 min and 2 in a row fit the 25 min commit cap (harness.commit_timeout)"
         );
+        // A commit cap under the step cap does not count: the harness never gives a
+        // gated commit less than a plain step.
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "600")
+            .unwrap();
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(lanes.lanes, 1, "{lanes:?}");
+        assert_eq!(
+            lanes.reason,
+            "1 of 4 work lanes open: the check takes ~10 min and only one fits the 15 min step cap (harness.step_timeout)"
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "1500")
+            .unwrap();
         // The median of the last five landings decides, not one slow outlier.
         for (i, secs) in [60, 70, 80, 90].iter().enumerate() {
             record_landing_verify(&s, "proj", &format!("2026-09-02T00:0{i}:00Z"), *secs);
@@ -687,13 +711,13 @@ mod tests {
         assert!(lanes.reason.is_empty(), "{lanes:?}");
         // A check longer than the cap alone leaves one lane and says so.
         for i in 0..5 {
-            record_landing_verify(&s, "proj", &format!("2026-09-03T00:0{i}:00Z"), 1000);
+            record_landing_verify(&s, "proj", &format!("2026-09-03T00:0{i}:00Z"), 1600);
         }
         let lanes = super::project_lanes(&s, "proj");
         assert_eq!(lanes.lanes, 1, "{lanes:?}");
         assert!(
             lanes.reason.starts_with(
-                "1 of 4 work lanes open: the check alone takes ~17 min, over the 15 min step cap"
+                "1 of 4 work lanes open: the check alone takes ~27 min, over the 25 min commit cap"
             ),
             "{lanes:?}"
         );
@@ -716,6 +740,8 @@ mod tests {
         s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "900")
             .unwrap();
         s.set_setting(
             pulse_store::HUMAN_AGENT,

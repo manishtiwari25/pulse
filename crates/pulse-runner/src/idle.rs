@@ -416,6 +416,8 @@ mod tests {
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "1500")
+            .unwrap();
         s.set_setting(
             pulse_store::HUMAN_AGENT,
             crate::verify_lock::SETTING,
@@ -428,11 +430,11 @@ mod tests {
             "daemon",
             "land.landed",
             "pulse/x/one",
-            serde_json::json!({"project": "proj", "sha": "abc", "verify": "verify exit 0", "verify_seconds": 500}),
+            serde_json::json!({"project": "proj", "sha": "abc", "verify": "verify exit 0", "verify_seconds": 800}),
         );
         let got = idle_note(&s, "proj".into(), TEST_NOW.into());
         assert!(
-            got.contains("; 1 of 4 work lanes open: the check takes ~9 min and only one fits the 15 min step cap (harness.step_timeout)"),
+            got.contains("; 1 of 4 work lanes open: the check takes ~14 min and only one fits the 25 min commit cap (harness.commit_timeout)"),
             "{got}"
         );
     }

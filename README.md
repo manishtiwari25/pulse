@@ -3316,11 +3316,13 @@ stop at `harness.step_timeout`) - the run retries,
 and the lanes burn their budget waiting on each other. So the daemon measures
 the check's own run time at every landing (`verify_seconds` on the
 `land.landed` event, the lock's wait excluded) and leases `improve` and `task`
-jobs for the project only up to the lanes that fit the cap
-(`step_timeout / median of the last five`, never below one); research,
+jobs for the project only up to the lanes that fit that commit cap
+(`commit_timeout / median of the last five`, never below one; the cap is
+`harness.commit_timeout`, never below `harness.step_timeout`, the same
+deadline the harness gives the gated commit); research,
 ballots and answers keep the plain limit. The project's idle line says so:
-`2 of 4 work lanes open: the check takes ~8 min and 2 in a row fit the 15 min
-step cap (harness.step_timeout)`. A quicker check, a longer step cap, or
+`2 of 4 work lanes open: the check takes ~10 min and 2 in a row fit the 25 min
+commit cap (harness.commit_timeout)`. A quicker check, a longer commit cap, or
 `verify.lock off` opens the lanes again. When the deadline still lands on a
 worker's `git commit` - the change finished, the pre-commit check did not -
 the runner does not discard the tree: if the worker exited normally, left
