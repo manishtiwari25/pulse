@@ -14,10 +14,10 @@ use pulse_provider::http::{
     network_error, parse_error_body, success_body, trim_base_url, unauthorized_error, with_retries,
 };
 use pulse_provider::{
-    CancelToken, Choice, ERROR_BODY_LIMIT_BYTES, LogFn, Login, LoginExporter, Logouter, Message,
-    Model, Options, Provider, ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage,
-    default_http_client, err_not_logged_in, merge_choices, provider_max_body_bytes,
-    provider_retry_after_cap, read_body_up_to, redact, remember_secret,
+    CancelToken, Choice, ERROR_BODY_LIMIT_BYTES, ImageContent, LogFn, Login, LoginExporter,
+    Logouter, Message, Model, Options, Provider, ProviderError, Request, Response, Role,
+    TokenLogin, ToolCall, Usage, default_http_client, err_not_logged_in, merge_choices,
+    provider_max_body_bytes, provider_retry_after_cap, read_body_up_to, redact, remember_secret,
 };
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -549,7 +549,8 @@ struct GenerationConfig {
 /// Translates the harness conversation into a generateContent body:
 /// system messages become `systemInstruction`, the assistant speaks as
 /// `model`, tool results ride as `functionResponse` parts in a `user`
-/// turn, and consecutive same-role turns are merged.
+/// turn, attached images become `inlineData` parts, and consecutive
+/// same-role turns are merged.
 fn generate_request(req: &Request) -> GenerateRequest {
     let mut system_texts: Vec<&str> = Vec::new();
     let mut contents: Vec<Content> = Vec::new();
@@ -562,12 +563,14 @@ fn generate_request(req: &Request) -> GenerateRequest {
                 }
             }
             Role::User => {
+                let mut parts: Vec<Value> = m.images.iter().map(image_part).collect();
                 if !m.content.is_empty() {
-                    push_parts(&mut contents, "user", vec![json!({"text": m.content})]);
+                    parts.push(json!({"text": m.content}));
                 }
+                push_parts(&mut contents, "user", parts);
             }
             Role::Assistant => {
-                let mut parts = Vec::new();
+                let mut parts: Vec<Value> = m.images.iter().map(image_part).collect();
                 if !m.content.is_empty() {
                     parts.push(json!({"text": m.content}));
                 }
@@ -659,6 +662,12 @@ fn parse_arguments(arguments: &str) -> Value {
         Ok(v) if v.is_object() => v,
         _ => json!({}),
     }
+}
+
+/// An attached image as the Gemini part that carries it: base64 bytes plus
+/// their media type, sent as `inlineData`.
+fn image_part(image: &ImageContent) -> Value {
+    json!({"inlineData": {"mimeType": image.media_type, "data": image.data}})
 }
 
 /// The tool parameters in the OpenAPI subset Gemini accepts, or `None`
@@ -1009,6 +1018,35 @@ mod tests {
             messages: vec![user(text)],
             ..Request::default()
         }
+    }
+
+    #[test]
+    fn request_serializes_message_images_as_inline_data() {
+        let mut message = user("describe this image");
+        message.images = vec![
+            ImageContent {
+                media_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+            ImageContent {
+                media_type: "image/jpeg".to_string(),
+                data: "d29ybGQ=".to_string(),
+            },
+        ];
+        let request = Request {
+            model: "gemini-pro".to_string(),
+            messages: vec![message],
+            ..Request::default()
+        };
+        let body = serde_json::to_value(generate_request(&request)).unwrap();
+        assert_eq!(
+            body["contents"][0]["parts"],
+            json!([
+                {"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}},
+                {"inlineData": {"mimeType": "image/jpeg", "data": "d29ybGQ="}},
+                {"text": "describe this image"},
+            ])
+        );
     }
 
     fn text_reply(finish: &str, text: &str) -> Value {
