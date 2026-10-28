@@ -90,6 +90,17 @@ pub(crate) static PROVIDER_SET: LazyLock<RwLock<BTreeMap<String, Arc<dyn Provide
 pub(crate) fn init() {
     *pulse_tasks::LOGIN_SOURCE_CHECK.write().unwrap() = Some(crate::token::has_login_source);
     *pulse_tasks::COMPUTE_PROVIDERS.write().unwrap() = Some(crate::commands::cmd_compute_providers);
+    // The hands-binary probe, so `pulse compute request` (pulse-tasks) asks
+    // the runner's resolution before any provider call and refuses early when
+    // the toolchain is missing.
+    let _ = pulse_tasks::hands::set_hands_binary_probe(Some(Box::new(|arch: &str| {
+        match crate::pair::hands_binary_plan(arch) {
+            crate::pair::HandsBinaryPlan::Missing(_) => {
+                Some(crate::pair::hands_binary_plan_line(arch))
+            }
+            _ => None,
+        }
+    })));
 }
 pub fn register_provider<P: Provider + 'static>(p: P) {
     PROVIDER_SET.write().unwrap().insert(p.name(), Arc::new(p));
@@ -510,8 +521,11 @@ impl ComputeWorker {
             );
             return;
         };
-        // The binary the machine would be paired with must exist before anything is bought:
-        // CR-002 paid for a VM that was then failed for want of a linux/amd64 pulse.
+        // The binary the machine would be paired with must be resolvable before
+        // anything is bought: CR-001/CR-002 paid for a VM that was then failed
+        // for want of a linux/amd64 pulse. The probe (env var, sibling file,
+        // cross-build dry check) never builds; the real resolution runs again
+        // in pair_machine once the machine exists.
         let size = if req.size.trim().is_empty() {
             self.s
                 .setting(&pulse_store::compute_size_setting(&p.name()), "")
@@ -520,14 +534,23 @@ impl ComputeWorker {
         };
         let arch = hands_arch_for_size(&p.name(), &size);
         crate::pair::set_hands_source_root(brain_source_root(&self.s));
-        if let Err(e) = (crate::pair::HANDS_BINARY
-            .read()
-            .expect("hands_binary poisoned"))(&arch)
-        {
-            self.fail(
-                req,
-                &format!("{}; no machine was bought", crate::run::err_message(&e)),
-            );
+        // A test may replace the resolver itself; that override is authoritative.
+        let blocked = if crate::pair::hands_binary_overridden() {
+            (crate::pair::HANDS_BINARY
+                .read()
+                .expect("hands_binary poisoned"))(&arch)
+            .err()
+            .map(|e| crate::run::err_message(&e))
+        } else {
+            match crate::pair::hands_binary_plan(&arch) {
+                crate::pair::HandsBinaryPlan::Missing(_) => {
+                    Some(crate::pair::hands_binary_plan_line(&arch))
+                }
+                _ => None,
+            }
+        };
+        if let Some(reason) = blocked {
+            self.fail(req, &format!("{reason}; no machine was bought"));
             return;
         }
         if let Err(e) =
