@@ -826,9 +826,14 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 c.println("  none")?;
             }
             for m in msgs {
+                let tag = if m.is_report() {
+                    format!(" (report on job {})", m.job_id)
+                } else {
+                    String::new()
+                };
                 printf(
                     c,
-                    format_args!("  {} {} {}: {}\n", m.at, m.id, m.author, m.body),
+                    format_args!("  {} {} {}{}: {}\n", m.at, m.id, m.author, tag, m.body),
                 )?;
                 print_choices(c, &m.choices, "    ")?;
             }
@@ -1061,15 +1066,21 @@ pub fn run_msg(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 } else {
                     &m.task_id
                 };
+                let tag = if m.is_report() {
+                    format!(" (report on job {})", m.job_id)
+                } else {
+                    String::new()
+                };
                 printf(
                     c,
                     format_args!(
-                        "{} {} {} {} {}: {}\n",
+                        "{} {} {} {} {}{}: {}\n",
                         m.at,
                         m.id,
                         m.project,
                         task,
                         c.style().bold(&m.author),
+                        tag,
                         m.body
                     ),
                 )?;

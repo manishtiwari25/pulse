@@ -18,7 +18,8 @@ pub(crate) const ADDITION_TASK_FROM: &str =
     " FROM tasks t JOIN task_revisions rv ON rv.task_id=t.id AND rv.rev=t.current_rev";
 /// The message columns the hub returns; `choices` is stored as JSON text and
 /// handed out as an array (see `addition_messages_rows`).
-pub(crate) const ADDITION_MESSAGE_COLUMNS: &str = "id,project,task_id,author,body,at,choices";
+pub(crate) const ADDITION_MESSAGE_COLUMNS: &str =
+    "id,project,task_id,author,body,at,choices,job_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AdditionEvent {
@@ -2290,6 +2291,18 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["choices"][0]["label"], "Try again another way");
         assert_eq!(messages[0]["choices"][1]["action"], "done");
+        assert_eq!(messages[0]["job_id"], "", "a plain message names no job");
+        // A worker's report on a job carries the job, so the chat nests it.
+        pulse_tasks::send_report(&s.store, &id, "cinder", "**Done** with the step.", "JOB-ui")
+            .unwrap();
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200);
+        let messages = arr(&result, "messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["job_id"], "JOB-ui");
+        assert_eq!(messages[1]["author"], "cinder");
+        assert_eq!(messages[1]["choices"].as_array().unwrap().len(), 0);
         let (status, result) = http::additions_request(
             http::handler(&s),
             "GET",

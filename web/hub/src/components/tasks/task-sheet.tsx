@@ -324,7 +324,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
             </Link>
           </div>
           <div className="min-h-0 flex-1">
-            <ChatPane project={project} taskId={t.id} task={t} messages={data.messages} lead={t.lead} leadWork={data.lead_work} embedded />
+            <ChatPane project={project} taskId={t.id} task={t} messages={data.messages} jobs={data.jobs} lead={t.lead} leadWork={data.lead_work} embedded />
           </div>
         </TabsContent>
       </Tabs>

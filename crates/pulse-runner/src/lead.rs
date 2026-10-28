@@ -97,6 +97,9 @@ pub(crate) struct LeadBriefExtra {
     // The "## Goal review" section from pulse_goals::review::lead_brief, or
     // empty when the review could not be read.
     pub goal_review: String,
+    /// Workers' reports on the tasks' finished jobs since the lead last
+    /// sat, one line each ([`report_lines`]).
+    pub report_lines: Vec<String>,
 }
 
 /// The goal review section for the lead's brief; empty when the store cannot
@@ -213,6 +216,7 @@ pub(crate) fn lead_brief(
         }
         b.push('\n');
     }
+    write_lead_reports_section(&mut b, &extra.report_lines);
     write_lead_agents_section(&mut b, slug.clone(), &extra.agent_lines);
     write_lead_mentions_section(&mut b, slug.clone(), &extra.mention_lines);
     if !extra.owner_questions.is_empty() {
@@ -281,7 +285,7 @@ pub(crate) fn bump_nudged_tasks(
     let mut lines = Vec::new();
     for m in msgs
         .into_iter()
-        .filter(|m| m.author != lead && !m.task_id.is_empty())
+        .filter(|m| m.author != lead && !m.task_id.is_empty() && !m.is_report())
     {
         let seen = must_one(
             &conn,
@@ -558,9 +562,11 @@ pub(crate) fn lead_due(
     now: String,
 ) -> anyhow::Result<(Vec<pulse_tasks::Message>, Vec<DueTask>, Option<AwayBrief>)> {
     let msgs = pulse_tasks::messages(s, &slug, "", "", &lead)?;
+    // Workers' reports on finished jobs are read as reports (`pending_reports`),
+    // never as the owner's words.
     let owner = msgs
         .into_iter()
-        .filter(|m| m.author != lead)
+        .filter(|m| m.author != lead && !m.is_report())
         .collect::<Vec<_>>();
     let mut due = Vec::new();
     for t in pulse_tasks::list(s, &slug, "open")? {
@@ -658,6 +664,87 @@ pub(crate) fn lead_due(
         away = Some(a);
     }
     Ok((owner, due, away))
+}
+
+/// Workers' reports the lead has not read: one per finished job of an open
+/// task, written by the daemon ([`pulse_tasks::report_settled_jobs`]), in
+/// the worker's name. The lead reads them in its brief and marks them read
+/// when its job is queued; they never wake it by themselves, since the
+/// daemon carries a settled task onward (its end-to-end check, the owner's
+/// acceptance, or the failed-task line above) and the owner reads each
+/// report in the chat the moment it is written.
+pub(crate) fn pending_reports(
+    s: &pulse_store::Store,
+    slug: String,
+    lead: String,
+) -> anyhow::Result<Vec<pulse_tasks::Message>> {
+    Ok(pulse_tasks::messages(s, &slug, "", "", &lead)?
+        .into_iter()
+        .filter(|m| m.is_report() && !m.task_id.is_empty())
+        .collect())
+}
+
+/// The most reports one brief lists; older ones stay in `pulse task show`.
+pub(crate) const REPORT_LINES_MAX: usize = 40;
+
+/// One line per report for the lead's brief, newest last: the task, the
+/// job and its title, who ran it, how it ended, where its code stands, and
+/// the worker's result in short.
+pub(crate) fn report_lines(
+    s: &pulse_store::Store,
+    reports: &[pulse_tasks::Message],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut reports = reports.to_vec();
+    reports.sort_by(|a, b| a.task_id.cmp(&b.task_id).then_with(|| a.at.cmp(&b.at)));
+    let skip = reports.len().saturating_sub(REPORT_LINES_MAX);
+    for m in reports.into_iter().skip(skip) {
+        let jobs = pulse_tasks::jobs(s, &m.task_id).unwrap_or_default();
+        let Some(j) = jobs.iter().find(|j| j.id == m.job_id) else {
+            lines.push(format!(
+                "- {} at {}: {} reported on job `{}` (message {})",
+                m.task_id, m.at, m.author, m.job_id, m.id
+            ));
+            continue;
+        };
+        let mut line = format!(
+            "- {} at {}: job `{}` \u{201c}{}\u{201d} by {} {}",
+            m.task_id,
+            m.at,
+            j.id,
+            j.title,
+            m.author,
+            match j.status.as_str() {
+                "done" if !j.branch.is_empty() => {
+                    format!("done; its commits wait to land on `{}`", j.branch)
+                }
+                "done" => "done and landed (or changed no code)".to_string(),
+                "failed" => "failed".to_string(),
+                // Requeued after a landing failure, or running again.
+                other => format!("ended, now {other}"),
+            }
+        );
+        if !j.result.trim().is_empty() {
+            line.push_str(&format!(": {}", trunc(j.result.trim(), 240)));
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+pub(crate) fn write_lead_reports_section(b: &mut String, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let _ = write!(
+        b,
+        "## Your workers reported back ({})\n\nEach line is a job of one of the tasks that ended since you last sat; the worker's full report sits in the task's chat (`pulse task show <id>`), where the owner read it as it came. A step that landed needs no word from you unless the whole changes the picture. A step that failed and left the task without a running job is listed above under the tasks waiting on you, when it is yours to re-plan; the daemon lands waiting branches, runs the end-to-end check and asks the owner by itself.\n\n",
+        lines.len()
+    );
+    for l in lines {
+        let _ = writeln!(b, "{l}");
+    }
+    b.push('\n');
 }
 
 pub(crate) fn awaiting_lead_proposals(
@@ -899,6 +986,23 @@ pub(crate) fn tend_lead(
     if created {
         lines.push(format!("lead {} joined for {}", lead.name, slug));
     }
+    // Every job of a task that ended since its last report tells the task's
+    // conversation so, in the worker's name, before anything else: the owner
+    // reads it at once, whether or not the lead sits this tick.
+    match pulse_tasks::report_settled_jobs(s, &slug) {
+        Ok(reported) => {
+            for r in reported {
+                lines.push(format!(
+                    "task {}: job {} reported back ({}) as {} in {}",
+                    r.task_id, r.job_id, r.status, r.author, r.message_id
+                ));
+            }
+        }
+        Err(e) => lines.push(format!(
+            "lead of {slug}: reports not written: {}",
+            crate::run::err_message(&e)
+        )),
+    }
     lines.extend(bump_nudged_tasks(
         s,
         slug.clone(),
@@ -994,11 +1098,13 @@ pub(crate) fn tend_lead(
         what.push_str(&format!(", help with {} peer request(s)", peer_requests));
     }
     let title = format!("Lead: {what} for {slug}");
+    let reports = pending_reports(s, slug.clone(), lead.name.clone()).unwrap_or_default();
     let extra = LeadBriefExtra {
         agent_lines: crate::brief::focus_lines(s, slug.clone(), lead.name.clone(), now.clone()),
         owner_questions,
         mention_lines: mentions,
         goal_review: goal_review_section(s, &slug),
+        report_lines: report_lines(s, &reports),
     };
     let add = crate::jobs::add_job(
         s,
@@ -1025,7 +1131,11 @@ pub(crate) fn tend_lead(
     if !is_new {
         return lines;
     }
-    let ids = msgs.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    let ids = msgs
+        .into_iter()
+        .chain(reports)
+        .map(|m| m.id)
+        .collect::<Vec<_>>();
     if let Err(e) = pulse_tasks::mark_read(s, &ids, &lead.name) {
         lines.push(format!("lead of {slug}: {}", crate::run::err_message(&e)));
     }
@@ -1657,7 +1767,7 @@ pub(crate) fn landed_choices() -> Vec<pulse_tasks::Choice> {
 
 /// The label of the job that checks a split task as a whole before the
 /// owner is asked: its source is `task:<id>:accept`.
-pub(crate) const ACCEPT_LABEL: &str = "accept";
+pub(crate) const ACCEPT_LABEL: &str = pulse_tasks::ACCEPT_LABEL;
 
 pub(crate) fn accept_source(task_id: &str) -> String {
     format!("task:{task_id}:{ACCEPT_LABEL}")
@@ -2559,6 +2669,203 @@ mod tests {
         );
         tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
         assert_eq!(priority(&ids[0]), 5, "second bump from one message");
+    }
+
+    #[test]
+    fn workers_report_back_to_the_task_at_once_and_to_the_lead_as_reports() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let t = pulse_tasks::new(
+            &s,
+            "proj",
+            "Ship the composer",
+            "a composer with a route",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let ui = task_job(&s, "Composer UI", &format!("task:{}", t.id));
+        let api = task_job(&s, "Composer route", &format!("task:{}:api", t.id));
+        tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        run_job(
+            &s,
+            &ui,
+            "done",
+            "SUMMARY: composer added with its test",
+            "2026-09-06T09:30:00Z",
+        );
+        // The step ended while its sibling still waits: the report reaches
+        // the task's chat this tick, in the worker's name, and wakes nobody.
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let msgs = pulse_tasks::messages(&s, "proj", &t.id, "", "").unwrap();
+        assert_eq!(msgs.len(), 1, "{lines:?}");
+        assert_eq!(msgs[0].job_id, ui.str("id"));
+        assert_eq!(msgs[0].author, "w1");
+        assert!(msgs[0].is_report());
+        assert!(
+            msgs[0].body.contains("**Done**") && msgs[0].body.contains("composer added"),
+            "{}",
+            msgs[0].body
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("job {} reported back (done) as w1", ui.str("id")))),
+            "{lines:?}"
+        );
+        assert!(
+            lead_jobs(&s).is_empty(),
+            "a report alone woke the lead: {lines:?}"
+        );
+        let conn = s.conn().expect("conn");
+        assert_eq!(
+            crate::jobs::job_row(&conn, api.str("id")).int("priority"),
+            50,
+            "a report is no nudge"
+        );
+        assert!(
+            must_rows(
+                &conn,
+                "SELECT 1 AS x FROM events WHERE action = ? AND subject = ?",
+                &[&NUDGE_ACTION, &t.id]
+            )
+            .is_empty()
+        );
+        // The same ending reports once.
+        tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            pulse_tasks::messages(&s, "proj", &t.id, "", "")
+                .unwrap()
+                .len(),
+            1
+        );
+        // The owner writes: the lead sits with the owner's one message as
+        // the owner's words and the report under its own heading, and reads
+        // both.
+        pulse_tasks::send_message(
+            &s,
+            "proj",
+            &t.id,
+            crate::util::HUMAN_AGENT,
+            "How is the composer coming along?",
+        )
+        .unwrap();
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let leads = lead_jobs(&s);
+        assert_eq!(leads.len(), 1, "{lines:?}");
+        assert!(
+            leads[0]
+                .str("title")
+                .contains("answer 1 message(s), plan 0 task(s)"),
+            "{}",
+            leads[0].str("title")
+        );
+        let brief = leads[0].str("brief");
+        assert!(
+            brief.contains("## Unread messages from the owner (1)"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("## Your workers reported back (1)"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(&format!(
+                "- {} at {}: job `{}` \u{201c}Composer UI\u{201d} by w1 done and landed (or changed no code): SUMMARY: composer added with its test",
+                t.id,
+                TEST_NOW,
+                ui.str("id")
+            )),
+            "{brief}"
+        );
+        assert!(
+            !brief.contains("**Done**"),
+            "the report's body is not quoted as the owner's words: {brief}"
+        );
+        assert!(
+            pulse_tasks::messages(&s, "proj", "", "", "proj-lead")
+                .unwrap()
+                .is_empty(),
+            "the lead read the owner's message and the report"
+        );
+    }
+
+    #[test]
+    fn a_failed_step_reports_back_and_rides_with_the_failed_task_line() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let t = pulse_tasks::new(
+            &s,
+            "proj",
+            "Ship the composer",
+            "a composer with a route",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let ui = task_job(&s, "Composer UI", &format!("task:{}", t.id));
+        let api = task_job(&s, "Composer route", &format!("task:{}:api", t.id));
+        tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        run_job(
+            &s,
+            &ui,
+            "done",
+            "SUMMARY: composer added",
+            "2026-09-06T09:00:00Z",
+        );
+        run_job(
+            &s,
+            &api,
+            "failed",
+            "the route's test fails: 500 on POST",
+            "2026-09-06T09:30:00Z",
+        );
+        tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(pulse_tasks::get(&s, &t.id).unwrap().0.status, "in_progress");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let msgs = pulse_tasks::messages(&s, "proj", &t.id, "", "").unwrap();
+        assert_eq!(
+            msgs.iter()
+                .map(|m| (m.job_id.clone(), m.author.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ui.str("id"), "w1".to_string()),
+                (api.str("id"), "w1".to_string())
+            ],
+            "{lines:?}"
+        );
+        assert!(msgs[1].body.contains("**Stopped**"), "{}", msgs[1].body);
+        let leads = lead_jobs(&s);
+        assert_eq!(leads.len(), 1, "the failed step wakes the lead: {lines:?}");
+        assert!(
+            leads[0]
+                .str("title")
+                .contains("answer 0 message(s), plan 1 task(s)"),
+            "{}",
+            leads[0].str("title")
+        );
+        let brief = leads[0].str("brief");
+        assert!(brief.contains("1 job failed and none runs"), "{brief}");
+        assert!(
+            brief.contains("## Your workers reported back (2)"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(&format!(
+                "job `{}` \u{201c}Composer route\u{201d} by w1 failed: the route's test fails: 500 on POST",
+                api.str("id")
+            )),
+            "{brief}"
+        );
+        assert!(
+            pulse_tasks::messages(&s, "proj", "", "", "proj-lead")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

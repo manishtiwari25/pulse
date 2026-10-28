@@ -54,9 +54,23 @@ pub struct Message {
     pub read_by: Vec<String>,
     /// Answers the owner can pick; empty for a plain message.
     pub choices: Vec<Choice>,
+    /// The job whose finished run this message reports on; empty for words
+    /// somebody wrote. A worker's job is a sub-session of the task: when it
+    /// ends, the daemon writes its report here so the owner sees it in the
+    /// conversation without waiting for the lead's next sitting.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub job_id: String,
 }
 
-const MESSAGE_COLUMNS: &str = "id, project, task_id, author, body, at, read_by, choices";
+impl Message {
+    /// A worker's report on a finished job, not words the owner or the lead
+    /// wrote: the lead reads it as a report, never as the owner's nudge.
+    pub fn is_report(&self) -> bool {
+        !self.job_id.is_empty()
+    }
+}
+
+const MESSAGE_COLUMNS: &str = "id, project, task_id, author, body, at, read_by, choices, job_id";
 
 fn scan_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
     let task: Option<String> = row.get(2)?;
@@ -71,6 +85,7 @@ fn scan_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         at: row.get(5)?,
         read_by: serde_json::from_str(&read_by).unwrap_or_default(),
         choices: parse_choices(&choices),
+        job_id: row.get(8)?,
     })
 }
 
@@ -175,6 +190,39 @@ pub fn send_message_with_choices(
     body: &str,
     choices: &[Choice],
 ) -> Result<Message> {
+    send_inner(s, project, task_id, author, body, choices, "")
+}
+
+/// Writes a worker's report on a finished job into its task's conversation:
+/// a message by the worker, marked with the job so the hub shows it as a
+/// report and the lead reads it as one. Reports carry no choices.
+pub fn send_report(
+    s: &pulse_store::Store,
+    task_id: &str,
+    author: &str,
+    body: &str,
+    job_id: &str,
+) -> Result<Message> {
+    if job_id.trim().is_empty() {
+        return Err(input(
+            2,
+            "A report names its job",
+            "the job id is what makes a message a report",
+            "pass the id of the finished job",
+        ));
+    }
+    send_inner(s, "", task_id, author, body, &[], job_id.trim())
+}
+
+fn send_inner(
+    s: &pulse_store::Store,
+    project: &str,
+    task_id: &str,
+    author: &str,
+    body: &str,
+    choices: &[Choice],
+    job_id: &str,
+) -> Result<Message> {
     let body = body.trim();
     if body.is_empty() {
         return Err(input(
@@ -240,7 +288,7 @@ pub fn send_message_with_choices(
         Some(task_id)
     };
     tx.execute(
-        "INSERT INTO messages (id, project, task_id, author, body, at, read_by, choices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (id, project, task_id, author, body, at, read_by, choices, job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             project,
@@ -249,16 +297,20 @@ pub fn send_message_with_choices(
             body,
             now,
             format!("[\"{author}\"]"),
-            pulse_store::gojson::to_string(&choices)?
+            pulse_store::gojson::to_string(&choices)?,
+            job_id
         ],
     )?;
+    // A report's event names its job; a plain message's event keeps its shape.
+    let mut detail = json!({"project": project, "task_id": task_id, "author": author});
+    if !job_id.is_empty() {
+        detail["job_id"] = json!(job_id);
+    }
     tx.event(
         author,
         "message.sent",
         &id,
-        pulse_store::Detail::json(
-            json!({"project": project, "task_id": task_id, "author": author}),
-        )?,
+        pulse_store::Detail::json(detail)?,
     )?;
     // The owner's words end a review: the lead asked, the owner answered, the
     // task is in progress again until the lead finishes or asks once more.

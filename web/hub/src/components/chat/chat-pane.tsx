@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Loader2Icon, MessagesSquareIcon, SendIcon } from "lucide-react";
+import { GitForkIcon, Loader2Icon, MessagesSquareIcon, SendIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,15 +10,15 @@ import { Separator } from "@/components/ui/separator";
 import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState } from "@/components/pulse/panel";
-import { Avatar, When } from "@/components/pulse/who";
+import { Avatar, ToneBadge, When } from "@/components/pulse/who";
 import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
 import { cn } from "@/lib/utils";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { writes, type LeadWork, type Message, type MessageChoice, type Task } from "@/lib/api";
+import { writes, type LeadWork, type Message, type MessageChoice, type Task, type TaskJob } from "@/lib/api";
 import { invalidate, useNow } from "@/lib/use-api";
 import { Ago } from "@/components/tasks/task-work";
-import { isOwner, taskMessageLine, taskMessageState } from "@/lib/task-message-status";
+import { isOwner, isReport, taskMessageLine, taskMessageState } from "@/lib/task-message-status";
 
 const SEEN_KEY = "pulse.chat.seen";
 
@@ -96,6 +96,64 @@ function dayLabel(at: string): string {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
+// Where a reported step stands now, from the task's live job list: the
+// report said how the step ended; the job row says whether its code landed
+// since, waits on its branch, or was sent round again after a landing failed.
+export function reportLanding(j: TaskJob | undefined): { word: string; tone: Tone } | null {
+  if (!j) return null;
+  switch (j.status) {
+    case "done":
+      return j.branch ? { word: "Waiting to land", tone: "warn" } : { word: "Landed", tone: "ok" };
+    case "failed":
+      return { word: "Failed", tone: "bad" };
+    case "queued":
+      return { word: "Queued again", tone: "info" };
+    case "leased":
+      return { word: "Running again", tone: "info" };
+    case "blocked":
+      return { word: "Blocked", tone: "warn" };
+    default:
+      return null;
+  }
+}
+
+// A worker's report on one step of the task, nested under the conversation:
+// who ran the step, what they found, and where the step's code is now.
+function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameAuthor: boolean }) {
+  const landing = reportLanding(job);
+  return (
+    <div className="flex min-w-0 items-start gap-2 pl-4 sm:pl-9" data-report={m.job_id}>
+      <GitForkIcon className="mt-2 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <div className="flex min-w-0 max-w-[min(85%,40rem)] flex-col items-start">
+        {!sameAuthor ? (
+          <div className="mb-1 flex flex-wrap items-baseline gap-x-2 px-1 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">{m.author}</span>
+            <span>{"reported back" + (job?.title ? " on \u201c" + job.title + "\u201d" : " on a step")}</span>
+            <When d={m.at} />
+          </div>
+        ) : null}
+        <div title={sameAuthor ? fmtDate(m.at) : undefined} className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-dashed bg-muted/30 px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground anywhere">
+          <Markdown source={m.body} className="[&>:last-child]:mb-0" />
+        </div>
+        {landing || job?.harness_session ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
+            {landing ? (
+              <ToneBadge tone={landing.tone} dot title={"Job " + (job?.id ?? m.job_id) + (job?.branch ? ", branch " + job.branch : "")}>
+                {landing.word}
+              </ToneBadge>
+            ) : null}
+            {job?.harness_session ? (
+              <Link href={hrefs.harness({ id: job.harness_session })} title={"Run " + job.harness_session} className="font-medium text-primary underline-offset-2 hover:underline">
+                See the run
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // The conversation with a project's lead agent. Messages come grouped by task
 // (or about the whole project); the owner's bubbles sit on the right in a
 // soft teal, the agent's on the left on white; a "New" line marks what
@@ -110,7 +168,7 @@ function dayLabel(at: string): string {
 // an answer below it replaces the line.
 // Only the message list scrolls to the newest message, never the page, and
 // it follows new messages only while the owner is already at the bottom.
-export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWork, embedded, className }: { project: string; taskId?: string | null; task?: Task; messages: Message[]; tasks?: Task[]; lead?: string; leadWork?: LeadWork | null; embedded?: boolean; className?: string }) {
+export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, leadWork, embedded, className }: { project: string; taskId?: string | null; task?: Task; messages: Message[]; tasks?: Task[]; jobs?: TaskJob[]; lead?: string; leadWork?: LeadWork | null; embedded?: boolean; className?: string }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [amending, setAmending] = useState<Task | null>(null);
@@ -130,11 +188,18 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWor
     return m;
   }, [tasks, task]);
   const titles = useMemo(() => new Map([...byId.values()].map((t) => [t.id, t.title])), [byId]);
-  // The newest message of each task: choices are live only there, and only
-  // while the task is still open - an older ask has been answered or overtaken.
+  const jobById = useMemo(() => new Map((jobs ?? []).map((j) => [j.id, j])), [jobs]);
+  // The newest message of each task that is a word in the conversation:
+  // choices are live only there, and only while the task is still open - an
+  // older ask has been answered or overtaken. A worker's report that came
+  // after the lead's ask does not take the ask's answers away.
   const lastOfTask = useMemo(() => {
     const m = new Map<string, string>();
-    for (const g of groups) if (g.task) m.set(g.task, g.items[g.items.length - 1]!.id);
+    for (const g of groups) {
+      if (!g.task) continue;
+      const last = [...g.items].reverse().find((x) => !isReport(x));
+      if (last) m.set(g.task, last.id);
+    }
     return m;
   }, [groups]);
   // The owner's latest message of each thread: the only one whose delivery
@@ -260,10 +325,12 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWor
               <ol className="grid gap-3">
                 {g.items.map((m, i) => {
                   const human = isOwner(m.author);
+                  const report = isReport(m);
                   const prev = g.items[i - 1];
                   const newDay = !prev || dayLabel(prev.at) !== dayLabel(m.at);
-                  // Consecutive messages from the same author share one name line.
-                  const sameAuthor = !!prev && !newDay && prev.author === m.author && firstUnread !== m.id;
+                  // Consecutive messages from the same author share one name
+                  // line; a report and a plain message never do.
+                  const sameAuthor = !!prev && !newDay && prev.author === m.author && isReport(prev) === report && firstUnread !== m.id;
                   return (
                     <li key={m.id} className={cn(sameAuthor && "-mt-1.5")}>
                       {newDay ? <div className="mb-2 text-center text-xs font-medium text-muted-foreground">{dayLabel(m.at)}</div> : null}
@@ -272,6 +339,9 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWor
                           <Separator className="flex-1 bg-primary/40" /> New <Separator className="flex-1 bg-primary/40" />
                         </div>
                       ) : null}
+                      {report ? (
+                        <ReportBubble m={m} job={jobById.get(m.job_id!)} sameAuthor={sameAuthor} />
+                      ) : (
                       <div className={cn("flex min-w-0 items-end gap-2", human && "flex-row-reverse")}>
                         {sameAuthor ? <span className="w-7 shrink-0" aria-hidden /> : <Avatar seed={m.author} human={human} size={28} className="mb-0.5" />}
                         <div className={cn("flex min-w-0 max-w-[min(85%,40rem)] flex-col", human ? "items-end" : "items-start")}>
@@ -304,6 +374,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, lead, leadWor
                           ) : null}
                         </div>
                       </div>
+                      )}
                     </li>
                   );
                 })}

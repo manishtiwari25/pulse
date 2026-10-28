@@ -19,6 +19,8 @@ export interface TaskStatusMessage {
   author: string;
   at: string;
   read_by?: string[];
+  // A worker's report on a job (see api.ts Message.job_id): not a reply.
+  job_id?: string;
 }
 
 export type TaskMessageState =
@@ -41,8 +43,12 @@ export const STALE_AFTER_MS = 2 * 60 * 1000;
 
 export const isOwner = (author: string): boolean => author === "human" || author === "owner";
 
+// A worker reporting back on its job is news, not an answer: the lead still
+// owes the reply, so the line under the owner's message stands.
+export const isReport = (m: { job_id?: string | null }): boolean => !!m.job_id;
+
 export function taskMessageState(m: TaskStatusMessage, later: TaskStatusMessage[], lead: string | undefined, work: LeadWork | null | undefined, nowMs: number): TaskMessageState {
-  if (later.some((x) => !isOwner(x.author))) return { kind: "answered" };
+  if (later.some((x) => !isOwner(x.author) && !isReport(x))) return { kind: "answered" };
   const state = work?.state ?? "idle";
   const who = lead || work?.agent || "the lead agent";
   const readByLead = !!lead && (m.read_by ?? []).includes(lead);

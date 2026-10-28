@@ -1976,6 +1976,10 @@ export interface Message {
   at: string;
   read_by?: string[];
   choices?: MessageChoice[];
+  // Set when the message is a worker's report on one of the task's jobs,
+  // written by the daemon the moment the job ended: shown nested under the
+  // conversation with the job's landing state, never read as a reply.
+  job_id?: string;
 }
 
 // Where a project's lead is, for the line under the owner's latest message
@@ -2010,6 +2014,7 @@ export interface ActivityItem {
   at: string;
   kind: ActivityKind;
   // task: created|revised|status|lead|cancelled|followup|nudged; job: added;
+  // message: sent, or report (a worker's report on a job, `job_id` set);
   // run: started|ended; step: the harness step kind; land: landed|held|…; post: its kind
   what: string;
   who: string;

@@ -16,9 +16,10 @@ pub struct ActivityItem {
     /// `task`, `message`, `job`, `run`, `step`, `quiet`, `land` or `post`.
     pub kind: String,
     /// For a task: created, revised, status, lead, cancelled, followup,
-    /// nudged. For a job: added. For a run: started, ended. For a step: the
-    /// harness step kind. For a landing: the word after `land.`. For a post:
-    /// its kind.
+    /// nudged. For a message: sent, or report when a worker's finished job
+    /// reported back. For a job: added. For a run: started, ended. For a
+    /// step: the harness step kind. For a landing: the word after `land.`.
+    /// For a post: its kind.
     pub what: String,
     /// Who did it: the owner, a lead, a worker, the daemon.
     pub who: String,
@@ -408,12 +409,16 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
 
     for m in crate::messages::messages(s, "", task_id, "", "")? {
         let (text, cut) = clip(m.body.trim(), TEXT_CAP * 2);
+        // A worker's report on its finished job reads as a report, with the
+        // job it is about, not as words somebody typed.
+        let what = if m.is_report() { "report" } else { "sent" };
         items.push(ActivityItem {
             id: format!("msg:{}", m.id),
             at: m.at.clone(),
             kind: "message".into(),
-            what: "sent".into(),
+            what: what.into(),
             who: m.author.clone(),
+            job_id: m.job_id.clone(),
             text,
             truncated: cut,
             choices: m.choices.iter().map(|c| c.label.clone()).collect(),

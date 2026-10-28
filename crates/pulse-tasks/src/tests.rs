@@ -726,6 +726,256 @@ fn messages_since_unread_and_immutable() {
 }
 
 #[test]
+fn finished_task_jobs_report_back_into_the_conversation_once() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let t = new(&s, "demo", "Ship the composer", "the brief", 30, "human").unwrap();
+    let now = s.now();
+    let job = |id: &str,
+               source: &str,
+               status: &str,
+               finished: &str,
+               result: &str,
+               branch: &str,
+               agent: &str| {
+        s.conn().unwrap().execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at, finished_at, result, branch, lease_agent, created_by) VALUES (?, 'demo', 'task', ?, ?, ?, ?, ?, ?, ?, ?, 'demo-lead')",
+            params![id, format!("Step {id}"), source, status, now, finished, result, branch, agent],
+        ).unwrap();
+    };
+    job(
+        "J-ui",
+        &format!("task:{}:ui", t.id),
+        "done",
+        &now,
+        "SUMMARY: the composer landed with its test",
+        "pulse/demo/J-ui",
+        "cinder",
+    );
+    job(
+        "J-api",
+        &format!("task:{}:api", t.id),
+        "failed",
+        &now,
+        "the route's test failed: 500 on POST",
+        "",
+        "quartz",
+    );
+    job(
+        "J-live",
+        &format!("task:{}:live", t.id),
+        "leased",
+        "",
+        "",
+        "",
+        "ember",
+    );
+    job(
+        "J-evolve",
+        "evolve",
+        "done",
+        &now,
+        "SUMMARY: unrelated",
+        "",
+        "cinder",
+    );
+    job(
+        "J-check",
+        &format!("task:{}:{ACCEPT_LABEL}", t.id),
+        "done",
+        &now,
+        "PASS: works end to end",
+        "",
+        "cinder",
+    );
+    s.conn().unwrap().execute(
+        "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits, summary) VALUES ('RUN-ui', 'J-ui', 'cinder', 'demo', ?, ?, 'done', 2, 'the composer landed')",
+        params![now, now],
+    ).unwrap();
+
+    let reports = report_settled_jobs(&s, "demo").unwrap();
+    assert_eq!(
+        reports
+            .iter()
+            .map(|r| (r.job_id.as_str(), r.status.as_str(), r.author.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("J-api", "failed", "quartz"), ("J-ui", "done", "cinder")]
+    );
+    let msgs = messages(&s, "", &t.id, "", "").unwrap();
+    assert_eq!(msgs.len(), 2);
+    let ui = msgs.iter().find(|m| m.job_id == "J-ui").unwrap();
+    assert!(ui.is_report());
+    assert_eq!(ui.author, "cinder");
+    assert!(
+        ui.body
+            .starts_with("**Done** with the step \u{201c}Step J-ui\u{201d}."),
+        "{}",
+        ui.body
+    );
+    assert!(
+        ui.body.contains("the composer landed with its test"),
+        "{}",
+        ui.body
+    );
+    assert!(
+        ui.body.contains("wait on branch `pulse/demo/J-ui`"),
+        "{}",
+        ui.body
+    );
+    assert!(ui.choices.is_empty());
+    assert_eq!(ui.read_by, vec!["cinder".to_string()]);
+    let api = msgs.iter().find(|m| m.job_id == "J-api").unwrap();
+    assert!(
+        api.body
+            .starts_with("**Stopped** on the step \u{201c}Step J-api\u{201d}"),
+        "{}",
+        api.body
+    );
+    assert!(api.body.contains("500 on POST"), "{}", api.body);
+    assert!(api.body.contains("the lead's call"), "{}", api.body);
+    let sent = events(&s, "message.sent");
+    assert_eq!(sent.len(), 2);
+    assert!(
+        sent.iter().all(|e| e.detail.contains("\"job_id\"")),
+        "{:?}",
+        sent[0].detail
+    );
+
+    // The activity feed shows them as reports on their job, the CLI tags them.
+    let feed = activity_for(&s, &t.id, 0).unwrap();
+    let report_items = feed
+        .items
+        .iter()
+        .filter(|i| i.kind == "message" && i.what == "report")
+        .collect::<Vec<_>>();
+    assert_eq!(report_items.len(), 2);
+    assert!(
+        report_items
+            .iter()
+            .any(|i| i.job_id == "J-ui" && i.who == "cinder")
+    );
+    assert!(
+        feed.items
+            .iter()
+            .all(|i| i.kind != "message" || i.what != "sent")
+    );
+
+    // A second tick writes nothing; the live job reports once it ends.
+    assert!(report_settled_jobs(&s, "demo").unwrap().is_empty());
+    assert_eq!(messages(&s, "", &t.id, "", "").unwrap().len(), 2);
+    s.conn().unwrap().execute(
+        "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: live path checked' WHERE id = 'J-live'",
+        [&now],
+    ).unwrap();
+    let again = report_settled_jobs(&s, "demo").unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        (again[0].job_id.as_str(), again[0].author.as_str()),
+        ("J-live", "ember")
+    );
+    let live = get_message(&s, &again[0].message_id).unwrap();
+    assert!(live.body.contains("It changed no code."), "{}", live.body);
+
+    // A job requeued after a landing failure that ends anew reports anew,
+    // and only once more.
+    let later = pulse_store::Store::open(pulse_store::Options {
+        home: s.home.clone(),
+        now: "2026-09-06T22:30:00Z".into(),
+        ..pulse_store::Options::default()
+    })
+    .unwrap();
+    s.conn().unwrap().execute(
+        "UPDATE jobs SET status = 'done', finished_at = '2026-09-06T22:00:00Z', result = 'SUMMARY: second attempt' WHERE id = 'J-api'",
+        [],
+    ).unwrap();
+    let third = report_settled_jobs(&later, "demo").unwrap();
+    assert_eq!(
+        third.iter().map(|r| r.job_id.as_str()).collect::<Vec<_>>(),
+        vec!["J-api"]
+    );
+    assert_eq!(messages(&s, "", &t.id, "", "").unwrap().len(), 4);
+    assert!(report_settled_jobs(&later, "demo").unwrap().is_empty());
+
+    // A closed task's jobs stay quiet; so does a job that ended long ago.
+    s.conn()
+        .unwrap()
+        .execute("UPDATE tasks SET status = 'done' WHERE id = ?", [&t.id])
+        .unwrap();
+    job(
+        "J-late",
+        &format!("task:{}:late", t.id),
+        "done",
+        &now,
+        "late",
+        "",
+        "cinder",
+    );
+    assert!(report_settled_jobs(&later, "demo").unwrap().is_empty());
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = ?",
+            [&t.id],
+        )
+        .unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET finished_at = '2026-09-06T10:00:00Z' WHERE id = 'J-late'",
+            [],
+        )
+        .unwrap();
+    assert!(report_settled_jobs(&later, "demo").unwrap().is_empty());
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET finished_at = ? WHERE id = 'J-late'",
+            [&now],
+        )
+        .unwrap();
+    assert_eq!(report_settled_jobs(&later, "demo").unwrap().len(), 1);
+
+    // A report needs its job; a plain message is no report.
+    assert!(send_report(&s, &t.id, "cinder", "words", " ").is_err());
+    let plain = reply(&s, &t.id, "demo-lead", "all landed").unwrap();
+    assert!(!plain.is_report());
+    assert!(plain.job_id.is_empty());
+}
+
+#[test]
+fn report_body_says_how_the_step_ended_and_where_its_code_is() {
+    let done = ReportFacts {
+        title: "Add the composer".into(),
+        status: "done".into(),
+        result: "SUMMARY: composer added".into(),
+        branch: String::new(),
+        commits: 3,
+    };
+    let body = report_body(&done);
+    assert!(
+        body.contains("**Done** with the step \u{201c}Add the composer\u{201d}."),
+        "{body}"
+    );
+    assert!(body.contains("have landed on the default branch"), "{body}");
+    let untitled = ReportFacts {
+        status: "failed".into(),
+        result: "x".repeat(REPORT_RESULT_CAP + 10),
+        ..ReportFacts::default()
+    };
+    let body = report_body(&untitled);
+    assert!(
+        body.starts_with("**Stopped** on my step: it did not finish."),
+        "{body}"
+    );
+    assert!(body.contains("The full report is on the run."), "{body}");
+    assert!(
+        body.chars().count() < REPORT_RESULT_CAP + 300,
+        "{}",
+        body.chars().count()
+    );
+}
+
+#[test]
 fn compute_post_summary_limit() {
     let _serial = crate::test_helpers::serial();
     const PREFIX: &str = "compute request CR-001: Standard_B2ms for 1h - ";

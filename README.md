@@ -222,7 +222,23 @@ activity fold under **Details for this machine**.
   the lead as a failed job to plan, and a fresh check follows the new slice.
   Your message then opens with *I checked it end to end against what you
   asked: ...*. Leads plan vertically for the same reason: the first job makes
-  the thinnest end-to-end path work, the next ones widen it. `review` means the lead could not finish without you - the
+  the thinnest end-to-end path work, the next ones widen it. Each job is a
+  sub-session of the task, and it reports back to the task's conversation
+  the moment it ends: the daemon writes one message in the worker's name
+  (*Done with the step "Composer UI". …* with the worker's summary, or
+  *Stopped on the step …* with why) marked with the job, so you read what
+  each step found as it comes instead of hours later in the lead's summary.
+  The chat shows a report nested under the conversation with the step's
+  live landing state (*Landed*, *Waiting to land*, *Failed*, *Queued again*)
+  and a **See the run** link; a report is news, not the lead's answer, so
+  the delivery line under your message stands and the lead's choices stay
+  live. The lead reads the reports in its next brief under *Your workers
+  reported back*, never as your words, and a report alone wakes nobody: the
+  daemon lands the branches, runs the end-to-end check and asks you by
+  itself, and a failed step reaches the lead the way it always did. The
+  end-to-end check writes no report; its verdict is in the lead's message.
+  (`pulse task show` and `pulse msg list` tag a report with its job.)
+  `review` means the lead could not finish without you - the
   conversation says why - and the lead's brief tells it that your answer,
   however short (`use your judgement`, `do not ask me`), is final: it decides,
   writes the decision in one message and plans; a task that mixes a reserved

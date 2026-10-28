@@ -14,6 +14,14 @@ test("an agent's message after the owner's is the answer: nothing to say", () =>
   assert.equal(taskMessageLine(s), "");
 });
 
+test("a worker's report after it is news, not the lead's answer", () => {
+  const report = { author: "cinder", at: "2026-10-25T14:07:00Z", job_id: "job-20261025T140600Z-ab12cd" };
+  const s = taskMessageState(owner(), [report], lead, idle, NOW);
+  assert.equal(s.kind, "sent");
+  const answered = taskMessageState(owner(), [report, { author: lead, at: "2026-10-25T14:12:00Z" }], lead, idle, NOW);
+  assert.deepEqual(answered, { kind: "answered" });
+});
+
 test("more owner messages after it are not an answer", () => {
   const s = taskMessageState(owner(), [{ author: "human", at: "2026-10-25T14:06:00Z" }], lead, idle, NOW);
   assert.equal(s.kind, "sent");

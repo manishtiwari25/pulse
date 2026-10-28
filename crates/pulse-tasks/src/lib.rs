@@ -6,6 +6,7 @@ pub mod compute;
 pub mod hands;
 pub mod leads;
 pub mod messages;
+pub mod reports;
 pub mod schedules;
 pub mod suggestions;
 pub mod tasks;
@@ -15,6 +16,7 @@ pub use activity::*;
 pub use commands::*;
 pub use compute::*;
 pub use messages::*;
+pub use reports::*;
 pub use tasks::*;
 pub use work::*;
 

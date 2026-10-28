@@ -133,8 +133,11 @@ function Line({ item, task, onChat }: { item: ActivityItem; task: Task; onChat?:
   if (item.kind === "task" && item.what === "created") return <Bubble who={item.who} at={item.at} title={item.title} body={item.text} />;
   if (item.kind === "message") {
     const open = task.status !== "done" && task.status !== "cancelled";
+    // A worker's report on one of the task's jobs, written the moment the
+    // job ended: the chat tab shows it with the step's landing state.
+    const note = item.what === "report" ? "reported back" + (item.job_id ? " on job " + item.job_id : "") : undefined;
     return (
-      <Bubble who={item.who} at={item.at} body={item.text} truncated={item.truncated}>
+      <Bubble who={item.who} at={item.at} note={note} body={item.text} truncated={item.truncated}>
         {item.choices?.length && !isOwnerName(item.who) ? (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1">
             {item.choices.map((c) => (
@@ -185,17 +188,18 @@ function SystemLine({ text, at, tone = "neutral", detail }: { text: string; at: 
   );
 }
 
-function Bubble({ who, at, title, body, truncated, children }: { who: string; at: string; title?: string; body?: string; truncated?: boolean; children?: React.ReactNode }) {
+function Bubble({ who, at, title, note, body, truncated, children }: { who: string; at: string; title?: string; note?: string; body?: string; truncated?: boolean; children?: React.ReactNode }) {
   const human = isOwnerName(who);
   return (
     <div className={cn("flex min-w-0 items-end gap-2", human && "flex-row-reverse")}>
       <Avatar seed={who} human={human} size={28} className="mb-0.5" />
       <div className={cn("flex min-w-0 max-w-[min(85%,40rem)] flex-col", human ? "items-end" : "items-start")}>
-        <div className="mb-1 flex items-baseline gap-2 px-1 text-xs text-muted-foreground">
+        <div className="mb-1 flex flex-wrap items-baseline gap-x-2 px-1 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{whoWord(who)}</span>
+          {note ? <span>{note}</span> : null}
           <When d={at} />
         </div>
-        <div className={cn("min-w-0 max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : "rounded-bl-md border bg-card")}>
+        <div className={cn("min-w-0 max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : note ? "rounded-bl-md border border-dashed bg-muted/30" : "rounded-bl-md border bg-card")}>
           {title ? <p className="mb-1 font-medium">{title}</p> : null}
           {body ? <Markdown source={body} className="[&>:last-child]:mb-0" /> : null}
           {truncated ? <p className="mt-1 text-xs text-muted-foreground">Shortened here.</p> : null}
