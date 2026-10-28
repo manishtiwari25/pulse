@@ -199,7 +199,18 @@ activity fold under **Details for this machine**.
   Have a look - is it what you wanted?* with what landed under it and the
   choices *Yes, close it*, *Not what I meant* and *Change what I asked* -
   while a task an agent opened for itself closes on its own (`done: 2 job(s)
-  landed`). `review` means the lead could not finish without you - the
+  landed`). A task done in two or more jobs is checked as a whole first:
+  each slice passed its own tests, nobody yet walked the path across them,
+  and that is where split work breaks (six slices of a picture-attachment
+  task once landed with the picture never reaching the model). Before you
+  are asked, the daemon queues one more job (`task:TASK-NNN:accept`,
+  *Check TASK-NNN end to end*) that reads your ask again, traces each point
+  through the default branch and the project's checks, mends a small gap on
+  the spot with a test, or ends `blocked: missing ...` - which comes back to
+  the lead as a failed job to plan, and a fresh check follows the new slice.
+  Your message then opens with *I checked it end to end against what you
+  asked: ...*. Leads plan vertically for the same reason: the first job makes
+  the thinnest end-to-end path work, the next ones widen it. `review` means the lead could not finish without you - the
   conversation says why - and the lead's brief tells it that your answer,
   however short (`use your judgement`, `do not ask me`), is final: it decides,
   writes the decision in one message and plans; a task that mixes a reserved

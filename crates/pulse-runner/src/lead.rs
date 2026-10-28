@@ -86,6 +86,9 @@ pub(crate) struct JobsTally {
     pub(crate) details: Vec<String>,
     /// What landed, one line per done job, for the owner to check.
     pub(crate) landed: Vec<String>,
+    /// What the end-to-end check of a split task found (`accept_source`),
+    /// for the owner's ask; empty when the task had no such check.
+    pub(crate) checked: String,
 }
 
 pub(crate) fn lead_name(slug: String) -> String {
@@ -197,7 +200,7 @@ pub(crate) fn lead_brief(
     b.push_str(&format!("## What to do\n\n\
 1. For each task: read `pulse task show <id>` (brief, revisions, messages, jobs so far) and the owner's messages above.\n\
 2. Reply to the owner with `pulse msg send --project {slug} --task <id> \"...\"` (or `pulse task reply <id> \"...\"`; `pulse msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap instead of a blank to fill: `--choice \"<your recommendation>\" --choice \"<the alternative>\"` (a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief); ask for written words only when no short list of answers exists. Never repeat a question the owner has not answered yet.\n\
-3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
+3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
 4. Set `pulse task status <id> planned` once its jobs exist.\n\
 5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`pulse env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time.\n\
 6. A task whose jobs failed and none runs: read each failure (`pulse task show <id>` lists the results), then queue a corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, `pulse task status <id> review` and tell the owner why in one message that carries the answers to pick (`--choice`); a task with three failed jobs goes to review by itself, with the choices to carry on, close, or change it. The owner's next message on a task in review puts it back in progress and wakes you: act on the answer. When the owner's task has landed, the daemon asks the owner in the chat whether it is what they wanted; an answer of \"Not what I meant\" (or words to that effect) means: read the brief against what landed, say in one message what you will change, and queue it - when you cannot tell what is missing, ask one question that carries the answers to pick.\n"));
@@ -1130,7 +1133,7 @@ pub(crate) fn tend_tasks(
             {
                 lines.push(format!("task {}: {}", t.id, crate::run::err_message(&e)));
             }
-            let tally = tally_jobs(jobs.clone());
+            let mut tally = tally_jobs(jobs.clone());
             let (active, finished, failed) = (tally.active, tally.finished, tally.failed);
             let mut status = t.status.clone();
             if status == "open" && pulse_tasks::set_status(s, &t.id, "planned", &actor).is_ok() {
@@ -1200,6 +1203,18 @@ pub(crate) fn tend_tasks(
                         lead.clone(),
                         tally.last_finished.clone(),
                     ) {
+                        match ensure_acceptance(s, &slug, &t, &lead, &mut tally) {
+                            Ok(Some(line)) => {
+                                lines.push(line);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(e) => lines.push(format!(
+                                "task {}: end-to-end check not queued: {}",
+                                t.id,
+                                crate::run::err_message(&e)
+                            )),
+                        }
                         match tell_owner(s, &t, &lead, "review", LANDED_TOLD, &tally) {
                             Ok(()) => lines.push(format!(
                                 "task {} still in review: asked the owner whether what landed is it",
@@ -1246,6 +1261,21 @@ pub(crate) fn tend_tasks(
                         tally.last_finished.clone(),
                     ) {
                         continue;
+                    }
+                    // Work done in several jobs is checked as a whole first:
+                    // each slice passed its own tests, nobody yet walked the
+                    // path across them against the ask.
+                    match ensure_acceptance(s, &slug, &t, &lead, &mut tally) {
+                        Ok(Some(line)) => {
+                            lines.push(line);
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(e) => lines.push(format!(
+                            "task {}: end-to-end check not queued: {}",
+                            t.id,
+                            crate::run::err_message(&e)
+                        )),
                     }
                     (
                         "review".to_string(),
@@ -1473,6 +1503,129 @@ pub(crate) fn landed_choices() -> Vec<pulse_tasks::Choice> {
     ]
 }
 
+/// The label of the job that checks a split task as a whole before the
+/// owner is asked: its source is `task:<id>:accept`.
+pub(crate) const ACCEPT_LABEL: &str = "accept";
+
+pub(crate) fn accept_source(task_id: &str) -> String {
+    format!("task:{task_id}:{ACCEPT_LABEL}")
+}
+
+/// Where a task's end-to-end check stands: how many jobs other than the
+/// check landed, and what the latest check that finished after the last of
+/// them said.
+#[derive(Default, Debug)]
+struct Acceptance {
+    slices: i32,
+    /// Title and result of each landed slice, oldest first.
+    landed: Vec<(String, String)>,
+    /// Status and result of the check that finished after the last slice
+    /// landed, when one did.
+    checked: Option<(String, String)>,
+}
+
+fn acceptance(s: &pulse_store::Store, task_id: &str) -> Acceptance {
+    let mut a = Acceptance::default();
+    let Ok(conn) = s.conn() else {
+        return a;
+    };
+    let (exact, like) = pulse_store::task_source_params(task_id);
+    let rows = must_rows(
+        &conn,
+        &format!(
+            "SELECT source, status, branch, title, finished_at, result FROM jobs WHERE {} ORDER BY finished_at, created_at",
+            pulse_store::task_source_clause("source")
+        ),
+        &[&exact, &like],
+    );
+    let check = accept_source(task_id);
+    let mut last_slice = String::new();
+    let mut checks = Vec::new();
+    for r in rows {
+        if r.str("source") == check {
+            if r.str("status") == "done" || r.str("status") == "failed" {
+                checks.push((r.str("finished_at"), r.str("status"), r.str("result")));
+            }
+            continue;
+        }
+        if r.str("status") == "done" && r.str("branch").is_empty() {
+            a.slices += 1;
+            a.landed.push((r.str("title"), r.str("result")));
+            if r.str("finished_at") > last_slice {
+                last_slice = r.str("finished_at");
+            }
+        }
+    }
+    a.checked = checks
+        .into_iter()
+        .rfind(|(at, _, _)| *at >= last_slice)
+        .map(|(_, status, result)| (status, result));
+    a
+}
+
+/// Queues the end-to-end check of an owner's task done in several jobs,
+/// when none has run since its last slice landed; fills `tally.checked`
+/// with what a finished check found. `Some(line)` when a check was queued
+/// (the task is not the owner's to judge yet); `None` when the task is
+/// ready for the owner: one whole job, or a check already done.
+fn ensure_acceptance(
+    s: &pulse_store::Store,
+    slug: &str,
+    t: &pulse_tasks::Task,
+    lead: &str,
+    tally: &mut JobsTally,
+) -> anyhow::Result<Option<String>> {
+    let a = acceptance(s, &t.id);
+    if a.slices < 2 {
+        return Ok(None);
+    }
+    if let Some((_, result)) = &a.checked {
+        // A failed check comes back as a failed job for the lead to plan;
+        // should the owner be asked anyway, they hear what it found.
+        tally.checked = result.trim().to_string();
+        // The check's own line says the same thing; keep the slices.
+        let prefix = format!("Check {} end to end", t.id);
+        tally.landed.retain(|l| !l.starts_with(&prefix));
+        return Ok(None);
+    }
+    let mut landed = String::new();
+    for (title, result) in &a.landed {
+        let _ = writeln!(landed, "- {title}: {}", trunc(result.trim(), 300));
+    }
+    let brief = format!(
+        "Task {id} ({title}) was done in {n} separate jobs, each landed on its own with its own tests. Nobody has yet checked that they add up to what the owner asked for. Do that now, against the default branch as it stands.\n\nThe owner's ask:\n\n{ask}\n\nWhat landed, job by job:\n\n{landed}\n1. Read the ask again and write down, one line each, what a user must be able to do once it is finished.\n2. Check each line against the code on the default branch: follow its path end to end (the control to its route to the store call to what the model or the user sees - whatever the path is here) and run the project's own checks. Trace the seams between the jobs above - that is where split work breaks: a function that exists but is never called, a value stored but never sent, a route without its button, a setting nothing reads.\n3. When every line holds, finish with `SUMMARY: checked end to end: <what you verified, one line per point>`.\n4. When one piece is missing and it is small - a call, a field, a route, a few lines - make it here with a test that walks the whole path, commit with a message that names the gap, and finish with `SUMMARY: checked end to end: <...>; fixed: <the gap>`.\n5. When what is missing is larger than that, change nothing and finish with `SUMMARY: blocked: missing <exactly what, where, and which of the jobs above left the gap>` so the lead can plan it.\n\nNever loosen a check, and never claim a point you did not trace.\n",
+        id = t.id,
+        title = t.title,
+        n = a.slices,
+        ask = t.brief.trim(),
+    );
+    let (job, created) = crate::jobs::add_job(
+        s,
+        slug.to_string(),
+        "task".into(),
+        format!("Check {} end to end: {}", t.id, trunc(&t.title, 80)),
+        brief,
+        1,
+        t.priority,
+        accept_source(&t.id),
+        lead.to_string(),
+        true,
+    )?;
+    if !created {
+        return Ok(Some(format!(
+            "task {}: every slice landed; its end-to-end check {} is already queued",
+            t.id,
+            job.str("id")
+        )));
+    }
+    Ok(Some(format!(
+        "task {}: {} slices landed; queued {} to check the whole against the ask before asking the owner",
+        t.id,
+        a.slices,
+        job.str("id")
+    )))
+}
+
 /// A task the owner gave, as against one an agent or a lead opened: only
 /// the owner can say whether what landed is what they asked for.
 fn owner_task(t: &pulse_tasks::Task) -> bool {
@@ -1528,6 +1681,12 @@ fn tell_owner(
             "{}: the work landed. Have a look - is it what you wanted?",
             t.title
         );
+        if !tally.checked.is_empty() {
+            body.push_str(&format!(
+                "\n\nI checked it end to end against what you asked: {}",
+                trunc(&tally.checked, 600)
+            ));
+        }
         if !tally.landed.is_empty() {
             body.push_str("\n\nWhat landed:");
             for d in tally.landed.iter().rev().take(3) {
@@ -1653,6 +1812,199 @@ pub(crate) const FAILED_JOBS_TO_REVIEW: i32 = 3;
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+
+    fn task_job(s: &pulse_store::Store, title: &str, source: &str) -> Row {
+        crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            title.into(),
+            format!("do {title}"),
+            1,
+            50,
+            source.into(),
+            "proj-lead".into(),
+            false,
+        )
+        .expect("add job")
+        .0
+    }
+
+    fn run_job(s: &pulse_store::Store, j: &Row, status: &str, result: &str, finished_at: &str) {
+        crate::jobs::lease_job(
+            s,
+            "w1".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: j.str("id"),
+                ..Default::default()
+            },
+        )
+        .expect("lease");
+        crate::jobs::finish_job(
+            s,
+            j.str("id"),
+            "w1".into(),
+            status.into(),
+            result.into(),
+            String::new(),
+            -1,
+        )
+        .expect("finish");
+        // Jobs are created and finish at the given stamp, in the order the
+        // test tells; the store's clock stands at TEST_NOW.
+        crate::util::exec1(
+            &*s.conn().expect("conn"),
+            "UPDATE jobs SET created_at = ?, finished_at = ? WHERE id = ?",
+            &[&finished_at, &finished_at, &j.str("id")],
+        );
+    }
+
+    fn accept_jobs(s: &pulse_store::Store, task_id: &str) -> Vec<Row> {
+        crate::util::must_rows(
+            &*s.conn().expect("conn"),
+            "SELECT * FROM jobs WHERE source = ? ORDER BY created_at",
+            &[&accept_source(task_id)],
+        )
+    }
+
+    #[test]
+    fn a_task_done_in_one_job_goes_straight_to_the_owner() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let t = pulse_tasks::new(
+            &s,
+            "proj",
+            "One piece",
+            "do it",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let only = task_job(&s, "One piece a", &format!("task:{}", t.id));
+        run_job(&s, &only, "done", "did it", "2026-09-06T10:00:00Z");
+        tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(pulse_tasks::get(&s, &t.id).unwrap().0.status, "review");
+        assert!(accept_jobs(&s, &t.id).is_empty());
+        let asks = pulse_tasks::messages(&s, "proj", &t.id, "", "").unwrap();
+        assert_eq!(asks.len(), 1);
+        assert!(!asks[0].body.contains("end to end"), "{}", asks[0].body);
+    }
+
+    #[test]
+    fn a_blocked_check_sends_the_task_back_to_the_lead_and_a_new_slice_earns_a_new_check() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let t = pulse_tasks::new(
+            &s,
+            "proj",
+            "Rename a project",
+            "rename from the hub",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let store = task_job(&s, "Store rename", &format!("task:{}", t.id));
+        let api = task_job(&s, "Rename route", &format!("task:{}:api", t.id));
+        run_job(
+            &s,
+            &store,
+            "done",
+            "rename_project added",
+            "2026-09-06T08:00:00Z",
+        );
+        run_job(
+            &s,
+            &api,
+            "done",
+            "PATCH route added",
+            "2026-09-06T08:30:00Z",
+        );
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            pulse_tasks::get(&s, &t.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        let checks = accept_jobs(&s, &t.id);
+        assert_eq!(checks.len(), 1, "{lines:?}");
+        assert_eq!(checks[0].str("priority"), "50");
+        assert_eq!(checks[0].str("tier"), "1");
+        // The check finds the join missing: it fails as `blocked`, the
+        // owner hears nothing, and the lead is woken to plan the gap.
+        run_job(
+            &s,
+            &checks[0],
+            "failed",
+            "blocked: missing the Rename control in the hub; the route has no caller",
+            "2026-09-06T09:00:00Z",
+        );
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(
+            pulse_tasks::get(&s, &t.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        assert!(
+            pulse_tasks::messages(&s, "proj", &t.id, "", "")
+                .unwrap()
+                .is_empty()
+        );
+        let (_, due, _) = lead_due(&s, "proj".into(), "proj-lead".into(), TEST_NOW.into()).unwrap();
+        assert!(
+            due.iter().any(|d| d.task.id == t.id
+                && d.why == "failed"
+                && d.detail.contains("missing the Rename control")),
+            "{due:?}"
+        );
+        // The lead's new slice lands: the old check is stale, so the whole
+        // is checked again before the owner is asked.
+        let ui = task_job(&s, "Rename control", &format!("task:{}:ui", t.id));
+        run_job(
+            &s,
+            &ui,
+            "done",
+            "Rename button calls the route",
+            "2026-09-06T09:30:00Z",
+        );
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let checks = accept_jobs(&s, &t.id);
+        assert_eq!(checks.len(), 2, "{lines:?}");
+        assert_eq!(checks[1].str("status"), "queued");
+        assert!(
+            checks[1].str("brief").contains("done in 3 separate jobs")
+                && checks[1]
+                    .str("brief")
+                    .contains("Rename button calls the route"),
+            "{}",
+            checks[1].str("brief")
+        );
+        assert_eq!(pulse_tasks::get(&s, &t.id).unwrap().0.status, "in_progress");
+        run_job(
+            &s,
+            &checks[1],
+            "done",
+            "checked end to end: the button renames, the route answers, the store keeps it",
+            "2026-09-06T09:45:00Z",
+        );
+        tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(pulse_tasks::get(&s, &t.id).unwrap().0.status, "review");
+        let asks = pulse_tasks::messages(&s, "proj", &t.id, "", "").unwrap();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert!(
+            asks[0]
+                .body
+                .contains("I checked it end to end against what you asked: checked end to end: the button renames")
+                && asks[0].body.contains("- Rename control: Rename button calls the route")
+                && !asks[0].body.contains("- Check "),
+            "{}",
+            asks[0].body
+        );
+    }
 
     fn idle_lead_job_rows(s: &impl crate::util::Querier) -> Vec<Row> {
         crate::util::must_rows(

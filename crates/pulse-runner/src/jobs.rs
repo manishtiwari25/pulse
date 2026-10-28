@@ -4059,6 +4059,90 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "in_progress"
         );
         s.conn().unwrap().execute("UPDATE jobs SET branch = '', result = result || ' | landed abc from x' WHERE id = ?", [&jobs[1].str("id")]).unwrap();
+        let lines = crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        // Two jobs landed on their own: before the owner is asked, one more
+        // checks that they add up to the ask. The task is not theirs to
+        // judge yet.
+        assert_eq!(
+            pulse_tasks::get(&s, &landed.id).unwrap().0.status,
+            "in_progress",
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("2 slices landed") && l.contains("check the whole")),
+            "{lines:?}"
+        );
+        let checks = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE source = ? ORDER BY created_at",
+            &[&crate::lead::accept_source(&landed.id)],
+        );
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].str("status"), "queued");
+        assert_eq!(checks[0].str("kind"), "task");
+        assert_eq!(checks[0].str("created_by"), "proj-lead");
+        assert_eq!(
+            checks[0].str("title"),
+            format!("Check {} end to end: Mark it done", landed.id)
+        );
+        let brief = checks[0].str("brief");
+        assert!(
+            brief.contains("done in 2 separate jobs")
+                && brief.contains("The owner's ask:\n\ndo it")
+                && brief.contains("- Mark it done a: done")
+                && brief.contains("landed abc from x")
+                && brief.contains("SUMMARY: checked end to end:")
+                && brief.contains("SUMMARY: blocked: missing"),
+            "{brief}"
+        );
+        assert!(
+            pulse_tasks::messages(&s, "proj", &landed.id, "", "")
+                .unwrap()
+                .is_empty()
+        );
+        // Asked twice, queued once.
+        crate::lead::tend_tasks(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(
+            crate::util::must_rows(
+                &*s.conn().unwrap(),
+                "SELECT id FROM jobs WHERE source = ?",
+                &[&crate::lead::accept_source(&landed.id)],
+            )
+            .len(),
+            1
+        );
+        crate::jobs::lease_job(
+            &s,
+            "w1".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: checks[0].str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::jobs::finish_job(
+            &s,
+            checks[0].str("id"),
+            "w1".into(),
+            "done".into(),
+            "checked end to end: a marks it, b shows it".into(),
+            String::new(),
+            -1,
+        )
+        .unwrap();
         crate::lead::tend_tasks(
             &s,
             "proj".into(),
@@ -4066,7 +4150,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "daemon".into(),
         );
         // The owner's own task is not closed over their head: what landed is
-        // put to them once, with the answers to pick.
+        // put to them once, with the check's word and the answers to pick.
         assert_eq!(pulse_tasks::get(&s, &landed.id).unwrap().0.status, "review");
         let landed_posts = crate::util::must_rows(
             &*s.conn().unwrap(),
@@ -4076,7 +4160,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             landed_posts.iter().any(|p| p
                 .str("summary")
-                .contains("2 job(s) done, 0 failed - review")
+                .contains("3 job(s) done, 0 failed - review")
                 && p.str("summary").contains("what they asked for")),
             "landed jobs go to the owner: {landed_posts:?}"
         );
@@ -4085,8 +4169,12 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert_eq!(asks[0].author, "proj-lead");
         assert!(
             asks[0].body.contains("the work landed")
+                && asks[0]
+                    .body
+                    .contains("I checked it end to end against what you asked: checked end to end: a marks it, b shows it")
                 && asks[0].body.contains("What landed:")
-                && asks[0].body.contains("landed abc from x"),
+                && asks[0].body.contains("landed abc from x")
+                && !asks[0].body.contains("- Check "),
             "{}",
             asks[0].body
         );
