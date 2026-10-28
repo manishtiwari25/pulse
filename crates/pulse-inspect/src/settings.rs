@@ -16,6 +16,9 @@ Runner and evolution caps (built-in defaults):
   harness.max_steps  default {} model calls
     Model calls one worker run may make before the built-in harness stops it;
     harness.max_cost caps what a run may spend ({} = no cap).
+    harness.task_max_steps (default empty) raises the step budget for task,
+    improve and experiment runs only, so a task can spend more without every
+    answer, ballot, reflect or onboard run getting the same.
   worker_model     default empty (the runner's default model)
     Model of the runs that change code: task, improve and experiment jobs; also
     the loop's measurements while measure_model is empty, and every other run

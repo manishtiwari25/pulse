@@ -92,7 +92,7 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.memory"=>"on","harness.teach"=>"off","harness.web_search"=>"chat","harness.fetch_allow"=>"","harness.compact_at"=>"70","harness.reasoning"=>"default","harness.allow_tools"=>"","harness.deny_tools"=>"",
+    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.task_max_steps"=>"","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.memory"=>"on","harness.teach"=>"off","harness.web_search"=>"chat","harness.fetch_allow"=>"","harness.compact_at"=>"70","harness.reasoning"=>"default","harness.allow_tools"=>"","harness.deny_tools"=>"",
     // One endpoint per API-key provider (the registry name is the middle
     // segment); azure-openai has no default because the resource is the owner's.
     "provider.openai.base_url"=>"https://api.openai.com/v1","provider.anthropic.base_url"=>"https://api.anthropic.com","provider.gemini.base_url"=>"https://generativelanguage.googleapis.com","provider.azure-openai.base_url"=>"","provider.openrouter.base_url"=>"https://openrouter.ai/api/v1","provider.groq.base_url"=>"https://api.groq.com/openai/v1","provider.mistral.base_url"=>"https://api.mistral.ai/v1","provider.deepseek.base_url"=>"https://api.deepseek.com/v1","provider.xai.base_url"=>"https://api.x.ai/v1","provider.together.base_url"=>"https://api.together.xyz/v1","provider.fireworks.base_url"=>"https://api.fireworks.ai/inference/v1","provider.cerebras.base_url"=>"https://api.cerebras.ai/v1","provider.github-models.base_url"=>"https://models.github.ai/inference","provider.ollama.base_url"=>"http://127.0.0.1:11434/v1","provider.lmstudio.base_url"=>"http://127.0.0.1:1234/v1","provider.vllm.base_url"=>"http://127.0.0.1:8000/v1",
@@ -123,6 +123,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "provider.retry_after_cap_s"=>("count",Some(0),[],None,"maximum seconds a provider Retry-After or rate-limit reset header may hold one retry before jitter; the backoff still floors the wait"),
         "provider.max_body_mb"=>("count",Some(1),[],None,"maximum MiB read from a successful provider response body before the call fails as non-retryable"),
         "harness.max_steps"=>("count",Some(1),[],None,"model calls one native-harness run may make before it stops"),
+        "harness.task_max_steps"=>("count-or-none",None,[],None,"model calls a task, improve or experiment run may make before it stops, in the shape of the per-kind model settings; none/off/unlimited (or the empty default) leaves these kinds on harness.max_steps, which still covers every other kind"),
         "harness.max_cost"=>("number",Some(0),[],None,"provider-reported cost one native-harness run may spend before it stops (0 = no cap); the unit is the provider's - Copilot reports usage.cost only when the vendor sends it"),
         "harness.keep_observations"=>("count",Some(1),[],None,"observations kept verbatim in the model's context; older ones collapse to their first and last lines"),
         "harness.system_prompt"=>("text",None,[],None,"Go text/template for the harness system prompt; empty = the built-in one (pulse harness prompt --default prints it)"),
@@ -681,6 +682,23 @@ impl Store {
             self.light_model()
         }
     }
+
+    /// The step budget for one run of `kind`, in the shape of the per-kind
+    /// model settings: a task, improve or experiment run may raise its budget
+    /// with `harness.task_max_steps` without giving the short kinds the same,
+    /// and every kind falls back to `harness.max_steps` while that is empty.
+    pub fn run_max_steps(&self, kind: &str) -> String {
+        let per_kind = self.setting("harness.task_max_steps", "");
+        let per_kind = per_kind.trim();
+        let override_set =
+            !per_kind.is_empty() && !NONE_WORDS.contains(&per_kind.to_ascii_lowercase().as_str());
+        if IMPLEMENTATION_JOB_KINDS.contains(&kind) && override_set {
+            per_kind.to_string()
+        } else {
+            self.setting("harness.max_steps", "")
+        }
+    }
+
     pub fn light_model(&self) -> String {
         let light = self.setting("light_model", "").trim().to_string();
         if light.is_empty() {
