@@ -317,7 +317,11 @@ pub fn evidence_summary(evidence: &[FixtureEvidence]) -> String {
         .map(|e| e.name.as_str())
         .collect();
     let mut line = if moving.is_empty() {
-        format!("no fixture told a variant from its baseline in {cycles} cycles")
+        let tied: Vec<&str> = scored.iter().map(|e| e.name.as_str()).collect();
+        format!(
+            "no fixture ({}) told a variant from its baseline in {cycles} cycles",
+            tied.join(", ")
+        )
     } else {
         format!(
             "only {} told a variant from its baseline in {cycles} cycles",
@@ -690,7 +694,25 @@ mod tests {
         }]);
         assert_eq!(
             plain,
-            "no fixture told a variant from its baseline in 3 cycles"
+            "no fixture (metric) told a variant from its baseline in 3 cycles"
+        );
+        // With nothing moving the summary names every tied fixture, so the
+        // owner sees which fixture to repair without opening the question.
+        let tied = evidence_summary(&[
+            FixtureEvidence {
+                name: "metric".into(),
+                cycles: 3,
+                ..Default::default()
+            },
+            FixtureEvidence {
+                name: "request".into(),
+                cycles: 3,
+                ..Default::default()
+            },
+        ]);
+        assert_eq!(
+            tied,
+            "no fixture (metric, request) told a variant from its baseline in 3 cycles"
         );
     }
 
