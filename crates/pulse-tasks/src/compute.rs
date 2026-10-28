@@ -434,3 +434,29 @@ fn insert_post(
 
 pub type ComputeProvidersFn = fn(&mut pulse_cli::Context) -> Result<()>;
 pub static COMPUTE_PROVIDERS: RwLock<Option<ComputeProvidersFn>> = RwLock::new(None);
+
+/// The linux hands arch a requested machine size will need. The request CLI
+/// has no provider yet (the worker picks one), so this mirrors the ARM
+/// patterns the worker's `hands_arch_for_size` matches; the probe error names
+/// the arch it checked.
+pub fn default_hands_arch(size: &str) -> String {
+    let size = size.trim().to_ascii_lowercase();
+    let arm = {
+        // Azure: Standard_E2ps_v5 style (a letters+digits block, "p", series
+        // letters, "_v" digits). AWS: m8g.large / a1.medium style. GCP: t2a-,
+        // c4a-.
+        let azure = size.starts_with("standard_") && {
+            let core = size.trim_start_matches("standard_");
+            let digits: String = core.chars().filter(|c| c.is_ascii_digit()).collect();
+            core.contains('p') && !digits.is_empty()
+        };
+        let aws = size
+            .split('.')
+            .next()
+            .is_some_and(|family| family.starts_with('a') || family.ends_with('g'))
+            && size.contains('.');
+        let gcp = size.starts_with("t2a-") || size.starts_with("c4a-");
+        azure || aws || gcp
+    };
+    if arm { "arm64".into() } else { "amd64".into() }
+}

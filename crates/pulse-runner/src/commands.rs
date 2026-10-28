@@ -1232,6 +1232,9 @@ pub(crate) fn cmd_env(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<
             } else {
                 write!(c.out, "{}", crate::env::env_check_text(&rep))?;
             }
+            // The same line the compute flow refuses with: where a linux
+            // hands binary comes from on this host, or what to install.
+            writeln!(c.out, "{}", crate::pair::hands_binary_plan_line("amd64"))?;
             if !rep.unfit.is_empty() {
                 return Err(pulse_cli::errorf(1, "", "", "").into());
             }
@@ -1649,6 +1652,13 @@ mod tests {
         assert!(
             out.contains("recipe ok (CTX-environment); tools node@22.1.0"),
             "env check: {code} {out:?}"
+        );
+        // The doctor line the suggestion asks for: the same sentence the
+        // compute request refusal carries, so a missing toolchain shows here
+        // instead of inside a failed CR.
+        assert!(
+            out.contains("hands binary linux/amd64: built with cargo"),
+            "env check hands line: {out:?}"
         );
         let (out, _, code) = invoke(&s, "executor", "", &["remove", "hands"]);
         assert!(

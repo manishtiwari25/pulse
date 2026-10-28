@@ -933,6 +933,36 @@ fn a_request_that_failed_before_a_machine_was_ready_does_not_spend_the_day() {
     assert_eq!(r3.status, "pending");
 }
 
+#[test]
+fn request_refused_before_a_machine_when_the_hands_binary_is_missing() {
+    let _serial = crate::test_helpers::serial();
+    let old = crate::hands::set_hands_binary_probe(Some(Box::new(|arch| {
+        Some(format!(
+            "hands binary linux/{arch}: none; install cargo-zigbuild (cargo install cargo-zigbuild)"
+        ))
+    })));
+    let s = new_store();
+    let (mut c, _out) = ctx_for(&s, "owner", "demo", false);
+    let err = run_cmd(
+        &mut c,
+        "compute",
+        &["request", "--size", "Standard_B2ms", "--reason", "build"],
+    )
+    .expect_err("the missing toolchain refuses the request");
+    let text = format!("{err:#}");
+    assert!(text.contains("refused"), "{text}");
+    assert!(text.contains("cargo-zigbuild"), "{text}");
+    // Nothing was requested: no CR row, so nothing can be approved and
+    // provisioned into the CR-001/CR-002 failure.
+    let n: i64 = s
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM compute_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+    let _ = crate::hands::set_hands_binary_probe(old);
+}
+
 fn ctx_for(s: &pulse_store::Store, agent: &str, project: &str, json: bool) -> (Context, Buffer) {
     let out = Buffer::new();
     let err = out.clone();

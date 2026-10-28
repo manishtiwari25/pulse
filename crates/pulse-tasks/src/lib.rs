@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod commands;
 pub mod compute;
+pub mod hands;
 pub mod leads;
 pub mod messages;
 pub mod schedules;

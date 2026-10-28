@@ -45,7 +45,18 @@ pub(crate) type HandsBinaryFn = dyn Fn(&str) -> anyhow::Result<(Vec<u8>, String)
 pub(crate) static HANDS_BINARY: LazyLock<RwLock<Box<HandsBinaryFn>>> =
     LazyLock::new(|| RwLock::new(Box::new(default_hands_binary)));
 
+/// Whether `set_hands_binary` installed a resolver other than the default
+/// (a test seam). The compute provision path checks this before trusting the
+/// cheap plan probe: an overridden resolver is authoritative.
+static HANDS_BINARY_OVERRIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn hands_binary_overridden() -> bool {
+    HANDS_BINARY_OVERRIDDEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub(crate) fn set_hands_binary(f: Box<HandsBinaryFn>) -> Box<HandsBinaryFn> {
+    HANDS_BINARY_OVERRIDDEN.store(true, std::sync::atomic::Ordering::SeqCst);
     std::mem::replace(
         &mut *HANDS_BINARY.write().expect("hands_binary poisoned"),
         f,
@@ -2583,6 +2594,48 @@ mod tests {
     }
 
     #[test]
+    fn hands_binary_plan_prefers_the_env_var() {
+        let _env = pulse_testutil::env_lock();
+        let _v = pulse_testutil::setenv("PULSE_HANDS_BINARY", "/tmp/pulse-linux-test");
+        assert_eq!(hands_binary_plan("amd64"), HandsBinaryPlan::EnvVar);
+        assert!(hands_binary_plan_line("amd64").contains("PULSE_HANDS_BINARY is set"));
+    }
+
+    #[test]
+    fn hands_binary_plan_falls_back_to_the_source_tree_build() {
+        // No env var, no sibling file beside the test binary: this test suite
+        // itself runs from the pulse source tree, so the plan is the cargo
+        // build (and never the toolchain-missing line).
+        let _env = pulse_testutil::env_lock();
+        let _v = pulse_testutil::unsetenv("PULSE_HANDS_BINARY");
+        assert!(
+            !std::env::current_exe()
+                .expect("current exe")
+                .with_file_name("pulse-linux-amd64")
+                .is_file()
+        );
+        assert_eq!(hands_binary_plan("amd64"), HandsBinaryPlan::BuildPulse);
+        assert!(hands_binary_plan_line("arm64").contains("built with cargo"));
+    }
+
+    #[test]
+    fn hands_binary_plan_line_reports_every_source() {
+        let line = hands_binary_plan_line("amd64");
+        assert!(line.starts_with("hands binary linux/amd64: "));
+        for plan in [
+            HandsBinaryPlan::EnvVar,
+            HandsBinaryPlan::SiblingFile,
+            HandsBinaryPlan::BuildPulse,
+            HandsBinaryPlan::CrossBuild,
+        ] {
+            assert!(!format!("{plan:?}").is_empty());
+        }
+        if let HandsBinaryPlan::Missing(hint) = hands_binary_plan("amd64") {
+            assert!(hint.contains("install") || hint.contains("rustup"));
+        }
+    }
+
+    #[test]
     fn cross_build_prefers_zigbuild_when_present() {
         let plain = cross_build_args("x86_64-unknown-linux-musl", "/src/pulse", false);
         assert_eq!(
@@ -2608,6 +2661,74 @@ mod tests {
                 .map(|a| a.replace("x86_64", "aarch64"))
                 .collect::<Vec<_>>()[..]
         );
+    }
+}
+
+/// How `pulse compute` will get a linux hands binary onto a new machine, or
+/// the one thing the owner has to fix first. Resolving this is cheap (env
+/// var, sibling file, toolchain presence) and never builds, so the compute
+/// flow can ask it before any provider call: a missing toolchain refuses the
+/// request with this hint instead of buying a machine that then fails
+/// (CR-001/CR-002).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HandsBinaryPlan {
+    EnvVar,
+    SiblingFile,
+    BuildPulse,
+    CrossBuild,
+    Missing(&'static str),
+}
+
+/// Classify the linux/{arch} hands-binary source for this host. Order matches
+/// `default_hands_binary`: env var, sibling file, in-tree cargo build, then a
+/// cross-build dry check naming the missing tool (`cargo-zigbuild` on PATH or
+/// the rustup target).
+pub(crate) fn hands_binary_plan(arch: &str) -> HandsBinaryPlan {
+    if std::env::var_os("PULSE_HANDS_BINARY").is_some() {
+        return HandsBinaryPlan::EnvVar;
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && exe.with_file_name(format!("pulse-linux-{arch}")).is_file()
+    {
+        return HandsBinaryPlan::SiblingFile;
+    }
+    if !module_root().is_empty() {
+        return HandsBinaryPlan::BuildPulse;
+    }
+    let triple = match arch {
+        "amd64" => "x86_64-unknown-linux-gnu",
+        _ => "aarch64-unknown-linux-gnu",
+    };
+    if !on_path("cargo-zigbuild") {
+        return HandsBinaryPlan::Missing(
+            "install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary",
+        );
+    }
+    if !rustup_target_installed(triple) {
+        return HandsBinaryPlan::Missing(
+            "add the rust target (rustup target add x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu) to cross-build the linux hands binary",
+        );
+    }
+    HandsBinaryPlan::CrossBuild
+}
+
+/// One sentence for a finding, a refused compute request or a doctor line:
+/// where the hands binary comes from, or what to install.
+pub(crate) fn hands_binary_plan_line(arch: &str) -> String {
+    match hands_binary_plan(arch) {
+        HandsBinaryPlan::EnvVar => {
+            format!("hands binary linux/{arch}: PULSE_HANDS_BINARY is set")
+        }
+        HandsBinaryPlan::SiblingFile => {
+            format!("hands binary linux/{arch}: pulse-linux-{arch} sits beside this binary")
+        }
+        HandsBinaryPlan::BuildPulse => {
+            format!("hands binary linux/{arch}: built with cargo from this source tree")
+        }
+        HandsBinaryPlan::CrossBuild => {
+            format!("hands binary linux/{arch}: cross-built with cargo-zigbuild (target installed)")
+        }
+        HandsBinaryPlan::Missing(hint) => format!("hands binary linux/{arch}: none; {hint}"),
     }
 }
 

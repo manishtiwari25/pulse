@@ -3,7 +3,7 @@ use crate::messages::*;
 use crate::schedules;
 use crate::suggestions;
 use crate::tasks::*;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use pulse_bus::{CancellationToken, Event, Filter};
 use pulse_cli::{Command, Context, FlagSet};
 use serde::Serialize;
@@ -1096,11 +1096,23 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
     let (sub, rest) = (&args[0], &args[1..]);
     match sub.as_str() {
         "request" => {
+            let size = fs.get_string("size");
+            // One variable, checked before any provider call: can this host
+            // ship a linux hands binary? On a host that cannot, refuse now
+            // with the fix instead of approving a request whose machine fails
+            // after provisioning (CR-001/CR-002). The probe is registered by
+            // pulse-runner::compute::init; without a runner it stays silent.
+            let arch = crate::compute::default_hands_arch(&size);
+            if let Some(line) = crate::hands::hands_binary_probe_line(&arch) {
+                bail!(
+                    "compute request refused before a machine: {line}\nSet PULSE_HANDS_BINARY, place pulse-linux-{arch} beside the pulse binary, or install the cross toolchain, then retry."
+                );
+            }
             let r = request_compute(
                 store(c)?,
                 &c.project,
                 &actor(c),
-                &fs.get_string("size"),
+                &size,
                 fs.get_int("hours"),
                 &fs.get_string("reason"),
             )?;
