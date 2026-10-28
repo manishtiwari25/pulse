@@ -125,17 +125,11 @@ pub(crate) fn real_path(p: impl AsRef<Path>) -> PathBuf {
     fs::canonicalize(&abs).unwrap_or(abs)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn register_project(
-    s: &pulse_store::Store,
-    path: &str,
-    name: &str,
-    remote: &str,
-    brain: bool,
-    verify_cmd: &str,
-    actor: &str,
-    slug: &str,
-) -> Result<(pulse_store::Project, bool)> {
+/// The checkout a project may stand on: `path` (a leading `~` is the home
+/// directory) resolved to its real directory, which must exist, lie outside
+/// the store and the runner's own clones under PULSE_HOME, and be a git
+/// checkout. Shared by registering a project and moving one.
+fn checkout_root(s: &pulse_store::Store, path: &str) -> Result<PathBuf> {
     let mut path = path.to_string();
     if let Some(rest) = path.strip_prefix('~')
         && let Some(home) = home::home_dir()
@@ -187,6 +181,148 @@ pub fn register_project(
             ),
         ));
     }
+    Ok(root)
+}
+
+/// The repository a remote URL names, so `git@github.com:o/r.git` and
+/// `https://github.com/o/r` count as the same remote.
+fn remote_identity(remote: &str) -> String {
+    let r = remote.trim().trim_end_matches('/');
+    let r = r.strip_suffix(".git").unwrap_or(r);
+    let r = r
+        .strip_prefix("git@")
+        .map(|rest| rest.replacen(':', "/", 1))
+        .unwrap_or_else(|| r.to_string());
+    let r = r
+        .strip_prefix("ssh://git@")
+        .or_else(|| r.strip_prefix("ssh://"))
+        .or_else(|| r.strip_prefix("https://"))
+        .or_else(|| r.strip_prefix("http://"))
+        .unwrap_or(&r)
+        .to_string();
+    r.to_ascii_lowercase()
+}
+
+/// What moving a project to another checkout changed.
+#[derive(Debug, Clone, Serialize)]
+pub struct Moved {
+    pub slug: String,
+    pub from: String,
+    pub to: String,
+    /// The remote the new checkout tracks when it differs from the one the
+    /// project had, adopted because the caller said `force`.
+    pub remote: String,
+}
+
+/// Points project `slug` at another checkout: the folder the owner moved or
+/// cloned it to. The new folder is checked like a registration (a directory,
+/// a git checkout, outside the store and the runner's clones) and must not
+/// be another project's; a checkout that tracks a different remote than the
+/// project's is refused unless `force` says it is the right one, in which
+/// case the project adopts that remote. The slug, posts, jobs and records
+/// stay; the next daemon pass finds the project present again.
+pub fn move_project(
+    s: &pulse_store::Store,
+    slug: &str,
+    path: &str,
+    force: bool,
+    actor: &str,
+) -> Result<Moved> {
+    let Some(project) = s.project(slug)? else {
+        return Err(refuse_fix(
+            2,
+            format!("No project {slug}"),
+            "only a registered project can be moved",
+            "pulse projects",
+        ));
+    };
+    if path.trim().is_empty() {
+        return Err(refuse_fix(
+            2,
+            "A project needs a folder".to_string(),
+            "the new path is the checkout the project now lives in",
+            format!("pulse move {slug} /path/to/the/checkout"),
+        ));
+    }
+    let root = checkout_root(s, path)?;
+    let to = root.display().to_string();
+    let conn = s.conn()?;
+    let taken: Option<String> = conn
+        .query_row(
+            "SELECT slug FROM projects WHERE path = ? AND slug <> ?",
+            rusqlite::params![to, slug],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(other) = taken {
+        return Err(refuse_fix(
+            2,
+            format!("{to} is already the project {other}"),
+            "two projects cannot share one checkout",
+            format!("pulse remove {other}  (or pick another folder)"),
+        ));
+    }
+    let found = git(
+        root.to_str().unwrap_or_default(),
+        &["config", "--get", "remote.origin.url"],
+    )
+    .0;
+    let differs = !project.remote.is_empty()
+        && !found.is_empty()
+        && remote_identity(&found) != remote_identity(&project.remote);
+    if differs && !force {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "{to} tracks {found}, not {slug}'s remote {}",
+                project.remote
+            ),
+            "a project's checkout should be a clone of its repository; a different remote usually means the wrong folder",
+            format!("pulse move {slug} {to} --force  (adopts {found} as the project's remote)"),
+        ));
+    }
+    let remote = if differs || project.remote.is_empty() {
+        found
+    } else {
+        project.remote.clone()
+    };
+    let default_branch = git_branch(root.to_str().unwrap_or_default());
+    let now = s.now();
+    conn.execute(
+        "UPDATE projects SET path = ?, remote = ?, default_branch = COALESCE(NULLIF(?, ''), default_branch), last_seen = ? WHERE slug = ?",
+        rusqlite::params![to, remote, default_branch, now, slug],
+    )?;
+    event(
+        s,
+        actor,
+        "project.moved",
+        slug,
+        pulse_store::Detail::json(serde_json::json!({
+            "from": project.path,
+            "to": to,
+            "remote": if differs { remote.clone() } else { String::new() },
+        }))?,
+    )?;
+    Ok(Moved {
+        slug: slug.to_string(),
+        from: project.path,
+        to,
+        remote: if differs { remote } else { String::new() },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn register_project(
+    s: &pulse_store::Store,
+    path: &str,
+    name: &str,
+    remote: &str,
+    brain: bool,
+    verify_cmd: &str,
+    actor: &str,
+    slug: &str,
+) -> Result<(pulse_store::Project, bool)> {
+    let root = checkout_root(s, path)?;
     let conn = s.conn()?;
     let existing_slug: Option<String> = conn
         .query_row(
@@ -523,6 +659,145 @@ mod tests {
 
     fn hook_err(_: &pulse_store::Store, _: &pulse_store::Project, _: &str) -> Result<()> {
         anyhow::bail!("seeding broke")
+    }
+
+    /// A project follows its checkout to a new folder: the slug and remote
+    /// stay, the old path is remembered in the event, and the guards that
+    /// registration applies (a directory, a checkout, not another project's)
+    /// apply here too; a checkout of another repository needs `force`.
+    #[test]
+    fn move_project_points_a_project_at_its_new_checkout() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        let _guard = pulse_testutil::env_lock();
+        let _previous = set_on_project_created(None);
+        let repo = git_repo();
+        let (p, _) = register_project(
+            &s,
+            &repo.path().display().to_string(),
+            "demo",
+            "git@github.com:acme/demo.git",
+            false,
+            "",
+            "alice",
+            "",
+        )
+        .unwrap();
+        let gone = "/Volumes/pulse-no-such-volume-7f3a/demo";
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ? WHERE slug = ?",
+                params![gone, p.slug],
+            )
+            .unwrap();
+        let moved_to = git_repo();
+        let new_path = real_path(moved_to.path()).display().to_string();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &new_path,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/demo",
+            ])
+            .output()
+            .unwrap();
+        let moved = move_project(&s, &p.slug, &new_path, false, "human").unwrap();
+        assert_eq!(moved.slug, p.slug);
+        assert_eq!(moved.from, gone);
+        assert_eq!(moved.to, new_path);
+        assert_eq!(moved.remote, "");
+        let now = s.project(&p.slug).unwrap().unwrap();
+        assert_eq!(now.path, new_path);
+        assert_eq!(now.remote, "git@github.com:acme/demo.git");
+        assert_eq!(now.status, "active");
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "action = 'project.moved' AND subject = ?",
+                &[&p.slug],
+            ),
+            1
+        );
+
+        // Refused: a missing folder, a folder that is no checkout, another
+        // project's checkout, an unknown slug, a checkout of another repository.
+        assert!(move_project(&s, &p.slug, "/no/such/folder-7f3a", false, "human").is_err());
+        let plain = tempfile::tempdir().unwrap();
+        let err = move_project(&s, &p.slug, plain.path().to_str().unwrap(), false, "human")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Not a git checkout"), "{err}");
+        let other_repo = git_repo();
+        let (other, _) = register_project(
+            &s,
+            &other_repo.path().display().to_string(),
+            "other",
+            "",
+            false,
+            "",
+            "alice",
+            "",
+        )
+        .unwrap();
+        let err = move_project(&s, &p.slug, &other.path, false, "human")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already the project other"), "{err}");
+        assert!(move_project(&s, "nobody", &new_path, false, "human").is_err());
+        let elsewhere = git_repo();
+        let elsewhere_path = real_path(elsewhere.path()).display().to_string();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &elsewhere_path,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/elsewhere.git",
+            ])
+            .output()
+            .unwrap();
+        let err = move_project(&s, &p.slug, &elsewhere_path, false, "human")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("tracks https://github.com/acme/elsewhere.git") && err.contains("--force"),
+            "{err}"
+        );
+        assert_eq!(s.project(&p.slug).unwrap().unwrap().path, new_path);
+        let moved = move_project(&s, &p.slug, &elsewhere_path, true, "human").unwrap();
+        assert_eq!(moved.remote, "https://github.com/acme/elsewhere.git");
+        let now = s.project(&p.slug).unwrap().unwrap();
+        assert_eq!(now.path, elsewhere_path);
+        assert_eq!(now.remote, "https://github.com/acme/elsewhere.git");
+    }
+
+    #[test]
+    fn remote_identity_ignores_the_transport_and_the_git_suffix() {
+        for (a, b) in [
+            (
+                "git@github.com:acme/demo.git",
+                "https://github.com/acme/demo",
+            ),
+            (
+                "ssh://git@github.com/acme/demo.git",
+                "https://github.com/Acme/Demo.git",
+            ),
+            (
+                "https://github.com/acme/demo/",
+                "https://github.com/acme/demo",
+            ),
+        ] {
+            assert_eq!(remote_identity(a), remote_identity(b), "{a} vs {b}");
+        }
+        assert_ne!(
+            remote_identity("https://github.com/acme/demo"),
+            remote_identity("https://github.com/acme/other")
+        );
     }
 
     #[test]

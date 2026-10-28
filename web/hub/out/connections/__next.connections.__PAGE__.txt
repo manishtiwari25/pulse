@@ -1,14 +1,14 @@
 2:"$Sreact.fragment"
-3:"/_next/static/chunks/20hd3wx435cfu.js"
+3:"/_next/static/chunks/27os38w2xal59.js"
 4:"/_next/static/chunks/3nj-3qs6be_3y.js"
 5:"/_next/static/chunks/3--h1ctn769tg.js"
-6:"/_next/static/chunks/1kt7eyhx5yvo2.js"
-7:"/_next/static/chunks/1aw2hv5n4445b.js"
-8:"/_next/static/chunks/0b1j5x5q0zrbg.js"
+6:"/_next/static/chunks/1thx16p-6-krp.js"
+7:"/_next/static/chunks/0r1nbc1j2aish.js"
+8:"/_next/static/chunks/0ipiog001e3o1.js"
 9:"/_next/static/chunks/1a_bfmh45v8z0.js"
-a:"/_next/static/chunks/1d-birohfu7zc.js"
-b:"/_next/static/chunks/2hq826fw0j7qb.js"
-c:"/_next/static/chunks/0ipiog001e3o1.js"
+a:"/_next/static/chunks/2hq826fw0j7qb.js"
+b:"/_next/static/chunks/0b1j5x5q0zrbg.js"
+c:"/_next/static/chunks/1tptxkn34_lp7.js"
 d:I[39756,["$3","$4","$5","$6","$7","$8","$9","$a","$b","$c"],"default"]
 e:I[37457,["$3","$4","$5","$6","$7","$8","$9","$a","$b","$c"],"default"]
 13:I[47257,["$3","$4","$5","$6","$7","$8","$9","$a","$b","$c"],"ClientPageRoot"]
@@ -27,7 +27,7 @@ e:I[37457,["$3","$4","$5","$6","$7","$8","$9","$a","$b","$c"],"default"]
 11:X
 12:[["children",{"s":"__PAGE__","h":160,"d":{"r":["$","$2","c",{"children":[["$","$L13",null,{"Component":"$16","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@17","$@18"]}}],[["$","script","script-0",{"src":"/_next/static/chunks/0tpf32nfakjqi.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/2b679eqc82264.js","async":true}]],["$","$L19",null,{"children":["$","$1a",null,{"name":"Next.MetadataOutlet","children":"$@1b"}]}]]}],"p":"$@1c","v":null,"s":"$11"}}]]
 1:[["children",{"s":"connections","h":64,"d":{"r":["$","$2","c",{"children":[null,["$","$Ld",null,{"parallelRouterKey":"children","template":["$","$Le",null,{}]}]]}],"p":"$@f","v":"$10","s":"$11"},"c":"$Q12"}]]
-0:{"t":{"t":{"s":"","h":16,"c":"$Q1"},"h":{"r":["$","$2","h",{"children":[null,["$","$L1e",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1, viewport-fit=cover"}],["$","meta","2",{"name":"theme-color","content":"#f3f7f6","media":"(prefers-color-scheme: light)"}],["$","meta","3",{"name":"theme-color","content":"#0f1726","media":"(prefers-color-scheme: dark)"}]]}],["$","$L20",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$1a",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"PULSE"}],["$","meta","1",{"name":"description","content":"Your console for PULSE: what waits for your answer, the tasks you gave, and what your agents are doing on every project on this machine."}],["$","meta","2",{"name":"application-name","content":"PULSE hub"}],["$","link","3",{"rel":"icon","href":"/icon.svg?icon.1p9ojcubo70wt.svg","sizes":"any","type":"image/svg+xml"}],["$","$L21","4",{}]]}]}],null]}],null]}],"p":"$@22","v":null,"s":"$11"}},"a":"$@23","u":"$@24","b":"FyjriR8pd9WxUaVrwYG-7"}
+0:{"t":{"t":{"s":"","h":16,"c":"$Q1"},"h":{"r":["$","$2","h",{"children":[null,["$","$L1e",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1, viewport-fit=cover"}],["$","meta","2",{"name":"theme-color","content":"#f3f7f6","media":"(prefers-color-scheme: light)"}],["$","meta","3",{"name":"theme-color","content":"#0f1726","media":"(prefers-color-scheme: dark)"}]]}],["$","$L20",null,{"children":[["$","div",null,{"hidden":true,"children":["$","$1a",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"PULSE"}],["$","meta","1",{"name":"description","content":"Your console for PULSE: what waits for your answer, the tasks you gave, and what your agents are doing on every project on this machine."}],["$","meta","2",{"name":"application-name","content":"PULSE hub"}],["$","link","3",{"rel":"icon","href":"/icon.svg?icon.1p9ojcubo70wt.svg","sizes":"any","type":"image/svg+xml"}],["$","$L21","4",{}]]}]}],null]}],null]}],"p":"$@22","v":null,"s":"$11"}},"a":"$@23","u":"$@24","b":"ANMVKuie94m1ajXO5GE28"}
 17:{}
 18:"$12:0:1:d:r:props:children:0:props:serverProvidedParams:params"
 1b:null

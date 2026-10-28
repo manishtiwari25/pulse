@@ -53,6 +53,7 @@ The only Markdown in this repository is this file.
   - [Credentials](#credentials)
   - [Pairing hands](#pairing-hands)
   - [Heartbeats and presence](#heartbeats-and-presence)
+  - [Moving a project](#moving-a-project)
   - [Removing projects and executors](#removing-projects-and-executors)
   - [Failed jobs and recovery](#failed-jobs-and-recovery)
   - [Lessons, briefs and peer help](#lessons-briefs-and-peer-help)
@@ -164,7 +165,15 @@ activity fold under **Details for this machine**.
   machine's folders with checkouts and registered projects marked; rename one
   from the project page's menu (`POST /api/v1/projects/<slug>/rename` with
   `{"name": ...}` - the display name the console shows, while the slug in
-  every link, job and post stays); remove one
+  every link, job and post stays); point one at the folder it now lives in
+  (**Change folder…** in the same menu, or the **Point to its folder** button
+  a project **Missing on disk** shows in its place - a folder moved, a disk
+  swapped, a clone made again; `POST /api/v1/projects/<slug>/move` with
+  `{"path": ..., "force"?: bool}`, the same as `pulse move SLUG PATH
+  [--force]`: the slug, tasks, posts and history stay, a folder that is no
+  checkout or another project's is refused, and a checkout of a different
+  repository is refused until **Use this folder anyway**, which also adopts
+  its remote); remove one
   after a preview of what deactivates, and restore a removed one from the
   picker. A checkout the runner made itself - a worker clone under
   `PULSE_HOME/work`, a fleet clone or measurement root under `PULSE_HOME/fleet`,
@@ -3520,7 +3529,13 @@ human needed. A jump past the compatible range (`next 16.3.8 -> 17.0.0`), a
 lockfile the landing does not read (`poetry.lock`, `go.sum`, `bun.lock`) or
 a registry that cannot be asked keep the human hold as before, with why in the `land.held` event, and `pulse land --project
 X --branch B` by hand still lands whatever you ask for, recording the verdict
-only. With the rule at `0` days no registry is asked and only the
+only. One exception to the major-jump hold: a branch the **security
+watcher** queued (job source `security:…`) lands past the compatible range
+when `dependencies.major_updates` is `auto` - you authorized those upgrades
+in advance, so the landing does not ask again; the `land.release-age` event
+then carries `authorized: dependencies.major_updates`. An agent's own major
+jump still waits, and a security major held under `ask` says in its hold
+note which setting would let it land. With the rule at `0` days no registry is asked and only the
 compatible-range check remains.
 
 ### Credentials
@@ -3705,6 +3720,23 @@ agent leased without a run is released the same way. A dead session
 agent simply shows as dead until it beats again. Heartbeats replace bounded
 metadata, not posts or useful-output scores; existing useful-output pruning and
 permanently retired names are unchanged.
+
+### Moving a project
+
+`pulse move <slug> <path> [--force]` points a project at the checkout it now
+lives in - the folder was moved, the disk it was on is gone, or the
+repository was cloned again elsewhere - and keeps its slug, tasks, posts,
+runs and records; the `project.moved` event remembers the old path. The
+guards are registration's: the path must exist and be a git checkout (its
+top level is taken, as `pulse init` does), may not be a checkout the runner
+made itself, and may not already be another project's. A checkout whose
+`origin` is a different repository than the project's remote is refused -
+a different remote usually means the wrong folder - unless `--force`, which
+adopts the new remote as the project's. The console's **Change folder…**
+(project page menu) and the **Point to its folder** button on a project
+marked *Missing on disk* run the same function. Nothing on disk changes,
+and jobs that failed with `cannot change to <old path>` run again as the
+watchers queue them.
 
 ### Removing projects and executors
 
@@ -4219,7 +4251,13 @@ with the lead's reason (an advisory with no fixed version is "keep
 watching"; a stale handoff is closed as such). The same guards apply as for
 proposals, and a finding the security watcher posted about a **major
 dependency upgrade** is never the lead's: the daemon skips the lead's
-`DECIDE:` on it and leaves it to you or to `dependencies.major_updates`.
+`DECIDE:` on it and leaves it to you or to `dependencies.major_updates` -
+and under `auto` the watcher answers every open major finding itself on its
+next pass, naming the job that covers it or the day the version is old
+enough (`security.auto_major`). While you are away the watcher also answers
+its own **no patched version yet** findings with the away default - keep
+watching, the update is queued the moment a fix is published and old enough
+(`security.away_default`) - so nothing of the watcher's waits on you.
 Questions marked for the owner are still answered in words (`pulse post
 answer --on`) rather than decided. Tasks are not parked either: while you are away the lead decides
 and writes its reasoning in the task's thread instead of ending with

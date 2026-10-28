@@ -551,6 +551,15 @@ export interface ProjectsPayload {
   brain: string;
 }
 
+// The answer to a project move: where it was, where it is now, and the
+// remote it adopted when the new checkout tracked another one (else "").
+export interface MovedProject {
+  slug: string;
+  from: string;
+  to: string;
+  remote: string;
+}
+
 export interface RegisterProjectInput {
   path: string;
   name?: string;
@@ -2592,6 +2601,9 @@ export const writes = {
   removeProject: (slug: string, dryRun: boolean) => post<RemovePreview>("projects/" + enc(slug) + "/remove", { dry_run: dryRun }),
   restoreProject: (slug: string) => post<InitResult>("projects/" + enc(slug) + "/restore", {}),
   renameProject: (slug: string, name: string) => post<{ slug: string; name: string; was: string }>("projects/" + enc(slug) + "/rename", { name }),
+  // `pulse move SLUG PATH [--force]`: the project follows its checkout to a new
+  // folder; force adopts a checkout that tracks another remote.
+  moveProject: (slug: string, path: string, force = false) => post<MovedProject>("projects/" + enc(slug) + "/move", force ? { path, force: true } : { path }),
   removeExecutor: (name: string, dryRun: boolean) => post<RemovePreview>("compute/executors/" + enc(name) + "/remove", { dry_run: dryRun }),
   // The owner's held-out fixtures (ADR-032): `pulse evolve setup DIR`, then one
   // write per fixture. The hub answers with counts only and never reads a fixture back.

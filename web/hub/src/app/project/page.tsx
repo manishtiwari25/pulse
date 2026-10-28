@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { MoreHorizontalIcon, PencilLineIcon, Trash2Icon } from "lucide-react";
+import { FolderInputIcon, MoreHorizontalIcon, PencilLineIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageTitle, EmptyState, SkeletonPage } from "@/components/pulse/panel";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
@@ -14,7 +14,7 @@ import { CommonsLine, ProjectCard, workingRows } from "@/components/pulse/cards"
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
-import { AddProjectButton, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
+import { AddProjectButton, MoveDialog, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
 import { AmendmentsTab, ChatTab, CleanupTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
 import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
 import { allProjects, projectPath, registeredProjects, type Org, type ProjectCardData, type ProjectGoalPayload, type ProjectsPayload, type RegisteredProject, type Task, type TasksPayload } from "@/lib/api";
@@ -75,6 +75,7 @@ function ProjectScreen() {
   const inbox = useInbox();
   const [removing, setRemoving] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [moving, setMoving] = useState(false);
 
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
@@ -159,9 +160,11 @@ function ProjectScreen() {
   const goalText = (card?.goal_preview || goal.data?.goal?.text || "").trim();
   const sub = isCommons
     ? "The shared board is for work that touches more than one project. Agents from every project post, ask and vote here."
-    : card?.brain
-      ? goalText || "PULSE's own source code. Agents here improve PULSE itself."
-      : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
+    : card && !card.present
+      ? "Its folder " + card.path + " is not on this disk, so agents cannot work on it. If it moved or was cloned again, point PULSE to the new folder."
+      : card?.brain
+        ? goalText || "PULSE's own source code. Agents here improve PULSE itself."
+        : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
   const counts: Partial<Record<ProjectCanonicalTab, number>> = card ? { "for-you": forYou, work: openTasks, board: card.threads_open } : {};
   const removed = () => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null });
 
@@ -192,23 +195,34 @@ function ProjectScreen() {
           isCommons || !card ? null : (
             <>
               {card.brain ? null : (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
-                      <MoreHorizontalIcon />
+                <>
+                  {card.present ? null : (
+                    <Button onClick={() => setMoving(true)}>
+                      <FolderInputIcon /> Point to its folder
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => setRenaming(true)}>
-                      <PencilLineIcon /> Rename project…
-                    </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
-                      <Trash2Icon /> Remove project…
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
+                        <MoreHorizontalIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuItem onSelect={() => setRenaming(true)}>
+                        <PencilLineIcon /> Rename project…
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setMoving(true)}>
+                        <FolderInputIcon /> Change folder…
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
+                        <Trash2Icon /> Remove project…
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
               )}
-              <NewTaskButton size="default" project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} />
+              <NewTaskButton size="default" variant={card.present ? "default" : "outline"} project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} />
             </>
           )
         }
@@ -243,6 +257,7 @@ function ProjectScreen() {
       <TaskSheet id={tab === "work" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
       {card && !card.brain && !isCommons ? <RemoveDialog open={removing} onOpenChange={setRemoving} kind="project" name={slug} onApplied={removed} /> : null}
       {card && !card.brain && !isCommons ? <RenameDialog open={renaming} onOpenChange={setRenaming} slug={slug} name={card.name || slug} /> : null}
+      {card && !card.brain && !isCommons ? <MoveDialog open={moving} onOpenChange={setMoving} slug={slug} name={card.name || slug} path={card.path} present={card.present} /> : null}
     </Tabs>
   );
 }

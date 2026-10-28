@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PencilLineIcon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderInputIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PencilLineIcon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,13 +13,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { showApiError } from "@/components/pulse/confirm";
 import { Disclosure, Notice } from "@/components/pulse/panel";
 import { Mono } from "@/components/pulse/who";
-import { api, enc, errorText, writes, type FoldersPayload, type InitResult, type RemovePreview } from "@/lib/api";
+import { ApiError, api, enc, errorText, writes, type FoldersPayload, type InitResult, type MovedProject, type RemovePreview } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // The project lifecycle from the console (ADR-027): register a checkout
 // (`pulse init PATH`), rename a project (its display name; the slug in every
-// URL, job and post stays), remove a project or an executor after a preview
+// URL, job and post stays), point a project at the folder it now lives in
+// (`pulse move SLUG PATH`), remove a project or an executor after a preview
 // (`pulse remove … --dry-run`, then for real), and restore an inactive
 // project. Every write goes through the hub; nothing here touches disk.
 
@@ -407,6 +408,145 @@ function RenameBody({ slug, name, busy, setBusy, onOpenChange, onRenamed }: { sl
         <Button type="submit" disabled={busy || !next || unchanged || tooLong}>
           {busy ? <Loader2Icon className="animate-spin" /> : <PencilLineIcon />}
           Rename
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
+// ----- move (change folder) -----------------------------------------------
+
+// A project follows its checkout to a new folder: the slug, posts, tasks and
+// history stay; only the path changes (`pulse move SLUG PATH`). The usual
+// way in is the "Missing on disk" badge - a folder moved, a disk swapped, a
+// clone made again elsewhere. The hub refuses a folder that is no checkout
+// or another project's, and a checkout of a different repository until the
+// owner says "use it anyway" (`--force`), which also adopts its remote.
+export function MoveDialog({ open, onOpenChange, slug, name, path, present, onMoved }: { open: boolean; onOpenChange: (o: boolean) => void; slug: string; name: string; path: string; present: boolean; onMoved?: (r: MovedProject) => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-lg">
+        {open ? <MoveBody slug={slug} name={name} path={path} present={present} busy={busy} setBusy={setBusy} onOpenChange={onOpenChange} onMoved={onMoved} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function MoveBody({ slug, name, path, present, busy, setBusy, onOpenChange, onMoved }: { slug: string; name: string; path: string; present: boolean; busy: boolean; setBusy: (b: boolean) => void; onOpenChange: (o: boolean) => void; onMoved?: (r: MovedProject) => void }) {
+  const [draft, setDraft] = useState("");
+  const [browsing, setBrowsing] = useState(false);
+  // The refusal that `force` answers: the folder is a checkout of another repository.
+  const [otherRemote, setOtherRemote] = useState<{ path: string; why: string } | null>(null);
+  const next = draft.trim();
+  const valid = next.length > 0 && pathLooksAbsolute(next);
+  const unchanged = next === path;
+  const label = name || slug;
+
+  const apply = async (force: boolean) => {
+    if (!valid || unchanged) return;
+    setBusy(true);
+    const id = toast.loading("Pointing " + slug + " at " + next + "…");
+    try {
+      const r = await writes.moveProject(slug, next, force);
+      toast.success(label + " now lives at " + r.to + "." + (r.remote ? " Its remote is now " + r.remote + "." : ""), { id });
+      invalidate();
+      onOpenChange(false);
+      onMoved?.(r);
+    } catch (e) {
+      toast.dismiss(id);
+      if (!force && e instanceof ApiError && e.fix.includes("--force")) {
+        setOtherRemote({ path: next, why: e.why || e.message });
+      } else {
+        setOtherRemote(null);
+        showApiError(e, slug + " wasn't moved");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="contents"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void apply(false);
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle className="anywhere">{"Change the folder of " + label}</DialogTitle>
+        <DialogDescription className="anywhere">
+          {present ? (
+            <>
+              PULSE works on this project in <Mono>{path}</Mono>. Pick the folder it should use from now on. Its tasks, posts and history stay with the project.
+            </>
+          ) : (
+            <>
+              PULSE last saw this project at <Mono>{path}</Mono>, and that folder is not on this disk. Pick the folder it lives in now - the same checkout moved, or cloned again - and its tasks, posts and history stay with it.
+            </>
+          )}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-1.5">
+        <Label htmlFor="mv-path">New folder</Label>
+        <div className="flex gap-2">
+          <Input
+            id="mv-path"
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setOtherRemote(null);
+            }}
+            placeholder={present ? path : "/Users/you/src/" + slug}
+            className="min-w-0 flex-1 font-mono text-[12.5px]"
+            autoFocus
+            spellCheck={false}
+            disabled={busy}
+          />
+          <Button type="button" variant={browsing ? "secondary" : "outline"} onClick={() => setBrowsing((b) => !b)} aria-pressed={browsing} aria-controls="mv-browser" disabled={busy}>
+            <FolderSearchIcon /> Browse
+          </Button>
+        </div>
+        <p className="text-[13px] text-muted-foreground">The full path, starting with / or ~. Or press Browse to find it.</p>
+        {browsing ? (
+          <FolderBrowser
+            id="mv-browser"
+            start={valid ? next : present ? path : ""}
+            onPick={(p) => {
+              setDraft(p);
+              setOtherRemote(null);
+              setBrowsing(false);
+            }}
+            onClose={() => setBrowsing(false)}
+          />
+        ) : null}
+        {unchanged && next ? <p className="text-[13px] text-muted-foreground">That is the folder PULSE already uses.</p> : null}
+      </div>
+      {otherRemote && otherRemote.path === next ? (
+        <Notice tone="warn">
+          <p className="font-medium">This folder is a checkout of another repository.</p>
+          <p className="mt-1 text-muted-foreground">{otherRemote.why}</p>
+          <p className="mt-2 text-muted-foreground">If it really is where {label} lives now, PULSE can use it and take over its remote.</p>
+          <Button type="button" variant="outline" size="sm" className="mt-2.5" disabled={busy} onClick={() => void apply(true)}>
+            {busy ? <Loader2Icon className="animate-spin" /> : <FolderInputIcon />}
+            Use this folder anyway
+          </Button>
+        </Notice>
+      ) : null}
+      <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5 text-[13px] text-muted-foreground">
+        <p>
+          Run <Mono>{"pulse move " + slug + " " + (valid ? next : "/path/to/the/checkout")}</Mono>. It does the same thing.
+        </p>
+      </Disclosure>
+      <DialogFooter className="items-center gap-2">
+        {next && !valid ? <span className="mr-auto text-[13px] text-bad">Start the path with / or ~.</span> : null}
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+          {present ? "Keep the current folder" : "Not now"}
+        </Button>
+        <Button type="submit" disabled={busy || !valid || unchanged}>
+          {busy ? <Loader2Icon className="animate-spin" /> : <FolderInputIcon />}
+          Use this folder
         </Button>
       </DialogFooter>
     </form>

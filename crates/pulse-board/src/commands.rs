@@ -39,6 +39,7 @@ pub fn register_commands() {
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"pulse decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
         cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
         cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"pulse init [PATH] [--name N] [--remote URL] [--verify CMD] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
+        cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"pulse move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"pulse export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
         cli_register(Command { name:"import".into(), group:"records".into(), summary:"register the projects of a JSON registry (the pre-store ~/.pulse/projects.json)".into(), usage:"pulse import --registry PATH".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_import, flags:Some(import_flags) });
         cli_register(Command { name:"remove".into(), group:"human".into(), summary:"deactivate or forget a project, retire an executor, or remove duplicate system findings".into(), usage:"pulse remove project SLUG [--dry-run] [--yes] [--json]\n       pulse remove project SLUG --forget [--dry-run] [--yes] [--json]  (deletes an inactive project whose checkout is gone, with every row it left)\n       pulse remove executor NAME [--dry-run] [--yes] [--json]   (the old spelling was: pulse executor remove NAME)\n       pulse remove duplicate-findings [--project SLUG] [--apply] [--yes] [--json]\n       pulse remove service                                     (the daemon's user service; today: pulse service uninstall)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_remove, flags:Some(remove_flags) });
@@ -181,6 +182,13 @@ fn init_flags(fs: &mut FlagSet) {
         "brain",
         false,
         "this checkout is the PULSE framework itself",
+    );
+}
+fn move_flags(fs: &mut FlagSet) {
+    fs.bool_var(
+        "force",
+        false,
+        "use a checkout that tracks another remote, which the project then adopts",
     );
 }
 fn export_flags(fs: &mut FlagSet) {
@@ -981,6 +989,25 @@ fn run_init(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             )?;
         }
         writeln!(c.out, "store: {}", r.store)?;
+    }
+    Ok(())
+}
+fn run_move(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    let [slug, path] = args else {
+        return Err(usage("move", "SLUG and PATH"));
+    };
+    let moved = move_project(store(c)?, slug, path, fs.get_bool("force"), &actor(c))?;
+    if c.json {
+        write_json(&mut c.out, &moved)?
+    } else {
+        writeln!(
+            c.out,
+            "moved project {} from {} to {}",
+            moved.slug, moved.from, moved.to
+        )?;
+        if !moved.remote.is_empty() {
+            writeln!(c.out, "remote is now {}", moved.remote)?;
+        }
     }
     Ok(())
 }

@@ -46,9 +46,44 @@ impl Handler {
         match parts[2].as_str() {
             "remove" => self.addition_project_remove(w, r, parts[1].clone()),
             "rename" => self.addition_project_rename(w, r, parts[1].clone()),
+            "move" => self.addition_project_move(w, r, parts[1].clone()),
             _ => self.addition_project_restore(w, r, parts[1].clone()),
         }
         true
+    }
+    // POST /api/v1/projects/<slug>/move {"path": "...", "force": bool}: the
+    // checkout the project now lives in, for a folder the owner moved or
+    // cloned again; the slug and everything filed under it stay. A folder
+    // that tracks another remote is refused unless `force` says it is the
+    // right one.
+    pub(crate) fn addition_project_move(
+        &self,
+        w: &mut crate::httpx::ResponseWriter,
+        r: &crate::httpx::Request,
+        slug: String,
+    ) {
+        let (payload, ok) = crate::server::read_payload(w, r);
+        if !ok {
+            return;
+        }
+        let (path, ok) = crate::addition_string(w, &payload, "path", true);
+        if !ok {
+            return;
+        }
+        let force = payload
+            .get("force")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let _lock = crate::additions::ADDITION_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        match pulse_board::move_project(store, &slug, &path, force, pulse_store::HUMAN_AGENT) {
+            Ok(moved) => crate::server::write_json(w, 200, go_value(&moved)),
+            Err(err) => crate::addition_failure(w, err.to_string()),
+        }
     }
     // POST /api/v1/projects/<slug>/rename {"name": "..."}: the project's
     // display name, shown wherever the console names the project; the slug
@@ -368,7 +403,10 @@ impl Handler {
 pub(crate) fn lifecycle_route(parts: Vec<String>) -> bool {
     match parts.len() {
         1 => true,
-        3 => matches!(parts[2].as_str(), "remove" | "restore" | "rename" | "goal"),
+        3 => matches!(
+            parts[2].as_str(),
+            "remove" | "restore" | "rename" | "move" | "goal"
+        ),
         4 => parts[2] == "goal" && parts[3] == "review",
         _ => false,
     }
@@ -665,6 +703,170 @@ mod tests {
             http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/rename"), "");
         assert_eq!(status, 405);
         assert_eq!(s.project(&slug).unwrap().unwrap().name, "Distillery (prod)");
+    }
+
+    /// A project whose checkout the owner moved is pointed at the new folder
+    /// from the console: the slug and its history stay, a folder that is
+    /// another project's or tracks another remote is refused, and `force`
+    /// adopts a different remote on purpose.
+    #[test]
+    fn a_project_is_moved_to_another_checkout_from_the_console() {
+        let _serial = crate::test_helpers::serial();
+        let (s, slug) = starter_store();
+        let h = http::handler(&s);
+        let was = s.project(&slug).unwrap().unwrap().path;
+        let gone = "/Volumes/pulse-no-such-volume-7f3a/seeded";
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?, remote = 'git@github.com:acme/seeded.git' WHERE slug = ?",
+                rusqlite::params![gone, slug],
+            )
+            .unwrap();
+        // The new checkout tracks the same repository over https.
+        let again = lifecycle_repo();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &again,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/seeded",
+            ])
+            .output()
+            .unwrap();
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            &format!(r#"{{"path":"{again}"}}"#),
+        );
+        assert_eq!(status, 200, "move: {result:?}");
+        assert_eq!(result["slug"], slug);
+        assert_eq!(result["from"], gone);
+        assert_eq!(
+            result["remote"], "",
+            "the same repository: no remote change"
+        );
+        let project = s.project(&slug).unwrap().unwrap();
+        assert_eq!(project.path, result["to"].as_str().unwrap());
+        assert_ne!(project.path, was);
+        assert_eq!(project.remote, "git@github.com:acme/seeded.git");
+        assert_eq!(project.slug, slug, "the slug is the id and never moves");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        assert_eq!(status, 200);
+        assert_eq!(result["projects"][0]["path"], project.path);
+        let noted: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM events WHERE action='project.moved' AND subject=?",
+                [&slug],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(noted, 1);
+
+        // Another project's folder, a folder that is no checkout, a missing
+        // path and an unknown project are refused; so is a checkout of
+        // another repository, until `force` says it is the right one.
+        let other = pulse_board::add_project(
+            &s,
+            &lifecycle_repo(),
+            "Other",
+            "",
+            false,
+            "",
+            "human",
+            "other",
+        )
+        .unwrap();
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            &format!(r#"{{"path":"{}"}}"#, other.path),
+        );
+        assert_ne!(status, 200, "{result:?}");
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("already the project other"),
+            "{result:?}"
+        );
+        let plain = tempfile::tempdir().unwrap();
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            &format!(r#"{{"path":"{}"}}"#, plain.path().display()),
+        );
+        assert_ne!(status, 200, "{result:?}");
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Not a git checkout"),
+            "{result:?}"
+        );
+        let (status, _) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            r#"{"path":""}"#,
+        );
+        assert_eq!(status, 400);
+        let (status, _) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/projects/nobody/move",
+            r#"{"path":"/tmp"}"#,
+        );
+        assert_ne!(status, 200);
+        let elsewhere = lifecycle_repo();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &elsewhere,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/elsewhere.git",
+            ])
+            .output()
+            .unwrap();
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            &format!(r#"{{"path":"{elsewhere}"}}"#),
+        );
+        assert_ne!(status, 200, "{result:?}");
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("tracks https://github.com/acme/elsewhere.git"),
+            "{result:?}"
+        );
+        assert_eq!(s.project(&slug).unwrap().unwrap().path, project.path);
+        let (status, result) = http::additions_request(
+            h,
+            "POST",
+            &format!("/api/v1/projects/{slug}/move"),
+            &format!(r#"{{"path":"{elsewhere}","force":true}}"#),
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["remote"], "https://github.com/acme/elsewhere.git");
+        let project = s.project(&slug).unwrap().unwrap();
+        assert_eq!(project.remote, "https://github.com/acme/elsewhere.git");
+        assert!(
+            project.path.ends_with(&elsewhere) || project.path == elsewhere,
+            "{}",
+            project.path
+        );
     }
 
     fn assert_evolution_shape(data: &crate::server::JsonMap) {
