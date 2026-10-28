@@ -589,7 +589,13 @@ console and lead routing use the same flag, and the console's For you inbox
 (and `GET /api/v1/questions`, per project `GET /api/v1/projects/<slug>/questions`)
 lists every marked question that is still open - not decided, not answered by
 a later `answer` in its thread, its thread not closed - with Yes / No that
-record a `pulse decide` on the post. Vote, evidence, in-flight job and
+record a `pulse decide` on the post. A marked `finding`, `handoff` or
+`suggestion` sits in the same inbox (the row carries the post's `kind`; the
+card says "Your call, from <agent>"), retired only by a decision or an
+`answer` on the post itself, since its thread is long-lived; when the body
+carries a `Yes: ...` and a `No: ...` line, those words label the two buttons
+("Upgrade it" / "Leave it to me"), and the owner's yes queues the job that
+acts on the post, as for any decided proposal. Vote, evidence, in-flight job and
 owner-only path gates still apply independently. Questions the daemon or the
 evolution loop posts (its "Evolution stopped; owner review needed" gate) are
 asks for the owner by construction: the planner never sends a worker to answer
@@ -1846,6 +1852,7 @@ record, read with `pulse record show WF-evolve`.
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
+| `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
 | `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age, and a landing that bumps a lockfile is held until every new version it pins is this old. `0` turns the wait off. |
 | `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
@@ -3465,14 +3472,22 @@ eligible (`security.waiting`) and queues it on the first pass after that.
 Alerts a job already covers - queued, running, or finished within the last
 24 hours, while its branch may still be landing - are not queued again.
 What the watcher cannot take it hands to you, once each, as a `finding` marked
-for the owner on the project's `security/dependabot` thread: a fix that
+for the owner on the project's `security/dependabot` thread, where it waits in
+the console's For you inbox with two buttons: a fix that
 needs a **major upgrade** (`security.major`; a Tier 2 change by the
-constitution, yours by hand or through an ADR), an alert whose advisory
-names **no patched version** yet (`security.unfixable`; the update is queued
-the moment one is published and old enough), an **ecosystem the watcher does
+constitution, so the finding asks "Yes: Upgrade it / No: Leave it to me" and
+your yes queues the upgrade as a security job - or set
+`dependencies.major_updates auto` and the watcher queues major upgrades like
+any other fix, to the newest eligible version of the patched line), an alert
+whose advisory names **no patched version** yet (`security.unfixable`, "Yes:
+Look for a way around it / No: Keep watching"; the update is queued the
+moment one is published and old enough), an **ecosystem the watcher does
 not read** (`security.unsupported`: it reads npm, Cargo, pip, Go and
 RubyGems), and alerts **switched off** on GitHub or unreadable to the
 signed-in `gh` account (`security.disabled`, with the setting to turn on).
+When an alert behind a finding is closed on GitHub - fixed by hand, dismissed,
+or gone with the dependency - the watcher answers the finding itself
+(`security.closed`) so nothing stale waits for you.
 `dependencies.security_updates off` stops the watcher; the watcher's memory
 per project is the `meta` row `dependabot:<slug>`.
 

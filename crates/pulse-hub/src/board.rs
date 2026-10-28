@@ -705,15 +705,17 @@ impl BoardData {
         }
     }
 
-    /// Questions that wait for the owner: posts marked `for_owner` and the
-    /// evolution loop's stop questions (asks for the owner by construction).
-    /// A question is open until the owner decides it, an answer lands on it or
-    /// later in its thread, or its thread closes. A stop question ignores a
-    /// closure dated before it: decisions close the loop-gate thread, and the
-    /// loop keeps posting new stops into it. Card-needed asks are the
-    /// planner's own work since ADR-044 and never wait for the owner.
-    /// `db_posts` holds the store posts the rows were built from: the owner
-    /// mark and the body live there, not in the rows.
+    /// Questions that wait for the owner: posts marked `for_owner` - a
+    /// question, or a finding, handoff or suggestion an agent addressed to
+    /// the owner, such as the security watcher's "a major upgrade: your
+    /// call" - and the evolution loop's stop questions (asks for the owner by
+    /// construction). One is open until the owner decides it, an answer
+    /// lands on it or later in its thread, or its thread closes. A stop
+    /// question ignores a closure dated before it: decisions close the
+    /// loop-gate thread, and the loop keeps posting new stops into it.
+    /// Card-needed asks are the planner's own work since ADR-044 and never
+    /// wait for the owner. `db_posts` holds the store posts the rows were
+    /// built from: the owner mark and the body live there, not in the rows.
     pub(crate) fn collect_owner_questions(
         &mut self,
         decided: &BTreeSet<String>,
@@ -747,19 +749,24 @@ impl BoardData {
         for (key, thread_posts) in &by_thread {
             let (status, last) = threads.get(key).cloned().unwrap_or_default();
             for (i, post) in thread_posts.iter().enumerate() {
-                if str_key(post, "kind") != "question" || str_key(post, "area") == "jobs" {
+                let kind = str_key(post, "kind");
+                if !OWNER_ASK_KINDS.contains(&kind.as_str()) || str_key(post, "area") == "jobs" {
                     continue;
                 }
-                let stop = str_key(post, "summary") == pulse_store::EVOLUTION_STOP_SUMMARY;
+                let stop = kind == "question"
+                    && str_key(post, "summary") == pulse_store::EVOLUTION_STOP_SUMMARY;
                 let id = str_key(post, "id");
                 let stored = db_posts.get(&id);
                 let for_owner = stored.is_some_and(|p| p.for_owner);
                 if !(stop || for_owner) {
                     continue;
                 }
+                // A later answer in the thread settles a question; a
+                // finding on a running thread (one security thread holds
+                // many) only its own answer or the owner's decision.
                 if decided.contains(&id)
                     || answered.contains(&id)
-                    || later_hub_answer_date(thread_posts, i)
+                    || (kind == "question" && later_hub_answer_date(thread_posts, i))
                 {
                     continue;
                 }
@@ -786,7 +793,7 @@ impl BoardData {
                         json!(key),
                         json!(str_key(post, "area")),
                         json!(str_key(post, "thread")),
-                        json!("question"),
+                        json!(kind),
                         json!(str_key(post, "agent")),
                         json!(str_key(post, "name")),
                         json!(str_key(post, "session")),
@@ -1237,6 +1244,11 @@ pub(crate) fn later_hub_answer_date(posts: &[&PostRow], index: usize) -> bool {
         .iter()
         .any(|post| str_key(post, "kind") == "answer" && str_key(post, "date") > date)
 }
+
+/// The post kinds that wait for the owner when marked `for_owner`: an ask,
+/// or a report that ends in the owner's call. Answers, results, votes and
+/// opinions never do.
+pub(crate) const OWNER_ASK_KINDS: &[&str] = &["question", "finding", "handoff", "suggestion"];
 
 /// The posts of a project the owner (or the lead on the owner's behalf) has
 /// already decided; a decided question no longer waits for anyone.
@@ -2110,6 +2122,50 @@ mod tests {
             "",
             "2026-09-06T08:09:00Z",
         );
+        // A finding addressed to the owner waits too (the security
+        // watcher's "a major upgrade: your call"); one for the agents does
+        // not. A later answer on a sibling finding of the same running
+        // thread settles only that sibling.
+        let major = post(
+            "finding",
+            "dependabot",
+            true,
+            "next needs 17.0.0 to fix #20, a major upgrade from 16.3.8: your call",
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\n\nYes queues the upgrade.",
+            "",
+            "",
+            "2026-09-06T07:00:00Z",
+        );
+        let sibling = post(
+            "finding",
+            "dependabot",
+            true,
+            "Dependabot #30: no patched version of hono exists yet",
+            "",
+            "",
+            "",
+            "2026-09-06T07:01:00Z",
+        );
+        post(
+            "answer",
+            "dependabot",
+            false,
+            "Dependabot #30 closed on GitHub; nothing to decide",
+            "",
+            &sibling.id,
+            "",
+            "2026-09-06T07:02:00Z",
+        );
+        post(
+            "finding",
+            "dependabot",
+            false,
+            "Alerts read: 3 open",
+            "",
+            "",
+            "",
+            "2026-09-06T07:03:00Z",
+        );
 
         let h = http::handler(&s);
         let data = h.snapshot("one", "").unwrap();
@@ -2120,14 +2176,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec![gate.id.clone(), ask.id.clone()],
+            vec![gate.id.clone(), ask.id.clone(), major.id.clone()],
             "{:#?}",
             data.questions
         );
         assert_eq!(data.questions[0]["stop"], true);
         assert_eq!(data.questions[0]["thread_key"], "evolution/loop-gate");
         assert_eq!(data.questions[1]["stop"], false);
+        assert_eq!(data.questions[1]["kind"], "question");
         assert_eq!(data.questions[1]["body"], "Pick one.");
+        assert_eq!(data.questions[2]["kind"], "finding");
+        assert_eq!(data.questions[2]["stop"], false);
+        assert_eq!(data.questions[2]["thread_key"], "api/dependabot");
 
         let view = crate::read::ProjectView {
             project: s.project("one").unwrap().unwrap(),
@@ -2137,16 +2197,16 @@ mod tests {
             mark: String::new(),
         };
         let summary = h.summary(&view);
-        assert_eq!(summary["owner_questions"], 2);
+        assert_eq!(summary["owner_questions"], 3);
         let org = h.org(std::slice::from_ref(&view));
-        assert_eq!(org["totals"]["owner_questions"], 2);
+        assert_eq!(org["totals"]["owner_questions"], 3);
         let rows = org["questions"].as_array().unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0]["slug"], "one");
         assert_eq!(rows[0]["base"], "/p/one");
         assert!(org["projects"][0].get("questions").is_none());
         let flat = crate::read::org_questions(std::slice::from_ref(&view));
-        assert_eq!(flat.len(), 2);
+        assert_eq!(flat.len(), 3);
         assert_eq!(str_key(&flat[0], "id"), gate.id);
 
         let (status, _, raw) = crate::test_helpers_http::request(
@@ -2158,10 +2218,17 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         let listed: Vec<JsonMap> = serde_json::from_str(&raw).unwrap();
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
 
         pulse_board::decide(&s, &ask.id, "yes", "the first one", "human").unwrap();
         pulse_board::decide(&s, &gate.id, "yes", "reviewed", "human").unwrap();
+        // The owner's yes on the finding queues the job that acts on it.
+        let decided = pulse_board::decide(&s, &major.id, "yes", "go ahead", "human").unwrap();
+        let job = decided.job.expect("a yes on a finding queues its job");
+        assert!(
+            job.title
+                .starts_with("Act on the human's yes: next needs 17.0.0")
+        );
         let data = h.snapshot("one", "").unwrap();
         assert!(data.questions.is_empty(), "{:#?}", data.questions);
     }

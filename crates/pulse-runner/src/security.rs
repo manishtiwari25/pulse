@@ -8,8 +8,13 @@
 //! stays within the installed version's compatible range. A fix that needs
 //! a major upgrade, an alert with no patched version, an ecosystem the
 //! watcher does not read, or alerts switched off on GitHub go to the owner
-//! as a finding, once. The watcher's memory per project is the `meta` row
-//! `dependabot:<slug>`.
+//! as a finding, once - a finding the hub lists as waiting for the owner,
+//! with a Yes and a No whose meaning the finding spells out (`Yes:` and
+//! `No:` lines); the owner's yes queues the job that acts on it. With
+//! `dependencies.major_updates = auto` a major upgrade is not asked about
+//! but queued like any other fix, the project's checks deciding. A finding
+//! whose alert has closed meanwhile is answered by the watcher itself. The
+//! watcher's memory per project is the `meta` row `dependabot:<slug>`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -18,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::release_age::{
-    self, ALERT_CHECK_MINUTES, Candidate, Ecosystem, HttpRegistry, Registry, SECURITY_UPDATES,
-    cmp_versions, compat_key,
+    self, ALERT_CHECK_MINUTES, Candidate, Ecosystem, HttpRegistry, MAJOR_UPDATES, Registry,
+    SECURITY_UPDATES, cmp_versions, compat_key,
 };
 use crate::util::{event_at, must_rows, plus_hours, plus_minutes, trunc};
 
@@ -320,6 +325,9 @@ struct Fix {
     direct: bool,
     /// (alert number, severity, GHSA id), by number.
     alerts: Vec<(i64, String, String)>,
+    /// The target is outside the installed version's compatible range: the
+    /// owner's `dependencies.major_updates = auto` allowed it.
+    major: bool,
 }
 
 impl Fix {
@@ -388,6 +396,11 @@ fn job_brief(
         numbers.len(),
         crate::util::plural(numbers.len() as i32, "open alert"),
     ));
+    if fixes.iter().any(|f| f.major) {
+        b.push(format!(
+            "A line marked *major upgrade* leaves the compatible range: the owner allowed that in advance (`{MAJOR_UPDATES} = auto`). For such a package read its release notes for the majors crossed, make the code changes the new major needs (renamed options, dropped or moved APIs, new defaults) with a test where behaviour changed, and let the project's checks decide. When they cannot be made to pass within this job, change nothing, and finish with `SUMMARY: blocked: <what the new major needs>` so the owner hears it."
+        ));
+    }
     b.push(String::new());
     b.push(format!("Packages ({}):", eco.label()));
     for f in fixes {
@@ -407,8 +420,9 @@ fn job_brief(
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let major = if f.major { ", major upgrade" } else { "" };
         b.push(format!(
-            "- {} {} -> {} (published {}{role}), fixes {alerts}",
+            "- {} {} -> {} (published {}{role}{major}), fixes {alerts}",
             f.name,
             f.installed.join(" and "),
             f.target.version,
@@ -660,6 +674,7 @@ pub(crate) fn tend_dependency_alerts_with(
                     actor,
                     reg,
                     min_days: release_age::min_release_age_days(s),
+                    auto_major: s.setting(MAJOR_UPDATES, "ask") == "auto",
                     watch: &mut watch,
                     lines: &mut lines,
                 };
@@ -725,6 +740,8 @@ struct Pass<'a> {
     actor: &'a str,
     reg: &'a dyn Registry,
     min_days: i32,
+    /// `dependencies.major_updates = auto`: a major upgrade is queued, not asked.
+    auto_major: bool,
     watch: &'a mut Watch,
     lines: &'a mut Vec<String>,
 }
@@ -733,6 +750,7 @@ impl Pass<'_> {
     fn run(&mut self, alerts: Vec<Alert>) {
         let numbers: BTreeSet<i64> = alerts.iter().map(|a| a.number).collect();
         let numbers: Vec<i64> = numbers.into_iter().collect();
+        self.close_findings_of_closed_alerts(&numbers);
         if numbers != self.watch.alerts {
             event_at(
                 self.conn,
@@ -759,6 +777,83 @@ impl Pass<'_> {
         self.watch.waiting.retain(|m, _| manifests.contains(m));
         for (manifest, group) in by_manifest {
             self.manifest(&manifest, group);
+        }
+    }
+
+    /// Answers the findings about alerts that are no longer open - the
+    /// owner upgraded by hand or dismissed them on GitHub - so the hub stops
+    /// listing them as waiting for the owner; a finding about a major
+    /// upgrade may be posted again should its alert come back.
+    fn close_findings_of_closed_alerts(&mut self, open: &[i64]) {
+        let stale = must_rows(
+            self.conn,
+            "SELECT e.action, e.detail, p.id AS post, p.summary FROM events e JOIN posts p ON p.id = json_extract(e.detail, '$.post') \
+             WHERE e.action IN ('security.major', 'security.unfixable') AND e.subject = ? \
+               AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
+             ORDER BY e.seq",
+            &[&self.slug],
+        );
+        for row in stale {
+            let detail = crate::util::json_map(&row.str("detail"));
+            let number = detail.get("number").and_then(Value::as_i64).unwrap_or(-1);
+            if open.contains(&number) {
+                continue;
+            }
+            let post = row.str("post");
+            let body = format!(
+                "Dependabot #{number} is no longer open on GitHub - fixed by hand or dismissed - so there is nothing left to decide here. Pulse keeps watching the repository's alerts."
+            );
+            match crate::board::create_post(
+                self.s,
+                self.now.to_string(),
+                crate::board::PostOpts {
+                    kind: "answer".into(),
+                    project: self.slug.to_string(),
+                    area: BOARD_AREA.into(),
+                    thread: BOARD_THREAD.into(),
+                    summary: trunc(
+                        &format!("Dependabot #{number} closed on GitHub; nothing to decide"),
+                        236,
+                    ),
+                    body,
+                    on: post.clone(),
+                    agent: crate::board::actor_agent(self.s, self.actor.to_string()),
+                    date: self.now.to_string(),
+                    ..Default::default()
+                },
+            ) {
+                Ok(answer) => {
+                    if row.str("action") == "security.major" {
+                        let key = format!(
+                            "major:{}:{}",
+                            detail
+                                .get("package")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                            detail.get("to").and_then(Value::as_str).unwrap_or_default()
+                        );
+                        self.watch.told.retain(|t| *t != key);
+                    }
+                    event_at(
+                        self.conn,
+                        self.now,
+                        self.actor,
+                        "security.closed",
+                        self.slug,
+                        json!({"repo": self.repo, "number": number, "post": post, "answer": answer.str("id")}),
+                    );
+                    self.lines.push(format!(
+                        "{}: Dependabot #{number} closed on GitHub; answered the finding {post}",
+                        self.slug
+                    ));
+                }
+                Err(e) => self.lines.push(format!(
+                    "{}: finding {post} of the closed #{number} not answered: {}",
+                    self.slug,
+                    crate::run::err_message(&e)
+                )),
+            }
         }
     }
 
@@ -797,6 +892,10 @@ impl Pass<'_> {
             let pinned = pinned_versions(&self.root, manifest, &name);
             // Fixable alerts grouped by the compatible range of the copy they hit.
             let mut lines: BTreeMap<(u64, u64), (Vec<String>, Vec<Alert>)> = BTreeMap::new();
+            // Alerts only a major upgrade fixes, with the installed version
+            // they hit and the first patched one, when the owner lets the
+            // watcher queue those.
+            let mut majors: Vec<(Alert, String, String)> = Vec::new();
             for a in alerts {
                 let Some(patched) = a.first_patched.clone() else {
                     self.unfixable(manifest, &a);
@@ -823,7 +922,11 @@ impl Pass<'_> {
                     .cloned()
                     .unwrap_or_default();
                 if compat_key(&patched) != compat_key(&current) {
-                    self.major(manifest, &a, &current, &patched);
+                    if self.auto_major {
+                        majors.push((a, current, patched));
+                    } else {
+                        self.major(manifest, &a, &current, &patched);
+                    }
                     continue;
                 }
                 let entry = lines.entry(compat_key(&current)).or_default();
@@ -834,7 +937,22 @@ impl Pass<'_> {
                 }
                 entry.1.push(a);
             }
-            for (_, (mut installed, alerts)) in lines {
+            let mut ranges: Vec<(Vec<String>, Vec<Alert>, bool)> = lines
+                .into_values()
+                .map(|(installed, alerts)| (installed, alerts, false))
+                .collect();
+            if !majors.is_empty() {
+                let mut installed: Vec<String> = Vec::new();
+                let mut alerts = Vec::new();
+                for (a, current, _) in majors {
+                    if !installed.contains(&current) {
+                        installed.push(current);
+                    }
+                    alerts.push(a);
+                }
+                ranges.push((installed, alerts, true));
+            }
+            for (mut installed, alerts, major) in ranges {
                 installed.sort_by(|a, b| cmp_versions(a, b));
                 let current = installed.last().cloned().unwrap_or_default();
                 let floor = alerts
@@ -842,12 +960,19 @@ impl Pass<'_> {
                     .filter_map(|a| a.first_patched.clone())
                     .max_by(|a, b| cmp_versions(a, b))
                     .unwrap_or_default();
+                // A major upgrade looks for the newest version in the
+                // patched version's range, not the installed one's.
+                let anchor = if major {
+                    floor.clone()
+                } else {
+                    current.clone()
+                };
                 match release_age::newest_eligible(
                     self.s,
                     self.reg,
                     eco,
                     &name,
-                    &current,
+                    &anchor,
                     &floor,
                     self.now,
                     self.min_days,
@@ -873,6 +998,7 @@ impl Pass<'_> {
                             target,
                             direct,
                             alerts: hits,
+                            major,
                         });
                     }
                     Ok(None) => {
@@ -979,8 +1105,8 @@ impl Pass<'_> {
             a.number, a.severity, a.ghsa, a.name
         );
         let body = format!(
-            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Pulse queues the update the moment one is published and at least {} days old.",
-            a.name, self.repo, a.range, self.min_days
+            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Pulse queues the update the moment one is published and at least {} days old.\n\nYes: Look for a way around it\nNo: Keep watching\n\nYes queues a job that looks for a replacement or a safe pin for {} within the project's checks and reports what it finds; No leaves it to the advisory. Either way the alert can be dismissed on GitHub; pulse answers this finding itself once the alert closes.",
+            a.name, self.repo, a.range, self.min_days, a.name
         );
         if let Some(post) = self.tell(summary, body) {
             event_at(
@@ -1007,8 +1133,8 @@ impl Pass<'_> {
             a.name, a.number
         );
         let body = format!(
-            "Dependabot #{} ({}, {}) in {manifest} of {}: the first patched version of {} is {patched}, outside the compatible range of the installed {current}. Pulse adopts patched versions within the installed major (minor below 1.0) on its own; a major upgrade is a Tier 2 change for a human. Upgrade it by hand or through an ADR, or dismiss the alert on GitHub.",
-            a.number, a.severity, a.ghsa, self.repo, a.name
+            "Dependabot #{} ({}, {}) in {manifest} of {}: the first patched version of {} is {patched}, outside the compatible range of the installed {current}. Pulse adopts patched versions within the installed major (minor below 1.0) on its own; a major upgrade is yours to allow.\n\nYes: Upgrade it\nNo: Leave it to me\n\nYes queues a job that moves {} to the newest {patched}-range version at least {} days old, makes the code changes the new major needs, and lands only when the project's checks pass; No leaves it to you - upgrade by hand or dismiss the alert on GitHub, and pulse answers this finding itself once the alert closes. `pulse settings set {MAJOR_UPDATES} auto` lets pulse queue every such upgrade without asking.",
+            a.number, a.severity, a.ghsa, self.repo, a.name, a.name, self.min_days
         );
         if let Some(post) = self.tell(summary, body) {
             event_at(
@@ -1341,7 +1467,7 @@ mod tests {
     fn owner_findings(s: &pulse_store::Store) -> Vec<Row> {
         must_rows(
             &s.conn().unwrap(),
-            "SELECT summary, body, extra, kind, area, thread FROM posts WHERE project = 'proj' AND area = 'security' ORDER BY id",
+            "SELECT id, summary, body, extra, kind, area, thread FROM posts WHERE project = 'proj' AND area = 'security' AND kind <> 'answer' ORDER BY id",
             &[],
         )
     }
@@ -1723,12 +1849,159 @@ mod tests {
         assert_eq!(events(&s, "security.unfixable").len(), 1);
         assert_eq!(events(&s, "security.unsupported").len(), 1);
         assert_eq!(lines.len(), 3, "{lines:?}");
+        // The finding names what Yes and No do, for the hub's buttons.
+        let major = posts
+            .iter()
+            .find(|p| p.str("summary").starts_with("next needs 17.0.0"))
+            .unwrap();
+        assert!(
+            major
+                .str("body")
+                .contains("\nYes: Upgrade it\nNo: Leave it to me\n")
+                && major.str("body").contains(MAJOR_UPDATES),
+            "{}",
+            major.str("body")
+        );
+        let unfixable = posts
+            .iter()
+            .find(|p| p.str("summary").starts_with("Dependabot #30"))
+            .unwrap();
+        assert!(
+            unfixable
+                .str("body")
+                .contains("\nYes: Look for a way around it\nNo: Keep watching\n"),
+            "{}",
+            unfixable.str("body")
+        );
         // Told once: the next check posts nothing.
         let lines =
             tend_dependency_alerts_with(&s, "proj", &plus_minutes(NOW, 61), "daemon", &fetch, &reg);
         assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(owner_findings(&s).len(), 3);
         assert_eq!(events(&s, "security.major").len(), 1);
+        // The owner fixes #20 by hand and dismisses #30 on GitHub: the
+        // watcher answers both findings so the hub stops listing them, and
+        // a returning #20 may be told again.
+        let gone: Vec<Value> = alerts
+            .iter()
+            .filter(|a| a["number"].as_i64() == Some(40))
+            .cloned()
+            .collect();
+        let fetch_gone = |_: &str| Ok(body(&gone));
+        let lines = tend_dependency_alerts_with(
+            &s,
+            "proj",
+            &plus_minutes(NOW, 122),
+            "daemon",
+            &fetch_gone,
+            &reg,
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("closed on GitHub; answered the finding"))
+                .count(),
+            2,
+            "{lines:?}"
+        );
+        let answers = must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'answer' AND on_post <> '' ORDER BY id",
+            &[],
+        );
+        assert_eq!(answers.len(), 2, "{answers:?}");
+        let on: BTreeSet<String> = answers.iter().map(|a| a.str("on_post")).collect();
+        assert!(
+            on.contains(&major.str("id")) && on.contains(&unfixable.str("id")),
+            "{on:?}"
+        );
+        assert!(
+            answers[0]
+                .str("summary")
+                .contains("closed on GitHub; nothing to decide")
+        );
+        assert_eq!(events(&s, "security.closed").len(), 2);
+        assert!(!watch(&s).told.iter().any(|t| t.starts_with("major:next:")));
+        // Answered once.
+        let lines = tend_dependency_alerts_with(
+            &s,
+            "proj",
+            &plus_minutes(NOW, 183),
+            "daemon",
+            &fetch_gone,
+            &reg,
+        );
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "security.closed").len(), 2);
+        // #20 comes back: told again, since the earlier finding is answered.
+        tend_dependency_alerts_with(&s, "proj", &plus_minutes(NOW, 244), "daemon", &fetch, &reg);
+        assert_eq!(events(&s, "security.major").len(), 2);
+    }
+
+    #[test]
+    fn with_major_updates_auto_a_major_jump_is_queued_like_any_fix() {
+        let _serial = crate::test_helpers::serial();
+        let (s, _root) = setup();
+        set_setting(&s, MAJOR_UPDATES, "auto");
+        let reg = registry().with(
+            Ecosystem::Npm,
+            "next",
+            &[
+                ("16.3.8", "2026-09-30T10:00:00Z"),
+                ("16.4.1", "2026-10-14T17:43:55Z"),
+                ("17.0.0", "2026-10-01T00:00:00Z"),
+                ("17.0.3", "2026-10-20T00:00:00Z"),
+                ("17.1.0", "2026-10-25T00:00:00Z"),
+            ],
+        );
+        let alerts = vec![
+            alert(
+                20,
+                "npm",
+                "next",
+                LOCK,
+                "16.3.8",
+                "direct",
+                ">= 16.0.0, < 17.0.0",
+                Some("17.0.0"),
+                "critical",
+            ),
+            alert(
+                21,
+                "npm",
+                "next",
+                LOCK,
+                "16.3.8",
+                "direct",
+                "< 17.0.2",
+                Some("17.0.2"),
+                "high",
+            ),
+        ];
+        let fetch = |_: &str| Ok(body(&alerts));
+        let lines = tend_dependency_alerts_with(&s, "proj", NOW, "daemon", &fetch, &reg);
+        assert!(owner_findings(&s).is_empty(), "{lines:?}");
+        assert!(events(&s, "security.major").is_empty());
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{lines:?}");
+        assert_eq!(js[0].str("source"), format!("security:proj:{LOCK}:20,21"));
+        assert_eq!(
+            js[0].str("title"),
+            "Security: update next in web/hub (Dependabot #20, #21)"
+        );
+        let brief = js[0].str("brief");
+        // The newest version of the patched range that is old enough: 17.0.3
+        // (17.1.0 is a day old), not 16.4.1 of the installed range.
+        assert!(
+            brief.contains("- next 16.3.8 -> 17.0.3 (published 2026-10-20T00:00:00Z, a direct dependency, major upgrade), fixes #20 (critical, GHSA-0020-test), #21 (high, GHSA-0021-test)"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("A line marked *major upgrade* leaves the compatible range")
+                && brief.contains("SUMMARY: blocked:")
+                && brief.contains("npm install --no-audit --no-fund next@17.0.3"),
+            "{brief}"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CheckIcon, ChevronRightIcon, CirclePauseIcon, MessageCircleQuestionIcon, MessageSquareTextIcon, UsersIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, CirclePauseIcon, MessageCircleQuestionIcon, MessageSquareTextIcon, ShieldAlertIcon, UsersIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
 import { DecideButtons } from "./decide-buttons";
@@ -17,6 +17,7 @@ import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { COMMONS_HINT, evolveGate, taskProgress, writes, type Claim, type EvolveGate, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Task, type TaskWorker } from "@/lib/api";
 import { gateStep, type GateStep } from "./evolve";
+import { askTitle, decisionLabels } from "@/lib/owner-questions";
 
 // ----- project card ------------------------------------------------------
 
@@ -177,9 +178,11 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
 
 // ----- owner question --------------------------------------------------------
 
-// A question that waits for the owner (ADR: for_owner posts and the evolution
-// loop's stop questions). Who asked, where, the ask, and Yes / No that record
-// the owner's decision on the board.
+// A post that waits for the owner (ADR: for_owner posts - a question, or a
+// finding, handoff or suggestion put to the owner - and the evolution loop's
+// stop questions). Who asked, where, the ask, and two buttons that record the
+// owner's decision on the board; the post's own `Yes:` / `No:` lines name
+// them (a security finding says "Upgrade it" / "Leave it to me").
 export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; slug: string; canDecide?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const body = (q.body || "").trim();
@@ -189,10 +192,11 @@ export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; 
   const title = stop ? "Self-improvement on " + s.replace(/-/g, "\u2011") + " stopped. May it carry on?" : endSentence(sentence(q.summary));
   const lead = firstSentence(body);
   const hasMore = body.length > lead.length + 1;
+  const labels = decisionLabels(body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
   return (
-    <ItemCard highlight={!q.stale} ariaLabel={"Question for you: " + q.summary}>
+    <ItemCard highlight={!q.stale} ariaLabel={(q.kind === "finding" ? "Your call: " : "Question for you: ") + q.summary}>
       <ItemCardHeader right={<When d={q.date} />}>
-        {stop ? <ItemCardKind icon={CirclePauseIcon} tone="bad">Self-improvement paused</ItemCardKind> : <ItemCardKind icon={MessageCircleQuestionIcon} tone={q.stale ? "neutral" : "you"}>{"Question from " + asker}</ItemCardKind>}
+        {stop ? <ItemCardKind icon={CirclePauseIcon} tone="bad">Self-improvement paused</ItemCardKind> : <ItemCardKind icon={q.kind === "finding" ? ShieldAlertIcon : MessageCircleQuestionIcon} tone={q.stale ? "neutral" : "you"}>{askTitle(q.kind, asker)}</ItemCardKind>}
         {q.slug && q.slug !== slug && !stop ? <ProjectLink slug={q.slug} className="font-normal text-muted-foreground" /> : null}
         {q.stale ? <ToneBadge tone="neutral">From an older thread</ToneBadge> : null}
       </ItemCardHeader>
@@ -210,7 +214,7 @@ export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; 
       ) : null}
       <ItemCardActions>
         <OnTheBoard slug={s} id={q.id} thread={q.thread_key} />
-        <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} yesLabel={stop ? "Yes, carry on" : "Yes"} noLabel={stop ? "No, keep it paused" : "No"} />
+        <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} yesLabel={labels.yes} noLabel={labels.no} />
       </ItemCardActions>
     </ItemCard>
   );

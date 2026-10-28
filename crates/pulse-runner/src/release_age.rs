@@ -17,6 +17,9 @@ use serde_json::Value;
 pub(crate) const MIN_RELEASE_AGE_DAYS: &str = "dependencies.min_release_age_days";
 pub(crate) const SECURITY_UPDATES: &str = "dependencies.security_updates";
 pub(crate) const ALERT_CHECK_MINUTES: &str = "dependencies.alert_check_minutes";
+/// `ask` (default): a fix that needs a major upgrade goes to the owner as a
+/// finding with a Yes and a No; `auto`: it is queued like any other fix.
+pub(crate) const MAJOR_UPDATES: &str = "dependencies.major_updates";
 
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_AGENT: &str = "pulse (https://github.com/manishtiwari25/pulse)";
