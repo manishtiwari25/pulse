@@ -776,12 +776,23 @@ impl BoardData {
                 if stop && body.contains(pulse_evolve::CARD_NEEDED) {
                     continue;
                 }
+                // A question goes with its thread; a finding, handoff or
+                // suggestion on a running thread (one security thread
+                // holds many) is settled by its own answer or decision, or
+                // by a result that closes the thread as a whole - never by
+                // the owner's decision on a sibling, whose result post
+                // names that sibling.
                 let resolved = if stop {
                     thread_posts[i + 1..]
                         .iter()
                         .any(|p| !str_key(p, "resolution").is_empty())
-                } else {
+                } else if kind == "question" {
                     status == "closed"
+                } else {
+                    thread_posts.iter().any(|p| {
+                        let on = str_key(p, "on_post");
+                        !str_key(p, "resolution").is_empty() && (on.is_empty() || on == id)
+                    })
                 };
                 if resolved {
                     continue;
@@ -2156,6 +2167,18 @@ mod tests {
             "",
             "2026-09-06T07:02:00Z",
         );
+        // A second open finding of the same running thread: the owner's
+        // decision on the first must not hide it.
+        let unfixable = post(
+            "finding",
+            "dependabot",
+            true,
+            "Dependabot #31: no patched version of node-forge exists yet",
+            "Yes: Look for a way around it\nNo: Keep watching",
+            "",
+            "",
+            "2026-09-06T07:01:30Z",
+        );
         post(
             "finding",
             "dependabot",
@@ -2176,7 +2199,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec![gate.id.clone(), ask.id.clone(), major.id.clone()],
+            vec![
+                gate.id.clone(),
+                ask.id.clone(),
+                unfixable.id.clone(),
+                major.id.clone()
+            ],
             "{:#?}",
             data.questions
         );
@@ -2185,9 +2213,9 @@ mod tests {
         assert_eq!(data.questions[1]["stop"], false);
         assert_eq!(data.questions[1]["kind"], "question");
         assert_eq!(data.questions[1]["body"], "Pick one.");
-        assert_eq!(data.questions[2]["kind"], "finding");
-        assert_eq!(data.questions[2]["stop"], false);
-        assert_eq!(data.questions[2]["thread_key"], "api/dependabot");
+        assert_eq!(data.questions[3]["kind"], "finding");
+        assert_eq!(data.questions[3]["stop"], false);
+        assert_eq!(data.questions[3]["thread_key"], "api/dependabot");
 
         let view = crate::read::ProjectView {
             project: s.project("one").unwrap().unwrap(),
@@ -2197,16 +2225,16 @@ mod tests {
             mark: String::new(),
         };
         let summary = h.summary(&view);
-        assert_eq!(summary["owner_questions"], 3);
+        assert_eq!(summary["owner_questions"], 4);
         let org = h.org(std::slice::from_ref(&view));
-        assert_eq!(org["totals"]["owner_questions"], 3);
+        assert_eq!(org["totals"]["owner_questions"], 4);
         let rows = org["questions"].as_array().unwrap();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["slug"], "one");
         assert_eq!(rows[0]["base"], "/p/one");
         assert!(org["projects"][0].get("questions").is_none());
         let flat = crate::read::org_questions(std::slice::from_ref(&view));
-        assert_eq!(flat.len(), 3);
+        assert_eq!(flat.len(), 4);
         assert_eq!(str_key(&flat[0], "id"), gate.id);
 
         let (status, _, raw) = crate::test_helpers_http::request(
@@ -2218,7 +2246,7 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         let listed: Vec<JsonMap> = serde_json::from_str(&raw).unwrap();
-        assert_eq!(listed.len(), 3);
+        assert_eq!(listed.len(), 4);
 
         pulse_board::decide(&s, &ask.id, "yes", "the first one", "human").unwrap();
         pulse_board::decide(&s, &gate.id, "yes", "reviewed", "human").unwrap();
@@ -2229,6 +2257,16 @@ mod tests {
             job.title
                 .starts_with("Act on the human's yes: next needs 17.0.0")
         );
+        // Its result post carries a resolution on the shared thread; the
+        // sibling finding still waits.
+        let data = h.snapshot("one", "").unwrap();
+        let ids = data
+            .questions
+            .iter()
+            .map(|q| str_key(q, "id"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![unfixable.id.clone()], "{:#?}", data.questions);
+        pulse_board::decide(&s, &unfixable.id, "no", "keep watching", "human").unwrap();
         let data = h.snapshot("one", "").unwrap();
         assert!(data.questions.is_empty(), "{:#?}", data.questions);
     }

@@ -2612,7 +2612,7 @@ pub(crate) fn apply_result_decisions(
         }
         let post = crate::util::must_one(
             &c,
-            "SELECT id, project, resolution, summary, body FROM posts WHERE id = ?",
+            "SELECT id, project, kind, resolution, summary, body, extra FROM posts WHERE id = ?",
             &[&d.post_id],
         );
         if is_nil(&post) {
@@ -2628,9 +2628,16 @@ pub(crate) fn apply_result_decisions(
             ));
             continue;
         }
-        if post.str("resolution") != "agreed" {
+        // An agreed proposal, or a finding, handoff or suggestion addressed
+        // to the owner (the hub's "For you"): both are the lead's call while
+        // the owner is away.
+        let proposal = post.str("resolution") == "agreed";
+        let ask = !proposal
+            && crate::lead::OWNER_ASK_DECIDE_KINDS.contains(&post.str("kind").as_str())
+            && crate::plan::is_owner_addressed_post(post.clone());
+        if !proposal && !ask {
             log.add(format!(
-                "decision skipped: {} is not an agreed proposal",
+                "decision skipped: {} is neither an agreed proposal nor a finding, handoff or suggestion addressed to the owner",
                 d.post_id
             ));
             continue;
@@ -2678,7 +2685,24 @@ pub(crate) fn apply_result_decisions(
             ));
             continue;
         }
-        if crate::util::must_one(&c, "SELECT resolution FROM posts WHERE project = ? AND area = (SELECT area FROM posts WHERE id = ?) AND thread = (SELECT thread FROM posts WHERE id = ?) AND resolution <> '' ORDER BY id DESC LIMIT 1", &[&slug, &d.post_id, &d.post_id]).str("resolution") != "agreed" { log.add(format!("decision skipped: {} is no longer awaiting", d.post_id)); continue; }
+        if proposal {
+            if crate::util::must_one(&c, "SELECT resolution FROM posts WHERE project = ? AND area = (SELECT area FROM posts WHERE id = ?) AND thread = (SELECT thread FROM posts WHERE id = ?) AND resolution <> '' ORDER BY id DESC LIMIT 1", &[&slug, &d.post_id, &d.post_id]).str("resolution") != "agreed" { log.add(format!("decision skipped: {} is no longer awaiting", d.post_id)); continue; }
+        } else {
+            if crate::lead::is_security_major_finding(&c, &d.post_id) {
+                log.add(format!(
+                    "decision skipped: {} is a major dependency upgrade: the owner's call, or dependencies.major_updates's, never the lead's",
+                    d.post_id
+                ));
+                continue;
+            }
+            if !crate::lead::owner_ask_is_open(&c, &d.post_id) {
+                log.add(format!(
+                    "decision skipped: {} was answered or its thread closed",
+                    d.post_id
+                ));
+                continue;
+            }
+        }
         if let Err(e) = pulse_board::decide(s, &d.post_id, &d.answer, &d.reason, &lead) {
             log.add(format!(
                 "decision skipped: {}: {}",

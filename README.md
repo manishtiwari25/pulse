@@ -595,11 +595,19 @@ a later `answer` in its thread, its thread not closed - with Yes / No that
 record a `pulse decide` on the post. A marked `finding`, `handoff` or
 `suggestion` sits in the same inbox (the row carries the post's `kind`; the
 card says "Your call, from <agent>"), retired only by a decision or an
-`answer` on the post itself, since its thread is long-lived; when the body
+`answer` on the post itself, or by a result that closes its thread as a
+whole, since its thread is long-lived: one `security/dependabot` thread holds
+every finding of a project, and your decision on one of them (whose result
+post names that one) never hides its siblings. When the body
 carries a `Yes: ...` and a `No: ...` line, those words label the two buttons
 ("Upgrade it" / "Leave it to me"), and the owner's yes queues the job that
-acts on the post, as for any decided proposal. Vote, evidence, in-flight job and
-owner-only path gates still apply independently. Questions the daemon or the
+acts on the post, as for any decided proposal. While `owner.presence` is
+`away` these marked findings, handoffs and suggestions are the project
+lead's call, decided with the same `DECIDE:` lines as board proposals (see
+*When the owner is away*); the major-upgrade findings of the security
+watcher are the one exception, since a dependency jump is Tier 2 - they wait
+for you, or for `dependencies.major_updates auto`. Vote, evidence, in-flight
+job and owner-only path gates still apply independently. Questions the daemon or the
 evolution loop posts (its "Evolution stopped; owner review needed" gate) are
 asks for the owner by construction: the planner never sends a worker to answer
 them, flagged or not, and the loop posts such a question once per open gate,
@@ -3481,7 +3489,9 @@ needs a **major upgrade** (`security.major`; a Tier 2 change by the
 constitution, so the finding asks "Yes: Upgrade it / No: Leave it to me" and
 your yes queues the upgrade as a security job - or set
 `dependencies.major_updates auto` and the watcher queues major upgrades like
-any other fix, to the newest eligible version of the patched line), an alert
+any other fix, to the newest eligible version of the patched line, and
+answers the finding that asked you itself (`security.auto_major`, naming the
+job) so the question leaves your inbox the moment the setting decides it), an alert
 whose advisory names **no patched version** yet (`security.unfixable`, "Yes:
 Look for a way around it / No: Keep watching"; the update is queued the
 moment one is published and old enough), an **ecosystem the watcher does
@@ -4198,7 +4208,20 @@ lead ("The owner is away ... answered yes on the owner's behalf"), the
 `on_behalf: owner-away`, and a yes queues one job titled "Act on the lead's
 yes (owner away): ...". Only the proposal project's own active lead may
 decide, only while the setting is `away`, and a `DECIDE:` line from a worker
-is ignored. Tasks are not parked either: while you are away the lead decides
+is ignored. The For you inbox empties the same way: every `finding`,
+`handoff` or `suggestion` marked for the owner that still waits (not
+decided, not answered, its thread not closed) is listed in the lead's brief
+with its kind and what its `Yes:` / `No:` lines mean, and the lead ends its
+report with a `DECIDE:` line for each - yes queues the work the post's Yes
+line names as "Act on the lead's yes (owner away): ..." (a handoff or
+suggestion that is Tier 0 or 1 work inside the constitution), no closes it
+with the lead's reason (an advisory with no fixed version is "keep
+watching"; a stale handoff is closed as such). The same guards apply as for
+proposals, and a finding the security watcher posted about a **major
+dependency upgrade** is never the lead's: the daemon skips the lead's
+`DECIDE:` on it and leaves it to you or to `dependencies.major_updates`.
+Questions marked for the owner are still answered in words (`pulse post
+answer --on`) rather than decided. Tasks are not parked either: while you are away the lead decides
 and writes its reasoning in the task's thread instead of ending with
 "waiting on the owner", and it posts no question addressed to you (what only
 you can do goes in its report; a stopped loop, a sign-in or a missing secret

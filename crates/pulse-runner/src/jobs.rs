@@ -6896,6 +6896,288 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         }
     }
 
+    /// A finding, handoff or suggestion marked for the owner, as the
+    /// security watcher and the agents post them (ADR-054).
+    fn owner_ask(
+        s: &pulse_store::Store,
+        kind: &str,
+        thread: &str,
+        summary: &str,
+        body: &str,
+        for_owner: bool,
+    ) -> crate::util::Row {
+        crate::board::create_post(
+            s,
+            crate::test_helpers::TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: kind.into(),
+                project: "proj".into(),
+                area: "security".into(),
+                thread: thread.into(),
+                summary: summary.into(),
+                body: body.into(),
+                agent: crate::board::actor_agent(s, "daemon".into()),
+                for_owner,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn while_away_the_lead_decides_the_asks_addressed_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        set_owner_away(&s);
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let unfixable = owner_ask(
+            &s,
+            "finding",
+            "dependabot",
+            "Dependabot #30 (low): no patched version of hono exists yet",
+            "hono is vulnerable and the advisory names no fixed version.\n\nYes: Look for a way around it\nNo: Keep watching\n",
+            true,
+        );
+        let sibling = owner_ask(
+            &s,
+            "finding",
+            "dependabot",
+            "Dependabot #31 (low): no patched version of node-forge exists yet",
+            "Yes: Look for a way around it\nNo: Keep watching\n",
+            true,
+        );
+        let major = owner_ask(
+            &s,
+            "finding",
+            "dependabot",
+            "next needs 17.0.0 to fix #20, a major upgrade from 16.3.8: your call",
+            "Yes: Upgrade it\nNo: Leave it to me\n",
+            true,
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            "security.major",
+            "proj",
+            serde_json::json!({"number": 20, "package": "next", "from": "16.3.8", "to": "17.0.0", "post": major.str("id")}),
+        );
+        let report = owner_ask(
+            &s,
+            "finding",
+            "dependabot",
+            "Alerts read: 3 open",
+            "",
+            false,
+        );
+        let handoff = owner_ask(
+            &s,
+            "handoff",
+            "backup",
+            "Store backup: pick the Azure container",
+            "Yes: Use the existing container\nNo: Leave it",
+            true,
+        );
+
+        // The lead's brief lists the asks with what yes and no mean, not
+        // the major upgrade (the setting's call) nor the plain report.
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        let ids = asks.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![unfixable.str("id"), sibling.str("id"), handoff.str("id")],
+            "{asks:?}"
+        );
+        assert_eq!(asks[0].kind, "finding");
+        assert_eq!(asks[0].yes, "Look for a way around it");
+        assert_eq!(asks[0].no, "Keep watching");
+        assert_eq!(asks[2].kind, "handoff");
+        let mut brief = String::new();
+        crate::lead::write_lead_owner_questions_section(
+            &mut brief,
+            "proj".into(),
+            Some(crate::lead::AwayBrief::default()),
+            asks,
+        );
+        assert!(
+            brief.contains(&format!(
+                "- {} (finding for the owner) security/dependabot by daemon: Dependabot #30",
+                unfixable.str("id")
+            )) && brief.contains("  yes: Look for a way around it; no: Keep watching\n")
+                && brief.contains("DECIDE: <post-id> yes|no <reason>")
+                && brief.contains("Major dependency upgrades are not listed"),
+            "{brief}"
+        );
+        let lines = crate::lead::tend_lead(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        let lead_jobs = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE kind = 'lead'",
+            &[],
+        );
+        assert_eq!(lead_jobs.len(), 1, "{lines:?}");
+        assert!(
+            lead_jobs[0].str("brief").contains(&unfixable.str("id"))
+                && lead_jobs[0].str("brief").contains(&handoff.str("id"))
+                && !lead_jobs[0].str("brief").contains(&major.str("id"))
+                && lead_jobs[0]
+                    .str("title")
+                    .contains("answer 3 owner question(s)"),
+            "{lead_jobs:?}"
+        );
+
+        // The report's DECIDE lines: the two the lead may decide are
+        // recorded, the major upgrade, the plain report and a repeat are not.
+        let rep = crate::brief::Report {
+            decisions: vec![
+                crate::brief::Decision {
+                    post_id: unfixable.str("id"),
+                    answer: "no".into(),
+                    reason: "no fixed version; keep watching".into(),
+                },
+                crate::brief::Decision {
+                    post_id: handoff.str("id"),
+                    answer: "yes".into(),
+                    reason: "Tier 1, reversible".into(),
+                },
+                crate::brief::Decision {
+                    post_id: major.str("id"),
+                    answer: "yes".into(),
+                    reason: "looks fine".into(),
+                },
+                crate::brief::Decision {
+                    post_id: report.str("id"),
+                    answer: "no".into(),
+                    reason: "nothing to do".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut log = crate::run::RunLog::default();
+        let got = crate::run::apply_result_decisions(&s, lead_jobs[0].clone(), rep, &mut log);
+        assert_eq!(got, 2, "{}", log.text());
+        assert!(
+            log.text().contains("is a major dependency upgrade")
+                && log
+                    .text()
+                    .contains("neither an agreed proposal nor a finding"),
+            "{}",
+            log.text()
+        );
+        let decided = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT post_id, answer, decided_by FROM decisions ORDER BY post_id",
+            &[],
+        );
+        assert_eq!(decided.len(), 2, "{decided:?}");
+        for d in &decided {
+            assert_eq!(d.str("decided_by"), crate::lead::lead_name("proj".into()));
+        }
+        // The yes queued the job the handoff names; the no on one finding
+        // left its sibling on the same thread open.
+        let acted = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT title FROM jobs WHERE title LIKE 'Act on the lead%'",
+            &[],
+        );
+        assert_eq!(acted.len(), 1, "{acted:?}");
+        assert!(
+            acted[0]
+                .str("title")
+                .contains("Store backup: pick the Azure container")
+        );
+        let conn = s.conn().unwrap();
+        assert!(!crate::lead::owner_ask_is_open(&conn, &unfixable.str("id")));
+        assert!(crate::lead::owner_ask_is_open(&conn, &sibling.str("id")));
+        assert!(crate::lead::owner_ask_is_open(&conn, &major.str("id")));
+        let remaining = crate::lead::owner_addressed_asks(&s, "proj".into());
+        assert_eq!(
+            remaining.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            vec![sibling.str("id")]
+        );
+        // A second report cannot decide them again.
+        let rep = crate::brief::Report {
+            decisions: vec![crate::brief::Decision {
+                post_id: unfixable.str("id"),
+                answer: "yes".into(),
+                reason: "changed my mind".into(),
+            }],
+            ..Default::default()
+        };
+        let mut log = crate::run::RunLog::default();
+        assert_eq!(
+            crate::run::apply_result_decisions(&s, lead_jobs[0].clone(), rep, &mut log),
+            0,
+            "{}",
+            log.text()
+        );
+    }
+
+    #[test]
+    fn while_the_owner_is_present_the_asks_stay_the_owners() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let ask = owner_ask(
+            &s,
+            "finding",
+            "dependabot",
+            "Dependabot #30 (low): no patched version of hono exists yet",
+            "Yes: Look for a way around it\nNo: Keep watching\n",
+            true,
+        );
+        let lines = crate::lead::tend_lead(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        let n = crate::test_helpers::count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'lead'",
+            &[],
+        );
+        assert_eq!(n, 0, "an ask for the owner woke the lead: {lines:?}");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            crate::lead::LEAD_KIND.into(),
+            "job".into(),
+            "brief".into(),
+            0,
+            50,
+            "test:job".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let rep = crate::brief::Report {
+            decisions: vec![crate::brief::Decision {
+                post_id: ask.str("id"),
+                answer: "no".into(),
+                reason: "keep watching".into(),
+            }],
+            ..Default::default()
+        };
+        let mut log = crate::run::RunLog::default();
+        assert_eq!(
+            crate::run::apply_result_decisions(&s, job, rep, &mut log),
+            0
+        );
+        assert!(crate::lead::owner_ask_is_open(
+            &s.conn().unwrap(),
+            &ask.str("id")
+        ));
+    }
+
     #[test]
     fn project_goal_all_worker_kinds_read_latest_at_render() {
         let _serial = crate::test_helpers::serial();

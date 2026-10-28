@@ -52,6 +52,41 @@ pub(crate) struct OwnerQuestion {
     pub thread: String,
     pub agent: String,
     pub summary: String,
+    /// `question`, or a `finding`, `handoff` or `suggestion` marked for the
+    /// owner: a report that ends in the owner's call (ADR-054).
+    pub kind: String,
+    /// What a yes and a no mean, from the post's own `Yes:` / `No:` lines;
+    /// empty when it names none.
+    pub yes: String,
+    pub no: String,
+}
+
+/// The post kinds, besides a question, that wait for the owner when marked
+/// `for_owner`, and that the lead decides with `DECIDE:` lines while the
+/// owner is away. Mirrors the hub's `OWNER_ASK_KINDS`.
+pub(crate) const OWNER_ASK_DECIDE_KINDS: &[&str] = &["finding", "handoff", "suggestion"];
+
+static ASK_MEANING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?m)^[ \t]*\**(Yes|No)\**:[ \t]*(.+?)[ \t]*$").expect("ask meaning regex")
+});
+
+/// The `Yes: ...` and `No: ...` lines of a post addressed to the owner: the
+/// meaning of each answer, as the hub shows them on the two buttons. Only a
+/// short label counts; a sentence is the explanation under it.
+pub(crate) fn ask_meanings(body: &str) -> (String, String) {
+    let mut yes = String::new();
+    let mut no = String::new();
+    for c in ASK_MEANING_RE.captures_iter(body) {
+        let label = c[2].trim_end_matches(['.', '!']).trim().to_string();
+        if label.is_empty() || label.len() > 40 {
+            continue;
+        }
+        let slot = if &c[1] == "Yes" { &mut yes } else { &mut no };
+        if slot.is_empty() {
+            *slot = label;
+        }
+    }
+    (yes, no)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -318,15 +353,37 @@ pub(crate) fn write_lead_owner_questions_section(
     questions: Vec<OwnerQuestion>,
 ) {
     b.push_str("## Questions addressed to the owner\n\n");
+    let mut asks = 0;
     if questions.is_empty() {
         b.push_str("No open questions addressed to the owner.\n");
     } else {
         for q in questions {
+            if q.kind.is_empty() || q.kind == "question" {
+                let _ = writeln!(
+                    b,
+                    "- {} {}/{} by {}: {}",
+                    q.id, q.area, q.thread, q.agent, q.summary
+                );
+                continue;
+            }
+            asks += 1;
             let _ = writeln!(
                 b,
-                "- {} {}/{} by {}: {}",
-                q.id, q.area, q.thread, q.agent, q.summary
+                "- {} ({} for the owner) {}/{} by {}: {}",
+                q.id, q.kind, q.area, q.thread, q.agent, q.summary
             );
+            if !q.yes.is_empty() || !q.no.is_empty() {
+                let _ = writeln!(
+                    b,
+                    "  yes: {}; no: {}",
+                    if q.yes.is_empty() {
+                        "act on it"
+                    } else {
+                        &q.yes
+                    },
+                    if q.no.is_empty() { "close it" } else { &q.no }
+                );
+            }
         }
     }
     b.push('\n');
@@ -335,6 +392,12 @@ pub(crate) fn write_lead_owner_questions_section(
             b,
             "The owner is away: answer what you can with pulse post answer --project {slug} --area A --thread T --on POST-ID --summary ... ; leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered. A question the daemon asked (a lead seat, the toolkit) is not yours to answer: a seat is compute, and the toolkit the daemon adds itself while the owner is away.\n\n"
         );
+        if asks > 0 {
+            let _ = write!(
+                b,
+                "A finding, handoff or suggestion marked \"for the owner\" above is your call while the owner is away: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`pulse show POST-ID`). A finding whose advisory names no fixed version is a no (keep watching) unless the package can be dropped or replaced inside the project's checks. A handoff or suggestion that is Tier 0 or 1 work inside the constitution and the accepted decisions is a yes; one that is stale, already done, or needs the owner's knowledge is a no with the reason. Major dependency upgrades are not listed: the `dependencies.major_updates` setting decides those, never you. Leave none for the owner.\n\n"
+            );
+        }
     } else {
         b.push_str("These wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
     }
@@ -655,8 +718,92 @@ pub(crate) fn owner_addressed_questions(
             thread: q.str("thread"),
             agent: q.str("agent"),
             summary: q.str("summary"),
+            kind: "question".into(),
+            yes: String::new(),
+            no: String::new(),
         })
         .collect()
+}
+
+/// Whether the post is the security watcher's finding about a major
+/// dependency upgrade: that one is the owner's call, or the
+/// `dependencies.major_updates` setting's - never the lead's, since a
+/// dependency jump is Tier 2 work.
+pub(crate) fn is_security_major_finding(conn: &rusqlite::Connection, post_id: &str) -> bool {
+    !must_one(
+        conn,
+        "SELECT 1 AS x FROM events WHERE action = 'security.major' AND json_extract(detail, '$.post') = ? LIMIT 1",
+        &[&post_id],
+    )
+    .0
+    .is_empty()
+}
+
+/// Whether a finding, handoff or suggestion addressed to the owner still
+/// waits: nobody decided it, nothing answered it, and no result closed its
+/// thread as a whole. A result that names a sibling post - the decision on
+/// another finding of the same running security thread - settles only that
+/// sibling. Mirrors the hub's For-you list.
+pub(crate) fn owner_ask_is_open(conn: &rusqlite::Connection, post_id: &str) -> bool {
+    !must_one(
+        conn,
+        "SELECT 1 AS x FROM posts p WHERE p.id = ? \
+           AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
+           AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
+           AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread \
+                             AND COALESCE(r.resolution, '') <> '' AND (COALESCE(r.on_post, '') = '' OR r.on_post = p.id))",
+        &[&post_id],
+    )
+    .0
+    .is_empty()
+}
+
+/// The findings, handoffs and suggestions of `slug` marked for the owner
+/// that still wait, oldest first, less the security watcher's major-upgrade
+/// findings (the owner's or the setting's call). While the owner is away
+/// these are the lead's to decide; the hub lists the same posts under "For
+/// you".
+pub(crate) fn owner_addressed_asks(s: &pulse_store::Store, slug: String) -> Vec<OwnerQuestion> {
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let marks = vec!["?"; OWNER_ASK_DECIDE_KINDS.len()].join(", ");
+    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&slug];
+    args.extend(
+        OWNER_ASK_DECIDE_KINDS
+            .iter()
+            .map(|k| k as &dyn rusqlite::ToSql),
+    );
+    must_rows(
+        &conn,
+        &format!(
+            "SELECT p.id, p.area, p.thread, p.agent, p.kind, p.summary, p.body, p.extra FROM posts p \
+             WHERE p.project = ? AND p.kind IN ({marks}) AND p.area <> 'jobs' \
+               AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
+               AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread \
+                                 AND COALESCE(r.resolution, '') <> '' AND (COALESCE(r.on_post, '') = '' OR r.on_post = p.id)) \
+               AND NOT EXISTS (SELECT 1 FROM events e WHERE e.action = 'security.major' AND json_extract(e.detail, '$.post') = p.id) \
+             ORDER BY p.date, p.rowid"
+        ),
+        &args,
+    )
+    .into_iter()
+    .filter(|r| pulse_store::post_for_owner(&r.str("extra")).unwrap_or(false))
+    .map(|r| {
+        let (yes, no) = ask_meanings(&r.str("body"));
+        OwnerQuestion {
+            id: r.str("id"),
+            area: r.str("area"),
+            thread: r.str("thread"),
+            agent: r.str("agent"),
+            summary: r.str("summary"),
+            kind: r.str("kind"),
+            yes,
+            no,
+        }
+    })
+    .collect()
 }
 
 pub(crate) fn mentions_project_lead(p: Row) -> bool {
@@ -799,7 +946,12 @@ pub(crate) fn tend_lead(
             .concat();
         }
     };
-    let owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
+    let mut owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
+    if away.is_some() {
+        // While the owner is away, the findings, handoffs and suggestions
+        // addressed to the owner are the lead's to decide too.
+        owner_questions.extend(owner_addressed_asks(s, slug.clone()));
+    }
     let mut away_question_count = 0;
     if away.is_some() {
         for q in &owner_questions {

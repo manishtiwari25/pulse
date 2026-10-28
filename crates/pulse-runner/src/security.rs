@@ -1064,6 +1064,88 @@ impl Pass<'_> {
         }
     }
 
+    /// Answers the open findings that asked the owner about the major
+    /// upgrades in `majors` (alert number, job): with
+    /// `dependencies.major_updates = auto` the setting has decided, so the
+    /// hub stops listing them under "For you" and the owner is told which
+    /// job does the work.
+    fn answer_major_findings(&mut self, majors: &[(i64, String)]) {
+        if majors.is_empty() {
+            return;
+        }
+        let open = must_rows(
+            self.conn,
+            "SELECT e.detail, p.id AS post FROM events e JOIN posts p ON p.id = json_extract(e.detail, '$.post') \
+             WHERE e.action = 'security.major' AND e.subject = ? \
+               AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
+             ORDER BY e.seq",
+            &[&self.slug],
+        );
+        for row in open {
+            let detail = crate::util::json_map(&row.str("detail"));
+            let number = detail.get("number").and_then(Value::as_i64).unwrap_or(-1);
+            let Some((_, job)) = majors.iter().find(|(n, _)| *n == number) else {
+                continue;
+            };
+            let package = detail
+                .get("package")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let to = detail
+                .get("to")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let post = row.str("post");
+            let body = format!(
+                "`{MAJOR_UPDATES}` is `auto`, so pulse makes this major upgrade itself: job {job} moves {package} to the {to} range, makes the code changes the new major needs, and lands only when the project's checks pass. Nothing is left to decide here; `pulse settings set {MAJOR_UPDATES} ask` brings the question back for the next one."
+            );
+            match crate::board::create_post(
+                self.s,
+                self.now.to_string(),
+                crate::board::PostOpts {
+                    kind: "answer".into(),
+                    project: self.slug.to_string(),
+                    area: BOARD_AREA.into(),
+                    thread: BOARD_THREAD.into(),
+                    summary: trunc(
+                        &format!(
+                            "Dependabot #{number}: upgrading {package} on its own ({MAJOR_UPDATES} is auto); queued {job}"
+                        ),
+                        236,
+                    ),
+                    body,
+                    on: post.clone(),
+                    agent: crate::board::actor_agent(self.s, self.actor.to_string()),
+                    date: self.now.to_string(),
+                    ..Default::default()
+                },
+            ) {
+                Ok(answer) => {
+                    event_at(
+                        self.conn,
+                        self.now,
+                        self.actor,
+                        "security.auto_major",
+                        self.slug,
+                        json!({"repo": self.repo, "number": number, "package": package, "to": to, "post": post, "answer": answer.str("id"), "job": job}),
+                    );
+                    self.lines.push(format!(
+                        "{}: Dependabot #{number}: {MAJOR_UPDATES} is auto; answered the finding {post} with job {job}",
+                        self.slug
+                    ));
+                }
+                Err(e) => self.lines.push(format!(
+                    "{}: finding {post} of #{number} not answered: {}",
+                    self.slug,
+                    crate::run::err_message(&e)
+                )),
+            }
+        }
+    }
+
     fn unsupported(&mut self, manifest: &str, alerts: &[Alert]) {
         let eco = alerts[0].ecosystem.clone();
         if self.told(&format!("eco:{}", eco.to_ascii_lowercase())) {
@@ -1158,9 +1240,9 @@ impl Pass<'_> {
         // are not queued again; the job that stays takes the rest.
         let quiet_until = plus_hours(self.now, -QUIET_HOURS);
         let prefix = job_source(self.slug, manifest, &[]);
-        let covered: BTreeSet<i64> = must_rows(
+        let covered: BTreeMap<i64, String> = must_rows(
             self.conn,
-            "SELECT source, status, finished_at FROM jobs WHERE project = ? AND source LIKE ?",
+            "SELECT id, source, status, finished_at FROM jobs WHERE project = ? AND source LIKE ? ORDER BY created_at, id",
             &[&self.slug, &format!("{SOURCE_PREFIX}{}:%", self.slug)],
         )
         .iter()
@@ -1175,11 +1257,22 @@ impl Pass<'_> {
             j.str("source")[prefix.len()..]
                 .split(',')
                 .filter_map(|n| n.parse::<i64>().ok())
+                .map(|n| (n, j.str("id")))
                 .collect::<Vec<_>>()
         })
         .collect();
-        fixes.retain(|f| f.numbers().iter().any(|n| !covered.contains(n)));
+        // The alerts a major upgrade fixes on the setting's say-so
+        // (`dependencies.major_updates = auto`): the finding that asked the
+        // owner about each is answered below, naming the job.
+        let mut majors: Vec<(i64, String)> = fixes
+            .iter()
+            .filter(|f| f.major)
+            .flat_map(Fix::numbers)
+            .map(|n| (n, covered.get(&n).cloned().unwrap_or_default()))
+            .collect();
+        fixes.retain(|f| f.numbers().iter().any(|n| !covered.contains_key(n)));
         if fixes.is_empty() {
+            self.answer_major_findings(&majors);
             return;
         }
         fixes.sort_by(|a, b| b.rank().cmp(&a.rank()).then_with(|| a.name.cmp(&b.name)));
@@ -1219,6 +1312,12 @@ impl Pass<'_> {
         };
         let id = job.str("id");
         self.watch.jobs.insert(manifest.to_string(), id.clone());
+        for (_, job_id) in majors.iter_mut() {
+            if job_id.is_empty() {
+                *job_id = id.clone();
+            }
+        }
+        self.answer_major_findings(&majors);
         if !created {
             return;
         }
@@ -2002,6 +2101,91 @@ mod tests {
                 && brief.contains("npm install --no-audit --no-fund next@17.0.3"),
             "{brief}"
         );
+    }
+
+    #[test]
+    fn turning_major_updates_auto_answers_the_finding_that_asked() {
+        let _serial = crate::test_helpers::serial();
+        let (s, _root) = setup();
+        let reg = registry().with(
+            Ecosystem::Npm,
+            "next",
+            &[
+                ("16.3.8", "2026-09-30T10:00:00Z"),
+                ("17.0.0", "2026-10-01T00:00:00Z"),
+                ("17.0.3", "2026-10-20T00:00:00Z"),
+            ],
+        );
+        let alerts = vec![alert(
+            20,
+            "npm",
+            "next",
+            LOCK,
+            "16.3.8",
+            "direct",
+            ">= 16.0.0, < 17.0.0",
+            Some("17.0.0"),
+            "critical",
+        )];
+        let fetch = |_: &str| Ok(body(&alerts));
+        // Under `ask` the watcher puts the major upgrade to the owner.
+        let lines = tend_dependency_alerts_with(&s, "proj", NOW, "daemon", &fetch, &reg);
+        assert!(jobs(&s).is_empty(), "{lines:?}");
+        let finding = owner_findings(&s);
+        assert_eq!(finding.len(), 1, "{finding:?}");
+        assert!(is_open_ask(&s, &finding[0].str("id")));
+        // The owner sets the upgrades to run on their own: the next check
+        // queues the job and answers the finding itself, so the hub stops
+        // listing it under "For you".
+        set_setting(&s, MAJOR_UPDATES, "auto");
+        let later = plus_hours(NOW, 1.0);
+        let lines = tend_dependency_alerts_with(&s, "proj", &later, "daemon", &fetch, &reg);
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{lines:?}");
+        assert_eq!(js[0].str("source"), format!("security:proj:{LOCK}:20"));
+        assert!(!is_open_ask(&s, &finding[0].str("id")), "{lines:?}");
+        let answers = must_rows(
+            &s.conn().unwrap(),
+            "SELECT summary, body, on_post FROM posts WHERE kind = 'answer' AND project = 'proj'",
+            &[],
+        );
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].str("on_post"), finding[0].str("id"));
+        assert_eq!(
+            answers[0].str("summary"),
+            format!(
+                "Dependabot #20: upgrading next on its own ({MAJOR_UPDATES} is auto); queued {}",
+                js[0].str("id")
+            )
+        );
+        assert!(
+            answers[0]
+                .str("body")
+                .contains("moves next to the 17.0.0 range"),
+            "{}",
+            answers[0].str("body")
+        );
+        let ev = events(&s, "security.auto_major");
+        assert_eq!(ev.len(), 1);
+        assert!(
+            ev[0]
+                .str("detail")
+                .contains(&format!("\"job\": \"{}\"", js[0].str("id")))
+                && ev[0].str("detail").contains("\"number\": 20"),
+            "{ev:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("answered the finding")),
+            "{lines:?}"
+        );
+        // The check after that: the job covers the alert, nothing to answer again.
+        tend_dependency_alerts_with(&s, "proj", &plus_hours(NOW, 2.0), "daemon", &fetch, &reg);
+        assert_eq!(events(&s, "security.auto_major").len(), 1);
+        assert_eq!(jobs(&s).len(), 1);
+    }
+
+    fn is_open_ask(s: &pulse_store::Store, id: &str) -> bool {
+        crate::lead::owner_ask_is_open(&s.conn().unwrap(), id)
     }
 
     #[test]
