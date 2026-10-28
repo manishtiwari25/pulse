@@ -787,9 +787,29 @@ fn wait_until(v: &crate::release_age::AgeVerdict) -> String {
     }
 }
 
+/// Whether a jump past a compatible range is one the owner allowed in
+/// advance: the branch is the security watcher's (its job's source starts
+/// with `security:`) and `dependencies.major_updates` is `auto`, the same
+/// setting that let the watcher queue the upgrade instead of asking.
+pub(crate) fn major_jump_authorized(
+    s: &pulse_store::Store,
+    job: &crate::util::Row,
+    check: &ReleaseAgeCheck,
+) -> bool {
+    matches!(
+        check.verdict,
+        crate::release_age::AgeVerdict::MajorJump { .. }
+    ) && job
+        .str("source")
+        .starts_with(crate::security::SOURCE_PREFIX)
+        && s.setting(crate::release_age::MAJOR_UPDATES, "ask") == "auto"
+}
+
 /// `land.release-age`: what the rule said about a dependency bump that goes
-/// on to land - the daemon's, found old enough, or a human's, whatever the
-/// verdict - with the versions adopted, so the owner can see what moved.
+/// on to land - the daemon's, found old enough or a major upgrade the owner's
+/// setting allowed (`authorized`), or a human's, whatever the verdict - with
+/// the versions adopted, so the owner can see what moved.
+#[allow(clippy::too_many_arguments)]
 fn record_release_age(
     s: &pulse_store::Store,
     slug: &str,
@@ -799,24 +819,22 @@ fn record_release_age(
     now: &str,
     lockfiles: &[String],
     check: &ReleaseAgeCheck,
+    authorized: bool,
 ) {
     if let Ok(conn) = s.conn() {
-        crate::util::event_at(
-            &conn,
-            now,
-            actor,
-            "land.release-age",
-            branch,
-            serde_json::json!({
-                "slug": slug,
-                "job": job_id_of(job.clone()),
-                "lockfiles": lockfiles,
-                "verdict": check.kind(),
-                "min_days": check.min_days,
-                "note": check.note,
-                "pins": check.pins_json(s),
-            }),
-        );
+        let mut detail = serde_json::json!({
+            "slug": slug,
+            "job": job_id_of(job.clone()),
+            "lockfiles": lockfiles,
+            "verdict": check.kind(),
+            "min_days": check.min_days,
+            "note": check.note,
+            "pins": check.pins_json(s),
+        });
+        if authorized {
+            detail["authorized"] = Value::String(crate::release_age::MAJOR_UPDATES.to_string());
+        }
+        crate::util::event_at(&conn, now, actor, "land.release-age", branch, detail);
     }
 }
 
@@ -905,10 +923,26 @@ pub(crate) fn hold_lockfile_branch(
         );
     }
     set_held_branch(s, slug, branch, now);
+    // The security watcher's major upgrade: the owner can let the next one
+    // land on its own instead of answering each.
+    let hint = if matches!(
+        check.verdict,
+        crate::release_age::AgeVerdict::MajorJump { .. }
+    ) && job
+        .str("source")
+        .starts_with(crate::security::SOURCE_PREFIX)
+    {
+        format!(
+            " (`pulse settings set {} auto` lets the security watcher's major upgrades land on their own)",
+            crate::release_age::MAJOR_UPDATES
+        )
+    } else {
+        String::new()
+    };
     (
         "held".to_string(),
         format!(
-            "{branch} changes the lockfile ({}) and {}; Tier 2 per the recipe; it waits for a human: {command}",
+            "{branch} changes the lockfile ({}) and {}; Tier 2 per the recipe; it waits for a human: {command}{hint}",
             lockfiles.join(", "),
             check.note,
         ),
@@ -1097,15 +1131,29 @@ pub(crate) fn land_branch_with_registry(
     // branch, the branch's lockfile kept for the check (main's over the branch's
     // manifest could never set up); a version still too young waits for its
     // date; a jump past a compatible range or a lockfile nobody can read waits
-    // for a human. A human landing the branch by hand has accepted its
+    // for a human - unless the jump is a security update the owner allowed in
+    // advance (`dependencies.major_updates = auto`), which lands like a version
+    // old enough. A human landing the branch by hand has accepted its
     // dependencies: the rule is only recorded for it. A sync landing is the
     // owner's published truth and is not asked.
     let lockfiles = branch_lockfiles(&files);
-    let mut age_check: Option<ReleaseAgeCheck> = None;
+    let mut dependencies_accepted = o.by_hand;
     if !o.sync && !lockfiles.is_empty() {
         let check = release_age_check(s, reg, &root, &def, &branch, &lockfiles, &now);
-        if o.by_hand || check.ready() {
-            record_release_age(s, &slug, &branch, &job, &actor, &now, &lockfiles, &check);
+        let authorized_major = major_jump_authorized(s, &job, &check);
+        if o.by_hand || check.ready() || authorized_major {
+            record_release_age(
+                s,
+                &slug,
+                &branch,
+                &job,
+                &actor,
+                &now,
+                &lockfiles,
+                &check,
+                authorized_major,
+            );
+            dependencies_accepted = true;
         } else if matches!(check.verdict, crate::release_age::AgeVerdict::Wait { .. }) {
             return Ok(wait_for_release_age(
                 s, &slug, &branch, &job, &actor, &now, &lockfiles, &check,
@@ -1115,12 +1163,11 @@ pub(crate) fn land_branch_with_registry(
                 s, &slug, &branch, &job, &actor, &now, &lockfiles, &check,
             ));
         }
-        age_check = Some(check);
     }
     // The branch's lockfiles and manifests stay for the check when the human
-    // landing it by hand accepted them or the rule found them old enough.
-    let keep_lockfiles =
-        !lockfiles.is_empty() && (o.by_hand || age_check.as_ref().is_some_and(|c| c.ready()));
+    // landing it by hand accepted them, the rule found them old enough, or the
+    // owner's setting allowed the security watcher's major upgrade.
+    let keep_lockfiles = !lockfiles.is_empty() && dependencies_accepted;
     let (on_default, clean) = checkout_state_pair(&root, &def);
     // A checkout parked on another branch is the human's; the landing then moves
     // `refs/heads/{def}` itself once the merge is verified and never touches the working
@@ -3674,6 +3721,124 @@ mod tests {
         let recorded = event_details(&s, "land.release-age");
         assert_eq!(recorded.len(), 1, "{recorded:?}");
         assert_eq!(recorded[0]["verdict"], "major");
+    }
+
+    /// The security watcher's major upgrade lands on its own when the owner
+    /// allowed such upgrades in advance (`dependencies.major_updates = auto`);
+    /// the same jump from any other job, or under `ask`, still waits for a
+    /// human - and the hold names the setting.
+    #[test]
+    fn a_security_major_jump_lands_when_the_owner_allowed_majors_in_advance() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/daemon/security-next-major";
+        let job = bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "17.0.0",
+            "package-lock.json",
+            &npm_lock("17.0.0"),
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET source = 'security:proj:package-lock.json:20' WHERE id = ?",
+            &[&job.str("id")],
+        );
+        let slug = project.str("slug");
+        let reg = next_registry();
+
+        // Under `ask` the watcher's branch is held like any other, with the
+        // setting that would let it land named in the note.
+        let held = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].state, "held", "{}", held[0].note);
+        assert!(
+            held[0]
+                .note
+                .contains("pulse settings set dependencies.major_updates auto"),
+            "{}",
+            held[0].note
+        );
+        assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
+        assert!(event_details(&s, "land.release-age").is_empty());
+
+        // The owner allows majors: the daemon's next look lands the branch,
+        // its lockfile kept for the check, and the record says who allowed it.
+        set_setting(&s, crate::release_age::MAJOR_UPDATES, "auto");
+        let later = crate::util::plus_minutes(TEST_NOW, (super::HELD_RECHECK_MINUTES + 1) as f64);
+        assert!(!super::held_branch_waits(&s, &slug, branch, &later));
+        let landed = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            &later,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(landed.len(), 1, "{landed:?}");
+        assert_eq!(landed[0].state, "landed", "{}", landed[0].note);
+        assert!(run(&root, &["git", "show", "main:package-lock.json"]).contains("17.0.0"));
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["verdict"], "major");
+        assert_eq!(recorded[0]["authorized"], "dependencies.major_updates");
+        assert_eq!(recorded[0]["pins"][0]["previous"], "16.3.8");
+    }
+
+    /// `dependencies.major_updates = auto` speaks for the security watcher
+    /// only: an agent's own major jump still waits for a human.
+    #[test]
+    fn an_agents_major_jump_still_waits_with_major_updates_auto() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/bump-next-major";
+        bump_next_fixture(
+            &s,
+            &mut project,
+            &root,
+            branch,
+            "17.0.0",
+            "package-lock.json",
+            &npm_lock("17.0.0"),
+        );
+        set_setting(&s, crate::release_age::MAJOR_UPDATES, "auto");
+        let reg = next_registry();
+        let held = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &reg,
+        );
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].state, "held", "{}", held[0].note);
+        assert!(
+            !held[0].note.contains("pulse settings set"),
+            "{}",
+            held[0].note
+        );
+        assert!(event_details(&s, "land.release-age").is_empty());
+        assert_eq!(event_details(&s, "land.held").len(), 1);
     }
 
     /// A lockfile the rule cannot read, and a registry that cannot date a

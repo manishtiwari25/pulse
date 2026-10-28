@@ -778,6 +778,130 @@ impl Pass<'_> {
         for (manifest, group) in by_manifest {
             self.manifest(&manifest, group);
         }
+        if self.auto_major {
+            self.answer_open_major_findings(&numbers);
+        }
+        if self.s.owner_away() {
+            self.answer_unfixable_findings_while_away(&numbers);
+        }
+    }
+
+    /// The jobs that cover the project's alerts (queued, running, or done
+    /// within the quiet period), alert number to job id, over every manifest.
+    fn covering_jobs(&self) -> BTreeMap<i64, String> {
+        let quiet_until = plus_hours(self.now, -QUIET_HOURS);
+        let prefix = format!("{SOURCE_PREFIX}{}:", self.slug);
+        must_rows(
+            self.conn,
+            "SELECT id, source, status, finished_at FROM jobs WHERE project = ? AND source LIKE ? ORDER BY created_at, id",
+            &[&self.slug, &format!("{prefix}%")],
+        )
+        .iter()
+        .filter(|j| {
+            matches!(
+                j.str("status").as_str(),
+                "queued" | "leased" | "running" | "blocked"
+            ) || j.str("finished_at") >= quiet_until
+        })
+        .flat_map(|j| {
+            let source = j.str("source");
+            source
+                .rsplit_once(':')
+                .map(|(_, numbers)| numbers.to_string())
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|n| n.parse::<i64>().ok())
+                .map(|n| (n, j.str("id")))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+    }
+
+    /// With `dependencies.major_updates = auto` every finding that once asked
+    /// the owner about a major upgrade is the setting's to answer, whether a
+    /// job already does the work, the patched version is still too young, or
+    /// the registry could not be read this pass: nothing waits for a human.
+    fn answer_open_major_findings(&mut self, open: &[i64]) {
+        let covered = self.covering_jobs();
+        let majors: Vec<(i64, String)> = open
+            .iter()
+            .map(|n| (*n, covered.get(n).cloned().unwrap_or_default()))
+            .collect();
+        self.answer_major_findings(&majors);
+    }
+
+    /// While the owner is away an advisory without a fixed version gets the
+    /// away default - No: keep watching - from the watcher itself, so the
+    /// finding never waits on a human who is not there; the alert can still
+    /// be worked around from the board.
+    fn answer_unfixable_findings_while_away(&mut self, open: &[i64]) {
+        let waiting = must_rows(
+            self.conn,
+            "SELECT e.detail, p.id AS post FROM events e JOIN posts p ON p.id = json_extract(e.detail, '$.post') \
+             WHERE e.action = 'security.unfixable' AND e.subject = ? \
+               AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
+             ORDER BY e.seq",
+            &[&self.slug],
+        );
+        for row in waiting {
+            let detail = crate::util::json_map(&row.str("detail"));
+            let number = detail.get("number").and_then(Value::as_i64).unwrap_or(-1);
+            if !open.contains(&number) {
+                continue;
+            }
+            let package = detail
+                .get("package")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let post = row.str("post");
+            let body = format!(
+                "The owner is away (`owner.presence = away`), and the away default for an advisory that names no fixed version is No: keep watching. Pulse queues the update for {package} the moment a patched version is published and at least {} days old, and answers this finding itself once GitHub closes the alert. A way around {package} can still be looked for: a suggestion on the board that names it is the lead's to plan.",
+                self.min_days
+            );
+            match crate::board::create_post(
+                self.s,
+                self.now.to_string(),
+                crate::board::PostOpts {
+                    kind: "answer".into(),
+                    project: self.slug.to_string(),
+                    area: BOARD_AREA.into(),
+                    thread: BOARD_THREAD.into(),
+                    summary: trunc(
+                        &format!(
+                            "Dependabot #{number}: the owner is away; pulse keeps watching {package} and queues the update the moment one is published and old enough"
+                        ),
+                        236,
+                    ),
+                    body,
+                    on: post.clone(),
+                    agent: crate::board::actor_agent(self.s, self.actor.to_string()),
+                    date: self.now.to_string(),
+                    ..Default::default()
+                },
+            ) {
+                Ok(answer) => {
+                    event_at(
+                        self.conn,
+                        self.now,
+                        self.actor,
+                        "security.away_default",
+                        self.slug,
+                        json!({"repo": self.repo, "number": number, "package": package, "post": post, "answer": answer.str("id"), "default": "keep watching"}),
+                    );
+                    self.lines.push(format!(
+                        "{}: Dependabot #{number} has no patched version and the owner is away; answered the finding {post} with the away default (keep watching)",
+                        self.slug
+                    ));
+                }
+                Err(e) => self.lines.push(format!(
+                    "{}: finding {post} of #{number} not answered: {}",
+                    self.slug,
+                    crate::run::err_message(&e)
+                )),
+            }
+        }
     }
 
     /// Answers the findings about alerts that are no longer open - the
@@ -1068,7 +1192,9 @@ impl Pass<'_> {
     /// upgrades in `majors` (alert number, job): with
     /// `dependencies.major_updates = auto` the setting has decided, so the
     /// hub stops listing them under "For you" and the owner is told which
-    /// job does the work.
+    /// job does the work - or, when no job covers the alert yet because the
+    /// patched version is still too young, that the watcher queues it on the
+    /// day it is old enough.
     fn answer_major_findings(&mut self, majors: &[(i64, String)]) {
         if majors.is_empty() {
             return;
@@ -1099,9 +1225,28 @@ impl Pass<'_> {
                 .unwrap_or_default()
                 .to_string();
             let post = row.str("post");
-            let body = format!(
-                "`{MAJOR_UPDATES}` is `auto`, so pulse makes this major upgrade itself: job {job} moves {package} to the {to} range, makes the code changes the new major needs, and lands only when the project's checks pass. Nothing is left to decide here; `pulse settings set {MAJOR_UPDATES} ask` brings the question back for the next one."
-            );
+            let (summary, body) = if job.is_empty() {
+                (
+                    format!(
+                        "Dependabot #{number}: upgrading {package} on its own ({MAJOR_UPDATES} is auto) once a {to}-range version is {} days old",
+                        self.min_days
+                    ),
+                    format!(
+                        "`{MAJOR_UPDATES}` is `auto`, so pulse makes this major upgrade itself: it queues the job the day a version in the {to} range is at least {} days old (`{}`), makes the code changes the new major needs, and lands only when the project's checks pass. Nothing is left to decide here; `pulse settings set {MAJOR_UPDATES} ask` brings the question back for the next one.",
+                        self.min_days,
+                        release_age::MIN_RELEASE_AGE_DAYS
+                    ),
+                )
+            } else {
+                (
+                    format!(
+                        "Dependabot #{number}: upgrading {package} on its own ({MAJOR_UPDATES} is auto); queued {job}"
+                    ),
+                    format!(
+                        "`{MAJOR_UPDATES}` is `auto`, so pulse makes this major upgrade itself: job {job} moves {package} to the {to} range, makes the code changes the new major needs, and lands only when the project's checks pass. Nothing is left to decide here; `pulse settings set {MAJOR_UPDATES} ask` brings the question back for the next one."
+                    ),
+                )
+            };
             match crate::board::create_post(
                 self.s,
                 self.now.to_string(),
@@ -1110,12 +1255,7 @@ impl Pass<'_> {
                     project: self.slug.to_string(),
                     area: BOARD_AREA.into(),
                     thread: BOARD_THREAD.into(),
-                    summary: trunc(
-                        &format!(
-                            "Dependabot #{number}: upgrading {package} on its own ({MAJOR_UPDATES} is auto); queued {job}"
-                        ),
-                        236,
-                    ),
+                    summary: trunc(&summary, 236),
                     body,
                     on: post.clone(),
                     agent: crate::board::actor_agent(self.s, self.actor.to_string()),
@@ -1132,10 +1272,17 @@ impl Pass<'_> {
                         self.slug,
                         json!({"repo": self.repo, "number": number, "package": package, "to": to, "post": post, "answer": answer.str("id"), "job": job}),
                     );
-                    self.lines.push(format!(
-                        "{}: Dependabot #{number}: {MAJOR_UPDATES} is auto; answered the finding {post} with job {job}",
-                        self.slug
-                    ));
+                    self.lines.push(if job.is_empty() {
+                        format!(
+                            "{}: Dependabot #{number}: {MAJOR_UPDATES} is auto; answered the finding {post} (the upgrade queues once a {to}-range version is old enough)",
+                            self.slug
+                        )
+                    } else {
+                        format!(
+                            "{}: Dependabot #{number}: {MAJOR_UPDATES} is auto; answered the finding {post} with job {job}",
+                            self.slug
+                        )
+                    });
                 }
                 Err(e) => self.lines.push(format!(
                     "{}: finding {post} of #{number} not answered: {}",
@@ -2182,6 +2329,179 @@ mod tests {
         tend_dependency_alerts_with(&s, "proj", &plus_hours(NOW, 2.0), "daemon", &fetch, &reg);
         assert_eq!(events(&s, "security.auto_major").len(), 1);
         assert_eq!(jobs(&s).len(), 1);
+    }
+
+    /// With `dependencies.major_updates = auto` no finding about a major
+    /// upgrade waits for the owner, even when no job covers the alert yet
+    /// because the patched version is still too young: the setting answers,
+    /// and the job comes on the day the version is old enough.
+    #[test]
+    fn with_major_updates_auto_a_major_still_too_young_is_answered_too() {
+        let _serial = crate::test_helpers::serial();
+        let (s, _root) = setup();
+        // 17.0.0 a day old at NOW (the rule says 3): nothing eligible in the
+        // patched range yet.
+        let reg = registry().with(
+            Ecosystem::Npm,
+            "next",
+            &[
+                ("16.3.8", "2026-09-30T10:00:00Z"),
+                ("17.0.0", "2026-10-25T12:00:00Z"),
+            ],
+        );
+        let alerts = vec![alert(
+            20,
+            "npm",
+            "next",
+            LOCK,
+            "16.3.8",
+            "direct",
+            ">= 16.0.0, < 17.0.0",
+            Some("17.0.0"),
+            "critical",
+        )];
+        let fetch = |_: &str| Ok(body(&alerts));
+        // Under `ask` the owner is asked.
+        tend_dependency_alerts_with(&s, "proj", NOW, "daemon", &fetch, &reg);
+        let finding = owner_findings(&s);
+        assert_eq!(finding.len(), 1, "{finding:?}");
+        assert!(is_open_ask(&s, &finding[0].str("id")));
+        // Under `auto` the setting answers although no job can be queued yet.
+        set_setting(&s, MAJOR_UPDATES, "auto");
+        let lines =
+            tend_dependency_alerts_with(&s, "proj", &plus_hours(NOW, 1.0), "daemon", &fetch, &reg);
+        assert!(jobs(&s).is_empty(), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("waits for next 17.0.0 to be")),
+            "{lines:?}"
+        );
+        assert!(!is_open_ask(&s, &finding[0].str("id")), "{lines:?}");
+        let answers = must_rows(
+            &s.conn().unwrap(),
+            "SELECT summary, body, on_post FROM posts WHERE kind = 'answer' AND project = 'proj'",
+            &[],
+        );
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].str("on_post"), finding[0].str("id"));
+        assert!(
+            answers[0]
+                .str("summary")
+                .contains("once a 17.0.0-range version is"),
+            "{}",
+            answers[0].str("summary")
+        );
+        assert!(
+            answers[0]
+                .str("body")
+                .contains("queues the job the day a version in the 17.0.0 range"),
+            "{}",
+            answers[0].str("body")
+        );
+        let ev = events(&s, "security.auto_major");
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert!(ev[0].str("detail").contains("\"job\": \"\""), "{ev:?}");
+        // Answered once; the owner's return changes nothing.
+        tend_dependency_alerts_with(&s, "proj", &plus_hours(NOW, 2.0), "daemon", &fetch, &reg);
+        assert_eq!(events(&s, "security.auto_major").len(), 1);
+    }
+
+    /// While the owner is away an alert with no patched version gets the
+    /// away default from the watcher itself - No: keep watching - so nothing
+    /// waits on a human who is not there; with the owner present the finding
+    /// stays theirs.
+    #[test]
+    fn while_the_owner_is_away_an_unfixable_alert_gets_the_away_default() {
+        let _serial = crate::test_helpers::serial();
+        let (s, _root) = setup();
+        let reg = registry();
+        let alerts = vec![alert(
+            30,
+            "npm",
+            "hono",
+            LOCK,
+            "4.13.7",
+            "direct",
+            "<= 4.13.11",
+            None,
+            "medium",
+        )];
+        let fetch = |_: &str| Ok(body(&alerts));
+        // Present: the owner is asked and the finding waits.
+        tend_dependency_alerts_with(&s, "proj", NOW, "daemon", &fetch, &reg);
+        let finding = owner_findings(&s);
+        assert_eq!(finding.len(), 1, "{finding:?}");
+        assert!(is_open_ask(&s, &finding[0].str("id")));
+        assert!(events(&s, "security.away_default").is_empty());
+        // Away: the next check answers it with the default.
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            "owner.presence",
+            pulse_store::OWNER_AWAY,
+        )
+        .unwrap();
+        assert!(s.owner_away());
+        let lines =
+            tend_dependency_alerts_with(&s, "proj", &plus_hours(NOW, 1.0), "daemon", &fetch, &reg);
+        assert!(!is_open_ask(&s, &finding[0].str("id")), "{lines:?}");
+        let answers = must_rows(
+            &s.conn().unwrap(),
+            "SELECT summary, body, on_post FROM posts WHERE kind = 'answer' AND project = 'proj'",
+            &[],
+        );
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].str("on_post"), finding[0].str("id"));
+        assert_eq!(
+            answers[0].str("summary"),
+            "Dependabot #30: the owner is away; pulse keeps watching hono and queues the update the moment one is published and old enough"
+        );
+        assert!(
+            answers[0].str("body").contains("away default")
+                && answers[0].str("body").contains("No: keep watching"),
+            "{}",
+            answers[0].str("body")
+        );
+        let ev = events(&s, "security.away_default");
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert!(
+            ev[0].str("detail").contains("\"number\": 30")
+                && ev[0]
+                    .str("detail")
+                    .contains("\"default\": \"keep watching\""),
+            "{ev:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("answered the finding") && l.contains("away default")),
+            "{lines:?}"
+        );
+        // Answered once; a new unfixable alert posted while away is answered
+        // in the same pass.
+        let more = vec![
+            alerts[0].clone(),
+            alert(
+                31, "npm", "fast-uri", LOCK, "3.1.8", "direct", "<= 3.1.9", None, "low",
+            ),
+        ];
+        let fetch_more = |_: &str| Ok(body(&more));
+        let lines = tend_dependency_alerts_with(
+            &s,
+            "proj",
+            &plus_hours(NOW, 2.0),
+            "daemon",
+            &fetch_more,
+            &reg,
+        );
+        assert_eq!(events(&s, "security.unfixable").len(), 2, "{lines:?}");
+        assert_eq!(events(&s, "security.away_default").len(), 2, "{lines:?}");
+        assert!(
+            owner_findings(&s)
+                .iter()
+                .all(|f| !is_open_ask(&s, &f.str("id"))),
+            "{lines:?}"
+        );
     }
 
     fn is_open_ask(s: &pulse_store::Store, id: &str) -> bool {
