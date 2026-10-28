@@ -43,12 +43,89 @@ impl Handler {
         {
             return true;
         }
-        if parts[2] == "remove" {
-            self.addition_project_remove(w, r, parts[1].clone());
-        } else {
-            self.addition_project_restore(w, r, parts[1].clone());
+        match parts[2].as_str() {
+            "remove" => self.addition_project_remove(w, r, parts[1].clone()),
+            "rename" => self.addition_project_rename(w, r, parts[1].clone()),
+            _ => self.addition_project_restore(w, r, parts[1].clone()),
         }
         true
+    }
+    // POST /api/v1/projects/<slug>/rename {"name": "..."}: the project's
+    // display name, shown wherever the console names the project; the slug
+    // (the id in every URL, job and post) never changes.
+    pub(crate) fn addition_project_rename(
+        &self,
+        w: &mut crate::httpx::ResponseWriter,
+        r: &crate::httpx::Request,
+        slug: String,
+    ) {
+        let (payload, ok) = crate::server::read_payload(w, r);
+        if !ok {
+            return;
+        }
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            crate::server::write_error(
+                w,
+                400,
+                "Missing name".into(),
+                "A project needs a name.".into(),
+                "Send {\"name\": \"...\"} with the new display name.".into(),
+            );
+            return;
+        }
+        let _lock = crate::additions::ADDITION_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        let before = match store.project(&slug) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                crate::addition_failure(
+                    w,
+                    pulse_cli::errorf(
+                        2,
+                        &format!("No project {slug}"),
+                        "only a registered project can be renamed",
+                        "pulse projects",
+                    )
+                    .to_string(),
+                );
+                return;
+            }
+            Err(err) => {
+                crate::addition_failure(w, err.to_string());
+                return;
+            }
+        };
+        if let Err(err) = store.rename_project(&slug, &name) {
+            crate::addition_failure(w, err.to_string());
+            return;
+        }
+        if before.name != name {
+            let _ = store.event(
+                pulse_store::HUMAN_AGENT,
+                "project.renamed",
+                &slug,
+                json!({"from": before.name, "to": name}),
+            );
+        }
+        crate::server::write_json(
+            w,
+            200,
+            json!(map_from_pairs(vec![
+                ("slug", json!(slug)),
+                ("name", json!(name)),
+                ("was", json!(before.name)),
+            ])),
+        );
     }
     pub(crate) fn addition_project_list(
         &self,
@@ -291,7 +368,7 @@ impl Handler {
 pub(crate) fn lifecycle_route(parts: Vec<String>) -> bool {
     match parts.len() {
         1 => true,
-        3 => matches!(parts[2].as_str(), "remove" | "restore" | "goal"),
+        3 => matches!(parts[2].as_str(), "remove" | "restore" | "rename" | "goal"),
         4 => parts[2] == "goal" && parts[3] == "review",
         _ => false,
     }
@@ -535,6 +612,59 @@ mod tests {
         )
         .unwrap();
         (s, p.slug)
+    }
+
+    #[test]
+    fn a_project_is_renamed_from_the_console_and_keeps_its_slug() {
+        let _serial = crate::test_helpers::serial();
+        let (s, slug) = starter_store();
+        let h = http::handler(&s);
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/rename"),
+            r#"{"name":"  Distillery (prod)  "}"#,
+        );
+        assert_eq!(status, 200, "rename: {result:?}");
+        assert_eq!(result["slug"], slug);
+        assert_eq!(result["name"], "Distillery (prod)");
+        assert_eq!(result["was"], "Seeded");
+        let project = s.project(&slug).unwrap().unwrap();
+        assert_eq!(project.name, "Distillery (prod)");
+        assert_eq!(project.slug, slug, "the slug is the id and never moves");
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        assert_eq!(status, 200);
+        assert_eq!(result["projects"][0]["name"], "Distillery (prod)");
+        let noted: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM events WHERE action='project.renamed' AND subject=?",
+                [&slug],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(noted, 1);
+
+        // An empty name, an unknown project and a GET are refused.
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/rename"),
+            r#"{"name":"   "}"#,
+        );
+        assert_eq!(status, 400, "{result:?}");
+        let (status, _) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/projects/nobody/rename",
+            r#"{"name":"x"}"#,
+        );
+        assert_ne!(status, 200);
+        let (status, _) =
+            http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/rename"), "");
+        assert_eq!(status, 405);
+        assert_eq!(s.project(&slug).unwrap().unwrap().name, "Distillery (prod)");
     }
 
     fn assert_evolution_shape(data: &crate::server::JsonMap) {

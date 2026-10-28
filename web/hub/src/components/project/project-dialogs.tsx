@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, FolderIcon, FolderSearchIcon, GitBranchIcon, HomeIcon, Loader2Icon, PencilLineIcon, PlusIcon, RotateCcwIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,8 @@ import { invalidate } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // The project lifecycle from the console (ADR-027): register a checkout
-// (`pulse init PATH`), remove a project or an executor after a preview
+// (`pulse init PATH`), rename a project (its display name; the slug in every
+// URL, job and post stays), remove a project or an executor after a preview
 // (`pulse remove … --dry-run`, then for real), and restore an inactive
 // project. Every write goes through the hub; nothing here touches disk.
 
@@ -342,6 +343,73 @@ export function FolderBrowser({ id, start, mode = "checkout", onPick, onClose }:
         </div>
       ) : null}
     </div>
+  );
+}
+
+// ----- rename ------------------------------------------------------------
+
+export function RenameDialog({ open, onOpenChange, slug, name, onRenamed }: { open: boolean; onOpenChange: (o: boolean) => void; slug: string; name: string; onRenamed?: (name: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+      <DialogContent className="sm:max-w-md">
+        <RenameBody slug={slug} name={name} busy={busy} setBusy={setBusy} onOpenChange={onOpenChange} onRenamed={onRenamed} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RenameBody({ slug, name, busy, setBusy, onOpenChange, onRenamed }: { slug: string; name: string; busy: boolean; setBusy: (b: boolean) => void; onOpenChange: (o: boolean) => void; onRenamed?: (name: string) => void }) {
+  const [draft, setDraft] = useState(name);
+  const next = draft.trim();
+  const unchanged = next === name.trim();
+  const tooLong = next.length > 120;
+  const apply = async () => {
+    if (!next || unchanged || tooLong) return;
+    setBusy(true);
+    const id = toast.loading("Renaming " + slug + "…");
+    try {
+      const r = await writes.renameProject(slug, next);
+      toast.success("Renamed to " + r.name + ".", { id });
+      invalidate();
+      onOpenChange(false);
+      onRenamed?.(r.name);
+    } catch (e) {
+      toast.dismiss(id);
+      showApiError(e, slug + " wasn't renamed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="contents"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void apply();
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle className="anywhere">{"Rename " + (name || slug)}</DialogTitle>
+        <DialogDescription className="anywhere">
+          The name is what the console calls this project. Its id <Mono>{slug}</Mono>, used in every link, job and post, stays the same.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-1.5">
+        <Label htmlFor="rename-project-name">Name</Label>
+        <Input id="rename-project-name" value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus maxLength={160} disabled={busy} aria-invalid={tooLong || undefined} />
+        {tooLong ? <p className="text-[13px] text-bad">A name can be at most 120 characters.</p> : null}
+      </div>
+      <DialogFooter>
+        <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+          Keep the old name
+        </Button>
+        <Button type="submit" disabled={busy || !next || unchanged || tooLong}>
+          {busy ? <Loader2Icon className="animate-spin" /> : <PencilLineIcon />}
+          Rename
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }
 

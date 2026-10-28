@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { MoreHorizontalIcon, Trash2Icon } from "lucide-react";
+import { MoreHorizontalIcon, PencilLineIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,7 +14,7 @@ import { CommonsLine, ProjectCard, workingRows } from "@/components/pulse/cards"
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
-import { AddProjectButton, RemoveDialog, RestoreButton } from "@/components/project/project-dialogs";
+import { AddProjectButton, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
 import { AmendmentsTab, ChatTab, CleanupTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
 import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
 import { allProjects, projectPath, registeredProjects, type Org, type ProjectCardData, type ProjectGoalPayload, type ProjectsPayload, type RegisteredProject, type Task, type TasksPayload } from "@/lib/api";
@@ -74,6 +74,7 @@ function ProjectScreen() {
   // The one "for you" count, shared with the home page and the sidebar.
   const inbox = useInbox();
   const [removing, setRemoving] = useState(false);
+  const [renaming, setRenaming] = useState(false);
 
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
@@ -151,7 +152,10 @@ function ProjectScreen() {
   const forYou = mine?.total ?? 0;
   const openList = (taskSummary.data?.tasks ?? []).filter((t) => t.status !== "done" && t.status !== "cancelled");
   const openTasks = openList.length;
-  const title = isCommons ? "Shared board" : slug;
+  // The project's own name leads; the slug (its id in every link) stands
+  // beside it once the two differ, so a renamed project is still findable.
+  const name = (card?.name || "").trim();
+  const title = isCommons ? "Shared board" : name && name !== slug ? name : slug;
   const goalText = (card?.goal_preview || goal.data?.goal?.text || "").trim();
   const sub = isCommons
     ? "The shared board is for work that touches more than one project. Agents from every project post, ask and vote here."
@@ -195,6 +199,9 @@ function ProjectScreen() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setRenaming(true)}>
+                      <PencilLineIcon /> Rename project…
+                    </DropdownMenuItem>
                     <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
                       <Trash2Icon /> Remove project…
                     </DropdownMenuItem>
@@ -215,7 +222,10 @@ function ProjectScreen() {
           ) : (
             <ProjectAvatar slug={slug} />
           )}
-          <span className="min-w-0 anywhere">{title}</span>
+          <span className="min-w-0 anywhere">
+            {title}
+            {!isCommons && title !== slug ? <span className="ml-2 align-middle font-mono text-[13px] font-normal text-muted-foreground">{slug}</span> : null}
+          </span>
         </span>
       </PageTitle>
 
@@ -232,6 +242,7 @@ function ProjectScreen() {
       <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
       <TaskSheet id={tab === "work" ? null : task} slug={slug} onClose={() => setParams({ task: null })} />
       {card && !card.brain && !isCommons ? <RemoveDialog open={removing} onOpenChange={setRemoving} kind="project" name={slug} onApplied={removed} /> : null}
+      {card && !card.brain && !isCommons ? <RenameDialog open={renaming} onOpenChange={setRenaming} slug={slug} name={card.name || slug} /> : null}
     </Tabs>
   );
 }

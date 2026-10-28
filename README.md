@@ -161,7 +161,10 @@ activity fold under **Details for this machine**.
   overwritten by generation.
 - **Projects** - add a checkout as a project (the same registration, recipe
   import and onboarding job as `pulse init`), typing its path or browsing the
-  machine's folders with checkouts and registered projects marked; remove one
+  machine's folders with checkouts and registered projects marked; rename one
+  from the project page's menu (`POST /api/v1/projects/<slug>/rename` with
+  `{"name": ...}` - the display name the console shows, while the slug in
+  every link, job and post stays); remove one
   after a preview of what deactivates, and restore a removed one from the
   picker. A checkout the runner made itself - a worker clone under
   `PULSE_HOME/work`, a fleet clone or measurement root under `PULSE_HOME/fleet`,
