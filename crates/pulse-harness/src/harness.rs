@@ -20,7 +20,9 @@ use crate::rewind::{self, Rewind};
 use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use anyhow::anyhow;
-use pulse_provider::{CancelToken, Message, Provider, Request, Role, Tool, ToolCall, Usage};
+use pulse_provider::{
+    CancelToken, ImageContent, Message, Provider, Request, Role, Tool, ToolCall, Usage,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1547,6 +1549,18 @@ impl Agent {
     /// answer), a budget or the user stops it, or the working directory
     /// is gone. The first turn sets the session up (prompt, hooks, notes).
     pub fn turn(&mut self, cancel: &CancelToken, text: &str) -> anyhow::Result<Turn> {
+        self.turn_with_images(cancel, text, Vec::new())
+    }
+
+    /// [`turn`](Self::turn) with images on the user's message: they ride
+    /// the message to the model (`Message.images`, which each provider maps
+    /// to its own shape or ignores) and stay in the trajectory with it.
+    pub fn turn_with_images(
+        &mut self,
+        cancel: &CancelToken,
+        text: &str,
+        images: Vec<ImageContent>,
+    ) -> anyhow::Result<Turn> {
         if !self.cfg.interactive {
             return Err(anyhow!(
                 "turn needs an interactive agent (Config.interactive)"
@@ -1577,7 +1591,7 @@ impl Agent {
         self.state.counted_format_errors = 0;
         self.state.used_format_retries = 0;
         self.rewind.begin_turn(&text, self.msgs.len());
-        self.push_user(text);
+        self.push_user_with_images(text, images);
         let drove = self.drive(cancel);
         if let Err(e) = self.rewind.end_turn() {
             self.emit(Step {
@@ -1721,13 +1735,17 @@ impl Agent {
     }
 
     fn push_user(&mut self, content: String) {
+        self.push_user_with_images(content, Vec::new());
+    }
+
+    fn push_user_with_images(&mut self, content: String, images: Vec<ImageContent>) {
         self.msgs.push(Message {
             role: Role::User,
             content,
             tool_calls: Vec::new(),
             tool_call_id: String::new(),
             name: String::new(),
-            ..Default::default()
+            images,
         });
     }
 

@@ -25,7 +25,7 @@ use crate::harness::{
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use pulse_cli::{Context, FlagSet};
-use pulse_provider::CancelToken;
+use pulse_provider::{CancelToken, ImageContent};
 use pulse_store::{Conversation as Row, Project, Store};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -294,7 +294,7 @@ struct LiveState {
     stream: String,
     pending: Option<Pending>,
     answer: Option<(u64, Answer)>,
-    queued: VecDeque<String>,
+    queued: VecDeque<Queued>,
     cancel: Option<CancelToken>,
     auto: bool,
     version: u64,
@@ -366,7 +366,7 @@ impl Shared {
             note: st.note.clone(),
             stream: st.stream.clone(),
             pending: st.pending.clone(),
-            queued: st.queued.iter().cloned().collect(),
+            queued: st.queued.iter().map(|q| q.text.clone()).collect(),
             turn_from: st.turn_from,
             turn_started_at: st.turn_started_at.clone(),
             auto_approve: st.auto,
@@ -558,6 +558,29 @@ struct Started {
     ended: bool,
 }
 
+/// One message waiting for the agent: its text as the model sees it and
+/// the images the owner attached inline (`Message.images`).
+#[derive(Clone, Debug, Default)]
+struct Queued {
+    text: String,
+    images: Vec<ImageContent>,
+}
+
+impl From<String> for Queued {
+    fn from(text: String) -> Self {
+        Queued {
+            text,
+            images: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for Queued {
+    fn from(text: &str) -> Self {
+        text.to_string().into()
+    }
+}
+
 /// The conversation's runtime: its queue, its live state and, once the
 /// first message arrives, its agent.
 pub struct Runtime {
@@ -590,10 +613,10 @@ impl Runtime {
     }
 
     /// Queues a message and makes sure a worker is running it.
-    fn enqueue(self: &Arc<Self>, text: String) {
+    fn enqueue(self: &Arc<Self>, message: impl Into<Queued>) {
         let spawn = {
             let mut st = self.shared.lock();
-            st.queued.push_back(text);
+            st.queued.push_back(message.into());
             let spawn = !st.worker;
             st.worker = true;
             self.shared.bump(&mut st);
@@ -622,7 +645,7 @@ impl Runtime {
                 next
             };
             match next {
-                Some(text) => self.turn(text),
+                Some(message) => self.turn(message),
                 None => break,
             }
         }
@@ -647,7 +670,8 @@ impl Runtime {
 
     /// Runs one turn: starts or restarts the agent when the workspace
     /// changed, sends the message, records what came back.
-    fn turn(self: &Arc<Self>, text: String) {
+    fn turn(self: &Arc<Self>, message: Queued) {
+        let Queued { text, images } = message;
         let row = match self.store.chat_get(&self.id) {
             Ok(Some(r)) if r.status != "archived" => r,
             _ => {
@@ -730,7 +754,7 @@ impl Runtime {
         let outcome = agent
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .turn(&cancel, &message);
+            .turn_with_images(&cancel, &message, images);
         if let Some(stop) = stop_watch {
             stop();
         }
@@ -779,7 +803,7 @@ impl Runtime {
                     self.shared
                         .lock()
                         .queued
-                        .push_front(RESUME_AFTER_PROVIDER_ERROR.to_string());
+                        .push_front(RESUME_AFTER_PROVIDER_ERROR.to_string().into());
                 }
                 let _ = self.store.chat_add_message(&self.id, "note", &line, &extra);
             }
@@ -847,10 +871,13 @@ impl Runtime {
             st.status = status;
             st.note = note.clone();
             if let Some(r) = &moved {
-                st.queued.push_front(format!(
-                    "You now work in {} (project {}, branch {}). Carry on with the request above from here.",
-                    r.cwd, r.project, r.branch
-                ));
+                st.queued.push_front(
+                    format!(
+                        "You now work in {} (project {}, branch {}). Carry on with the request above from here.",
+                        r.cwd, r.project, r.branch
+                    )
+                    .into(),
+                );
             }
             self.shared.bump(&mut st);
         }
@@ -1344,8 +1371,9 @@ impl Manager {
     /// Owner posts a message with inline images: each image is validated,
     /// its bytes saved into the attachments folder, and the stored message
     /// carries an `images` array so the hub can serve the bytes back at
-    /// `GET /api/v1/chat/{id}/image/{message}/{n}`. Only the text reaches
-    /// the agent; vision input is a later job.
+    /// `GET /api/v1/chat/{id}/image/{message}/{n}`. The images ride the
+    /// message to the model too (`Message.images`): a provider that takes
+    /// images shows them to the model, one that does not ignores them.
     pub fn send_with_images(
         &self,
         id: &str,
@@ -1357,8 +1385,13 @@ impl Manager {
             bail!("Invalid attachments: one message carries up to {ATTACHMENTS_PER_MESSAGE} files");
         }
         let mut stored: Vec<Value> = Vec::with_capacity(images.len());
+        let mut shown: Vec<ImageContent> = Vec::with_capacity(images.len());
         for (n, image) in images.iter().enumerate() {
             let data = image.decode()?;
+            shown.push(ImageContent {
+                media_type: image.mime.trim().to_ascii_lowercase(),
+                data: image.data.trim().to_string(),
+            });
             let name = if image.name.trim().is_empty() {
                 format!("image-{}.{}", n + 1, image.ext())
             } else {
@@ -1413,7 +1446,10 @@ impl Manager {
         };
         self.store.chat_add_message(id, "user", &text, &extra)?;
         let rt = self.runtime(&row);
-        rt.enqueue(message_with_attachments(&text, &files));
+        rt.enqueue(Queued {
+            text: message_with_attachments(&text, &files),
+            images: shown,
+        });
         Ok(())
     }
 
@@ -2656,6 +2692,25 @@ mod tests {
         assert_eq!(data, png);
         assert!(m.image(&row.id, user.n, 1).expect("none").is_none());
         assert!(m.image(&row.id, 9999, 0).expect("none").is_none());
+        // The model saw the image: it rides the user message in the
+        // trajectory as `images`, base64 as it arrived.
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let sent = traj
+            .messages
+            .iter()
+            .rfind(|m| m.content == "look")
+            .expect("the agent got the message");
+        assert_eq!(sent.images.len(), 1, "{sent:?}");
+        assert_eq!(sent.images[0].media_type, "image/png");
+        assert_eq!(sent.images[0].data, STANDARD.encode(&png));
+        // Text-only messages carry none.
+        assert!(
+            traj.messages
+                .iter()
+                .filter(|m| m.content != "look")
+                .all(|m| m.images.is_empty())
+        );
         // A renamed image keeps its own name.
         let named = ImageAttachment {
             name: "shot.webp".into(),

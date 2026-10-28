@@ -358,8 +358,11 @@ activity fold under **Details for this machine**.
   `pulse chat list [--all]` and `pulse chat show <id>` print what the page
   shows, and `/api/v1/chat` (`POST` to start, `GET /chat/<id>?since=N&after=N`
   for the transcript and live steps past what you hold, `/message` with an
-  optional `attachments` list of uploaded names, `/upload?name=` with the
-  raw bytes, `/attachments/<name>`, `/model`,
+  optional `attachments` list of uploaded names and an optional `images`
+  list of inline pictures (`mime`, base64 `data`, optional `name`; png, jpeg
+  or webp) that the model sees with the message when its provider takes
+  images and the hub shows back as thumbnails, `/upload?name=` with the
+  raw bytes, `/attachments/<name>`, `/image/<message>/<n>`, `/model`,
   `/answer`, `/approve`, `/cancel`, `/auto`, `/attach`, `/title`,
   `/archive`, `/diff`, `/artifacts/<name>`) serves other tools. The agents
   run inside the hub process: restarting the hub ends their turns, and the
