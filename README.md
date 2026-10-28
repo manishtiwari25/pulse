@@ -1899,6 +1899,7 @@ record, read with `pulse record show WF-evolve`.
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
 | `harness.max_steps` | `60` | Model calls one worker run may make before the harness stops it. |
+| `harness.task_max_steps` | - | Model calls a `task`, `improve` or `experiment` run may make before the harness stops it. Empty keeps these kinds on `harness.max_steps`, so a task can get a larger budget without the short kinds (answer, ballot, reflect, onboard) getting the same. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
 | `harness.commit_timeout` | `1500` seconds | Wall-clock cap on a `git commit`/`merge`/`rebase`/`cherry-pick`/`am` whose pre-commit hook is the runner's verify gate; never below `harness.step_timeout`, capped by the run's remaining minutes. A step that still times out tells the model the verify gate was running (and how long it waited for the verify lock) instead of the generic retry hint. |
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
@@ -2357,7 +2358,12 @@ returns to the agent for diagnosis.
 **Budgets**, or `pulse settings set`): `harness.max_steps` model calls (60), the wall
 clock (`minutes_per_job`, the harness stops one minute before the runner
 would kill it), and `harness.max_cost` - the provider-reported cost one run
-may spend, `0` meaning no cap. The unit is the provider's: Copilot sends
+may spend, `0` meaning no cap. The step budget is per kind in the shape of
+the per-kind model settings: `harness.task_max_steps` (empty by default)
+raises it for `task`, `improve` and `experiment` runs only - the kinds that
+write - while `answer`, `ballot`, `reflect` and `onboard` stay on
+`harness.max_steps`, so an owner task can have a larger budget without every
+short run getting one. The unit is the provider's: Copilot sends
 `usage.cost` only for some models, so a session's cost column shows `—`
 rather than a number when the vendor did not say - and a run whose provider
 reports no cost is bounded by the other two budgets alone. Whichever budget

@@ -1059,7 +1059,7 @@ pub(crate) fn worker_command(
         "-C".into(),
         clone.into(),
         "--max-steps".into(),
-        s.setting("harness.max_steps", ""),
+        s.run_max_steps(kind),
         "--step-timeout".into(),
         s.setting("harness.step_timeout", ""),
         "--commit-timeout".into(),
@@ -1638,6 +1638,12 @@ mod tests {
             .unwrap_or_default()
     }
 
+    fn flag_arg(cmd: &[String], flag: &str) -> String {
+        cmd.windows(2)
+            .find_map(|w| (w[0] == flag).then(|| w[1].clone()))
+            .unwrap_or_default()
+    }
+
     fn set_setting(s: &pulse_store::Store, key: &str, value: &str) {
         s.set_setting(crate::util::HUMAN_AGENT, key, value).unwrap();
     }
@@ -1722,6 +1728,29 @@ mod tests {
             worker_command(&s, "task", "brief", "/tmp/clone", "sh -c 'echo hi'", false);
         assert!(custom);
         assert_eq!(model_arg(&cmd), "");
+    }
+
+    #[test]
+    fn worker_command_task_max_steps_only_widens_the_implementation_kinds() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        set_setting(&s, "harness.max_steps", "150");
+        set_setting(&s, "harness.task_max_steps", "300");
+        // A task may spend more steps without the short kinds getting them.
+        for kind in ["task", "improve", "experiment"] {
+            let (cmd, _) = worker_command(&s, kind, "brief", "/tmp/clone", "", false);
+            assert_eq!(flag_arg(&cmd, "--max-steps"), "300", "{kind}");
+        }
+        for kind in ["answer", "ballot", "onboard", "reflect", "lead", "clean"] {
+            let (cmd, _) = worker_command(&s, kind, "brief", "/tmp/clone", "", false);
+            assert_eq!(flag_arg(&cmd, "--max-steps"), "150", "{kind}");
+        }
+        // none/off (and the empty default) fall back to harness.max_steps for every kind.
+        for off in ["none", "off"] {
+            set_setting(&s, "harness.task_max_steps", off);
+            let (cmd, _) = worker_command(&s, "task", "brief", "/tmp/clone", "", false);
+            assert_eq!(flag_arg(&cmd, "--max-steps"), "150", "{off}");
+        }
     }
 
     #[test]

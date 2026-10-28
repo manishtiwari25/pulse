@@ -155,6 +155,7 @@ const LABELS: Record<string, string> = {
   "provider.max_body_mb": "Largest provider reply to read (MiB)",
   provider: "Model provider",
   "harness.max_steps": "Steps per run",
+  "harness.task_max_steps": "Steps per task run",
   "harness.format_retries": "Free retries for replies in the wrong format",
   "chat.resume_after_provider_error_secs":
     "Resume a conversation once after a network provider error (seconds, 0 = off)",
@@ -286,6 +287,8 @@ const HELP: Record<string, string> = {
   "provider.vllm.base_url": "Where your vLLM server listens. A local server needs no API key.",
   provider: "Which model provider the built-in harness talks to.",
   "harness.max_steps": "How many model calls one run may make before it stops.",
+  "harness.task_max_steps":
+    "How many model calls a task, improve or experiment run may make before it stops. Empty keeps these on the steps-per-run budget, which still covers every other kind.",
   "harness.max_cost": "How many model credits one run may spend. 0 means no limit.",
   "harness.keep_observations": "How many recent command results stay in full in the prompt. Older ones are summarised.",
   "harness.context_window":

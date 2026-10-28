@@ -12,6 +12,7 @@ pub const BASELINE_CACHE_SETTINGS: &[&str] = &[
     "light_model",
     "provider",
     "harness.max_steps",
+    "harness.task_max_steps",
     "harness.step_timeout",
     "harness.commit_timeout",
     "harness.output_limit",
