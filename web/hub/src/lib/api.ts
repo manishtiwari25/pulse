@@ -251,6 +251,9 @@ export interface OwnerQuestion extends Who {
   stop: boolean;
   stale: boolean;
   thread_last: string;
+  // Who alone can answer: `owner`, `lead` (owner away), or `setting` (a
+  // policy answers it). Older hubs omit it - treat a missing value as owner.
+  decider?: "owner" | "lead" | "setting";
   slug?: string;
   base?: string;
 }

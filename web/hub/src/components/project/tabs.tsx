@@ -157,6 +157,11 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
                   >
                     For you
                   </SectionHeading>
+                  {mine.agentsDeciding > 0 ? (
+                    <p className="-mt-2 mb-3 text-xs text-muted-foreground">
+                      and {mine.agentsDeciding} more the agents are deciding (the lead while you are away, or a setting answers them).
+                    </p>
+                  ) : null}
                   <div className="grid gap-3">{asks.slice(0, 2)}</div>
                 </section>
               ) : null}
@@ -550,7 +555,9 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
       {(all) => {
         const mine = inbox.forProject(slug);
         // The project's own routes are the source for proposals and questions; the shared inbox adds the rest.
-        const questions = qs.data ?? mine.questions;
+        // Count only what the owner alone can decide: questions the lead answers while the owner is away, or that a setting answers, are the agents' to settle.
+        const questions = (qs.data ?? mine.questions).filter((x) => (x.decider ?? "owner") === "owner");
+        const agentsDeciding = (qs.data ?? mine.questions).length - questions.length;
         const awaiting = all.filter((p) => p.status === "awaiting");
         const decided = all.filter((p) => p.status !== "awaiting");
         const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.work.length + mine.drafts.length + mine.steps.length;
@@ -567,6 +574,7 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                   { id: "all", label: "All, with answered ones", n: waiting + decided.length },
                 ]}
               />
+              {agentsDeciding > 0 ? <span className="text-[13px] text-muted-foreground">{agentsDeciding} more the agents are deciding.</span> : null}
               {!canDecide ? <span className="text-[13px] text-muted-foreground">To answer, open PULSE on the machine that runs it.</span> : null}
             </Toolbar>
             {waiting || rows.length ? (

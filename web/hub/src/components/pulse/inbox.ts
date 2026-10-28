@@ -24,6 +24,9 @@ export interface InboxItems {
   decisions: RecordRow[];
   proposals: Proposal[];
   questions: OwnerQuestion[];
+  // Open questions the agents settle themselves (the lead while the owner is
+  // away, or a setting): not counted in `total`, only named beside For you.
+  agentsDeciding: number;
   compute: ComputeRequest[];
   work: WorkSuggestion[];
   drafts: { slug: string; r: DraftState }[];
@@ -66,7 +69,9 @@ export function buildInbox(q: InboxSources): Inbox {
   const gateOf = (p: ProjectCardData) => evolveGate(p, regRows.find((r) => r.slug === p.slug));
   const decisions = (q.proposed.data?.records ?? []).filter(awaitsDecision);
   const proposals = (o?.proposals ?? []).filter((p) => p.status === "awaiting");
-  const questions = sortOwnerQuestions(o?.questions ?? []);
+  const allQuestions = sortOwnerQuestions(o?.questions ?? []);
+  const questions = allQuestions.filter((x) => (x.decider ?? "owner") === "owner");
+  const agentsDeciding = allQuestions.length - questions.length;
   const compute = (q.compute.data?.requests ?? []).filter((r) => r.status === "pending");
   const work = (q.suggested?.data?.suggestions ?? []).filter((s) => s.status === "owner");
   const drafts = projects.flatMap((p) => {
@@ -78,7 +83,7 @@ export function buildInbox(q: InboxSources): Inbox {
   const steps = foldSteps(ownSteps);
   const daemon = daemonControlState({ runner: q.runner, service: q.service, settings: q.settings });
   const machine = daemon.pause === "on" || !!daemon.setup;
-  const all = { decisions, proposals, questions, compute, work, drafts, steps, machine };
+  const all = { decisions, proposals, questions, agentsDeciding, compute, work, drafts, steps, machine };
   const decisionsDown = !!q.proposed.error && !q.proposed.data;
   const computeDown = !!q.compute.error && !q.compute.data;
   return {
@@ -95,6 +100,7 @@ export function buildInbox(q: InboxSources): Inbox {
         decisions: decisions.filter((r) => r.project === slug),
         proposals: proposals.filter((p) => (p.slug || brain) === slug),
         questions: questions.filter((x) => (x.slug || brain) === slug),
+        agentsDeciding: allQuestions.filter((x) => ((x.decider ?? "owner") !== "owner") && (x.slug || brain) === slug).length,
         compute: compute.filter((r) => r.project === slug),
         work: work.filter((s) => s.project === slug),
         drafts: drafts.filter((d) => d.slug === slug),

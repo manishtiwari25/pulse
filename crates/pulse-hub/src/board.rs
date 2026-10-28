@@ -45,11 +45,12 @@ impl<T: Fields + ?Sized> Fields for &T {
 
 /// `POST_ROW_FIELDS` in bytewise order - the order a `BTreeMap` row
 /// serialized its keys in, so a row's JSON is unchanged.
-const POST_ROW_KEYS: [&str; 26] = [
+const POST_ROW_KEYS: [&str; 27] = [
     "agent",
     "area",
     "branch",
     "date",
+    "decider",
     "expires",
     "files",
     "has_read_line",
@@ -176,7 +177,7 @@ impl TallySource for NativeTally {
 /// store and `Handler::post_detail` reads them for the one post a request
 /// asks for, so a snapshot holds a few kilobytes per post rather than the
 /// whole board text (see `snapshot`).
-pub(crate) const POST_ROW_FIELDS: &str = "id rel_path area thread thread_key kind agent runner model session date branch expires on_post vote text_hash has_read_line resolution summary links files provenance_ok provenance_missing in_area name project";
+pub(crate) const POST_ROW_FIELDS: &str = "id rel_path area thread thread_key kind decider agent runner model session date branch expires on_post vote text_hash has_read_line resolution summary links files provenance_ok provenance_missing in_area name project";
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BoardData {
@@ -196,6 +197,10 @@ pub(crate) struct BoardData {
     /// loop's stop questions by construction): what waits for a yes or no
     /// that no worker may give.
     pub(crate) questions: Vec<JsonMap>,
+    /// Quiet note beside the owner questions: how many open ones the agents
+    /// are settling themselves (lead while the owner is away, or a setting),
+    /// so the For you count is only what the owner alone can decide.
+    pub(crate) questions_meta: JsonMap,
     pub(crate) suggestions: Vec<JsonMap>,
     pub(crate) amendments: Vec<JsonMap>,
     pub(crate) evolution: JsonMap,
@@ -322,7 +327,7 @@ impl crate::server::Handler {
                     let row = PostRow::new(
                         vec![
                             json!(f[3]), json!(f[0]), json!(f[1]), json!(f[2]), json!(format!("{}/{}", f[1], f[2])),
-                            json!(f[4]), json!(f[5]), json!(post.runner), json!(post.model), json!(f[12]),
+                            json!(f[4]), json!(""), json!(f[5]), json!(post.runner), json!(post.model), json!(f[12]),
                             json!(f[6]), json!(post.branch), json!(f[7]), json!(f[8]), json!(f[9]), json!(f[13]),
                             json!(if f[14] == "1" { 1 } else { 0 }), json!(f[10]), json!(f[11]), json!(post.links),
                             json!(post.files), json!(if missing.is_empty() { 1 } else { 0 }),
@@ -398,7 +403,7 @@ impl crate::server::Handler {
         };
         let plan_ctx = pulse_tally::plan_context_for(store, project, &now, plan_res);
         d.enrich_threads();
-        d.collect_owner_questions(&decided_posts(store, project)?, &db_posts);
+        d.collect_owner_questions(&decided_posts(store, project)?, &db_posts, Some(store));
         // The rows carry no body, so the body of a post that has a row comes
         // from the store post the row was built from (every row's id is a
         // `db_posts` key).
@@ -720,7 +725,13 @@ impl BoardData {
         &mut self,
         decided: &BTreeSet<String>,
         db_posts: &BTreeMap<String, pulse_tally::Post>,
+        store: Option<&pulse_store::Store>,
     ) {
+        let owner_away = store.is_some_and(|s| {
+            s.setting("owner.presence", pulse_store::OWNER_PRESENT) == pulse_store::OWNER_AWAY
+        });
+        let major_updates_auto =
+            store.is_some_and(|s| s.setting("dependencies.major_updates", "ask") == "auto");
         let threads = self
             .threads
             .iter()
@@ -753,8 +764,8 @@ impl BoardData {
                 if !OWNER_ASK_KINDS.contains(&kind.as_str()) || str_key(post, "area") == "jobs" {
                     continue;
                 }
-                let stop = kind == "question"
-                    && str_key(post, "summary") == pulse_store::EVOLUTION_STOP_SUMMARY;
+                let summary = str_key(post, "summary");
+                let stop = kind == "question" && summary == pulse_store::EVOLUTION_STOP_SUMMARY;
                 let id = str_key(post, "id");
                 let stored = db_posts.get(&id);
                 let for_owner = stored.is_some_and(|p| p.for_owner);
@@ -798,7 +809,7 @@ impl BoardData {
                     continue;
                 }
                 rows.push(object(
-                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last",
+                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider",
                     vec![
                         json!(id),
                         json!(key),
@@ -815,12 +826,31 @@ impl BoardData {
                         json!(stop),
                         json!(status == "stale"),
                         json!(last),
+                        json!(question_decider(
+                            &kind,
+                            &summary,
+                            owner_away,
+                            major_updates_auto
+                        )),
                     ],
                 ));
             }
         }
         order(&mut rows, &["-date", "id"]);
         rows.sort_by_key(|r| !r.get("stop").and_then(Value::as_bool).unwrap_or(false));
+        let delegated = rows
+            .iter()
+            .filter(|r| r.get("decider").and_then(Value::as_str).unwrap_or("owner") != "owner")
+            .count();
+        if delegated > 0 {
+            self.questions_meta.insert(
+                "agents_deciding".into(),
+                json!({
+                    "count": delegated,
+                    "note": format!("{delegated} more the agents are deciding (the lead while you are away, or a setting answers them)"),
+                }),
+            );
+        }
         self.questions = rows;
     }
 
@@ -1027,6 +1057,26 @@ impl BoardData {
             ],
         )
     }
+}
+
+/// Who alone can answer a question the owner was asked. A security finding
+/// about a major upgrade that `dependencies.major_updates = auto` queues
+/// itself is a `setting`'s call; while `owner.presence` is `away` the lead
+/// answers findings, handoffs and suggestions on the owner's behalf
+/// (edc518dc); everything else only the owner can decide.
+fn question_decider(
+    kind: &str,
+    summary: &str,
+    owner_away: bool,
+    major_updates_auto: bool,
+) -> &'static str {
+    if kind == "finding" && major_updates_auto && summary.contains("major upgrade") {
+        return "setting";
+    }
+    if owner_away && matches!(kind, "finding" | "handoff" | "suggestion") {
+        return "lead";
+    }
+    "owner"
 }
 
 pub(crate) fn str_value(v: &Value) -> String {
@@ -1451,6 +1501,7 @@ mod tests {
             json!("disk-floor"),
             json!("runner/disk-floor"),
             json!("finding"),
+            json!("owner"),
             json!("copilot-fable-1012-hub"),
             json!("copilot"),
             json!("claude-fable-5.1"),
@@ -2269,6 +2320,149 @@ mod tests {
         pulse_board::decide(&s, &unfixable.id, "no", "keep watching", "human").unwrap();
         let data = h.snapshot("one", "").unwrap();
         assert!(data.questions.is_empty(), "{:#?}", data.questions);
+    }
+
+    #[test]
+    fn owner_questions_split_by_decider() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let repo = repo();
+        pulse_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        join(&s, "alpha");
+        let post = |kind: &str, thread: &str, summary: &str, body: &str, date: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    kind: kind.into(),
+                    project: "one".into(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    agent: "alpha".into(),
+                    for_owner: true,
+                    summary: summary.into(),
+                    body: body.into(),
+                    on: "".into(),
+                    resolution: "".into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // One of each class: the owner's ask, a finding the lead answers
+        // while the owner is away, and a security major-upgrade finding a
+        // setting answers.
+        let own = post(
+            "question",
+            "own",
+            "Ship the rename?",
+            "Yes: Rename it\nNo: Keep it",
+            "2026-09-06T08:01:00Z",
+        );
+        let lead = post(
+            "handoff",
+            "lead",
+            "Run the queued cleanup?",
+            "The owner is away; the lead's call.",
+            "2026-09-06T08:02:00Z",
+        );
+        let setting = post(
+            "finding",
+            "dependabot",
+            "next needs 17.0.0 to fix #20, a major upgrade from 16.3.8: your call",
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me",
+            "2026-09-06T08:03:00Z",
+        );
+
+        let h = http::handler(&s);
+
+        // Owner present, no auto: all three are the owner's.
+        let data = h.snapshot("one", "").unwrap();
+        let deciders: Vec<(String, String)> = data
+            .questions
+            .iter()
+            .map(|q| {
+                let id = str_key(q, "id");
+                let who = if id == own.id {
+                    "own"
+                } else if id == lead.id {
+                    "lead"
+                } else {
+                    "setting"
+                };
+                (who.to_string(), str_key(q, "decider"))
+            })
+            .collect();
+        assert_eq!(deciders.len(), 3, "{:#?}", data.questions);
+        for (who, decider) in &deciders {
+            assert_eq!(decider, "owner", "{who}: {deciders:?}");
+        }
+        assert!(!data.questions_meta.contains_key("agents_deciding"));
+
+        // Owner away: the handoff and the finding become the lead's (the
+        // lead answers findings, handoffs and suggestions while the owner is
+        // away); only the question stays the owner's.
+        s.set_setting("human", "owner.presence", pulse_store::OWNER_AWAY)
+            .unwrap();
+        let data = h.snapshot("one", "").unwrap();
+        let by_id: std::collections::BTreeMap<String, String> = data
+            .questions
+            .iter()
+            .map(|q| (str_key(q, "id"), str_key(q, "decider")))
+            .collect();
+        assert_eq!(by_id[&own.id], "owner");
+        assert_eq!(by_id[&lead.id], "lead");
+        assert_eq!(by_id[&setting.id], "lead");
+        assert_eq!(
+            data.questions_meta["agents_deciding"]["count"],
+            serde_json::json!(2)
+        );
+        let view = crate::read::ProjectView {
+            project: s.project("one").unwrap().unwrap(),
+            data: Some(std::sync::Arc::new(data)),
+            error: String::new(),
+            present: true,
+            mark: String::new(),
+        };
+        assert_eq!(h.summary(&view)["owner_questions"], 1);
+
+        // Major upgrades on auto too: the finding is the setting's, leaving
+        // only the owner's own question in For you.
+        s.set_setting("human", "dependencies.major_updates", "auto")
+            .unwrap();
+        let data = h.snapshot("one", "").unwrap();
+        let by_id: std::collections::BTreeMap<String, String> = data
+            .questions
+            .iter()
+            .map(|q| (str_key(q, "id"), str_key(q, "decider")))
+            .collect();
+        assert_eq!(by_id[&own.id], "owner");
+        assert_eq!(by_id[&lead.id], "lead");
+        assert_eq!(by_id[&setting.id], "setting");
+        assert_eq!(
+            data.questions_meta["agents_deciding"]["count"],
+            serde_json::json!(2)
+        );
+        let view = crate::read::ProjectView {
+            project: s.project("one").unwrap().unwrap(),
+            data: Some(std::sync::Arc::new(data)),
+            error: String::new(),
+            present: true,
+            mark: String::new(),
+        };
+        assert_eq!(h.summary(&view)["owner_questions"], 1);
+        let org = h.org(std::slice::from_ref(&view));
+        assert_eq!(org["totals"]["owner_questions"], 1);
     }
 
     #[test]

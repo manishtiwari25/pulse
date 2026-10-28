@@ -93,7 +93,7 @@ export default function HubPage() {
 
   const o = org.data;
   const commons = o.commons;
-  const { decisions: adrs, proposals: awaiting, questions, compute: pendingCompute, work: suggestedWork, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
+  const { decisions: adrs, proposals: awaiting, questions, agentsDeciding, compute: pendingCompute, work: suggestedWork, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
   // Boards can hold many old owner questions; the inbox shows the first few and unfolds on request.
   const QUESTIONS_SHOWN = 6;
   const shownQuestions = allQuestions ? questions : questions.slice(0, QUESTIONS_SHOWN);
@@ -141,6 +141,11 @@ export default function HubPage() {
           <SectionHeading count={inbox} note={down.length ? <span className="text-warn">{down.join("; ")}.</span> : "Nothing here moves until you answer. Read what the agents found, then decide."}>
             For you
           </SectionHeading>
+          {agentsDeciding > 0 ? (
+            <p className="-mt-3 mb-4 text-xs text-muted-foreground">
+              and {agentsDeciding} more the agents are deciding (the lead while you are away, or a setting answers them).
+            </p>
+          ) : null}
           <CardGrid cols={2} className="max-xl:grid-cols-1">
             {adrs.map((rec) => (
               <ProposedRecordCard key={rec.project + "/" + rec.id} r={rec} onOpen={setOpenRecord} />

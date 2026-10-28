@@ -603,7 +603,15 @@ impl Handler {
                     .unwrap_or(Value::Null),
                 overview.get("threads_open").cloned().unwrap_or(Value::Null),
                 json!(questions_open),
-                json!(d.questions.len()),
+                json!(
+                    d.questions
+                        .iter()
+                        .filter(
+                            |q| q.get("decider").and_then(Value::as_str).unwrap_or("owner")
+                                == "owner"
+                        )
+                        .count()
+                ),
                 overview
                     .get("suggestions_eligible")
                     .cloned()
@@ -846,7 +854,16 @@ impl Handler {
                         json!(votes_open),
                         json!(votes_plannable),
                         json!(proposals.len()),
-                        json!(questions.len()),
+                        json!(
+                            questions
+                                .iter()
+                                .filter(|q| q
+                                    .get("decider")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("owner")
+                                    == "owner")
+                                .count()
+                        ),
                         questions_open,
                         json!(posts24),
                         json!(posts),
