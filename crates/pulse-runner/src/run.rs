@@ -1212,12 +1212,19 @@ pub(crate) fn run_job(
                 .ok()
                 .flatten()
                 .filter(|h| h.run_id == run_id);
+            let why = if crate::yield_lane::yielded(s, &job.str("id"), &run_id) {
+                "held so the owner's work could start first"
+            } else {
+                "held for the runner's restart"
+            };
             summary = match &held {
                 Some(h) => format!(
-                    "held for the runner's restart after {} steps; the next run carries on from harness session {}",
+                    "{why} after {} steps; the next run carries on from harness session {}",
                     h.steps, h.id
                 ),
-                None => "held for the runner's restart; no harness session to carry on, so the next run starts over".into(),
+                None => {
+                    format!("{why}; no harness session to carry on, so the next run starts over")
+                }
             };
             log.put(&summary);
             return Ok(());
@@ -2830,9 +2837,15 @@ pub(crate) fn pick_worker(
         }
     }
     // A worker with held work waiting in the queue goes first: only it can
-    // carry that work on, and nobody else may take it while it is free. Then
-    // the worker that leased least recently.
-    q.push_str("ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h JOIN jobs j ON j.id = h.job_id JOIN projects p ON p.slug = j.project WHERE h.agent = a.name AND h.status = 'held' AND j.status = 'queued' AND p.status = 'active') THEN 0 ELSE 1 END, COALESCE((SELECT MAX(e.seq) FROM events e WHERE e.actor = a.name AND e.action = 'job.lease'), 0), a.name LIMIT 1");
+    // carry that work on, and nobody else may take it while it is free -
+    // unless that work waits behind the owner's queued work in its project
+    // (yield_lane), when another worker takes the owner's job and this one
+    // stays free to carry its own on. Then the worker that leased least
+    // recently.
+    q.push_str(&format!(
+        "ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h JOIN jobs j ON j.id = h.job_id JOIN projects p ON p.slug = j.project WHERE h.agent = a.name AND h.status = 'held' AND j.status = 'queued' AND p.status = 'active' AND {}) THEN 0 ELSE 1 END, COALESCE((SELECT MAX(e.seq) FROM events e WHERE e.actor = a.name AND e.action = 'job.lease'), 0), a.name LIMIT 1",
+        crate::yield_lane::fleet_waits_sql()
+    ));
     let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| &**v).collect();
     let r = crate::util::must_one(&c, &q, &refs);
     if !is_nil(&r) {

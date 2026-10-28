@@ -88,6 +88,7 @@ pub mod toolkit;
 pub mod util;
 pub mod verify_lock;
 pub mod verify_memo;
+pub(crate) mod yield_lane;
 
 pub(crate) use board::*;
 pub use commands::*;

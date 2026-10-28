@@ -123,6 +123,11 @@ pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
 /// owner's, and queue with the fleet.
 pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
 
+/// [`OWNER_DRIVEN_SQL`] over another table alias.
+pub(crate) fn owner_driven_sql(alias: &str) -> String {
+    OWNER_DRIVEN_SQL.replace("j.", &format!("{alias}."))
+}
+
 /// [`OWNER_DRIVEN_SQL`] over a job row already in hand (a run in flight).
 pub(crate) fn is_owner_driven(job: &Row) -> bool {
     let kind = job.str("kind");
@@ -352,6 +357,11 @@ pub(crate) fn lease_job(
             vals.push(Box::new(slug.clone()));
             vals.push(Box::new(lanes.lanes));
         }
+        // The owner's work goes first in its project: while an owner-driven
+        // work job is queued there, the fleet's work jobs of that project
+        // wait (yield_lane: a fleet run in the way is asked to hold).
+        sql.push_str(" AND ");
+        sql.push_str(&crate::yield_lane::fleet_waits_sql());
         if !o.project.is_empty() {
             sql.push_str(" AND j.project = ?");
             vals.push(Box::new(o.project.clone()));
@@ -419,11 +429,13 @@ pub(crate) fn lease_job(
             pulse_tasks::suggestions::SOURCE_PREFIX
         ));
         vals.push(Box::new(agent.clone()));
-        // A job held for the runner's restart waits for the agent that held
-        // it, whose commits only it can carry on, while that agent is active
-        // and free; otherwise anyone takes it and starts over.
+        // A job held for the runner's restart or the owner's work waits for
+        // the agent that held it, whose commits only it can carry on, while
+        // that agent is active and free or busy with the owner's work (the
+        // work it yielded to); otherwise anyone takes it and starts over.
         sql.push_str(&format!(
-            " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN agents a ON a.name = h.agent WHERE h.job_id = j.id AND h.status = 'held' AND h.agent != ? AND a.status = 'active' AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.lease_agent = a.name AND {OCCUPIED_JOB_SQL}))"
+            " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN agents a ON a.name = h.agent WHERE h.job_id = j.id AND h.status = 'held' AND h.agent != ? AND a.status = 'active' AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.lease_agent = a.name AND {OCCUPIED_JOB_SQL} AND NOT {}))",
+            owner_driven_sql("k")
         ));
         vals.push(Box::new(agent.clone()));
         // The work this agent holds first - its clone and conversation carry
@@ -861,18 +873,24 @@ mod tests {
         // waits for borealis, who is active and free.
         let first = lease("aurora");
         assert_eq!(first.str("id"), other, "{first:?}");
-        // Its own agent takes it - before the owner's work, which anyone
-        // else can do.
+        // The owner's work queued in the project goes first, even for the
+        // holder (yield_lane); the held job waits for the holder while the
+        // holder is on the owner's work, and the holder takes it after.
         let owner_task = queue(&s, "proj", "improve", "task:TASK-1", 9);
-        let second = lease("borealis");
-        assert_eq!(second.str("id"), held, "{second:?}");
-        let owner_first = lease("cinder");
+        let owner_first = lease("borealis");
         assert_eq!(owner_first.str("id"), owner_task, "{owner_first:?}");
+        let waits = lease("cinder");
+        assert!(
+            waits.0.is_empty(),
+            "the held job left its holder, who is on the owner's work: {waits:?}"
+        );
         crate::util::exec1(
             &s.conn().unwrap(),
             "UPDATE jobs SET status = 'done', lease_agent = '', lease_until = '' WHERE id = ?",
             &[&owner_task],
         );
+        let second = lease("borealis");
+        assert_eq!(second.str("id"), held, "{second:?}");
         // Held again by borealis, who is now busy with it: cinder may take
         // it (and start over) rather than leave it waiting.
         crate::util::exec1(

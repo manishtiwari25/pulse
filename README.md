@@ -3223,6 +3223,25 @@ owner's work alone - one at a time, never while an owner run is already in
 flight, and only when `workers` leaves a hand to lend - with the line `every
 slot under daemon.max_jobs is busy with the fleet's work; one express slot
 stays open for the owner's work`.
+A free slot is not a free lane, though: a project's own work lanes
+(`parallel_per_project`, narrowed to what fits the commit cap while its
+checks take turns) count the fleet's runs and the owner's alike, so an owner's
+task queued behind one long fleet `improve` job in its project waited four
+hours while the daemon leased fifty runs in other projects around it. Now the
+owner's work goes first in its own project: while an owner-driven work job
+(`task:`, `security:`) is queued in a project, the fleet's work jobs of that
+project stay in the queue, and when every lane the owner's job needs is held
+and some by the fleet's runs, the daemon asks the youngest of those runs to
+hold at its current step - the same hold the restart uses: the clone and its
+commits stay, the job goes back to the queue costing it no attempt, and the
+same agent carries it on from its harness session once the owner's run has a
+lane. The daemon says `<project>: <job> (improve) holds after its current step
+so the owner's <job> can start; it carries on later`, writes a `job.yield`
+event on the fleet job (`project`, `run`, `to`), and the held run's summary
+reads `held so the owner's work could start first after N steps`. The owner's
+own runs are never held, and a project whose default branch is red is left
+alone: the owner's task waits behind the fix job there and holding the fix
+would only lengthen the wait.
 Remote hands carry their own load and are not capped by this machine's
 governor. Every run the daemon starts here - the worker, its `npm ci`, its
 test suite, the clone's removal - runs at nice 10, so the owner's own work and

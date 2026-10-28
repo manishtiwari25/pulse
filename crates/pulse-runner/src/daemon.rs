@@ -1438,6 +1438,9 @@ pub(crate) fn daemon(
                 {
                     say(&o, line);
                 }
+                for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor) {
+                    say(&o, line);
+                }
             }
             let conn = match s.conn() {
                 Ok(c) => Some(c),
