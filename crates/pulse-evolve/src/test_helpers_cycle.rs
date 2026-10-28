@@ -372,16 +372,29 @@ pub(crate) fn score_repo() -> (String, String) {
     (repo.display().to_string(), commit)
 }
 
+/// Scores every starter fixture against the commit. Each scorer is read-only on
+/// its own checkout (one `git -C DIR` per scorer, PULSE_HOME shared read-only), so
+/// they run on scoped threads: serially this helper was the slowest test in the
+/// suite (~100s of git subprocesses).
 pub(crate) fn all_scores(repo: &str, commit: &str) -> BTreeMap<String, i64> {
     let cancel = pulse_bus::CancellationToken::new();
-    let mut scores = BTreeMap::new();
-    for name in crate::score::starter_names() {
-        let (score, reason) =
-            crate::score::score_tree(&cancel, repo, &name, commit).expect("score tree");
-        assert_eq!(score == 1, reason.is_empty(), "{name}: {score} {reason}");
-        scores.insert(name, score);
-    }
-    scores
+    let names = crate::score::starter_names();
+    let results: Vec<(String, i64)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let cancel = &cancel;
+                scope.spawn(move || {
+                    let (score, reason) =
+                        crate::score::score_tree(cancel, repo, name, commit).expect("score tree");
+                    assert_eq!(score == 1, reason.is_empty(), "{name}: {score} {reason}");
+                    (name.clone(), score)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    results.into_iter().collect()
 }
 
 pub(crate) fn only(names: &[&str]) -> BTreeMap<String, i64> {
