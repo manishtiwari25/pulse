@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, ArrowRightIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, SearchIcon, SettingsIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, ArrowRightIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, SearchIcon, SettingsIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -29,7 +29,7 @@ import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Avatar, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import { THREAD_COLUMNS, ThreadCards, ThreadParticipants, ThreadSignals, threadTitle } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
-import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { SuggestedWorkPanel, WorkSuggestionCard } from "@/components/tasks/suggested-work";
@@ -556,8 +556,9 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
         const mine = inbox.forProject(slug);
         // The project's own routes are the source for proposals and questions; the shared inbox adds the rest.
         // Count only what the owner alone can decide: questions the lead answers while the owner is away, or that a setting answers, are the agents' to settle.
-        const questions = (qs.data ?? mine.questions).filter((x) => (x.decider ?? "owner") === "owner");
-        const agentsDeciding = (qs.data ?? mine.questions).length - questions.length;
+        const allQuestions = qs.data ?? mine.questions;
+        const questions = allQuestions.filter((x) => (x.decider ?? "owner") === "owner");
+        const agentsDecided = allQuestions.filter((x) => (x.decider ?? "owner") !== "owner");
         const awaiting = all.filter((p) => p.status === "awaiting");
         const decided = all.filter((p) => p.status !== "awaiting");
         const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.work.length + mine.drafts.length + mine.steps.length;
@@ -574,9 +575,10 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
                   { id: "all", label: "All, with answered ones", n: waiting + decided.length },
                 ]}
               />
-              {agentsDeciding > 0 ? <span className="text-[13px] text-muted-foreground">{agentsDeciding} more the agents are deciding.</span> : null}
+              {agentsDecided.length > 0 ? <span className="text-[13px] text-muted-foreground">{agentsDecided.length} more the agents are deciding.</span> : null}
               {!canDecide ? <span className="text-[13px] text-muted-foreground">To answer, open PULSE on the machine that runs it.</span> : null}
             </Toolbar>
+            {show === "all" && agentsDecided.length > 0 ? <AgentsDecidedAudit questions={agentsDecided} slug={slug} /> : null}
             {waiting || rows.length ? (
               <CardGrid cols={2}>
                 {mine.decisions.map((r) => (
@@ -611,6 +613,48 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
         );
       }}
     </Wait>
+  );
+}
+
+// The questions the agents settle themselves - the lead answers them while
+// the owner is away, or a setting answers them - kept out of every "N for
+// you" count but auditable here, collapsed under a toggle so the audit never
+// reads as more waiting work. The rows are read-only: the decision is already
+// recorded, so there are no buttons - only a link to the thread with the
+// answer.
+export const AGENTS_DECIDED_SUMMARY = "Answered by the agents";
+
+function whoSettled(decider: OwnerQuestion["decider"]): string {
+  return decider === "setting" ? "a setting" : "the lead";
+}
+
+export function AgentsDecidedAudit({ questions, slug }: { questions: OwnerQuestion[]; slug: string }) {
+  const [open, setOpen] = useState(false);
+  const hint = open ? null : <span>Settled by the lead or a setting; never counted as waiting for you.</span>;
+  return (
+    <div className="mb-4" data-agents-decided="">
+      <Disclosure summary={<span>{AGENTS_DECIDED_SUMMARY} · {num(questions.length)}</span>} hint={hint} open={open} onToggle={setOpen}>
+        <CardGrid cols={2}>
+          {questions.map((x) => (
+            <ItemCard key={x.id} ariaLabel={"Settled by " + whoSettled(x.decider) + ": " + x.summary}>
+              <ItemCardHeader right={<When d={x.date} />}>
+                <ItemCardKind icon={MessageCircleQuestionIcon}>Settled by {whoSettled(x.decider)}</ItemCardKind>
+              </ItemCardHeader>
+              <ItemCardTitle>{x.summary}</ItemCardTitle>
+              <ItemCardBody clamp={3}>{sentence(x.body)}</ItemCardBody>
+              <ItemCardActions>
+                <Who row={x} />
+                <span className="flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end">
+                  <Link href={hrefs.post(slug, x.id)} title={"Thread " + x.thread + ", post " + x.id} className="text-[13px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+                    See it on the board
+                  </Link>
+                </span>
+              </ItemCardActions>
+            </ItemCard>
+          ))}
+        </CardGrid>
+      </Disclosure>
+    </div>
   );
 }
 
