@@ -157,11 +157,15 @@ pub(crate) fn pre_commit_hook_script(
     b
 }
 
-/// The gate skips the rerun when this clone already verified the identical
-/// index tree with the identical verify command: the memo the hook below
-/// writes names the tree, the command hash and the clone, so a second commit
-/// of an unchanged tree (a reword, a split, a retry after a lock timeout) does
-/// not queue behind the project verify lock for another full run.
+/// The gate skips the rerun when this store already holds a fresh memo for the
+/// identical index tree verified with the identical verify command: the memo
+/// the hook below writes names the tree and the command hash, and lives under
+/// the store-shared `$PULSE_HOME/verified/<project>/`, so a second commit of an
+/// unchanged tree (a reword, a split, a retry after a lock timeout, or a commit
+/// in a sibling clone of the same store whose own verify just passed) does not
+/// queue behind the project verify lock for another full run. The verify lock
+/// serializes every clone's verify on the store; replaying a fresh same-store
+/// memo is what lets the clones that waited on that lock skip the rerun.
 fn prepend_verify_memo_skip(
     b: &mut String,
     verify_cmd: &str,
@@ -169,19 +173,18 @@ fn prepend_verify_memo_skip(
     pulse_home: &str,
     project: &str,
 ) {
+    let _ = clone;
     let hash = crate::verify_memo::verify_sha256(verify_cmd);
     let project_q = crate::util::shell_quote(project);
     let home_q = crate::util::shell_quote(pulse_home);
-    let clone_json = serde_json::to_string(clone).unwrap_or_else(|_| "\"\"".into());
     let needle_hash = crate::util::shell_quote(&format!("\"verify_sha256\":\"{hash}\""));
-    let needle_clone = crate::util::shell_quote(&format!("\"clone\":{clone_json}"));
     let _ = writeln!(
         b,
         "tree=$(git diff --quiet 2>/dev/null && git write-tree 2>/dev/null || true)
 if [ -n \"$tree\" ]; then
   memo=\"{home_q}/verified/\"{project_q}\"/$tree\"
-  if [ -f \"$memo\" ] && grep -qF -- {needle_hash} \"$memo\" 2>/dev/null && grep -qF -- {needle_clone} \"$memo\" 2>/dev/null; then
-    echo \"pulse: verify skipped: tree $tree already passed this verify in this clone\" >&2
+  if [ -f \"$memo\" ] && grep -qF -- {needle_hash} \"$memo\" 2>/dev/null; then
+    echo \"pulse: verify skipped: tree $tree already passed this verify on this store\" >&2
     exit 0
   fi
 fi"
@@ -523,11 +526,11 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A commit of a tree this clone already verified with the same command
-    /// (a reword, a retry after a lock timeout) skips the rerun; a new tree,
-    /// or a memo from another clone, still runs the verify.
+    /// A commit of a tree already verified on this store with the same command
+    /// (a reword, a retry after a lock timeout, or a sibling clone's verify of
+    /// the same tree) skips the rerun; a new tree still runs the verify.
     #[test]
-    fn pre_commit_hook_skips_verify_for_a_tree_already_verified_in_this_clone() {
+    fn pre_commit_hook_skips_verify_for_a_tree_already_verified_on_this_store() {
         let _serial = crate::test_helpers::serial();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -566,7 +569,9 @@ mod tests {
         git_in(&clone, &["commit", "-q", "-m", "two"]);
         assert_eq!(runs(), 2, "a new tree runs the verify");
 
-        // A memo written by another clone does not count for this one.
+        // A memo written by a sibling clone on the same store counts for this
+        // one: the verify lock serializes both clones, so replaying it is what
+        // spares the queued clone a serial rerun.
         let tree2 = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
         let memo_path = home.join("verified").join("proj").join(&tree2);
         let memo = std::fs::read_to_string(&memo_path).unwrap();
@@ -579,7 +584,11 @@ mod tests {
         )
         .unwrap();
         git_in(&clone, &["commit", "-q", "--amend", "-m", "two reworded"]);
-        assert_eq!(runs(), 3, "another clone's memo does not skip the verify");
+        assert_eq!(
+            runs(),
+            2,
+            "a sibling clone's memo on the store skips the verify"
+        );
     }
 
     /// The lock wrapper around a verify command ends in `exit`; the hook must
