@@ -647,7 +647,13 @@ fn block_mapping(
             continue;
         };
         let key = key.trim();
-        if key.is_empty() || key.contains([' ', '\t', '[', ']', '{', '}']) {
+        // A quoted key may hold anything (`"git *": allow`); a bare one
+        // with a space or a bracket is not a key at all.
+        let quoted = key.len() >= 2
+            && ((key.starts_with('"') && key.ends_with('"'))
+                || (key.starts_with('\'') && key.ends_with('\'')));
+        let key = if quoted { &key[1..key.len() - 1] } else { key };
+        if key.is_empty() || (!quoted && key.contains([' ', '\t', '[', ']', '{', '}'])) {
             continue;
         }
         let raw = block_uncomment(raw).trim();

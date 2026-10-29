@@ -7522,6 +7522,7 @@ mod tests {
             denied: Vec::new(),
             body: "Report only; never edit.".into(),
             source: ".claude/agents/reviewer.md".into(),
+            ..Default::default()
         }]);
         assert!(
             h.environment()
