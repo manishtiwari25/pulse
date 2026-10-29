@@ -1494,6 +1494,7 @@ dependencies = [
  "pulse-bus",
  "pulse-cli",
  "pulse-gitenv",
+ "pulse-harness",
  "pulse-provider",
  "pulse-provider-copilot",
  "pulse-runner",
