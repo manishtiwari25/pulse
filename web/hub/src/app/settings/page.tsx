@@ -48,7 +48,7 @@ const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
   { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.parallel", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
   { title: "Dependencies", keys: ["dependencies.security_updates", "dependencies.major_updates", "dependencies.min_release_age_days", "dependencies.alert_check_minutes"] },
-  { title: "Backups", keys: ["backup.to", "backup.every_hours", "backup.keep"] },
+  { title: "Backups", keys: ["backup.to", "backup.every_hours", "backup.keep", "backup.subscription"] },
   { title: "Votes on suggestions", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "board.stale_days", "lead.ballot_hours", "lead.ballot_cap"] },
   { title: "Lead agents", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "lead.idle_factor", "plan.operating_layer_per_day", "plan.operating_layer_fill"] },
   { title: "Rule changes", keys: ["amend_quorum", "amend_majority"] },

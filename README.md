@@ -3095,7 +3095,10 @@ mount must never turn into a new folder on the boot disk. The Azure destination
 uses the `az` CLI you are logged in to; it fetches the account key for the
 upload and passes it to `az` through the environment only, never on a command
 line, in the store, or in a log, and falls back to `--auth-mode login` when the
-key is not readable. The `run:` destination gets no pruning - the command owns
+key is not readable. When the account lives in a subscription other than the
+CLI's default, name it with `backup.subscription` (name or id): every `az`
+call then carries `--subscription`, so the key is found and the login's token
+is cut for that tenant. The `run:` destination gets no pruning - the command owns
 its remote. The outcome (size, digest, location, what was pruned, or the error)
 is recorded as `backup.done`/`backup.failed` on the bus and under the Cleanup
 panel in the console; a failed backup is tried again within the hour regardless

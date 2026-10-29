@@ -13,7 +13,8 @@
 //!   of the upload (`az storage account keys list`) and handed over in the
 //!   process environment, never written anywhere; when the key cannot be
 //!   read, or the account refuses shared-key access, the upload goes with the
-//!   login itself (`--auth-mode login`);
+//!   login itself (`--auth-mode login`). `backup.subscription` names the
+//!   subscription holding the account when it is not the CLI's default;
 //! - `run: COMMAND {file} {name}`: anything else - rclone, `aws s3 cp`, scp,
 //!   restic - run through `sh -c` with the two placeholders filled in.
 //!
@@ -40,6 +41,9 @@ pub(crate) const TO: &str = "backup.to";
 pub(crate) const EVERY_HOURS: &str = "backup.every_hours";
 /// Copies of this machine kept at the destination; 0 keeps every one.
 pub(crate) const KEEP: &str = "backup.keep";
+/// The Azure subscription holding the `az://` account when it is not the
+/// CLI's default; passed as `--subscription` to every `az` call. Empty: the default.
+pub(crate) const SUBSCRIPTION: &str = "backup.subscription";
 /// The meta key holding the last outcome.
 pub(crate) const META: &str = "backup";
 /// After a failed attempt the daemon tries again this much later.
@@ -190,6 +194,7 @@ pub(crate) fn run_backup_with(s: &pulse_store::Store, o: Opts, run: &Runner) -> 
         o.to.clone()
     };
     let keep = o.keep.unwrap_or_else(|| s.setting_int(KEEP)).max(0) as usize;
+    let subscription = s.setting(SUBSCRIPTION, "").trim().to_string();
     let mut out = Outcome {
         at: o.now.clone(),
         by: if o.actor.is_empty() {
@@ -219,8 +224,8 @@ pub(crate) fn run_backup_with(s: &pulse_store::Store, o: Opts, run: &Runner) -> 
         out.bytes = bytes;
         out.sha256 = sha;
         out.name = name.clone();
-        out.location = deliver(&dest, &gz, &name, run)?;
-        match prune(&dest, &host, keep, run) {
+        out.location = deliver(&dest, &gz, &name, &subscription, run)?;
+        match prune(&dest, &host, keep, &subscription, run) {
             Ok(removed) => out.removed = removed,
             Err(e) => {
                 out.error = format!(
@@ -298,6 +303,7 @@ pub fn status(s: &pulse_store::Store) -> Value {
         "to": to.trim(),
         "every_hours": s.setting_int(EVERY_HOURS),
         "keep": s.setting_int(KEEP),
+        "subscription": s.setting(SUBSCRIPTION, "").trim(),
         "last": last(s),
         "next_due": next_due(s),
     })
@@ -375,7 +381,13 @@ fn compress(src: &Path, dst: &Path) -> Result<(u64, String)> {
 }
 
 /// Puts the file where the destination says; answers where it is.
-fn deliver(dest: &Destination, file: &Path, name: &str, run: &Runner) -> Result<String> {
+fn deliver(
+    dest: &Destination,
+    file: &Path,
+    name: &str,
+    subscription: &str,
+    run: &Runner,
+) -> Result<String> {
     match dest {
         Destination::Dir(dir) => {
             if !dir.is_dir() {
@@ -423,7 +435,7 @@ fn deliver(dest: &Destination, file: &Path, name: &str, run: &Runner) -> Result<
                 "--output".into(),
                 "none".into(),
             ];
-            az_with_auth(account, &args, run)?;
+            az_with_auth(account, subscription, &args, run)?;
             Ok(format!(
                 "https://{account}.blob.core.windows.net/{container}/{blob}"
             ))
@@ -454,7 +466,13 @@ fn deliver(dest: &Destination, file: &Path, name: &str, run: &Runner) -> Result<
 }
 
 /// Removes this machine's copies beyond `keep` (newest kept); answers their names.
-fn prune(dest: &Destination, host: &str, keep: usize, run: &Runner) -> Result<Vec<String>> {
+fn prune(
+    dest: &Destination,
+    host: &str,
+    keep: usize,
+    subscription: &str,
+    run: &Runner,
+) -> Result<Vec<String>> {
     if keep == 0 {
         return Ok(Vec::new());
     }
@@ -483,6 +501,7 @@ fn prune(dest: &Destination, host: &str, keep: usize, run: &Runner) -> Result<Ve
         } => {
             let listed = az_with_auth(
                 account,
+                subscription,
                 &[
                     "storage".to_string(),
                     "blob".into(),
@@ -512,6 +531,7 @@ fn prune(dest: &Destination, host: &str, keep: usize, run: &Runner) -> Result<Ve
             for n in names.into_iter().take(extra) {
                 az_with_auth(
                     account,
+                    subscription,
                     &[
                         "storage".to_string(),
                         "blob".into(),
@@ -545,7 +565,15 @@ fn blob_name(prefix: &str, name: &str) -> String {
 
 /// Runs one `az storage ...` call: with the account key when it can be read
 /// (handed over in the environment), with the login otherwise. Answers stdout.
-fn az_with_auth(account: &str, args: &[String], run: &Runner) -> Result<String> {
+/// A `subscription` (`backup.subscription`) rides on every call as
+/// `--subscription`, so an account outside the CLI's default subscription is
+/// found for the key and the login's token is cut for the right tenant.
+fn az_with_auth(
+    account: &str,
+    subscription: &str,
+    args: &[String],
+    run: &Runner,
+) -> Result<String> {
     let base_env = vec![
         ("AZURE_CORE_NO_COLOR".to_string(), "true".to_string()),
         (
@@ -553,20 +581,24 @@ fn az_with_auth(account: &str, args: &[String], run: &Runner) -> Result<String> 
             "true".to_string(),
         ),
     ];
+    let args = with_subscription(args, subscription);
     let key = run(
         "az",
-        &[
-            "storage".to_string(),
-            "account".into(),
-            "keys".into(),
-            "list".into(),
-            "--account-name".into(),
-            account.to_string(),
-            "--query".into(),
-            "[0].value".into(),
-            "--output".into(),
-            "tsv".into(),
-        ],
+        &with_subscription(
+            &[
+                "storage".to_string(),
+                "account".into(),
+                "keys".into(),
+                "list".into(),
+                "--account-name".into(),
+                account.to_string(),
+                "--query".into(),
+                "[0].value".into(),
+                "--output".into(),
+                "tsv".into(),
+            ],
+            subscription,
+        ),
         &base_env,
         AZ_TIMEOUT,
     )
@@ -578,7 +610,7 @@ fn az_with_auth(account: &str, args: &[String], run: &Runner) -> Result<String> 
         let mut env = base_env.clone();
         env.push(("AZURE_STORAGE_KEY".into(), key));
         env.push(("AZURE_STORAGE_AUTH_MODE".into(), "key".into()));
-        let (rc, stdout, stderr) = run("az", args, &env, AZ_TIMEOUT)?;
+        let (rc, stdout, stderr) = run("az", &args, &env, AZ_TIMEOUT)?;
         if rc == 0 {
             return Ok(stdout);
         }
@@ -602,6 +634,16 @@ fn az_with_auth(account: &str, args: &[String], run: &Runner) -> Result<String> 
         args.iter().take(3).cloned().collect::<Vec<_>>().join(" "),
         tried.join("; ")
     ))
+}
+
+/// `args` plus `--subscription SUB` when one is set.
+fn with_subscription(args: &[String], subscription: &str) -> Vec<String> {
+    let mut out = args.to_vec();
+    if !subscription.trim().is_empty() {
+        out.push("--subscription".into());
+        out.push(subscription.trim().to_string());
+    }
+    out
 }
 
 fn az_text(stdout: &str, stderr: &str) -> String {
@@ -1035,6 +1077,12 @@ mod tests {
             "the key never travels as an argument"
         );
         assert!(!upload.1.contains(&"--auth-mode".to_string()));
+        assert!(
+            calls
+                .iter()
+                .all(|(_, a, _)| !a.contains(&"--subscription".to_string())),
+            "no subscription set: az works in its default one"
+        );
         let deletes = calls
             .iter()
             .filter(|(_, a, _)| a.get(2).map(String::as_str) == Some("delete"))
@@ -1043,6 +1091,69 @@ mod tests {
         // Nothing secret in what was recorded.
         let (raw, _) = s.meta(META).unwrap();
         assert!(!raw.contains("s3cr3tkey"));
+    }
+
+    #[test]
+    fn azure_calls_carry_backup_subscription_when_one_is_set() {
+        let s = new_store();
+        s.set_setting("owner", SUBSCRIPTION, " lamplitlabs-prod-de ")
+            .unwrap();
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        let host = host_name();
+        let seen = calls.clone();
+        let listed = format!(
+            "store/pulse-{host}-20260101T000000Z.sqlite.gz\nstore/pulse-{host}-20260906T100000Z.sqlite.gz\n"
+        );
+        let run = move |program: &str,
+                        args: &[String],
+                        env: &[(String, String)],
+                        _: Duration|
+              -> Result<(i32, String, String)> {
+            seen.lock()
+                .unwrap()
+                .push((program.to_string(), args.to_vec(), env.to_vec()));
+            let verb = args.iter().take(4).cloned().collect::<Vec<_>>().join(" ");
+            Ok(match verb.as_str() {
+                "storage account keys list" => (0, "s3cr3tkey==\n".into(), String::new()),
+                "storage blob upload --account-name" => (0, String::new(), String::new()),
+                "storage blob list --account-name" => (0, listed.clone(), String::new()),
+                "storage blob delete --account-name" => (0, String::new(), String::new()),
+                other => panic!("unexpected az call: {other}"),
+            })
+        };
+        let out = run_backup_with(
+            &s,
+            Opts {
+                to: "az://lamplitpulse/pulse-backups/store".into(),
+                keep: Some(1),
+                actor: "owner".into(),
+                now: TEST_NOW.into(),
+            },
+            &run,
+        );
+        assert!(out.ok, "{out:?}");
+        assert_eq!(out.removed.len(), 1);
+        let calls = calls.lock().unwrap();
+        // Three az_with_auth calls (upload, list, delete), each reading the key first: six
+        // az calls, every one in the named subscription.
+        assert_eq!(calls.len(), 6, "{calls:?}");
+        for (program, args, _) in calls.iter() {
+            assert_eq!(program, "az");
+            let at = args
+                .iter()
+                .position(|a| a == "--subscription")
+                .unwrap_or_else(|| panic!("--subscription missing in {args:?}"));
+            assert_eq!(
+                args.get(at + 1).map(String::as_str),
+                Some("lamplitlabs-prod-de")
+            );
+            assert_eq!(
+                args.iter().filter(|a| *a == "--subscription").count(),
+                1,
+                "{args:?}"
+            );
+        }
+        assert_eq!(status(&s)["subscription"], "lamplitlabs-prod-de");
     }
 
     #[test]
