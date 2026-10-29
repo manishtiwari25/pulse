@@ -1952,6 +1952,7 @@ Feed the blog of {slug}; {blocked_jobs} wait on the environment.
                 "/nonexistent/clone",
                 "",
                 false,
+                None,
             );
             cmd.windows(2)
                 .find_map(|w| (w[0] == "--model").then(|| w[1].clone()))

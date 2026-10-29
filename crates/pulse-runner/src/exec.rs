@@ -1039,11 +1039,24 @@ pub(crate) fn worker_command(
     worker_cmd: &str,
     remote: bool,
 ) -> (Vec<String>, bool) {
-    worker_command_as(s, kind, "", brief_text, clone, worker_cmd, remote)
+    worker_command_as(s, kind, "", brief_text, clone, worker_cmd, remote, None)
+}
+
+/// Whether the worker gets `--agent NAME` for this spec: a local worker
+/// has the store and the owner's home, a remote hand only its clone, so a
+/// spec that lives in a record or in `~/.pulse/agents` cannot be named to
+/// it (its model, step cap and read-only flag still travel as flags).
+pub(crate) fn agent_flag_travels(spec: &pulse_harness::agents::AgentDef, remote: bool) -> bool {
+    !remote || spec.layer.in_clone()
 }
 
 /// `worker_command` for a run whose role asks for a model class of its own
-/// (`model_class`, empty for the kind's own model).
+/// (`model_class`, empty for the kind's own model) and whose card an agent
+/// file selects (`spec`, see [`crate::agent_specs::spec_for_job`]): the
+/// worker runs as that agent, with its model when `models.allowed` lets it
+/// through, its step cap when lower than the kind's, read-only when it
+/// says so.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn worker_command_as(
     s: &pulse_store::Store,
     kind: &str,
@@ -1052,6 +1065,7 @@ pub(crate) fn worker_command_as(
     clone: &str,
     worker_cmd: &str,
     remote: bool,
+    spec: Option<&pulse_harness::agents::AgentDef>,
 ) -> (Vec<String>, bool) {
     if !worker_cmd.is_empty() {
         return (crate::util::split_shell(worker_cmd), true);
@@ -1073,7 +1087,7 @@ pub(crate) fn worker_command_as(
         "-C".into(),
         clone.into(),
         "--max-steps".into(),
-        s.run_max_steps(kind),
+        worker_max_steps(s, kind, spec),
         "--step-timeout".into(),
         s.setting("harness.step_timeout", ""),
         "--commit-timeout".into(),
@@ -1140,14 +1154,53 @@ pub(crate) fn worker_command_as(
     }
     // The jobs that look but do not touch run read-only: no edit or write
     // tool, commands that would change the clone refused.
-    if pulse_store::settings::READ_ONLY_JOB_KINDS.contains(&kind) {
+    if pulse_store::settings::READ_ONLY_JOB_KINDS.contains(&kind)
+        || spec.is_some_and(|a| a.read_only)
+    {
         cmd.push("--read-only".into());
     }
-    let model = s.run_model_class(kind, model_class);
+    if let Some(a) = spec
+        && agent_flag_travels(a, remote)
+    {
+        cmd.extend(["--agent".into(), a.name.clone()]);
+    }
+    let model = worker_model(s, kind, model_class, spec);
     if !model.is_empty() {
         cmd.extend(["--model".into(), model]);
     }
     (cmd, false)
+}
+
+/// The step cap a worker gets: the kind's (`harness.max_steps`,
+/// `harness.task_max_steps`), lowered to the agent's `max_steps` when the
+/// job runs as one.
+fn worker_max_steps(
+    s: &pulse_store::Store,
+    kind: &str,
+    spec: Option<&pulse_harness::agents::AgentDef>,
+) -> String {
+    let kinds = s.run_max_steps(kind);
+    match (spec.and_then(|a| a.max_steps), kinds.trim().parse::<u32>()) {
+        (Some(cap), Ok(n)) if cap < n => cap.to_string(),
+        _ => kinds,
+    }
+}
+
+/// The model a worker gets: the agent's when the job runs as one and
+/// `models.allowed` lets it through, else the kind's and class's
+/// (`run_model_class`).
+pub(crate) fn worker_model(
+    s: &pulse_store::Store,
+    kind: &str,
+    model_class: &str,
+    spec: Option<&pulse_harness::agents::AgentDef>,
+) -> String {
+    if let Some(m) = spec.and_then(|a| a.model.as_deref())
+        && pulse_harness::agents::model_allowed(&s.setting("models.allowed", ""), m)
+    {
+        return m.to_string();
+    }
+    s.run_model_class(kind, model_class)
 }
 pub(crate) fn local_cli(home: &str) -> String {
     std::env::current_exe()
@@ -1742,6 +1795,163 @@ mod tests {
             worker_command(&s, "task", "brief", "/tmp/clone", "sh -c 'echo hi'", false);
         assert!(custom);
         assert_eq!(model_arg(&cmd), "");
+    }
+
+    #[test]
+    fn worker_command_runs_as_the_agent_file_that_selects_the_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        set_setting(&s, "worker_model", "heavy-test");
+        set_setting(&s, "light_model", "light-test");
+        set_setting(&s, "harness.max_steps", "60");
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".pulse/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("rust-refactorer.md"),
+            "---\ndescription: Refactors Rust.\ntools: [read, grep, glob, bash, edit]\nmodel: kimi-k3\nmaxTurns: 40\npulse:\n  kinds: [task]\n  select:\n    tags: [refactor]\n---\nKeep every public signature.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("auditor.md"),
+            "---\ndescription: Audits.\nreadonly: true\npulse:\n  kinds: [task, answer]\n  select:\n    tags: [security]\n---\nLook, do not touch.\n",
+        )
+        .unwrap();
+        let checkout = dir.path().to_str().unwrap();
+        let job = |brief: &str| {
+            let mut j = crate::util::Row::new();
+            j.insert("id", serde_json::json!("J-1"));
+            j.insert("kind", serde_json::json!("task"));
+            j.insert("brief", serde_json::json!(brief));
+            j
+        };
+        let refactor = job("Tidy run.rs\nClass: refactor\nFile: crates/pulse-runner/src/run.rs\n");
+        let spec = crate::agent_specs::spec_for_job(&s, &refactor, "proj", checkout).unwrap();
+        assert_eq!(spec.name, "rust-refactorer");
+        assert!(
+            crate::agent_specs::spec_for_job(
+                &s,
+                &job("Add a feature\nClass: feature\n"),
+                "proj",
+                checkout
+            )
+            .is_none()
+        );
+
+        // models.allowed empty: the agent's model travels, with --agent and
+        // its lower step cap.
+        let (cmd, custom) = worker_command_as(
+            &s,
+            "task",
+            "",
+            "brief",
+            "/tmp/clone",
+            "",
+            false,
+            Some(&spec),
+        );
+        assert!(!custom);
+        assert_eq!(flag_arg(&cmd, "--agent"), "rust-refactorer");
+        assert_eq!(model_arg(&cmd), "kimi-k3");
+        assert_eq!(flag_arg(&cmd, "--max-steps"), "40");
+        assert!(!cmd.contains(&"--read-only".to_string()));
+
+        // models.allowed lists it: the same.
+        set_setting(&s, "models.allowed", "claude-*, kimi-k3");
+        let (cmd, _) = worker_command_as(
+            &s,
+            "task",
+            "",
+            "brief",
+            "/tmp/clone",
+            "",
+            false,
+            Some(&spec),
+        );
+        assert_eq!(model_arg(&cmd), "kimi-k3");
+        assert_eq!(flag_arg(&cmd, "--agent"), "rust-refactorer");
+
+        // models.allowed leaves it out: the class model, the agent still.
+        set_setting(&s, "models.allowed", "claude-*");
+        let (cmd, _) = worker_command_as(
+            &s,
+            "task",
+            "",
+            "brief",
+            "/tmp/clone",
+            "",
+            false,
+            Some(&spec),
+        );
+        assert_eq!(model_arg(&cmd), "heavy-test");
+        assert_eq!(flag_arg(&cmd, "--agent"), "rust-refactorer");
+        let (cmd, _) = worker_command_as(
+            &s,
+            "task",
+            "light",
+            "brief",
+            "/tmp/clone",
+            "",
+            false,
+            Some(&spec),
+        );
+        assert_eq!(
+            model_arg(&cmd),
+            "light-test",
+            "the role's class still routes"
+        );
+        assert_eq!(
+            worker_model(&s, "task", "", Some(&spec)),
+            "heavy-test",
+            "the board's agent row shows the model the worker gets"
+        );
+
+        // A remote hand reads its clone, so a repository-file agent travels
+        // by name; the kind's step cap holds when the agent's is higher.
+        set_setting(&s, "models.allowed", "");
+        set_setting(&s, "harness.max_steps", "30");
+        let (cmd, _) =
+            worker_command_as(&s, "task", "", "brief", "/tmp/clone", "", true, Some(&spec));
+        assert_eq!(flag_arg(&cmd, "--agent"), "rust-refactorer");
+        assert_eq!(flag_arg(&cmd, "--max-steps"), "30");
+        assert!(agent_flag_travels(&spec, true));
+        let mut record = spec.clone();
+        record.layer = pulse_harness::agents::AgentLayer::Store;
+        assert!(!agent_flag_travels(&record, true) && agent_flag_travels(&record, false));
+        let (cmd, _) = worker_command_as(
+            &s,
+            "task",
+            "",
+            "brief",
+            "/tmp/clone",
+            "",
+            true,
+            Some(&record),
+        );
+        assert_eq!(flag_arg(&cmd, "--agent"), "");
+        assert_eq!(model_arg(&cmd), "kimi-k3", "the model travels all the same");
+
+        // A read-only agent makes a task run read-only.
+        let audit = job("Check the login\nTags: security\n");
+        let spec = crate::agent_specs::spec_for_job(&s, &audit, "proj", checkout).unwrap();
+        assert_eq!(spec.name, "auditor");
+        let (cmd, _) = worker_command_as(
+            &s,
+            "task",
+            "",
+            "brief",
+            "/tmp/clone",
+            "",
+            false,
+            Some(&spec),
+        );
+        assert!(cmd.contains(&"--read-only".to_string()), "{cmd:?}");
+        assert_eq!(flag_arg(&cmd, "--agent"), "auditor");
+        assert_eq!(model_arg(&cmd), "heavy-test", "no model of its own");
+        // Without a spec nothing changes.
+        let (cmd, _) = worker_command_as(&s, "task", "", "brief", "/tmp/clone", "", false, None);
+        assert_eq!(flag_arg(&cmd, "--agent"), "");
+        assert_eq!(flag_arg(&cmd, "--max-steps"), "30");
     }
 
     #[test]

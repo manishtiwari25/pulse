@@ -1,4 +1,6 @@
-use crate::agents::{AgentDef, load_agent_specs};
+use crate::agents::{
+    AgentDef, load_agent_specs, model_allowed, standing_instructions, withheld_tools,
+};
 use crate::compact::DEFAULT_COMPACT_AT;
 use crate::fetch::FetchPolicy;
 use crate::harness::*;
@@ -222,6 +224,11 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         "reasoning",
         "",
         "reasoning effort asked of the model (minimal, low, medium, high, xhigh) where the provider takes one; empty leaves the model's default; overrides harness.reasoning",
+    );
+    fs.string_var(
+        "agent",
+        "",
+        "run as this custom agent (an agent record, ~/.pulse/agents, .pulse/agents, .claude/agents or .github/agents): its body becomes standing instructions, its tools and permissions deny what they leave out, its max_steps lowers --max-steps, readonly makes the run read-only and its model applies when models.allowed lets it (the runner sets this for a job whose kind and tags an agent file selects)",
     );
 }
 
@@ -456,13 +463,107 @@ pub(crate) fn prepare_agent_with(
             Err(e) => return Err(e),
         }
     }
-    let max_steps = setting_int_or(
+    let project = if opts.project.is_empty() {
+        std::env::var("PULSE_PROJECT").unwrap_or_default()
+    } else {
+        opts.project.clone()
+    };
+    let models_allowed = st
+        .as_ref()
+        .map_or_else(String::new, |s| s.setting("models.allowed", ""));
+    // The custom agent the run runs as (`--agent NAME`): resolved before
+    // the model is final, since the spec may choose it.
+    let mut agent_notes: Vec<String> = Vec::new();
+    let agent_spec = match fs.get_string("agent").trim() {
+        "" => None,
+        name => {
+            let specs = load_agent_specs(&abs_cwd, &c.home, st.as_ref(), &project);
+            let found = specs
+                .iter()
+                .find(|a| a.name == name)
+                .or_else(|| specs.iter().find(|a| a.name.eq_ignore_ascii_case(name)));
+            match found {
+                Some(a) if a.loads() => Some(a.clone()),
+                Some(a) => {
+                    return Err(errorf(
+                        2,
+                        &format!(
+                            "pulse harness {verb}: --agent {name}: {} does not load: {}",
+                            a.source,
+                            a.rejected.as_deref().unwrap_or("rejected")
+                        ),
+                        "",
+                        "fix the file (pulse agents lint) or drop --agent",
+                    )
+                    .into());
+                }
+                None => {
+                    let known: Vec<&str> = specs
+                        .iter()
+                        .filter(|a| a.loads())
+                        .map(|a| a.name.as_str())
+                        .collect();
+                    return Err(errorf(
+                        2,
+                        &format!("pulse harness {verb}: there is no custom agent {name:?}"),
+                        "",
+                        &if known.is_empty() {
+                            format!("add .pulse/agents/{name}.md or ~/.pulse/agents/{name}.md")
+                        } else {
+                            format!("the agents are {}", known.join(", "))
+                        },
+                    )
+                    .into());
+                }
+            }
+        }
+    };
+    if let Some(a) = &agent_spec {
+        agent_notes.push(format!(
+            "running as the {} agent ({}; {} characters of standing instructions{})",
+            a.name,
+            a.source,
+            a.body.chars().count(),
+            if a.warnings.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; {} lint warning(s), see pulse agents lint",
+                    a.warnings.len()
+                )
+            }
+        ));
+        if let Some(m) = &a.model
+            && fs.get_string("model").is_empty()
+            && *m != model_name
+        {
+            if model_allowed(&models_allowed, m) {
+                agent_notes.push(format!("model {m} from the {} agent", a.name));
+                model_name = m.clone();
+            } else {
+                agent_notes.push(format!(
+                    "the {} agent asks for model {m}, which models.allowed does not list; keeping {model_name}",
+                    a.name
+                ));
+            }
+        }
+    }
+    let mut max_steps = setting_int_or(
         fs,
         "max-steps",
         st.as_ref(),
         "harness.max_steps",
         DEFAULT_MAX_STEPS,
     );
+    if let Some(cap) = agent_spec.as_ref().and_then(|a| a.max_steps) {
+        let cap = i32::try_from(cap).unwrap_or(i32::MAX);
+        if cap < max_steps {
+            agent_notes.push(format!(
+                "max steps {max_steps} lowered to {cap} by the agent"
+            ));
+            max_steps = cap;
+        }
+    }
     let max_cost = if fs.get_f64("max-cost") != 0.0 {
         fs.get_f64("max-cost")
     } else {
@@ -561,11 +662,6 @@ pub(crate) fn prepare_agent_with(
     if let Some(log) = &step_log {
         sinks.push(Box::new(SharedStepsFileSink(log.clone())));
     }
-    let project = if opts.project.is_empty() {
-        std::env::var("PULSE_PROJECT").unwrap_or_default()
-    } else {
-        opts.project.clone()
-    };
     let mut rec_for_finish = None;
     if let Some(s) = &st {
         let mut rec = StoreSink::new(c, s.clone(), &session_id);
@@ -632,7 +728,7 @@ pub(crate) fn prepare_agent_with(
             s.setting_int("harness.compact_at") as i32
         }),
     };
-    let read_only = fs.get_bool("read-only");
+    let read_only = fs.get_bool("read-only") || agent_spec.as_ref().is_some_and(|a| a.read_only);
     let reasoning = {
         let flag = fs.get_string("reasoning").trim().to_lowercase();
         let v = if flag.is_empty() {
@@ -688,6 +784,12 @@ pub(crate) fn prepare_agent_with(
         reasoning,
         interactive,
         teach,
+        agent_instructions: agent_spec
+            .as_ref()
+            .map(standing_instructions)
+            .unwrap_or_default(),
+        models_allowed,
+        max_subagents: agent_spec.as_ref().and_then(|a| a.max_subagents),
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
@@ -718,6 +820,9 @@ pub(crate) fn prepare_agent_with(
         cfg,
         sinks,
     );
+    for note in agent_notes {
+        agent.note_at_start(note);
+    }
     if !instruction_files.is_empty() {
         agent.note_at_start(format!(
             "read repository instructions from {} ({} bytes) into the system prompt",
@@ -813,7 +918,19 @@ pub(crate) fn prepare_agent_with(
         agent.note_at_start(format!("web_search tool on through {}", search.describe()));
         agent.set_web_search(search);
     }
-    let permissions = permission_rules(fs, st.as_ref())?;
+    let mut permissions = permission_rules(fs, st.as_ref())?;
+    if let Some(a) = &agent_spec {
+        // The agent's tool list holds as deny rules, as it does for a
+        // helper: a tool outside it is neither offered nor run.
+        let offered = agent.offered_tool_names();
+        permissions.extend(withheld_tools(a, &offered).into_iter().map(|kind| Rule {
+            allow: false,
+            kind,
+            filter: None,
+            source: crate::permissions::Source::Agent,
+        }));
+        permissions.extend(a.permission_rules());
+    }
     if !permissions.is_empty() {
         let (allow, deny) = permissions.counts();
         agent.note_at_start(format!(
@@ -5275,6 +5392,202 @@ bye
         assert!(
             stderr.contains("--deny-tool: \"bash(curl\": missing the closing parenthesis"),
             "{stderr}"
+        );
+    }
+
+    #[test]
+    fn harness_run_as_a_custom_agent_applies_its_spec() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let p = dir.path().join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        };
+        write("src/lib.rs", "pub fn a() {}\n");
+        write(
+            ".pulse/agents/rust-refactorer.md",
+            "---\ndescription: Refactors Rust without changing behaviour.\ntools: [read, grep, glob, bash]\nmodel: kimi-k3\nmaxTurns: 7\npulse:\n  kinds: [task]\n  select:\n    tags: [refactor]\n  max_subagents: 0\n---\nKeep every public signature.\nRun the tests of the crate you touched.\n",
+        );
+        write(
+            ".pulse/agents/free.md",
+            "---\ndescription: Wants it all.\npermissionMode: bypassPermissions\n---\nAnything.\n",
+        );
+        let cwd = dir.path().to_str().unwrap();
+        let run = |session: &str, extra: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = [
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                cwd,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                session,
+                "--quiet",
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+            v.extend(extra.iter().map(|s| (*s).to_string()));
+            v
+        };
+        let notes = |session: &str| -> Vec<String> {
+            let (_h, steps) = s.harness_session(session).unwrap();
+            steps
+                .iter()
+                .filter(|st| st.kind == "note")
+                .map(|st| st.content.clone())
+                .collect()
+        };
+
+        // models.allowed is empty: the spec's model, steps, tools and body
+        // all apply to the main run.
+        let p = CommandFakeProvider::scripted(vec![
+            call("read", json!({"path": "src/lib.rs"})),
+            say("SUMMARY: read it"),
+        ]);
+        set_fake_provider(p.clone());
+        let args = run("agent-1", &["--agent", "rust-refactorer"]);
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].model, "kimi-k3");
+        let system = &reqs[0].messages[0].content;
+        assert!(
+            system.contains("You are an autonomous software engineering agent")
+                && system.contains(
+                    "You are the rust-refactorer agent. Your standing instructions follow"
+                )
+                && system.contains(
+                    "--- .pulse/agents/rust-refactorer.md ---\nKeep every public signature.\nRun the tests of the crate you touched.\n--- end of rust-refactorer ---"
+                ),
+            "{system}"
+        );
+        assert!(system.contains("at most 7 model calls"), "{system}");
+        let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"read")
+                && names.contains(&"grep")
+                && names.contains(&"glob")
+                && names.contains(&"bash")
+                && !names.contains(&"edit")
+                && !names.contains(&"write")
+                && !names.contains(&"subagent"),
+            "{names:?}"
+        );
+        let notes_1 = notes("agent-1");
+        assert!(
+            notes_1.iter().any(|n| n.starts_with(
+                "running as the rust-refactorer agent (.pulse/agents/rust-refactorer.md; "
+            )) && notes_1
+                .iter()
+                .any(|n| n == "model kimi-k3 from the rust-refactorer agent")
+                && notes_1
+                    .iter()
+                    .any(|n| n == "max steps 60 lowered to 7 by the agent")
+                && notes_1.iter().any(|n| n.starts_with(
+                    "custom agent .pulse/agents/free.md not loaded: `permissionMode: bypassPermissions`"
+                )),
+            "{notes_1:?}"
+        );
+        let (h, _steps) = s.harness_session("agent-1").unwrap();
+        assert_eq!(h.unwrap().model, "kimi-k3");
+
+        // Tools the spec leaves out are refused when the model asks anyway.
+        let p = CommandFakeProvider::scripted(vec![
+            call(
+                "edit",
+                json!({"path": "src/lib.rs", "old": "pub fn a() {}", "new": "pub fn b() {}"}),
+            ),
+            say("SUMMARY: tried"),
+        ]);
+        set_fake_provider(p.clone());
+        let args = run("agent-2", &["--agent", "rust-refactorer"]);
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let reqs = p.requests();
+        let reply = &reqs[1].messages.last().unwrap().content;
+        assert!(
+            reply.contains("edit: refused by permission rule `deny edit`"),
+            "the edit call is refused: {reply}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+            "pub fn a() {}\n"
+        );
+
+        // models.allowed without the spec's model: the run keeps its own
+        // model, says so, and the rest of the spec still applies.
+        s.set_setting("human", "models.allowed", "claude-*, gpt-5*")
+            .unwrap();
+        let p = CommandFakeProvider::scripted(vec![say("SUMMARY: ok")]);
+        set_fake_provider(p.clone());
+        let args = run("agent-3", &["--agent", "rust-refactorer"]);
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        let reqs = p.requests();
+        assert_eq!(reqs[0].model, "fake-model");
+        assert!(
+            reqs[0].messages[0]
+                .content
+                .contains("Keep every public signature.")
+        );
+        let notes_3 = notes("agent-3");
+        assert!(
+            notes_3.iter().any(|n| n
+                == "the rust-refactorer agent asks for model kimi-k3, which models.allowed does not list; keeping fake-model"),
+            "{notes_3:?}"
+        );
+
+        // An explicit --model wins over the spec's; an unknown agent and a
+        // rejected one are clear errors.
+        s.set_setting("human", "models.allowed", "").unwrap();
+        let p = CommandFakeProvider::scripted(vec![say("SUMMARY: ok")]);
+        set_fake_provider(p.clone());
+        let args = run(
+            "agent-4",
+            &["--agent", "rust-refactorer", "--model", "fake-model"],
+        );
+        let (out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 0, "stdout {out:?} stderr {err:?}");
+        assert_eq!(p.requests()[0].model, "fake-model");
+        let args = run("agent-5", &["--agent", "nobody"]);
+        let (_out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("there is no custom agent \"nobody\"")
+                && err.contains("the agents are rust-refactorer"),
+            "{err}"
+        );
+        let args = run("agent-6", &["--agent", "free"]);
+        let (_out, err, code) = invoke(
+            &s.home,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("--agent free: .pulse/agents/free.md does not load: `permissionMode: bypassPermissions`"),
+            "{err}"
         );
     }
 

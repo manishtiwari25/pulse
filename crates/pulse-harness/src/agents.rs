@@ -1271,6 +1271,21 @@ pub fn tool_names(given: &str) -> Vec<String> {
     }
 }
 
+/// The system-prompt section a run gets when it runs as this agent
+/// (`pulse harness run --agent NAME`): the body as standing instructions,
+/// wrapped the way the `subagent` tool wraps a helper's.
+pub fn standing_instructions(a: &AgentDef) -> String {
+    if a.body.trim().is_empty() {
+        return format!("You are the {} agent ({}).", a.name, a.source);
+    }
+    format!(
+        "You are the {name} agent. Your standing instructions follow; the task comes after them and the rules above still hold.\n\n--- {source} ---\n{body}\n--- end of {name} ---",
+        name = a.name,
+        source = a.source,
+        body = a.body.trim_end()
+    )
+}
+
 /// The tools of `offered` an agent loses: everything outside its `tools`
 /// list and everything `disallowedTools` names, as glob patterns a deny
 /// rule takes.

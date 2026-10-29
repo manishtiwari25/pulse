@@ -17,6 +17,7 @@ pulse-cred.workspace = true
 pulse-evolve.workspace = true
 pulse-gitenv.workspace = true
 pulse-goals.workspace = true
+pulse-harness.workspace = true
 pulse-hooks.workspace = true
 pulse-provider.workspace = true
 pulse-provider-copilot.workspace = true

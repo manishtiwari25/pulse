@@ -175,6 +175,7 @@ const LABELS: Record<string, string> = {
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
   "harness.deny_tools": "Tool calls a run refuses outright",
   "harness.allow_tools": "Tool calls a chat session runs without asking",
+  "models.allowed": "Models a custom agent file may ask for",
   "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
   "harness.reasoning": "Reasoning effort asked of the model",
   "harness.step_timeout": "Time limit per command (seconds)",
@@ -318,6 +319,8 @@ const HELP: Record<string, string> = {
     "Permission rules every run follows, comma-separated: a tool name or tool(filter) with * wildcards - bash(git push *), read(.env*), write(*.lock), subagent. A matching call is refused and the model is told; a tool denied whole is not offered. The job policy line stays on top.",
   "harness.allow_tools":
     "Permission rules for pulse harness chat, comma-separated: calls matching them run without the user's approval - bash(git *), bash(cargo *), edit(src/*), mcp__github__*. A deny rule wins. Jobs ask nobody, so this does not change them.",
+  "models.allowed":
+    "The models an agent file (.pulse/agents/<name>.md, .claude/agents, .github/agents, an agent record) may choose with its model key, comma-separated, * for a run of characters - kimi-k3, claude-*. Empty lets any model the provider accepts through. A model outside the list is ignored with a note and the run keeps its routing.",
   "harness.compact_at":
     "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. The summary call is free of the step cap. 0 turns compaction off.",
   "harness.reasoning":
