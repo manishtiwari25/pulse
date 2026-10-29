@@ -1724,7 +1724,13 @@ instead of waiting for another project's verify command. One worker holds a
 project's landing lock and lands that project's ready branches serially; later
 passes skip a project whose worker is still running. Experiments stay on a
 second thread, the experiment lane, which measures one experiment at a time; a
-ninety-minute measurement therefore holds no plain landing. The lane reuses a
+ninety-minute measurement therefore holds no plain landing. The lane obeys the
+load governor: while the machine is saturated (the `machine saturated` hold
+below) it does not start a measurement - the log says `landing experiment
+<branch> (<project>) waits: machine saturated: …` once per hold and the
+experiment is tried again after `lane.short_retry_minutes` - and a
+measurement in progress counts as a local run under `daemon.max_jobs`, since
+its two builds are load like any other. The lane reuses a
 cached baseline when the default-branch commit, fixture hash and TTL still
 match, logging `baseline for <commit7> reused from <at> (score <x>)`; archive
 notes say `baseline: reused <at>` or `baseline: measured`. It measures the
@@ -3327,7 +3333,9 @@ the laptop hot for most of a day, so the daemon also exports
 `CARGO_BUILD_JOBS=<daemon.build_jobs>` (default 0: half the physical cores) to
 everything it spawns - a worker's `cargo test`, the pre-commit verification
 that inherits the worker's environment, the landing verification, the
-self-update build's `-j` - whenever the environment does not set it already,
+self-update build's `-j`, the experiment lane's measurements (each fixture's
+share of the cores, `evolve.measure_parallel`, never over this cap) - whenever
+the environment does not set it already,
 so an owner's own export or a recipe's `env:` wins and a `-j` on a command
 line still overrides it. Other toolchains read their own variables
 (`GOMAXPROCS`, `MAKEFLAGS`); a recipe sets those where a project needs them. The daemon itself

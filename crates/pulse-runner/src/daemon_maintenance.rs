@@ -76,6 +76,9 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) pass_noted: bool,
     pub(crate) pass_restart_noted: bool,
     pub(crate) lane_disk_floor: bool,
+    /// Whether the lane's wait for the load governor was said; it is said
+    /// once per hold, not every tick.
+    pub(crate) lane_load_hold: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -441,6 +444,21 @@ impl DaemonMaintenance {
         }
         self.lane_disk_floor = false;
         let (project, job) = self.next_experiment(s, projects, now)?;
+        // A measurement is two builds: while the governor holds, the lane
+        // waits like a leased run would, instead of deferring every two
+        // minutes on a thread of its own (the landing checks again itself).
+        if let Some(why) = crate::experiment::measure_hold(s) {
+            if self.lane_load_hold {
+                return None;
+            }
+            self.lane_load_hold = true;
+            return Some(format!(
+                "landing experiment {} ({}) waits: {why}",
+                job.str("branch"),
+                project.str("slug")
+            ));
+        }
+        self.lane_load_hold = false;
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = cancel.child();
         self.lane = Some(rx);
@@ -1035,6 +1053,60 @@ mod tests {
             m.next_experiment(&s, &projects, TEST_NOW).is_none(),
             "project under a landing retry hold was offered"
         );
+    }
+
+    #[test]
+    fn start_lane_waits_for_the_load_governor_and_says_so_once() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        set_setting(&s, "landing", "agents");
+        set_setting(&s, "daemon.min_free_mb", "0");
+        pending_experiment(&s, &dir, "first", TEST_NOW);
+        let cancel = pulse_bus::CancellationToken::new();
+        let projects = vec![proj];
+        let mut m = DaemonMaintenance::default();
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        });
+        let line = m
+            .start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+            .expect("the hold was not said");
+        assert!(
+            line.contains(
+                "landing experiment evolve/first (proj) waits: machine saturated: load 40.0 on"
+            ),
+            "line = {line}"
+        );
+        assert!(m.lane.is_none(), "lane started under a hold");
+        assert!(
+            m.start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+                .is_none(),
+            "the hold was said twice"
+        );
+        drop(saturated);
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+        let old = pulse_evolve::set_measure(Box::new(move |ctx, _s, _p, _r, _ref, _o| {
+            let _ = started_tx.send(());
+            while !ctx.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            anyhow::bail!("context canceled")
+        }));
+        let line = m
+            .start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+            .expect("lane did not start once the hold lifted");
+        assert!(line.contains("measuring on the experiment lane"), "{line}");
+        assert!(!m.lane_load_hold);
+        started_rx
+            .recv_timeout(test_wait(Duration::from_secs(10)))
+            .expect("lane never measured");
+        m.cancel_lane();
+        let _ = m.finish(&s, &cancel, None);
+        let _ = pulse_evolve::set_measure(old);
     }
 
     #[test]

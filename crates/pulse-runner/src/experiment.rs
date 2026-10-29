@@ -288,9 +288,14 @@ fn log_patch_skip(s: &pulse_store::Store, actor: &str, now: &str, branch: &str, 
 /// Why a measurement must wait, if the machine is saturated. A measurement is
 /// two builds, so the lane obeys the daemon's hold like a leased run does,
 /// instead of adding load on top of the runs the governor already refused.
-fn measure_hold(s: &pulse_store::Store) -> Option<String> {
-    let limits = crate::daemon_load::limits(s, &crate::daemon_load::Machine::detect(), 0);
-    crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure())
+pub(crate) fn measure_hold(s: &pulse_store::Store) -> Option<String> {
+    crate::daemon_load::hold_reason(&measure_limits(s), &crate::daemon_load::pressure())
+}
+
+/// The governor's limits as the lane sees them (no `--max-jobs` flag here:
+/// the lane measures on the daemon's and on `pulse land`'s machine alike).
+fn measure_limits(s: &pulse_store::Store) -> crate::daemon_load::Limits {
+    crate::daemon_load::limits(s, &crate::daemon_load::Machine::detect(), 0)
 }
 
 pub(crate) fn land_experiment(
@@ -496,12 +501,16 @@ pub(crate) fn land_experiment_context(
             Err(e) => return ("error".into(), crate::run::err_message(&e)),
         }
     }
-    if let Some(why) = measure_hold(s) {
+    let limits = measure_limits(s);
+    if let Some(why) = crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure()) {
         return (
             "deferred".into(),
             format!("{branch} not landed: measuring waits - {why}"),
         );
     }
+    // The measurement's builds obey daemon.build_jobs as a worker's do;
+    // pulse-evolve has no store, so the cap is handed over here.
+    pulse_evolve::process::set_build_jobs(usize::try_from(limits.build_jobs).unwrap_or(0));
     let _measuring = crate::daemon_load::MeasuringMark::new(&s.home);
     let ctx = parent.with_timeout(EXPERIMENT_MEASURE_BUDGET);
     let unavailable = |what: String, err: anyhow::Error| -> (String, String) {
@@ -889,14 +898,16 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let (s, project, job, _root, calls) = measured_keep_fixture();
-        let marks: std::sync::Arc<std::sync::Mutex<Vec<usize>>> = Default::default();
+        set_setting(&s, "daemon.build_jobs", "3");
+        let marks: std::sync::Arc<std::sync::Mutex<Vec<(usize, usize)>>> = Default::default();
         let seen = marks.clone();
         let home = s.home.clone();
         let _old =
             pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
-                seen.lock()
-                    .unwrap()
-                    .push(crate::daemon_load::measuring(&home));
+                seen.lock().unwrap().push((
+                    crate::daemon_load::measuring(&home),
+                    pulse_evolve::process::build_jobs(),
+                ));
                 let score = if r#ref == "main" { 0.8 } else { 0.9 };
                 Ok(pulse_evolve::Scores {
                     project: slug.into(),
@@ -938,9 +949,11 @@ mod tests {
             true,
         );
         assert_eq!(state, "landed", "{note}");
-        // Both measurements ran under the lane's mark, and the mark went with them.
-        assert_eq!(marks.lock().unwrap().clone(), vec![1, 1]);
+        // Both measurements ran under the lane's mark with the daemon's build
+        // cap handed to pulse-evolve, and the mark went with them.
+        assert_eq!(marks.lock().unwrap().clone(), vec![(1, 3), (1, 3)]);
         assert_eq!(crate::daemon_load::measuring(&s.home), 0);
+        pulse_evolve::process::set_build_jobs(0);
     }
 
     #[test]
