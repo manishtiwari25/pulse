@@ -2368,8 +2368,25 @@ mod tests {
             "down when its Hypothesis names no check or user-visible behaviour that will move";
         const OPERATING_RULE: &str = "or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week";
         const SCOPE_OFF: &str = "Product scope is off on this project, so an operating-layer card is in scope when its Hypothesis names the check, count or flake it moves";
-        // No EVO-evaluators record: product scope is off, and the operating
-        // layer is the only lane the ballot feeds.
+        let set_scope = |line: &str| {
+            s.put_record(
+                pulse_store::Record {
+                    id: "EVO-evaluators-proj".into(),
+                    project: "proj".into(),
+                    kind: "evolution".into(),
+                    slug: "evaluators".into(),
+                    ..Default::default()
+                },
+                BTreeMap::new(),
+                line,
+                pulse_store::HUMAN_AGENT,
+                "fixture",
+            )
+            .expect("evaluators record");
+        };
+        // The owner closed product scope: the operating layer is the only
+        // lane the ballot feeds.
+        set_scope("Product scope: off\n");
         let brief = ballot_brief();
         assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
         assert!(brief.contains(SCOPE_OFF), "{brief}");
@@ -2381,20 +2398,7 @@ mod tests {
             "DELETE FROM jobs WHERE kind = 'ballot'",
             &[],
         );
-        s.put_record(
-            pulse_store::Record {
-                id: "EVO-evaluators-proj".into(),
-                project: "proj".into(),
-                kind: "evolution".into(),
-                slug: "evaluators".into(),
-                ..Default::default()
-            },
-            BTreeMap::new(),
-            "Product scope: allowed\n",
-            pulse_store::HUMAN_AGENT,
-            "fixture",
-        )
-        .expect("evaluators record");
+        set_scope("Product scope: allowed\n");
         let brief = ballot_brief();
         assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
         assert!(brief.contains(OPERATING_RULE), "{brief}");
