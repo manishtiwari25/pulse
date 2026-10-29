@@ -4245,7 +4245,13 @@ hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
 first; while the fleet is idle that wait and gap are also divided by
 `lead.idle_factor` (never below 10 minutes), so a card reaches quorum within
 the hour instead of one ballot round per hour, and the planner line reads
-`ballot in 20m (fleet idle)`. Research, ballot and reflect jobs do not count as the project moving
+`ballot in 20m (fleet idle)`. The ballot brief's rule is to vote down a card
+whose Hypothesis names no check or user-visible behaviour that will move;
+a card that only adds or fixes a test, lint or format is a down vote only
+while the project's product scope is on (the EVO-evaluators record's
+`Product scope:` line) - with it off the operating layer is the only lane, so
+such a card is in scope when its Hypothesis names the check, count or flake it
+moves. Research, ballot and reflect jobs do not count as the project moving
 for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
 report` counts what research left behind (cards, votes, findings, answers) on
 its own row.

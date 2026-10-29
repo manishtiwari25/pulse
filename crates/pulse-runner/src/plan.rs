@@ -289,6 +289,25 @@ pub(crate) struct BallotListing {
     pub(crate) lines: Vec<String>,
 }
 
+/// Whether product cards may run on this project: the `Product scope:` line
+/// of its EVO-evaluators record, read through `pulse_evolve::status`. When
+/// the status cannot be read, a ballot that holds a product-class card is
+/// taken to be in scope.
+pub(crate) fn ballot_product_scope(
+    s: &pulse_store::Store,
+    slug: &str,
+    cards: &[pulse_tally::Suggestion],
+) -> bool {
+    match pulse_evolve::status(s, slug) {
+        Ok(status) => status.product_scope.allowed,
+        Err(_) => cards.iter().any(|c| {
+            tally_post(s, c.id.clone()).is_some_and(|p| {
+                pulse_tally::card_class(&p.summary, &p.body) == pulse_tally::CARD_CLASS_PRODUCT
+            })
+        }),
+    }
+}
+
 pub(crate) fn ballot_listing(
     s: &pulse_store::Store,
     cards: Vec<pulse_tally::Suggestion>,
@@ -850,10 +869,19 @@ pub(crate) fn plan_jobs_with_tally(
             } else {
                 " An item marked `amendment` changes the constitution: read its Current and Proposed text in the Ballot section, check that the replaced text is still in the constitution (`pulse constitution --project SLUG`), and make your reason restate the change in your own words - the runner records it as the vote's `Read:` line with the proposal's hash, and only such informed votes count toward the amendment quorum; vote down a proposal that weakens a hard stop, the kill switch, or a guard row.".to_string()
             };
+            // With product scope off the operating layer is the project's
+            // only lane, so a test or check card is not voted down for
+            // being one; its Hypothesis still has to name what moves.
+            let scope_rule = if ballot_product_scope(s, &slug, &listing.cards) {
+                ", already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week."
+            } else {
+                " or already done. Product scope is off on this project, so an operating-layer card is in scope when its Hypothesis names the check, count or flake it moves."
+            };
             let brief = format!(
-                "{} on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week.{} Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
+                "{} on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when its Hypothesis names no check or user-visible behaviour that will move, or when it is a guess, a duplicate (vote on the older same File+Variable), owner-only{}{} Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
                 waiting,
                 crate::util::format_minutes(wait),
+                scope_rule,
                 amendment_rule,
                 listed
             );
@@ -2302,6 +2330,75 @@ mod tests {
             crate::tally::amendment_records(&s, "proj".into(), TEST_NOW.into()),
         );
         assert_eq!(part, "");
+    }
+
+    #[test]
+    fn ballot_brief_judges_a_card_by_what_its_hypothesis_moves() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        join(&s, "boris");
+        suppress_planner_reflect(&s);
+        plan_handoff(
+            &s,
+            &crate::util::plus_minutes(TEST_NOW, -90.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "readme".into(),
+                summary: "Shorten the install section".into(),
+                body: "The install section repeats the README's first paragraph.".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let ballot_brief = || {
+            let jobs =
+                plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+            assert!(
+                jobs.len() == 1 && jobs[0].str("kind") == "ballot",
+                "ballot: {jobs:?}"
+            );
+            jobs[0].str("brief")
+        };
+        const HYPOTHESIS_RULE: &str =
+            "down when its Hypothesis names no check or user-visible behaviour that will move";
+        const OPERATING_RULE: &str = "or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week";
+        const SCOPE_OFF: &str = "Product scope is off on this project, so an operating-layer card is in scope when its Hypothesis names the check, count or flake it moves";
+        // No EVO-evaluators record: product scope is off, and the operating
+        // layer is the only lane the ballot feeds.
+        let brief = ballot_brief();
+        assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
+        assert!(brief.contains(SCOPE_OFF), "{brief}");
+        assert!(!brief.contains(OPERATING_RULE), "{brief}");
+        assert!(brief.contains("owner-only or already done."), "{brief}");
+
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "DELETE FROM jobs WHERE kind = 'ballot'",
+            &[],
+        );
+        s.put_record(
+            pulse_store::Record {
+                id: "EVO-evaluators-proj".into(),
+                project: "proj".into(),
+                kind: "evolution".into(),
+                slug: "evaluators".into(),
+                ..Default::default()
+            },
+            BTreeMap::new(),
+            "Product scope: allowed\n",
+            pulse_store::HUMAN_AGENT,
+            "fixture",
+        )
+        .expect("evaluators record");
+        let brief = ballot_brief();
+        assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
+        assert!(brief.contains(OPERATING_RULE), "{brief}");
+        assert!(!brief.contains(SCOPE_OFF), "{brief}");
     }
 
     #[test]
