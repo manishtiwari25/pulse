@@ -76,7 +76,7 @@ export function RunningStrip() {
           {update ? daemonUpdateText(update) + "." : ""}
           {d.hub.restart_pending ? (update ? " " : "") + "This console has a newer build and waits for the conversations working." : ""}
         </span>
-        <RestartNow ask={d.restart_ask} />
+        <RestartNow ask={d.restart_ask} inflight={update?.inflight} />
       </span>,
     ]);
   } else if (d.restart_ask?.pending) {

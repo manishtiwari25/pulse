@@ -4,6 +4,19 @@ import { useState } from "react";
 import { RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
+import {
+  restartActionLabel,
+  restartButtonLabel,
+  restartConsoleDetail,
+  restartDialogLead,
+  restartDialogTitle,
+  restartDrainDetail,
+  restartHoldCheckboxLabel,
+  restartHoldDetail,
+  restartHoldShown,
+  restartOlderRunnerDetail,
+  restartSuccessMessage,
+} from "./restart-now-state";
 import { writes, type RestartAsk } from "@/lib/api";
 import { fmtDate, rel } from "@/lib/format";
 
@@ -18,11 +31,11 @@ export function RestartNow({ ask, inflight = 0, size = "sm", variant = "outline"
   const [open, setOpen] = useState(false);
   const [holdNow, setHoldNow] = useState(false);
   const pending = !!ask?.pending;
-  const runs = inflight > 0 ? `${inflight} run${inflight === 1 ? "" : "s"} in flight` : null;
+  const holdShown = restartHoldShown(inflight);
   return (
     <span className={"inline-flex flex-wrap items-center gap-x-3 gap-y-1 " + (className ?? "")}>
       <Button size={size} variant={variant} onClick={() => setOpen(true)} data-testid="restart-now">
-        <RefreshCwIcon /> {pending ? "Ask again" : runs ? `Restart · ${runs}` : "Restart now"}
+        <RefreshCwIcon /> {restartButtonLabel(pending, inflight)}
       </Button>
       {pending && ask ? (
         <span className="text-[13px] text-muted-foreground" title={fmtDate(ask.at)}>
@@ -32,35 +45,35 @@ export function RestartNow({ ask, inflight = 0, size = "sm", variant = "outline"
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title={holdNow ? "Restart PULSE now, holding its runs?" : "Restart PULSE?"}
+        title={restartDialogTitle(holdNow)}
         description={
-          runs ? (
+          holdShown ? (
             <>
-              {runs.charAt(0).toUpperCase() + runs.slice(1)}. {holdNow ? (
+              {restartDialogLead(inflight)}. {holdNow ? (
                 <>
-                  Each is asked to hold: it saves where it is, and the new runner picks it back up with the same agent, workspace and conversation. Anything that can&apos;t hold within two minutes is stopped and its job goes back to the queue. Conversations in this console carry on by themselves once the new console is up.
+                  {restartHoldDetail()} {restartConsoleDetail()}
                 </>
               ) : (
                 <>
-                  The runner stops starting runs and restarts once they end (up to the drain budget), so nothing is held or lost. Conversations in this console carry on by themselves once the new console is up.
+                  {restartDrainDetail()} {restartConsoleDetail()}
                 </>
               )}
             </>
           ) : (
             <>
-              Nothing is in flight, so the runner swaps in the new build at once. Conversations in this console carry on by themselves once the new console is up. A runner older than this console may not hear the ask; then it restarts once its run finishes, as before.
+              {restartDialogLead(0)} {restartConsoleDetail()} {restartOlderRunnerDetail()}
             </>
           )
         }
-        action={holdNow ? "Hold them now" : "Restart when they finish"}
-        success={holdNow ? "Asked. The runner holds its runs and restarts now." : "Asked. The runner starts nothing new and restarts once its runs finish."}
+        action={restartActionLabel(holdNow)}
+        success={restartSuccessMessage(holdNow)}
         onConfirm={() => writes.restartNow(holdNow)}
         invalidates={(p) => ["running", "runner", "service", "harness", "jobs", "org", "events"].some((path) => p === path || p.startsWith(path + "?") || p.startsWith(path + "/"))}
       >
-        {runs ? (
+        {holdShown ? (
           <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground">
             <input type="checkbox" checked={holdNow} onChange={(e) => setHoldNow(e.target.checked)} />
-            Hold the {inflight} run{inflight === 1 ? "" : "s"} and restart now instead
+            {restartHoldCheckboxLabel(inflight)}
           </label>
         ) : null}
       </ConfirmDialog>
