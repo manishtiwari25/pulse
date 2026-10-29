@@ -903,7 +903,8 @@ an error swallowed). If none is found, fix one flaky test, broken link, stale do
 Read `pulse evolve report --project "
                 .to_string()
                 + &slug
-                + "` for what the loop did this week - jobs done without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - and when one gap is measurable, post it as one SUGGESTION: line naming the product File:, Variable: and Hypothesis: outcome. Record every other signal as FINDING: lines so the runner posts them.";
+                + "` for what the loop did this week - jobs done without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - and when one gap is measurable, post it as one SUGGESTION: line naming the product File:, Variable: and Hypothesis: outcome. Record every other signal as FINDING: lines so the runner posts them. \
+A quiet run is a completed task: when the checks pass and you find nothing to fix, end with `SUMMARY: done - checked <the checks you ran and the paths you read>` and one FINDING: line saying so. `SUMMARY: failed` is for a check you could not run or a defect you could not fix, never for finding nothing.";
             let (job, is_new) = crate::jobs::add_job(
                 s,
                 slug.clone(),
@@ -1674,6 +1675,37 @@ mod tests {
     }
 
     #[test]
+    fn daily_reflect_brief_ends_a_quiet_run_done() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("kind") == "reflect",
+            "daily reflect: {jobs:?}"
+        );
+        assert_eq!(
+            jobs[0].str("source"),
+            format!("reflect:proj:{}", &TEST_NOW[..10])
+        );
+        let brief = jobs[0].str("brief");
+        for want in [
+            "A quiet run is a completed task",
+            "end with `SUMMARY: done - checked <the checks you ran and the paths you read>` and one FINDING: line saying so",
+            "`SUMMARY: failed` is for a check you could not run or a defect you could not fix, never for finding nothing",
+        ] {
+            assert!(brief.contains(want), "missing {want:?} in:\n{brief}");
+        }
+        let mut report = crate::brief::parse_result_text(Some(
+            "SUMMARY: done - checked cargo test, README.md, src/main.rs\nFINDING: checks green, no Tier 0 defect found".into(),
+        ));
+        assert!(!report.incomplete(), "{:?}", report.summary);
+        assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
     fn plan_jobs_fills_every_free_lane_with_voted_cards() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2393,14 +2425,24 @@ mod tests {
             "ballot brief:\n{}",
             jobs[0].str("brief")
         );
-        let part = crate::idle::ballot_idle_part(
-            &s,
-            "proj".into(),
-            TEST_NOW.into(),
-            crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
-            crate::tally::amendment_records(&s, "proj".into(), TEST_NOW.into()),
+        // The queued ballot is a slot's worth of work: until a worker takes
+        // it the fleet is busy and the status shows the plain wait.
+        let idle_part = |now: &str| {
+            crate::idle::ballot_idle_part(
+                &s,
+                "proj".into(),
+                now.into(),
+                crate::tally::suggestion_records(&s, "proj".into(), now.into()),
+                crate::tally::amendment_records(&s, "proj".into(), now.into()),
+            )
+        };
+        assert_eq!(idle_part(TEST_NOW), "ballot in 1h");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'leased', lease_agent = 'aurora' WHERE kind = 'ballot'",
+            &[],
         );
-        assert_eq!(part, "ballot in 20m (fleet idle)");
+        assert_eq!(idle_part(TEST_NOW), "ballot in 20m (fleet idle)");
         crate::util::exec1(
             &s.conn().expect("conn"),
             "UPDATE jobs SET status = 'done', finished_at = ? WHERE kind = 'ballot'",

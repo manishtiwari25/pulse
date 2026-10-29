@@ -1535,9 +1535,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong
   message, a wrong default, a broken user path, a swallowed error) and only
-  then a flaky test, broken link, stale doc or lint finding; research jobs
+  then a flaky test, broken link, stale doc or lint finding; a quiet run
+  (checks green, nothing to fix) ends `SUMMARY: done - checked <paths>` with
+  a `FINDING:` line, not `failed`; research jobs
   rotate through their focuses starting with the product as its user sees
-  it, and keep to the product focuses while the day's operating-layer cap is
+  it, weighted by what the board accepted, and keep to the product focuses while the day's operating-layer cap is
   reached. The console's Votes page, `pulse queue`
   (`not planned: <gate>`) and `pulse status` (`planner <slug>: N eligible, M
   plannable (...)`) show the same gate for the same card, so a ballot that
@@ -4203,13 +4205,19 @@ lanes are open (fleet idle)` when the lanes are full). A queued job is work
 waiting for a slot, however few leases the load governor lets out: the fleet
 is not idle over it, and research keeps the plain cadence rather than
 lengthening the queue it would be feeding. The research job is a `reflect` job whose
-brief points a worker at one focus in turn (the product as its user sees it,
+brief points a worker at one focus (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the
-project's checks, the loop's report, the docs against the code, the
-dependencies, the board, the lessons the code could enforce) and requires one
+project's checks, the loop's report, the docs against the code, the board,
+the lessons the code could enforce) and requires one
 to three experiment cards with evidence, votes on the listed cards below
 quorum and findings for the rest - at most `lead.research_per_day` (default
-12) per project per day. The goal focus is the fleet's own source of new
+12) per project per day. The focuses take turns, but a focus whose cards
+the board accepted more often in the last 30 days (reached quorum with more
+up than down votes) comes around more often, down to one turn per cycle
+for the rest, so a focus the board keeps voting down stops taking the same
+share of runs as the one whose cards land and climbs back as the window
+forgets its rejections. The report focus leaves `FINDING:` lines only, no
+cards: its cards were guesses about the loop. The goal focus is the fleet's own source of new
 work: it reads `pulse goal`, holds it against what the product does today
 (the README's promises, roadmap or TODO lists, empty states, steps the user
 does by hand, the last ten landed commits) and cards the smallest slice a
@@ -4219,12 +4227,15 @@ operating-layer improve jobs have already reached
 `plan.operating_layer_per_day`, the rotation keeps to the product focuses
 (product, code, goal, docs): cards from the others would join a pile the cap
 holds until tomorrow while the slots stand idle for want of a product card. While fewer than
-half the local worker slots hold a lease and no decided work is queued (a
-queued reflect, ballot, lead or answer does not count) the fleet is idle, and research comes
+half the local worker slots hold a lease and no job is queued (a queued
+reflect, ballot or lead job wants a slot like any other, so the ballot the
+idle fleet just planned ends its idleness until a worker takes it) the fleet is idle, and research comes
 `lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
-that applies. A `needs votes` card
+that applies. A shallow last research run (fewer than 5 steps and no card)
+forfeits the shortcut: the next research comes at the plain cadence and the
+planner line says `(fleet idle, last run shallow)`. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
