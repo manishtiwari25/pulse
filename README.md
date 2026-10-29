@@ -1681,11 +1681,14 @@ suggestion that names no single `File:` and `Variable:` is not the owner's to
 fix: the planner queues one agent card job for it, which posts the card as a
 new suggestion on the same thread, where it earns its own votes and passes
 every gate before the loop runs it (ADR-044). Workers can post a complete card
-in one `SUGGESTION:` line with `;`-separated fields. A `SUGGESTION:` line that
+in one `SUGGESTION:` line with `;`-separated fields; the line's first prose
+segment is the card's summary, falling back to the Hypothesis, never to a
+`Class:` value standing alone (`product; File: …`). A `SUGGESTION:` line that
 only says the worker saw nothing (`none`, `nothing further`, `n/a`, `no
-suggestion`) is dropped by the runner rather than posted: an empty card on the
-ballot only spawns vote jobs, and each of those tends to end in another such
-line.
+suggestion`, `none identified`, `I did not find …`, `no defect`) is dropped by
+the runner rather than posted, even behind `File: n/a; Variable: none`: an
+empty card on the ballot only spawns vote jobs, and each of those tends to end
+in another such line.
 
 The loop may edit only the file classes the constitution's Editable scope
 table has raised to Stage 2 (Stage 4 for product code) whose paths exist in

@@ -1126,21 +1126,26 @@ pub(crate) fn card_body(text: String) -> (String, String, bool) {
         start = m.start() + 1;
     }
     lines.push(text[start..].trim().to_string());
+    // "product; File: …" or "**Class**: product; File: …" is the Class line
+    // with its key dropped or dressed up; written back as `Class: product`
+    // it is read as the class it is, never as the card's summary.
+    if let Some(class) = lines.first().and_then(|l| bare_class(l)) {
+        lines[0] = format!("Class: {class}");
+    }
     let mut fields = std::collections::BTreeMap::new();
     for line in &lines {
         if let Some((key, value)) = line.split_once(':') {
             fields.insert(key.trim().to_lowercase(), value.trim().to_string());
         }
     }
-    if fields.get("file").is_none_or(String::is_empty)
-        && fields.get("path").is_none_or(String::is_empty)
-        || fields.get("variable").is_none_or(String::is_empty)
-    {
+    let named = |key: &str| fields.get(key).is_some_and(|v| !none_value(v));
+    if !named("file") && !named("path") || !named("variable") {
         return (String::new(), String::new(), false);
     }
     let mut summary = String::new();
     if let Some(first) = lines.first()
         && !CARD_KEY_RE.is_match(first)
+        && !none_text(first)
     {
         summary = first.clone();
     }
@@ -1149,7 +1154,7 @@ pub(crate) fn card_body(text: String) -> (String, String, bool) {
         fields.get("hypothesis").cloned().unwrap_or_default(),
         fields.get("variable").cloned().unwrap_or_default(),
     ] {
-        if !candidate.is_empty() {
+        if !candidate.is_empty() && !none_value(&candidate) {
             summary = candidate;
             break;
         }
@@ -1157,15 +1162,62 @@ pub(crate) fn card_body(text: String) -> (String, String, bool) {
     (lines.join("\n"), summary, true)
 }
 
-/// A `SUGGESTION:` line that only says the worker saw nothing ("none", "none beyond the
-/// ballot", "nothing further", "n/a", "no suggestion") is not an improvement. Posting it puts
-/// an empty card on the ballot that other agents are then given jobs to vote on, and each of
-/// those votes tends to end in another such line.
-pub(crate) fn empty_suggestion(card: &str) -> bool {
-    if card_body(card.to_string()).2 {
-        return false;
-    }
-    let text = card
+/// The class a card segment names on its own ("product", "Operating-layer.")
+/// or behind markup on the key ("**Class**: pulse", "`Class`: product").
+fn bare_class(segment: &str) -> Option<&'static str> {
+    let plain: String = segment
+        .chars()
+        .filter(|c| !matches!(c, '*' | '`' | '_' | '"' | '\''))
+        .collect();
+    let plain = plain.trim().to_lowercase();
+    let value = plain
+        .strip_prefix("class")
+        .map_or(plain.as_str(), |rest| rest.trim_start_matches([':', ' ']));
+    let value = value.trim().trim_end_matches(['.', ';']).replace(' ', "-");
+    ["product", "operating-layer", "pulse"]
+        .into_iter()
+        .find(|c| *c == value)
+}
+
+/// A field value that names nothing: "none", "n/a", "-", "tbd", "unknown",
+/// "none identified", "no file". A card whose File or Variable says so has
+/// no File or Variable.
+fn none_value(value: &str) -> bool {
+    let v = value
+        .trim()
+        .trim_matches(['`', '*', '_', '"', '\'', '(', ')', '[', ']'])
+        .trim()
+        .trim_end_matches('.')
+        .to_lowercase();
+    v.is_empty()
+        || matches!(
+            v.as_str(),
+            "-" | "—"
+                | "–"
+                | "?"
+                | "tbd"
+                | "unknown"
+                | "not applicable"
+                | "not identified"
+                | "not yet identified"
+                | "not found"
+        )
+        || [
+            "no file",
+            "no path",
+            "no variable",
+            "no single file",
+            "no specific file",
+        ]
+        .iter()
+        .any(|p| v.starts_with(p))
+        || none_text(&v)
+}
+
+/// Prose that only says the worker saw nothing: "none", "none identified",
+/// "nothing further", "n/a", "no suggestion", "I did not find …", "no defect".
+fn none_text(text: &str) -> bool {
+    let text = text
         .trim()
         .trim_start_matches(['-', '*', '`', '"', '\''])
         .trim()
@@ -1187,16 +1239,64 @@ pub(crate) fn empty_suggestion(card: &str) -> bool {
         || (first == "nothing"
             && matches!(
                 second,
-                "" | "further" | "new" | "beyond" | "to" | "else" | "more" | "this" | "additional"
+                "" | "further"
+                    | "new"
+                    | "beyond"
+                    | "to"
+                    | "else"
+                    | "more"
+                    | "this"
+                    | "additional"
+                    | "found"
+                    | "identified"
+                    | "concrete"
+                    | "actionable"
+                    | "specific"
             ))
         || [
             "no suggestion",
             "no further",
             "no improvement",
             "no one-variable",
+            "no defect",
+            "no provable",
+            "no tier 0",
+            "no tier-0",
+            "no card",
+            "no new card",
+            "no actionable",
+            "no concrete",
+            "no finding",
+            "did not find",
+            "i did not find",
+            "we did not find",
+            "could not find",
+            "couldn't find",
+            "i found no",
+            "we found no",
+            "unable to find",
+            "failed to find",
         ]
         .iter()
-        .any(|prefix| text.starts_with(prefix))
+        .any(|prefix| {
+            // A whole word (or its plural): "no cards" yes, "no cardinality" no.
+            text.strip_prefix(prefix).is_some_and(|rest| {
+                rest.strip_prefix('s')
+                    .unwrap_or(rest)
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_alphanumeric())
+            })
+        })
+}
+
+/// A `SUGGESTION:` line that only says the worker saw nothing ("none", "none beyond the
+/// ballot", "nothing further", "n/a", "no suggestion", "none identified; I did not find a
+/// defect") is not an improvement, with or without `File: n/a; Variable: none` behind it.
+/// Posting it puts an empty card on the ballot that other agents are then given jobs to vote
+/// on, and each of those votes tends to end in another such line.
+pub(crate) fn empty_suggestion(card: &str) -> bool {
+    !card_body(card.to_string()).2 && none_text(card)
 }
 
 pub(crate) fn parse_suggestion_line(text: String) -> Suggestion {
@@ -1337,6 +1437,70 @@ mod tests {
         assert!(ok);
         assert_eq!(summary, "Shorten the intro");
         assert!(body.contains("\nFile: README.md\n"));
+    }
+
+    #[test]
+    fn card_body_never_titles_a_card_with_its_class_or_a_none_word() {
+        let _serial = crate::test_helpers::serial();
+        // The Class line with its key dropped, or dressed in markup, is the
+        // class, not the summary; the summary falls back to the Hypothesis.
+        for (card, class) in [
+            (
+                "product; File: src/a.rs; Variable: retry count; Hypothesis: fewer timeouts",
+                "product",
+            ),
+            (
+                "**Class**: operating-layer; File: README.md; Variable: intro length; Hypothesis: fewer timeouts",
+                "operating-layer",
+            ),
+            (
+                "`Class`: pulse; File: crates/x.rs; Variable: y; Hypothesis: fewer timeouts",
+                "pulse",
+            ),
+            (
+                "Operating layer.; File: README.md; Variable: intro length; Hypothesis: fewer timeouts",
+                "operating-layer",
+            ),
+        ] {
+            let (body, summary, ok) = card_body(card.into());
+            assert!(ok, "{card}");
+            assert_eq!(summary, "fewer timeouts", "{card}");
+            assert!(body.starts_with(&format!("Class: {class}\n")), "{body}");
+            assert_eq!(card_class(card), class, "{card}");
+        }
+        // Without a Hypothesis the Variable names the card.
+        let (_, summary, ok) =
+            card_body("operating-layer; File: README.md; Variable: intro length".into());
+        assert!(ok);
+        assert_eq!(summary, "intro length");
+        // A none-shaped first line is skipped too.
+        let (_, summary, ok) = card_body("None; File: a.rs; Variable: b; Hypothesis: c".into());
+        assert!(ok);
+        assert_eq!(summary, "c");
+        // Prose that starts with a class word is still a summary.
+        let (_, summary, ok) = card_body(
+            "Product page drops the price; File: src/page.rs; Variable: price; Hypothesis: shown"
+                .into(),
+        );
+        assert!(ok);
+        assert_eq!(summary, "Product page drops the price");
+        // A File or Variable that names nothing is no File or Variable, so
+        // the line is no card and the none filter reads its prose.
+        for card in [
+            "none identified; File: n/a; Variable: none; Hypothesis: I did not find a single defect file.",
+            "No defect found; File: -; Variable: tbd",
+            "Nothing found; File: no file; Variable: unknown; Hypothesis: none",
+        ] {
+            assert!(!card_body(card.into()).2, "{card} was taken for a card");
+            assert!(empty_suggestion(card), "{card}");
+        }
+        assert!(
+            card_body(
+                "none-handling; File: run.rs; Variable: none-handling; Hypothesis: drop none lines"
+                    .into()
+            )
+            .2
+        );
     }
 
     fn brief_job() -> crate::util::Row {
@@ -1687,7 +1851,7 @@ mod tests {
     fn parse_result_text_drops_empty_suggestions() {
         let _serial = crate::test_helpers::serial();
         let rep = parse_result_text(Some(
-            "SUMMARY: voted\nSUGGESTION: none beyond the ballot; pattern observed across cards was fine.\nSUGGESTION: evolution/ballot: None this run - used the slot purely for voting.\nSUGGESTION: Nothing further.\nSUGGESTION: N/A\nSUGGESTION: no suggestions beyond what is already filed\nSUGGESTION: runner/none-handling: drop `SUGGESTION: none` lines instead of posting them".into(),
+            "SUMMARY: voted\nSUGGESTION: none beyond the ballot; pattern observed across cards was fine.\nSUGGESTION: evolution/ballot: None this run - used the slot purely for voting.\nSUGGESTION: Nothing further.\nSUGGESTION: N/A\nSUGGESTION: no suggestions beyond what is already filed\nSUGGESTION: evolution/none - none identified; File: n/a; Variable: none; Hypothesis: I did not find a single defect file.\nSUGGESTION: I did not find a one-variable defect this run.\nSUGGESTION: No provable Tier 0 defect in the handlers.\nSUGGESTION: nothing found\nSUGGESTION: Could not find a file that fails the check.\nSUGGESTION: runner/none-handling: drop `SUGGESTION: none` lines instead of posting them".into(),
         ));
         assert_eq!(rep.suggestions.len(), 1, "{:?}", rep.suggestions);
         assert_eq!(rep.suggestions[0].area, "runner");
@@ -1704,6 +1868,9 @@ mod tests {
             "Nothing prevents a double landing",
             "No-op detection: File: a.rs; Variable: b",
             "None; File: a.rs; Variable: b; Hypothesis: c",
+            "No cardinality check on the join",
+            "No defective rows are skipped",
+            "Did not finding is a typo in the log line",
         ] {
             assert!(!empty_suggestion(real), "{real}");
         }
