@@ -997,10 +997,8 @@ pub(crate) fn print_archive(w: &mut dyn Write, color: bool, archive: &[crate::ar
             let decision =
                 if a.kept && crate::api::is_baseline_row(&a.hypothesis, &a.suggestion_post) {
                     "baseline"
-                } else if a.kept {
-                    "kept"
                 } else {
-                    "discarded"
+                    a.outcome().label()
                 };
             vec![
                 a.id.clone(),
@@ -1034,11 +1032,7 @@ pub(crate) fn print_archive(w: &mut dyn Write, color: bool, archive: &[crate::ar
 pub(crate) fn print_lineage(w: &mut dyn Write, tree: &[crate::lineage::LineageNode]) {
     for node in tree {
         let indent = "  ".repeat(node.depth);
-        let decision = if node.kept {
-            format!("kept ({})", node.outcome)
-        } else {
-            "discarded".to_string()
-        };
+        let decision = node.outcome.clone();
         let hypothesis = crate::card_job::truncate(&node.hypothesis.replace('\n', " "), 80);
         let _ = writeln!(
             w,

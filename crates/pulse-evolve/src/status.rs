@@ -678,11 +678,12 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
     };
     let hit = |r: &HitRate| match r.rate {
         Some(rate) => format!(
-            "{}/{} kept ({:.1}%), {} improved",
+            "{}/{} kept ({:.1}%): {} improved, {} neutral",
             r.kept,
             r.tried,
             100.0 * rate,
-            r.improved
+            r.improved,
+            r.kept - r.improved
         ),
         None => "0 tried; hit rate unavailable".to_string(),
     };
@@ -718,10 +719,12 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec!["Public fixtures".into(), s.public_fixtures.to_string()],
         vec!["Held-out fixtures".into(), heldout_label(&s.heldout)],
         vec![
-            "Kept / discarded".into(),
+            "Improved / neutral / discarded".into(),
             format!(
-                "{} / {}; {} of the kept improved, the rest tied",
-                s.kept, s.discarded, s.improved
+                "{} / {} / {}; only an improvement is a win, a neutral tie landed on the project's own check",
+                s.improved,
+                s.kept - s.improved,
+                s.discarded
             ),
         ],
         vec!["Voted suggestions".into(), hit(&s.voted)],
@@ -1179,9 +1182,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            text.contains("1/1 kept (100.0%), 1 improved")
-                && text.contains("1/2 kept (50.0%), 0 improved")
-                && text.contains("2 / 1; 1 of the kept improved, the rest tied"),
+            text.contains("1/1 kept (100.0%): 1 improved, 0 neutral")
+                && text.contains("1/2 kept (50.0%): 0 improved, 1 neutral")
+                && text.contains("Improved / neutral / discarded")
+                && text.contains("1 / 1 / 1; only an improvement is a win"),
             "{text}"
         );
     }

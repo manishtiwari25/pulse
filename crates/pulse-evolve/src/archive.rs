@@ -53,10 +53,11 @@ pub struct Archived {
 }
 
 /// ArchiveOutcome is what the Keep rule saw in an archived row, derived from
-/// its scores: `Improved` is a kept row whose delta reached the tolerance
-/// (`kept`), `Neutral` a kept tie or within-tolerance change (`kept (no
-/// regression)`), `Discarded` a row the rule did not keep. Lineage credits
-/// productivity to `Improved` rows only; a kept tie is still a kept branch.
+/// its scores: `Improved` is a kept row whose delta reached the tolerance, or
+/// a kept tie whose card's own check rose (`improved`); `Neutral` any other
+/// kept tie (`neutral`: the branch may still land, but nothing was shown to
+/// move); `Discarded` a row the rule did not keep. Lineage credits
+/// productivity to `Improved` rows only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArchiveOutcome {
@@ -86,16 +87,36 @@ impl Archived {
         self.variant_score - self.baseline_score
     }
 
-    /// Mirrors the boundary in [`crate::api::keep`]: `delta >= tolerance` is
-    /// `kept` (an improvement); a smaller kept delta is `kept (no regression)`.
+    /// Mirrors [`crate::api::keep`]: `delta >= tolerance` is `improved`, and
+    /// so is a smaller kept delta whose card check rose; any other kept delta
+    /// is `neutral`.
     pub fn outcome(&self) -> ArchiveOutcome {
         if !self.kept {
             ArchiveOutcome::Discarded
-        } else if self.delta() >= self.tolerance {
+        } else if self.delta() >= self.tolerance || self.card_check_rose() {
             ArchiveOutcome::Improved
         } else {
             ArchiveOutcome::Neutral
         }
+    }
+
+    /// Whether the card's own check scored higher on the variant, read from
+    /// the archived measurements.
+    pub fn card_check_rose(&self) -> bool {
+        match (&self.fixtures.baseline, &self.fixtures.variant) {
+            (Some(b), Some(v)) => crate::api::card_check_rose(b, v),
+            _ => false,
+        }
+    }
+
+    /// The fixtures the variant's measurement counted only inside the card's
+    /// changed files.
+    pub fn diff_scoped(&self) -> &[String] {
+        self.fixtures
+            .variant
+            .as_ref()
+            .map(|v| v.diff_scoped.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -229,14 +250,27 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             row.base_commit
         ],
     )?;
+    let outcome = Archived {
+        kept: row.kept,
+        baseline_score: baseline.total,
+        variant_score: variant.total,
+        tolerance: row.tolerance,
+        fixtures: ScorePair {
+            baseline: Some(baseline.clone()),
+            variant: Some(variant.clone()),
+        },
+        ..Default::default()
+    }
+    .outcome();
     tx.event(
         "pulse",
         "evolution.archived",
         &id,
         serde_json::json!({
-            "project": row.project, "kept": row.kept, "baseline": baseline.total, "variant": variant.total,
+            "project": row.project, "kept": row.kept, "outcome": outcome.label(), "baseline": baseline.total, "variant": variant.total,
             "tolerance": row.tolerance, "suggestion_post": row.suggestion_post, "run_id": row.run_id,
-            "parent": row.parent, "patch": row.patch, "base_commit": row.base_commit
+            "parent": row.parent, "patch": row.patch, "base_commit": row.base_commit,
+            "diff_scoped": variant.diff_scoped, "card_check": variant.card_check
         }),
     )?;
     tx.commit()?;
@@ -437,22 +471,102 @@ mod tests {
         };
         let improved = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.6)), 0.02);
         assert!(
-            improved.0 && improved.1.starts_with("kept: "),
+            improved.0 && improved.1.starts_with("improved: "),
             "{improved:?}"
         );
         let tie = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.51)), 0.02);
         assert!(
-            tie.0 && tie.1.starts_with("kept (no regression): "),
-            "a tie within the tolerance is kept: {tie:?}"
+            tie.0
+                && tie
+                    .1
+                    .starts_with("neutral (a tie: the hypothesis went unmeasured"),
+            "a tie within the tolerance still goes to landing, labelled neutral: {tie:?}"
+        );
+        assert!(
+            !tie.1.contains("kept"),
+            "a tie is not called a win: {tie:?}"
         );
         let exact = crate::api::keep(Some(&scores(0.875)), Some(&scores(0.875)), 0.02);
-        assert!(exact.0, "pass/fail fixtures tie exactly: {exact:?}");
+        assert!(
+            exact.0 && exact.1.starts_with("neutral"),
+            "pass/fail fixtures tie exactly: {exact:?}"
+        );
         let regressed = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.47)), 0.02);
         assert!(
             !regressed.0 && regressed.1.starts_with("discarded: "),
             "a regression beyond the tolerance is discarded: {regressed:?}"
         );
         assert!(!crate::api::keep(None, Some(&scores(1.0)), 0.02).0);
+    }
+
+    #[test]
+    fn a_tie_whose_card_check_rose_is_improved() {
+        let scores = |total: f64, check: Option<f64>| crate::api::Scores {
+            total,
+            card_check: check,
+            ..Default::default()
+        };
+        let rose = crate::api::keep(
+            Some(&scores(0.5, Some(0.5))),
+            Some(&scores(0.51, Some(0.75))),
+            0.02,
+        );
+        assert!(
+            rose.0
+                && rose.1.starts_with(
+                    "improved (a tie on the composite, but the card's own check rose)"
+                ),
+            "{rose:?}"
+        );
+        let flat = crate::api::keep(
+            Some(&scores(0.5, Some(0.5))),
+            Some(&scores(0.51, Some(0.5))),
+            0.02,
+        );
+        assert!(flat.0 && flat.1.starts_with("neutral"), "{flat:?}");
+        let fell = crate::api::keep(
+            Some(&scores(0.5, Some(1.0))),
+            Some(&scores(0.51, Some(0.0))),
+            0.02,
+        );
+        assert!(fell.0 && fell.1.starts_with("neutral"), "{fell:?}");
+        let unmeasured = crate::api::keep(
+            Some(&scores(0.5, None)),
+            Some(&scores(0.51, Some(1.0))),
+            0.02,
+        );
+        assert!(
+            unmeasured.0 && unmeasured.1.starts_with("neutral"),
+            "a check that only the variant ran proves nothing: {unmeasured:?}"
+        );
+        let regressed = crate::api::keep(
+            Some(&scores(0.5, Some(0.0))),
+            Some(&scores(0.4, Some(1.0))),
+            0.02,
+        );
+        assert!(
+            !regressed.0,
+            "a rising check never rescues a regression: {regressed:?}"
+        );
+        // The archive reads the same rule back from the stored measurements.
+        let archived = Archived {
+            baseline_score: 0.5,
+            variant_score: 0.51,
+            tolerance: 0.02,
+            kept: true,
+            fixtures: ScorePair {
+                baseline: Some(scores(0.5, Some(0.5))),
+                variant: Some(scores(0.51, Some(0.75))),
+            },
+            ..Default::default()
+        };
+        assert_eq!(archived.outcome(), ArchiveOutcome::Improved);
+        let mut tied = archived.clone();
+        tied.fixtures.variant.as_mut().unwrap().card_check = Some(0.5);
+        assert_eq!(tied.outcome(), ArchiveOutcome::Neutral);
+        let mut without = archived;
+        without.fixtures.variant = None;
+        assert_eq!(without.outcome(), ArchiveOutcome::Neutral);
     }
 
     #[test]

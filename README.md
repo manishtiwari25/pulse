@@ -1557,13 +1557,13 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   share of experiments that should try an archived parent; eligible parents
   must have a saved patch and are weighted by clade metaproductivity
   `(improved descendants + 1) / (descendants + 2)` with the Beta prior keeping
-  unexplored nodes alive, times novelty `1 / (1 + children)`. A kept tie
-  (`kept (no regression)`, the usual result on pass/fail fixtures) counts as a
-  descendant but not as a productive one; only an improvement, a kept delta of
-  at least `evolve.tolerance`, earns productivity. `pulse evolve
-  lineage --project P [--json]` prints the archived tree, each row's outcome
-  (`improved`, `neutral`, `discarded`), CMP values and the current candidate
-  count.
+  unexplored nodes alive, times novelty `1 / (1 + children)`. A tie
+  (`neutral`, the usual result on pass/fail fixtures) counts as a descendant
+  but not as a productive one; only an improvement - a delta of at least
+  `evolve.tolerance`, or a tie whose card's own check rose - earns
+  productivity. `pulse evolve lineage --project P [--json]` prints the
+  archived tree, each row's outcome (`improved`, `neutral`, `discarded`), CMP
+  values and the current candidate count.
 - **Seeded records and starter fixtures** - registering a project (`pulse
   init`, `pulse onboard`, the console) seeds the loop's records and six public
   behaviour fixtures. The records: a project whose checkout commits
@@ -1735,14 +1735,19 @@ that already contains the default branch, or one that conflicts with it, is
 measured as it is and landing reports the conflict); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
 and the archive notes `measured as … merged onto …` when that happened. The
-keep rule is *no regression*: a variant whose total score is not more than
-`evolve.tolerance` below the baseline is kept - an improvement as `kept`, a
-tie as `kept (no regression)` - and goes to the same landing as any branch,
-where the project's own check decides it; only a larger regression is
-`discarded` and loses its branch. Held-out fixtures are mostly pass/fail, so a
-voted change that keeps every fixture green measures as an exact tie; before
-this rule such ties were discarded and no voted experiment ever landed. A
-discard must reproduce: when a regression hinges on request fixtures alone (the
+keep rule is asymmetric: a variant whose total score falls more than
+`evolve.tolerance` below the baseline is `discarded` and loses its branch; a
+gain of at least `evolve.tolerance` is `improved`; anything in between is a
+tie, labelled `neutral`. A tie is not a win: it still goes to the same landing
+as any branch, where the project's own check decides it, but the archive,
+`pulse evolve status`, `report` and `lineage` show it apart from improvements
+and it earns no lineage credit - a tie means the card's hypothesis went
+unmeasured, so the worker brief asks every card to name a check that will move
+(`Signal: check:<command>`, the card-check fixture below). The one exception: a
+tie whose card-check score rose counts as `improved`. Held-out fixtures are
+mostly pass/fail, so a voted change that keeps every fixture green measures
+as an exact tie; before the tie lane such ties were discarded and no voted
+experiment ever landed. A discard must reproduce: when a regression hinges on request fixtures alone (the
 ones that run a harness, whose score depends on a model's answer - a metric
 fixture scores the frozen tree and is believed as measured), the lane measures
 those fixtures again on both trees before the discard stands (`--fixture` on

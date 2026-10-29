@@ -49,6 +49,18 @@ pub struct Scores {
     pub sandbox: String,
     #[serde(rename = "shadow", skip_serializing_if = "is_false", default)]
     pub shadow: bool,
+    /// The card's own check (`Signal: check:<…>`) scored on this tree, when
+    /// the card named one; the `card-check` fixture's score.
+    #[serde(
+        rename = "card_check",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub card_check: Option<f64>,
+    /// The fixtures that counted only inside the card's changed files on this
+    /// measurement; their base scores 0.5 and is never the cached project one.
+    #[serde(rename = "diff_scoped", skip_serializing_if = "Vec::is_empty", default)]
+    pub diff_scoped: Vec<String>,
 }
 
 /// MeasureOptions tunes Measure.
@@ -99,11 +111,13 @@ pub fn measure(
     )
 }
 
-/// A variant is kept unless it regresses the score by more than the tolerance:
-/// an improvement is `kept`, a tie `kept (no regression)`. Held-out fixtures are
-/// mostly pass/fail, so a voted change that keeps every fixture green measures
-/// as a tie; it still has to pass the project's own check when it lands
-/// (ADR-024), which is what decides a tie. Only `discarded` deletes the branch.
+/// A variant is discarded when it regresses the score by more than the
+/// tolerance; otherwise it goes on to the ordinary landing lane, where the
+/// project's own checks decide. The verdict says what the measurement saw:
+/// `improved` when the delta reached the tolerance, or when a tie came with
+/// the card's own check (`Scores::card_check`) rising; `neutral` for any other
+/// tie, which is no win - the hypothesis went unmeasured, and the row earns no
+/// lineage credit. Only `discarded` deletes the branch.
 pub fn keep(baseline: Option<&Scores>, variant: Option<&Scores>, tolerance: f64) -> (bool, String) {
     let (Some(baseline), Some(variant)) = (baseline, variant) else {
         return (false, "no measurement".to_string());
@@ -115,13 +129,38 @@ pub fn keep(baseline: Option<&Scores>, variant: Option<&Scores>, tolerance: f64)
             crate::format::format_delta("discarded", delta, tolerance),
         )
     } else if delta >= tolerance {
-        (true, crate::format::format_delta("kept", delta, tolerance))
+        (
+            true,
+            crate::format::format_delta("improved", delta, tolerance),
+        )
+    } else if card_check_rose(baseline, variant) {
+        (
+            true,
+            crate::format::format_delta(
+                "improved (a tie on the composite, but the card's own check rose)",
+                delta,
+                tolerance,
+            ),
+        )
     } else {
         (
             true,
-            crate::format::format_delta("kept (no regression)", delta, tolerance),
+            crate::format::format_delta(NEUTRAL_VERDICT, delta, tolerance),
         )
     }
+}
+
+/// The verdict a tie gets: the branch still lands if the project's own checks
+/// pass, but nothing was shown to move.
+pub const NEUTRAL_VERDICT: &str = "neutral (a tie: the hypothesis went unmeasured, no fixture moved; the project's own check decides at landing)";
+
+/// Whether the card's own check scored higher on the variant than on the
+/// baseline; both trees must have run it.
+pub fn card_check_rose(baseline: &Scores, variant: &Scores) -> bool {
+    matches!(
+        (baseline.card_check, variant.card_check),
+        (Some(b), Some(v)) if v.is_finite() && b.is_finite() && v > b + 1e-9
+    )
 }
 
 /// ArchiveRow is what the runner records after an experiment was measured.
