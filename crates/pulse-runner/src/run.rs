@@ -688,9 +688,10 @@ fn prepare_setup(
             pins: Vec::new(),
         });
     };
-    match crate::recipe::recipe_block(&r, ex.remote()).as_str() {
+    let lack_recipe = crate::recipe::hands_lack_recipe(&s.conn()?, &ex.name());
+    match crate::recipe::recipe_block(&r, lack_recipe).as_str() {
         crate::recipe::RECIPE_UNFIT_SERVICES => return Err(crate::executor::ExecutorUnfit { msg: format!("{} lists services ({}) that no machine starts; {} waits until an owner clears the list", crate::recipe::RECIPE_PATH, r.services.iter().take(4).cloned().collect::<Vec<_>>().join(", "), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_SERVICES.to_string(), project: project.str("slug"), detail: String::new() }.into()),
-        crate::recipe::RECIPE_UNFIT_HANDS => return Err(crate::executor::ExecutorUnfit { msg: format!("{} pins tools or env that the hands on {} cannot take yet; {} jobs run on the hub until the hands are refreshed", crate::recipe::RECIPE_PATH, ex.name(), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_HANDS.to_string(), project: project.str("slug"), detail: String::new() }.into()),
+        crate::recipe::RECIPE_UNFIT_HANDS => return Err(crate::executor::ExecutorUnfit { msg: format!("{} pins tools or env that the hands on {} predate (their probe does not answer recipe=1); {} jobs run on the hub until the hands are refreshed", crate::recipe::RECIPE_PATH, ex.name(), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_HANDS.to_string(), project: project.str("slug"), detail: String::new() }.into()),
         _ => {}
     }
     let pins = r.tools.clone();
@@ -1176,7 +1177,22 @@ pub(crate) fn run_job(
                 cmd = prefix;
             }
         } else {
+            // prepare_setup let a recipe with tools or env through only because
+            // these hands take them: the worker gets what the hub's gets.
+            if let Some(r) = &recipe {
+                for (k, v) in &r.env {
+                    env.insert(k.clone(), v.clone());
+                }
+            }
             env.insert("PULSE_CLI".into(), remote_pulse_cli(recipe.as_ref()));
+            if !pins.is_empty() {
+                for kv in crate::recipe::mise_env(&clone) {
+                    env.insert(kv[0].clone(), kv[1].clone());
+                }
+                let mut prefix = crate::recipe::mise_exec_argv(&pins);
+                prefix.extend(cmd);
+                cmd = prefix;
+            }
         }
         if !custom_worker && !project.str("verify_cmd").is_empty() {
             let hook_verify =

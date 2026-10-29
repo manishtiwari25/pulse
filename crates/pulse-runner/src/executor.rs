@@ -1647,6 +1647,15 @@ pub(crate) fn probe_executor(
         Ok((rc, out, err_text)) => {
             let mut fields = parse_probe(&out);
             let mut problems = Vec::new();
+            if fields.get("hands").map(String::as_str) == Some("ok")
+                && let Ok(conn) = s.conn()
+            {
+                crate::recipe::note_hands_recipe(
+                    &conn,
+                    name,
+                    fields.get("recipe").map(String::as_str) == Some("1"),
+                );
+            }
             if rc != 0 || fields.get("hands").map(String::as_str) != Some("ok") {
                 let src = if err_text.is_empty() {
                     out.clone()

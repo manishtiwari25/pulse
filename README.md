@@ -3383,7 +3383,13 @@ that looked only at git and disk sent the jobs back into the same failing
 setup every hour; while the tool is still missing the mark stays, the re-probe
 wait doubles as after a failed probe, and the mark expires a day after the
 setup failed, so the setup gets one real try a day. A pin the recipe no longer
-lists is cleared whether or not it is installed. A setup that fails twice the same way marks the project unfit for that
+lists is cleared whether or not it is installed. Remote hands take a recipe's
+`tools:` and `env:` the way the hub does - the worker runs under `mise exec
+PIN… --` with the recipe's env set, after the `setup:` lines ran there - once
+their probe answers `recipe=1` (hands shipped since this landed do; `pulse
+pair` refreshes older ones, then `pulse executor probe NAME`); until then such
+a project runs on the hub only, as before, which kept five of eight projects off
+the hands. A setup that fails twice the same way marks the project unfit for that
 executor; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle

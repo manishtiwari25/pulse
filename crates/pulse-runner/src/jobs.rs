@@ -3272,10 +3272,26 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let bin = crate::test_helpers::build_pulse();
         let _stage = crate::test_helpers_staged_pulse::stage_local_pulse(&bin);
         let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
+        // The recipe's env reaches the worker on the hands, as it does here.
+        crate::env::env_set(
+            &s,
+            proj,
+            crate::test_helpers::recipe_with(
+                None,
+                None,
+                None,
+                Some(&[("HANDS_GREETING", "from-the-recipe")]),
+                "",
+            ),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "env".into(),
+        )
+        .unwrap();
         let workroot = tempfile::tempdir().unwrap();
         let workdir = workroot.path().join("srv");
         let hands_home = tempfile::tempdir().unwrap();
@@ -3348,6 +3364,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "probe left the executor {}",
             crate::executor::executor_row(&s, "hands").str("status")
         );
+        assert!(
+            crate::recipe::hands_take_recipe(&s.conn().unwrap(), "hands"),
+            "these hands answer recipe=1: {note:?}"
+        );
         let job = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -3370,7 +3390,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW,
             crate::run::RunOpts {
                 executor: "hands".into(),
-                worker_cmd: "sh -c 'echo SUMMARY: hi from hands'".into(),
+                worker_cmd: "sh -c 'echo SUMMARY: hi from hands $HANDS_GREETING'".into(),
                 ..Default::default()
             },
         )
@@ -3379,7 +3399,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             run.str("status") == "done"
                 && run.str("executor") == "hands"
-                && run.str("summary").contains("hi from hands"),
+                && run.str("summary").contains("hi from hands from-the-recipe"),
             "run {run:?}"
         );
         assert_eq!(
@@ -3591,6 +3611,72 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             note.contains("harness login missing"),
             "probe note: {note:?}"
         );
+    }
+    #[test]
+    fn probe_executor_learns_whether_the_hands_take_a_recipe() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "pulse@hands",
+            "/srv/pulse",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let conn = s.conn().unwrap();
+        let base = "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1 steps=1";
+        // (what the hands answer, whether the hub then sends them recipes)
+        for (reply, takes) in [
+            (
+                format!(
+                    "{base} recipe=1
+"
+                ),
+                true,
+            ),
+            (
+                format!(
+                    "{base}
+"
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "{base} recipe=1
+"
+                ),
+                true,
+            ),
+            // A probe that got no answer leaves the last one standing.
+            (
+                "hands=missing
+"
+                .to_string(),
+                true,
+            ),
+        ] {
+            let old = crate::executor::run_ssh_hook();
+            crate::executor::set_run_ssh(fake_probe_ssh);
+            *PROBE_REPLY.write().unwrap() = reply.clone();
+            let (_ok, note) = crate::executor::probe_executor(
+                &s,
+                "hands",
+                crate::util::HUMAN_AGENT,
+                crate::test_helpers::TEST_NOW,
+            )
+            .unwrap();
+            crate::executor::restore_run_ssh(old);
+            assert_eq!(
+                crate::recipe::hands_take_recipe(&conn, "hands"),
+                takes,
+                "{reply:?}: {note:?}"
+            );
+        }
     }
     #[test]
     fn probe_executor_min_free_mb() {

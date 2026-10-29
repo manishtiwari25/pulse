@@ -14,6 +14,24 @@ static HANDS_BRANCH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._/-]+$").unwrap());
 pub(crate) static HANDS_ENV_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(PULSE_[A-Z_]+|GIT_TERMINAL_PROMPT)=.*$").unwrap());
+/// Names the hands keep for themselves: a recipe's `env:` may set anything the
+/// hub would, but not what decides which binaries load or whose account runs.
+const HANDS_OWN_ENV: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD"];
+const HANDS_OWN_ENV_PREFIXES: [&str; 3] = ["LD_", "DYLD_", "SSH_"];
+/// Whether `run` takes `K=V`: the hub's own keys, or a name a recipe's `env:`
+/// may set (the hub refused secret names and secret-shaped values before it
+/// sent them; the hands refuse the names again, cheaply).
+pub(crate) fn hands_env_allowed(kv: &str) -> bool {
+    if HANDS_ENV_RE.is_match(kv) {
+        return true;
+    }
+    let Some((k, _)) = kv.split_once('=') else {
+        return false;
+    };
+    crate::recipe::recipe_env_name_ok(k)
+        && !HANDS_OWN_ENV.contains(&k)
+        && !HANDS_OWN_ENV_PREFIXES.iter().any(|p| k.starts_with(p))
+}
 static HANDS_B64_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^b64 ([A-Za-z0-9+/=]+)$").unwrap());
 static HANDS_UPLOAD_RE: LazyLock<Regex> =
@@ -58,7 +76,25 @@ impl std::fmt::Debug for Hands {
             .finish_non_exhaustive()
     }
 }
+/// The worker `run` may start: `pulse harness run …`, bare or under the
+/// recipe's pins as `mise exec <tool@version>… -- pulse harness run …`.
 pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
+    let rest = match rest {
+        [mise, exec, tail @ ..] if mise == "mise" && exec == "exec" => {
+            let Some(sep) = tail.iter().position(|a| a == "--") else {
+                return false;
+            };
+            if sep == 0
+                || !tail[..sep]
+                    .iter()
+                    .all(|p| crate::recipe::RECIPE_TOOL_RE.is_match(p))
+            {
+                return false;
+            }
+            &tail[sep + 1..]
+        }
+        _ => rest,
+    };
     match rest
         .first()
         .map(|s| {
@@ -320,7 +356,7 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1",
             self.workdir,
             dash(jobs),
             dash(keys)
@@ -472,7 +508,7 @@ impl Hands {
         let mut extra = BTreeMap::new();
         let mut i = 0;
         while i < rest.len() && rest[i] != "--" {
-            if !HANDS_ENV_RE.is_match(&rest[i]) {
+            if !hands_env_allowed(&rest[i]) {
                 return Err(hands_die(format!(
                     "env key not allowed: {}",
                     rest[i].split_once('=').map(|x| x.0).unwrap_or(&rest[i])
@@ -807,6 +843,58 @@ mod tests {
         }
         let err = h.hands_main(&["tool".into()]).unwrap_err().to_string();
         assert!(err.contains("tool CHECK"), "{err}");
+    }
+
+    #[test]
+    fn hands_take_a_recipes_env_and_pins_but_keep_their_own_names() {
+        for ok in [
+            "PULSE_AGENT=aurora",
+            "GIT_TERMINAL_PROMPT=0",
+            "CARGO_TARGET_DIR=/srv/pulse/target",
+            "CI=1",
+            "MISE_IGNORED_CONFIG_PATHS=/srv/pulse/j/clone",
+            "MISE_YES=1",
+            "_X=",
+        ] {
+            assert!(hands_env_allowed(ok), "{ok} refused");
+        }
+        for bad in [
+            "PATH=/evil",
+            "HOME=/elsewhere",
+            "LD_PRELOAD=/evil.so",
+            "DYLD_INSERT_LIBRARIES=/evil.dylib",
+            "SSH_AUTH_SOCK=/x",
+            "SECRET=x",
+            "NPM_TOKEN=x",
+            "lower=1",
+            "NOEQUALS",
+        ] {
+            assert!(!hands_env_allowed(bad), "{bad} accepted");
+        }
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(hands_allowed_worker(&argv(&["pulse", "harness", "run"])));
+        assert!(hands_allowed_worker(&argv(&[
+            "mise",
+            "exec",
+            "node@22.1.0",
+            "pnpm@9.1.0",
+            "--",
+            "pulse",
+            "harness",
+            "run",
+            "-p",
+            "x"
+        ])));
+        for bad in [
+            vec!["mise", "exec", "--", "pulse", "harness", "run"],
+            vec!["mise", "exec", "node", "--", "pulse", "harness", "run"],
+            vec!["mise", "exec", "node@22.1.0", "pulse", "harness", "run"],
+            vec!["mise", "exec", "node@22.1.0", "--", "sh", "-c", "true"],
+            vec!["mise", "exec", "node@22.1.0", "--"],
+            vec!["mise", "run", "--", "pulse", "harness", "run"],
+        ] {
+            assert!(!hands_allowed_worker(&argv(&bad)), "{bad:?} allowed");
+        }
     }
 
     #[test]
