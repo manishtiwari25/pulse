@@ -903,8 +903,27 @@ pub(crate) fn run_job(
         stop_watch();
         return r;
     }
+    let model_class = crate::lead_roles::model_class_of_job(s, &job);
+    // The agent file whose kinds and select fit the card, if any: the
+    // worker runs as it (`--agent NAME`), the clone being made from the
+    // checkout whose files are read here.
+    let agent_spec = crate::agent_specs::spec_for_job(s, &job, &project.str("slug"), &root);
+    if let Some(a) = &agent_spec {
+        let travels = crate::exec::agent_flag_travels(a, ex.remote());
+        log.add(format!(
+            "runs as the {} agent ({}){}",
+            a.name,
+            a.source,
+            if travels {
+                String::new()
+            } else {
+                "; a remote hand cannot read that layer, so only its model, step cap and read-only flag travel".to_string()
+            }
+        ));
+    }
     if agent != crate::util::HUMAN_AGENT {
-        let mut model = s.run_model(&job.str("kind"));
+        let mut model =
+            crate::exec::worker_model(s, &job.str("kind"), &model_class, agent_spec.as_ref());
         if !o.worker_cmd.is_empty() {
             model.clear();
         }
@@ -1080,23 +1099,27 @@ pub(crate) fn run_job(
             // The carried conversation already holds the brief; the worker
             // opens with what changed since and resumes its trajectory.
             Some(r) => {
-                let (cmd, custom) = crate::exec::worker_command(
+                let (cmd, custom) = crate::exec::worker_command_as(
                     s,
                     &job.str("kind"),
+                    &model_class,
                     &continuation_message(&run_id, r, &clone),
                     &clone,
                     &o.worker_cmd,
                     ex.remote(),
+                    agent_spec.as_ref(),
                 );
                 (crate::exec::with_resume(cmd, &r.session.trajectory), custom)
             }
-            None => crate::exec::worker_command(
+            None => crate::exec::worker_command_as(
                 s,
                 &job.str("kind"),
+                &model_class,
                 &brief_text,
                 &clone,
                 &o.worker_cmd,
                 ex.remote(),
+                agent_spec.as_ref(),
             ),
         };
         if let Some(r) = &resume {

@@ -353,6 +353,7 @@ impl Store {
         if self.additive_complete() {
             return Ok(());
         }
+        self.widen_record_kinds()?;
         let tx = self.begin()?;
         for (table, marker) in SUPERSEDED_SHAPES {
             if !table_present(&tx, table)? || has_column(&tx, table, marker)? {

@@ -837,6 +837,20 @@ lead" --brief "..."` (a custom role needs its title and brief; the built-in
 ones carry theirs). One live lead per role and project; the agent is named
 `<slug>-lead-<role>`.
 
+A **`role` record** makes a role the registry knows without a rebuild:
+`pulse record new role --project my-app --title content --body-file role.md`
+(the role word is the record's slug, or a `role:` key). The body may open
+with a `---` block - `title`, `about`, `every`, and `gaps` naming the
+signals the built-in roles watch (`pulse lead roles` lists them, and the
+`{variables}` the text may use) - and the rest is the concern's section,
+rendered with the project's signals at each sitting. A record named like a
+built-in role replaces what it states and keeps the rest; a record in the
+`commons` project counts for every project, the project's own wins; a
+retired status takes it out. Only a record made in the store (not one a
+repository's file became) may widen the daemon: a `gaps` entry
+`{signal: sql, query: <read-only SQL, ?1 = the project slug>, threshold: N,
+why: "{n} ..."}`, `model_class: worker|light`, `away_seatable: true`.
+
 Each **sitting** is an ordinary lead job (`source = lead-role:<slug>:<role>:…`)
 queued by the daemon when the seat is due and run by the role lead alone -
 the project lead never takes it, and a role lead never takes the project
@@ -859,7 +873,14 @@ in use; for `triage` the open threads and questions; for `tidy` whether the
 check runs a linter; for `dx` the jobs the environment blocked. A sitting
 queues Tier 0/1 worker jobs, posts findings and suggestions, and tells the
 owner in the project's chat what it did; it never decides for an absent
-owner. Like every job it counts against `jobs_per_day`.
+owner. Like every job it counts against `jobs_per_day`. The `rsi` sitting
+carries one step that binds: when the project's archive shows fewer than
+20% improved-or-kept over its last 20 cycles, the sitting must add one
+metric fixture that reads the project's own check output (`pulse evolve
+fixture add … --metric`), check that it scores HEAD (`pulse evolve measure
+--ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`;
+that sitting runs on the worker model (`worker_model`), the other roles'
+sittings on the light one.
 
 PULSE **suggests** a seat when the project shows the gap: the loop is at
 level D with no `rsi` lead; three or more landings in a fortnight changed
@@ -899,6 +920,7 @@ declined, is never seated unasked again.
 
 ```bash
 pulse lead suggest --project my-app          # the missing roles, why, and the command that seats each
+pulse lead roles --project my-app            # every role the project can seat, built in or from a role record
 pulse lead add --project my-app --role rsi   # seat a built-in role; its first sitting is queued now
 pulse lead add --project my-app --role content --title "Content lead" --brief-file content.md --every 1w
 pulse lead list --project my-app             # ID, role, agent, cadence, next sitting, sittings so far
@@ -917,8 +939,9 @@ queued), `lead.paused`, `lead.resumed`, `lead.run`, `lead.ended`,
 `lead.seated_away` (the security seat the daemon filled while you were
 away). The hub serves
 them at `GET /api/v1/leads?project=` (the seats, the suggestions and the
-built-in roles) and `POST /api/v1/leads` (`{project, role, title?, brief?,
-every?}`), `POST /api/v1/leads/<id>/pause|resume|end|run`.
+roles, each with its `source`: `builtin` or `store`) and `POST /api/v1/leads`
+(`{project, role, title?, brief?, every?}`),
+`POST /api/v1/leads/<id>/pause|resume|end|run`.
 
 ### Suggested work: `pulse task suggest`
 
@@ -1411,7 +1434,13 @@ pulse backup --to az://myaccount/pulse-backups  # a gzip copy off this machine (
 
 Numbered kinds (ADR, PLAN, FEAT, WU) keep their numbers; the rest are
 `PREFIX-<slug>[-<project>]` (GUIDE-*, MEM-*, PROMPT-*, TPL-*, CTX-environment,
-EVO-constitution, EVO-evaluators, EVO-archive).
+EVO-constitution, EVO-evaluators, EVO-archive, and the agent-pack kinds
+ROLE-*, AGENT-*, BRIEF-*, KIND-*). `pulse migrate --records` also reads
+`.pulse/agents/*.md`: each file becomes an `agent` record holding the file
+whole, front matter included, and a file whose front matter has a `pulse:`
+block with a `role:` word also makes a `role` record (the block's other
+keys are its front matter, the file's body its text). `pulse seed export`
+bundles the pack kinds with the framework's.
 
 For a human-run quarterly prune, `pulse record show WF-prune` holds the
 script. It counts local `pulse/*` branches before deletion and saves the count
@@ -2201,17 +2230,45 @@ were read and how many rules wait.
 **Custom agents.** The helper the `subagent` tool runs can be one the
 repository or the owner described: a Markdown file with front matter under
 `.pulse/agents`, `.claude/agents` (Claude Code's `<name>.md`),
-`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, the
-first of a name winning in that order. Its `description` tells the model
-when to pick it (the tool lists them and takes `agent: NAME`), its body
-becomes the helper's standing instructions ahead of the sub-task, and its
-`tools` list - in any harness's spelling: `Read`, `view`, `shell`,
-`WebFetch`, `Task`, `mcp__github__*`; `Bash(git *)` counts as `bash` -
-narrows what the helper gets: a tool outside the list (or in
-`disallowedTools`) is neither offered to it nor run for it, the same way a
-`deny` rule works. A helper also inherits the run's permission rules and
-the path-scoped rules above. `--no-agents` leaves the agents out for one
-run; they follow `harness.subagents` otherwise.
+`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, or an
+`agent` record of the store (the importer makes one of each `.pulse/agents`
+file). A name belongs to its most trusted source - a store record, then
+`~/.pulse/agents`, then `.pulse/agents`, `.claude/agents`, `.github/agents`
+- and a lower twin of the same name may only narrow it: fewer `tools`, more
+denies, a smaller `max_steps`, read-only; whatever else it says is dropped
+with a warning. `pulse agents list` (and the hub) show which source won.
+Its `description` tells the model when to pick it (the tool lists them and
+takes `agent: NAME`), its body - up to 30,000 characters - becomes the
+helper's standing instructions ahead of the sub-task, and its `tools` list
+- in any harness's spelling: `Read`, `view`, `shell`, `WebFetch`, `Task`,
+`mcp__github__*`, Copilot's `github/*`, OpenCode's `mcp_github_search`;
+`Bash(git *)` counts as `bash` - narrows what the helper gets: a tool
+outside the list (or in `disallowedTools`) is neither offered to it nor
+run for it, the same way a `deny` rule works. `model`, `maxTurns` (it may
+only lower the step cap), `permissionMode: plan` and `readonly: true`
+apply too; `permissionMode: bypassPermissions` keeps the file from
+loading, and so does a `hooks:` block or an `allow: "*"` in a repository
+file. A helper also inherits the run's permission rules and the
+path-scoped rules above. Under a `pulse:` key the file speaks to PULSE
+itself: `kinds` and `select: {tags, files}` name the job cards it runs - a
+job whose kind is listed and whose `Tags:` (else `Class:`) words or
+`File:` paths match runs under that agent's model, tools, step cap and
+standing instructions, the runner handing the worker `pulse harness run
+--agent NAME` (a remote hand reads the clone's files; a store-only record
+is invisible to it); `max_steps` and `max_subagents` cap the run and the
+helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
+`quorum` and `project_scope` are read and linted for the phases that will
+consume them. `--agent NAME` runs any `pulse harness run` as that agent;
+its `model` applies only when `models.allowed` lets it (empty = any model
+the provider accepts; a comma or newline list, `claude-*` globs), else the
+run keeps the model it had and says so. `pulse agents lint [PATH…]` reads
+the files one by one - the keys, what each tool name became, the limits
+(1024 characters of description), the template, the Tier 0/1 rules, the
+twins - and exits 1 on an error; `pulse agents schema` prints the front
+matter's JSON Schema; `pulse agents list` what loads and from where
+(`pulse agent`, singular, manages the running workers). `--no-agents`
+leaves the agents out for one run; they follow `harness.subagents`
+otherwise.
 
 **MCP servers as tools.** With a store at hand, a run connects the
 project's enabled [MCP servers](#connecting-the-outside-world-pulse-mcp)

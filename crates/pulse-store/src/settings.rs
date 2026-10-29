@@ -92,7 +92,7 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.task_max_steps"=>"","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.memory"=>"on","harness.teach"=>"off","harness.web_search"=>"chat","harness.fetch_allow"=>"","harness.compact_at"=>"70","harness.reasoning"=>"default","harness.allow_tools"=>"","harness.deny_tools"=>"",
+    "provider"=>"copilot","provider.retry_after_cap_s"=>"60","provider.max_body_mb"=>"8","harness.max_steps"=>"60","harness.task_max_steps"=>"","harness.max_cost"=>"0","harness.keep_observations"=>"5","harness.system_prompt"=>"","harness.step_timeout"=>"300","harness.commit_timeout"=>"1500","harness.output_limit"=>"20000","harness.format_retries"=>"1","harness.context_window"=>"0","harness.instructions"=>"on","harness.mcp_tools"=>"on","harness.skills"=>"on","harness.hooks"=>"on","harness.subagents"=>"on","harness.memory"=>"on","harness.teach"=>"off","harness.web_search"=>"chat","harness.fetch_allow"=>"","harness.compact_at"=>"70","harness.reasoning"=>"default","harness.allow_tools"=>"","harness.deny_tools"=>"","models.allowed"=>"",
     // One endpoint per API-key provider (the registry name is the middle
     // segment); azure-openai has no default because the resource is the owner's.
     "provider.openai.base_url"=>"https://api.openai.com/v1","provider.anthropic.base_url"=>"https://api.anthropic.com","provider.gemini.base_url"=>"https://generativelanguage.googleapis.com","provider.azure-openai.base_url"=>"","provider.openrouter.base_url"=>"https://openrouter.ai/api/v1","provider.groq.base_url"=>"https://api.groq.com/openai/v1","provider.mistral.base_url"=>"https://api.mistral.ai/v1","provider.deepseek.base_url"=>"https://api.deepseek.com/v1","provider.xai.base_url"=>"https://api.x.ai/v1","provider.together.base_url"=>"https://api.together.xyz/v1","provider.fireworks.base_url"=>"https://api.fireworks.ai/inference/v1","provider.cerebras.base_url"=>"https://api.cerebras.ai/v1","provider.github-models.base_url"=>"https://models.github.ai/inference","provider.ollama.base_url"=>"http://127.0.0.1:11434/v1","provider.lmstudio.base_url"=>"http://127.0.0.1:1234/v1","provider.vllm.base_url"=>"http://127.0.0.1:8000/v1",
@@ -145,6 +145,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "harness.allow_tools"=>("text",None,[],None,"permission rules for the calls of an interactive harness session (pulse harness chat) that run without the user's approval, comma- or newline-separated, each a tool name or tool(filter) with * and ? wildcards: bash(git *), edit(src/*), write, fetch(docs.rs), mcp__github__*; --allow-tool adds to the list and a deny rule wins over an allow; a job asks nobody, so this does not change jobs"),
         "harness.deny_tools"=>("text",None,[],None,"permission rules for the calls a native-harness run refuses outright, in jobs and sessions alike, comma- or newline-separated, each a tool name or tool(filter) with * and ? wildcards: bash(git push *), read(.env*), write(*.lock), subagent; a tool denied whole is not offered to the model; --deny-tool adds to the list; the job policy line (no push, no gh, no credentials) stays on top of these"),
         "harness.reasoning"=>("choice",None,["default","minimal","low","medium","high","xhigh"],None,"the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers (openai, azure-openai, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, github-models, ollama, lmstudio, vllm) and to copilot for the models that take it; default sends nothing and leaves the model's own setting; a model that does not take the field rejects the call, so set this per project with its model in mind"),
+        "models.allowed"=>("text",None,[],None,"the models a custom agent file (.pulse/agents/<name>.md, .claude/agents, .github/agents, an agent record) may ask for with its model key, comma- or newline-separated, * for a run of characters: kimi-k3, claude-*; empty lets any model the provider accepts through; a model outside the list is ignored with a note and the run keeps its routing (run.model, the role's model class), a subagent its parent's model"),
     }
 });
 pub const COMPUTE_PROVIDERS: &[&str] = &["azure", "aws", "gcp", "multipass"];
@@ -301,6 +302,9 @@ pub const OWNER_PATHS: &[&str] = &[
     "docs/evolution/STOP",
     "docs/decisions/",
     ".github/",
+    ".pulse/agents/",
+    ".pulse/roles/",
+    ".pulse/kinds/",
 ];
 pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -681,6 +685,17 @@ impl Store {
             self.setting("worker_model", "").trim().to_string()
         } else {
             self.light_model()
+        }
+    }
+
+    /// The model for a run of `kind` whose role asks for a model class of
+    /// its own: `worker` runs on the worker model, `light` on the light one,
+    /// anything else on the kind's own.
+    pub fn run_model_class(&self, kind: &str, class: &str) -> String {
+        match class.trim() {
+            "worker" => self.setting("worker_model", "").trim().to_string(),
+            "light" => self.light_model(),
+            _ => self.run_model(kind),
         }
     }
 
