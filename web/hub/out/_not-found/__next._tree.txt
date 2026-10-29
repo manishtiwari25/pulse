@@ -2,4 +2,4 @@
 :HL["/fonts/atkinson-next-latin.woff2","font",{"crossOrigin":"anonymous","type":"font/woff2"}]
 2:[["children",{"s":"__PAGE__","h":160}]]
 1:[["children",{"s":"/_not-found","h":64,"c":"$Q2"}]]
-0:{"b":"fSpDtXVXJX_rcLaT-GJdK","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
+0:{"b":"rsdtwgbw7WzTCrJ8hR-fT","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
