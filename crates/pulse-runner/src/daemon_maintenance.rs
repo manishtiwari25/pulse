@@ -39,6 +39,11 @@ pub(crate) fn set_stage(stage: Option<&Stage>, what: impl Into<String>) {
 /// Landing states after which the job is no longer pending; every other
 /// state leaves the experiment in the queue for a later attempt.
 const TERMINAL_STATES: &[&str] = &["landed", "merged", "dropped", "missing"];
+/// Retries of `lane.retry_minutes` a deferred experiment gets before the
+/// lane gives it up: a day of them at the default, since what a day of tries
+/// did not clear (a setup that fails, a base the branch lost) needs an owner,
+/// not more tries - one experiment was deferred for eight days.
+pub(crate) const EXPERIMENT_DEFERRAL_RETRIES: u64 = 72;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LaneResult {
@@ -482,14 +487,14 @@ impl DaemonMaintenance {
                     state: "error".into(),
                     note: format!("experiment lane error: {}", panic_text(&panic)),
                 });
-                let result = LaneResult {
+                let mut result = LaneResult {
                     project: project.str("slug"),
                     job: job.str("id"),
                     branch: job.str("branch"),
                     state: lr.state,
                     note: lr.note,
                 };
-                record_lane_outcome(&s, &actor, &result);
+                record_lane_outcome(&s, &actor, &project, &job, &mut result);
                 let _ = tx.send(result);
             })
             .expect("spawn experiment lane thread");
@@ -710,19 +715,92 @@ fn recv_by<T>(
     }
 }
 
+/// How long the lane keeps retrying a deferred experiment.
+pub(crate) fn experiment_deferral_bound(s: &pulse_store::Store) -> Duration {
+    Duration::from_secs(
+        60 * setting_minutes(s, "lane.retry_minutes", 20) as u64 * EXPERIMENT_DEFERRAL_RETRIES,
+    )
+}
+
+/// When the experiment was first deferred for a reason of its own, if ever.
+/// A governor hold is the machine's reason, not the experiment's, and does
+/// not start the clock.
+fn first_own_deferral(q: &(impl crate::util::Querier + ?Sized), job: &str) -> Option<String> {
+    crate::util::query_rows(
+        q,
+        "SELECT at, json_extract(detail, '$.note') AS note FROM events
+         WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = ?
+           AND json_extract(detail, '$.state') = 'deferred'
+         ORDER BY at ASC, seq ASC",
+        &[&job],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .find(|r| !crate::daemon_load::is_hold_note(&r.str("note")))
+    .map(|r| r.str("at"))
+}
+
 /// Records a lane outcome that leaves the experiment pending as a
-/// `land.deferred` event; the terminal states write their own events.
-fn record_lane_outcome(s: &pulse_store::Store, actor: &str, result: &LaneResult) {
+/// `land.deferred` event; the terminal states write their own events. An
+/// experiment deferred for longer than `experiment_deferral_bound` is given
+/// up instead: its job fails with a `land.missing` event naming the wait and
+/// the last reason, and `result` says so; the branch stays for review.
+fn record_lane_outcome(
+    s: &pulse_store::Store,
+    actor: &str,
+    project: &Row,
+    job: &Row,
+    result: &mut LaneResult,
+) {
     if TERMINAL_STATES.contains(&result.state.as_str()) {
         return;
     }
     let Ok(conn) = s.conn() else {
         return;
     };
+    let now = s.now();
+    if result.state == "deferred"
+        && !crate::daemon_load::is_hold_note(&result.note)
+        && let Some(first) = first_own_deferral(&conn, &result.job)
+    {
+        let waited = crate::util::must_iso(&now) - crate::util::must_iso(&first);
+        let bound = experiment_deferral_bound(s);
+        if waited.to_std().unwrap_or_default() >= bound {
+            let why = format!(
+                "experiment {} was deferred for {} since {first} and still does not land ({}); the lane gives it up after {EXPERIMENT_DEFERRAL_RETRIES} retries of lane.retry_minutes - the branch stays for review",
+                result.branch,
+                crate::util::format_minutes(waited.num_minutes()),
+                result.note
+            );
+            let run = crate::experiment::last_run_id(s, result.job.clone());
+            match crate::landing_evidence::fail_missing_experiment(
+                s,
+                project.clone(),
+                job.clone(),
+                actor.to_string(),
+                run,
+                String::new(),
+                why.clone(),
+            ) {
+                Ok(()) => {
+                    result.state = "missing".into();
+                    result.note = why;
+                    return;
+                }
+                Err(e) => {
+                    result.note = format!(
+                        "{}; could not give it up: {}",
+                        result.note,
+                        crate::run::err_message(&e)
+                    );
+                }
+            }
+        }
+    }
     let wait = experiment_retry(s, &result.state, &result.note);
     crate::util::event_at(
         &conn,
-        &s.now(),
+        &now,
         actor,
         "land.deferred",
         &result.branch,
@@ -748,6 +826,98 @@ mod tests {
             "INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, 'test')
              ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
             &[&key, &value, &TEST_NOW],
+        );
+    }
+
+    #[test]
+    fn a_deferred_experiment_is_given_up_once_it_has_waited_the_bound() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        set_retry_setting(&s, "lane.retry_minutes", "20");
+        let bound_minutes = 20.0 * EXPERIMENT_DEFERRAL_RETRIES as f64;
+        let long_ago = crate::util::plus_minutes(TEST_NOW, -(bound_minutes + 5.0));
+        pending_experiment(&s, &dir, "first", &long_ago);
+        let job = crate::jobs::job_row(&*s.conn().unwrap(), "first".into());
+        let deferred = LaneResult {
+            project: "proj".into(),
+            job: "first".into(),
+            branch: "evolve/first".into(),
+            state: "deferred".into(),
+            note: "setup failed on local: pnpm install exited 1".into(),
+        };
+        let deferral_at = |at: &str, note: &str| {
+            crate::util::event_at(
+                &*s.conn().unwrap(),
+                at,
+                "daemon",
+                "land.deferred",
+                "evolve/first",
+                serde_json::json!({"project": "proj", "job": "first", "state": "deferred", "note": note}),
+            );
+        };
+        // A governor hold long ago is the machine's reason, not the
+        // experiment's: the clock has not started, so this deferral is
+        // recorded and the experiment stays pending.
+        deferral_at(
+            &long_ago,
+            &format!(
+                "{}load 30.0 on 12 CPUs is over daemon.max_load 24",
+                crate::daemon_load::HOLD_PREFIX
+            ),
+        );
+        let mut result = deferred.clone();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut result);
+        assert_eq!(result.state, "deferred", "{result:?}");
+        assert_eq!(
+            crate::jobs::job_row(&*s.conn().unwrap(), "first".into()).str("status"),
+            "done"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = 'first'",
+                &[],
+            ),
+            2
+        );
+        // A stop past the bound is not the experiment's doing either.
+        deferral_at(&long_ago, "base check failed: cargo test exited 101");
+        let mut stopped = deferred.clone();
+        stopped.state = "stopped".into();
+        stopped.note = "daemon stopping".into();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut stopped);
+        assert_eq!(stopped.state, "stopped", "{stopped:?}");
+        // Deferred again a day after its own first deferral: the lane gives
+        // the experiment up with the wait and the last reason on record.
+        let mut result = deferred.clone();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut result);
+        assert_eq!(result.state, "missing", "{result:?}");
+        assert!(
+            result.note.contains("deferred for 24h05m")
+                && result.note.contains("pnpm install exited 1")
+                && result.note.contains("gives it up"),
+            "{}",
+            result.note
+        );
+        let failed = crate::jobs::job_row(&*s.conn().unwrap(), "first".into());
+        assert_eq!(failed.str("status"), "failed");
+        assert!(failed.str("result").contains("gives it up"), "{failed:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.missing' AND json_extract(detail, '$.job') = 'first'",
+                &[],
+            ),
+            1
+        );
+        let line = DaemonMaintenance::lane_result_line(
+            &result,
+            experiment_retry(&s, &result.state, &result.note),
+        );
+        assert!(
+            line.starts_with("landing missing: experiment evolve/first was deferred for"),
+            "{line}"
         );
     }
 

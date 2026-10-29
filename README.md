@@ -1763,7 +1763,12 @@ experiment the lane could not land stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
 `land.deferred` with the reason and `retry_after_min`. The daemon log says
-`retry in 20m` (or the configured value). The measurement harness the lane starts
+`retry in 20m` (or the configured value). The retries are bounded: an
+experiment still deferred for a reason of its own (a governor hold does not
+count) `lane.retry_minutes` × 72 (`EXPERIMENT_DEFERRAL_RETRIES`, a day at the
+default) after its first such deferral is given up - the job fails with a
+`land.missing` event naming the wait and the last reason, the branch stays
+for review - where one experiment was deferred for eight days. The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt; it runs on `measure_model`
 (`worker_model` while empty). When the daemon restarts on a new
