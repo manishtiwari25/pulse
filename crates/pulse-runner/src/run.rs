@@ -309,6 +309,28 @@ pub(crate) fn take_job(
     held: &BTreeMap<String, String>,
     fits: &[(String, String)],
 ) -> Result<(Row, Row, String)> {
+    take_job_first(
+        s, agent, project, job_id, dry_run, now, executor, taken, held, fits, false,
+    )
+}
+
+/// [`take_job`] for a slot the daemon keeps for the work class
+/// (`work_first`, jobs.rs `LeaseOpts`): queued improve, task and experiment
+/// jobs go before the meta kinds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn take_job_first(
+    s: &pulse_store::Store,
+    agent: &str,
+    project: &str,
+    job_id: &str,
+    dry_run: bool,
+    now: &str,
+    executor: &str,
+    taken: i32,
+    held: &BTreeMap<String, String>,
+    fits: &[(String, String)],
+    work_first: bool,
+) -> Result<(Row, Row, String)> {
     if let why = runner_stopped(s)
         && !why.is_empty()
     {
@@ -469,6 +491,7 @@ pub(crate) fn take_job(
             any_proj,
             fits: fits.to_vec(),
             hold_except,
+            work_first,
             ..Default::default()
         },
     )?;

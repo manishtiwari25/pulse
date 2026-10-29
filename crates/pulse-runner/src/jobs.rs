@@ -55,6 +55,11 @@ pub(crate) struct LeaseOpts {
     /// Projects whose landing kinds wait behind one source (a red default
     /// branch and its fix job): `(project, source)` pairs.
     pub hold_except: Vec<(String, String)>,
+    /// The slot is one the daemon keeps for the work class: a queued
+    /// improve, task or experiment job goes before the meta kinds whatever
+    /// project waited longest, and the meta kinds get the slot only when no
+    /// work is there to take it.
+    pub work_first: bool,
 }
 
 pub(crate) fn queue_onboarding_job(
@@ -122,6 +127,19 @@ pub(crate) fn work_kinds_sql() -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+
+/// The work class as a SQL list: [`WORK_KINDS`] and the lane's experiments,
+/// the jobs that change the product; the rest (reflect, ballot, lead,
+/// answer, clean...) is the meta work around them.
+pub(crate) fn work_class_sql() -> String {
+    format!("{},'experiment'", work_kinds_sql())
+}
+
+/// Hours a work-class job waits before every lease puts the work class
+/// ahead of the meta kinds, whatever the slot: reflects and ballots are many
+/// and short, and four slots cycling through them kept an improve job
+/// queued for a day while the project fairness saw every project served.
+pub(crate) const WORK_WAITED_HOURS: i32 = 2;
 
 /// The jobs the owner is waiting on, as a clause over `j`: the lead's own
 /// runs, answers, the jobs a lead planned for an owner task
@@ -444,12 +462,26 @@ pub(crate) fn lease_job(
         ));
         vals.push(Box::new(agent.clone()));
         // The work this agent holds first - its clone and conversation carry
-        // on only under it; then the owner's work; then the project that
-        // waited longest (fairness between projects); then priority and age.
+        // on only under it; then the owner's work; then the work class, on a
+        // slot kept for it or once a work job has waited WORK_WAITED_HOURS;
+        // then the project that waited longest (fairness between projects);
+        // then priority and age.
+        let work_class = work_class_sql();
+        let work_waited = if o.work_first {
+            "1".to_string()
+        } else {
+            "j.created_at <= ?".to_string()
+        };
         sql.push_str(&format!(
-            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
         ));
         vals.push(Box::new(agent.clone()));
+        if !o.work_first {
+            vals.push(Box::new(crate::util::plus_minutes(
+                &now,
+                -(WORK_WAITED_HOURS * 60),
+            )));
+        }
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| &**v).collect();
         let r = one_dyn(q, &sql, &refs);
         if r.0.is_empty() {
@@ -1024,6 +1056,69 @@ mod tests {
             crate::jobs::job_row(&s.conn().unwrap(), fleet_2).str("status"),
             "queued"
         );
+    }
+
+    #[test]
+    fn lease_puts_the_work_class_first_on_a_kept_slot_or_once_it_has_waited_two_hours() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        for name in ["aurora", "borealis", "cinder", "dusk"] {
+            join(&s, name);
+        }
+        // `proj` ran most recently: project fairness sends the next worker
+        // to `other`, whose reflect also carries the higher priority.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES ('run-old', 'job-old', 'aurora', 'proj', '2026-09-01T00:00:00Z', '2026-09-01T00:10:00Z', 'done')",
+                [],
+            )
+            .unwrap();
+        let reflect = queue(&s, "other", "reflect", "reflect:other:1", 40);
+        let improve = queue(&s, "proj", "improve", "lead-idle:proj:1", 1);
+        let lease = |agent: &str, now: &str, work_first: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                now.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    work_first,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // A plain slot keeps the fairness: the reflect goes first.
+        let first = lease("aurora", crate::test_helpers::TEST_NOW, false);
+        assert_eq!(first.str("id"), reflect, "{first:?}");
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+            &[&reflect],
+        );
+        // A slot kept for the work class takes the improve job over it.
+        let kept = lease("borealis", crate::test_helpers::TEST_NOW, true);
+        assert_eq!(kept.str("id"), improve, "{kept:?}");
+        // With no work queued the kept slot serves the meta kinds.
+        let meta = lease("cinder", crate::test_helpers::TEST_NOW, true);
+        assert_eq!(meta.str("id"), reflect, "{meta:?}");
+        for id in [&improve, &reflect] {
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[id],
+            );
+        }
+        // Two hours on, a plain slot puts the waiting improve job first too.
+        let later =
+            crate::util::plus_minutes(crate::test_helpers::TEST_NOW, super::WORK_WAITED_HOURS * 60);
+        let waited = lease("dusk", &later, false);
+        assert_eq!(waited.str("id"), improve, "{waited:?}");
     }
 
     fn fake_probe_ssh(

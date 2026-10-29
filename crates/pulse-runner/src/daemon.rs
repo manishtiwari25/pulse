@@ -2017,6 +2017,12 @@ pub(crate) fn daemon(
                 // at daemon.max_jobs and all close while the machine is saturated.
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
+                // The last half of the local slots under daemon.max_jobs
+                // (rounded up) go to the work class first (jobs.rs
+                // work_first): with four slots and a queue of reflects and
+                // ballots for every project, the fairness between projects
+                // kept an improve job waiting all day.
+                let mut work_reserve = 0usize;
                 // While a soft hold (load, or the kernel's memory warning
                 // with free memory above the floor) closes the machine, or
                 // the fleet's own work fills daemon.max_jobs, one local slot
@@ -2033,8 +2039,10 @@ pub(crate) fn daemon(
                         .filter(|d| crate::jobs::is_owner_driven(&d.job))
                         .count();
                     let reserved = usize::from(crate::selfupdate::update_pending());
+                    let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
+                    work_reserve = (limits.max_jobs.max(0) as usize).div_ceil(2);
                     let verdict = crate::daemon_load::decide(
-                        &crate::daemon_load::limits(s, &machine, o.max_jobs),
+                        &limits,
                         &crate::daemon_load::pressure(),
                         running_local,
                         crate::daemon_load::measuring(&s.home),
@@ -2115,6 +2123,11 @@ pub(crate) fn daemon(
                         (unrestricted, *i)
                     });
                     let owner_lane = crate::jobs::owner_lane_fits();
+                    let local_free = slots
+                        .iter()
+                        .filter(|n| *n == crate::executor::LOCAL_EXECUTOR)
+                        .count();
+                    let mut local_leased = 0usize;
                     for i in order {
                         let slot = &slots[i];
                         let fits = if express_slot && slot == crate::executor::LOCAL_EXECUTOR {
@@ -2122,6 +2135,10 @@ pub(crate) fn daemon(
                         } else {
                             &restart_kinds
                         };
+                        // This and the local slots still to fill this tick
+                        // are the last of the cap: the work class goes first.
+                        let work_first = slot == crate::executor::LOCAL_EXECUTOR
+                            && local_free - local_leased <= work_reserve;
                         let mut held = BTreeMap::new();
                         if slot == crate::executor::LOCAL_EXECUTOR
                             && let Some(adm) = admission.as_ref()
@@ -2159,7 +2176,7 @@ pub(crate) fn daemon(
                                     continue;
                                 }
                             };
-                            let (job, _, why) = match crate::run::take_job(
+                            let (job, _, why) = match crate::run::take_job_first(
                                 s,
                                 &worker,
                                 "",
@@ -2170,6 +2187,7 @@ pub(crate) fn daemon(
                                 started.len() as i32,
                                 &held,
                                 fits,
+                                work_first,
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
@@ -2185,10 +2203,11 @@ pub(crate) fn daemon(
                             }
                             (worker, job)
                         };
-                        if slot == crate::executor::LOCAL_EXECUTOR
-                            && let Some(adm) = admission.as_mut()
-                        {
-                            adm.claim(&job.str("project"));
+                        if slot == crate::executor::LOCAL_EXECUTOR {
+                            local_leased += 1;
+                            if let Some(adm) = admission.as_mut() {
+                                adm.claim(&job.str("project"));
+                            }
                         }
                         names.push(worker.clone());
                         let wait_s = crate::jobs::job_wait_seconds(

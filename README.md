@@ -2898,7 +2898,14 @@ Project fairness includes lease reservations before the worker's run thread
 records its start, so dispatch can spread work across projects without waiting
 for their processes to launch. Without the owner-first key a six-project fleet
 on four workers made an urgent task wait a full round of other projects'
-improve jobs (ninety minutes, measured) before its first job leased.
+improve jobs (ninety minutes, measured) before its first job leased. Between
+the owner's work and the fairness comes the work class: the last half of the
+local slots under `daemon.max_jobs` (rounded up: two of four) take a queued
+improve, task or experiment job before a reflect, ballot or clean, and every
+slot does once such a job has waited two hours (`WORK_WAITED_HOURS`) - the
+meta kinds are many and short, and four slots cycling through them for every
+project kept an improve job queued for a day while fairness saw each project
+served; a kept slot still takes the meta kinds when no work is queued.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
 ### Services and self-update
