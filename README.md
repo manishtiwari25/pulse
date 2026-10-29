@@ -1834,7 +1834,19 @@ what the archived cycles show about it, so you know which one to replace:
 default branch` (its baseline score changed when the default branch did -
 it measures main's own commits, not the experiments), or `scored the same
 baseline commit two ways, so a difference it reports is not a signal on its
-own`; held-out fixtures appear by their archive names (`H1 (held-out)`).
+own`, or `scored as a tie by the discard dispute in 2 cycles`; held-out
+fixtures appear by their archive names (`H1 (held-out)`). Judge noise counts
+neither way: the streak is read fixture by fixture from each cycle's
+archived matrix, leaving out a fixture the discard dispute scored as a tie
+and one that scored the same baseline commit two ways inside the window, so
+such a fixture neither breaks a streak with a difference that is noise nor
+makes one with a tie that was a verdict; the question's cycle lines and the
+reason name what was left out (`request left out as judge noise`). A fixture
+that flips the same baseline commit both ways twice is retired by the
+healer below (disabled, event `evolution.fixture.retired`, one finding
+`Evolution fixture retired: it scored the same commit both ways twice`);
+`pulse evolve fixture enable NAME` brings it back and only later cycles
+count for it again.
 `pulse evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
@@ -1850,7 +1862,9 @@ set evolve.flat_cycles 0` turns the gate off; the smallest streak it accepts
 is `2`.
 
 The loop heals a flat evaluator set itself before it asks or waits
-(`evolve.heal`, default `on`). When the gate fires, the planner first derives
+(`evolve.heal`, default `on`). Whenever it plans, it first retires the judge
+noise described above (a public fixture that flipped the same baseline commit
+both ways twice since it was last enabled). When the gate fires, it derives
 the metric fixtures the project's tree affords (`derived-tests`,
 `derived-todo-markers`, above) and re-arms a derived fixture whose count
 reached its scale - unless that fixture told no variant from its baseline in
@@ -1924,7 +1938,7 @@ record, read with `pulse record show WF-evolve`.
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
 | `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
-| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
+| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - retires a fixture that flipped the same commit both ways twice, derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |

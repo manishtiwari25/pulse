@@ -13,6 +13,11 @@
 //!    tied cycles, so the loop never waits forever on a question nobody
 //!    answers, and never runs more than one window on its own say-so.
 //!
+//! Before either, the healer retires judge noise: a public fixture whose
+//! archived scores flipped the same baseline commit both ways twice since it
+//! was last enabled is disabled (event `evolution.fixture.retired`, one
+//! finding on the thread); no gate can read such a fixture either way.
+//!
 //! Only the flat gate's own question is reviewed this way. The
 //! failed-experiment gate and STOP are the owner's alone. `evolve.heal off`
 //! turns the whole step off; `evolve.flat_wait_hours 0` keeps derivation and
@@ -27,11 +32,13 @@ pub const FLAT_WAIT_SETTING: &str = "evolve.flat_wait_hours";
 pub const HEALED_SUMMARY: &str = "Evolution healed: the loop derived fixtures from the tree";
 pub const RESUMED_SUMMARY: &str = "Evolution resumed: the gate no longer holds";
 pub const SELF_REVIEW_PREFIX: &str = "Reviewed by the loop: run";
+pub const RETIRED_SUMMARY: &str =
+    "Evolution fixture retired: it scored the same commit both ways twice";
 
 /// What the healer did for a project, for the plan result and the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Healed {
-    /// `derived` or `self-reviewed`.
+    /// `derived`, `self-reviewed` or `retired`.
     pub how: String,
     /// The post that records it: an answer on the gate question when one is
     /// open, otherwise a finding on the thread.
@@ -103,6 +110,95 @@ pub fn heal_flat(
     if !may_write(s, project)? {
         return Ok(None);
     }
+    let retired = retire_flaky_fixtures(s, project, opts)?;
+    Ok(heal_flat_gate(s, project, opts)?.or(retired))
+}
+
+/// Disables the enabled public fixtures whose archived scores flipped the
+/// same baseline commit both ways twice or more since they were last
+/// enabled ([`crate::flat_gate::RETIRE_FLIPS`]): judge noise that no gate
+/// can read as a signal either way. One event per fixture and one finding
+/// for all of them; `pulse evolve fixture enable NAME` is the owner's way
+/// back, after which only later cycles count.
+fn retire_flaky_fixtures(
+    s: &pulse_store::Store,
+    project: &str,
+    opts: &crate::plan::PlanOptions,
+) -> Result<Option<Healed>> {
+    let evidence = crate::flat_gate::fixture_evidence(s, project)?;
+    let suspects: Vec<String> = evidence
+        .iter()
+        .filter(|e| e.flips >= crate::flat_gate::RETIRE_FLIPS)
+        .map(|e| e.name.clone())
+        .collect();
+    if suspects.is_empty() {
+        return Ok(None);
+    }
+    let enabled = crate::fixtures::list_fixtures(s, project, true)?;
+    let mut retired = Vec::new();
+    for name in suspects {
+        if !enabled.iter().any(|f| f.name == name) {
+            continue;
+        }
+        // Only the cycles since the owner last enabled it count: the
+        // evidence that retired it once must not retire it again.
+        let since = last_enabled(s, project, &name)?;
+        let flips = if since.is_empty() {
+            evidence.iter().find(|e| e.name == name).map(|e| e.flips)
+        } else {
+            crate::flat_gate::fixture_evidence_since(s, project, &since)?
+                .into_iter()
+                .find(|e| e.name == name)
+                .map(|e| e.flips)
+        }
+        .unwrap_or(0);
+        if flips < crate::flat_gate::RETIRE_FLIPS {
+            continue;
+        }
+        crate::fixtures::set_fixture_enabled(s, project, &name, false, &opts.agent)?;
+        s.event(
+            &opts.agent,
+            "evolution.fixture.retired",
+            &name,
+            serde_json::json!({"project": project, "flips": flips, "since": since}),
+        )?;
+        retired.push(format!("{name} ({flips} flips on one baseline commit)"));
+    }
+    if retired.is_empty() {
+        return Ok(None);
+    }
+    let line = format!("retired {}", retired.join(", "));
+    let body = format!(
+        "The loop disabled {} of {project}'s fixtures (evolve.heal on): {}. Each scored the same baseline commit both ways at least twice across the archived cycles, so a difference it reports is judge noise, not a signal, and a tie it reports is not a reading either; the flat-fixture gate had already stopped counting it. The baseline is measured again on the next cycle because the fixture set changed.\n\npulse evolve fixture enable NAME --project {project} brings one back - only cycles after that count for it again; pulse evolve fixture list --project {project} shows the set; pulse settings set evolve.heal off leaves the evaluators to you.\n",
+        retired.len(),
+        retired.join(", ")
+    );
+    let post = heal_post(s, project, opts, "", RETIRED_SUMMARY, body)?;
+    Ok(Some(Healed {
+        how: "retired".to_string(),
+        post,
+        line,
+    }))
+}
+
+/// When the owner last enabled the fixture (the `evolution.fixture.enabled`
+/// event with `enabled: true`), or empty.
+fn last_enabled(s: &pulse_store::Store, project: &str, name: &str) -> Result<String> {
+    let at: Option<String> = s.conn()?.query_row(
+        "SELECT MAX(at) FROM events WHERE action = 'evolution.fixture.enabled' AND subject = ?
+		AND json_valid(detail) AND json_extract(detail, '$.project') = ?
+		AND json_extract(detail, '$.enabled') = 1",
+        rusqlite::params![name, project],
+        |r| r.get(0),
+    )?;
+    Ok(at.unwrap_or_default())
+}
+
+fn heal_flat_gate(
+    s: &pulse_store::Store,
+    project: &str,
+    opts: &crate::plan::PlanOptions,
+) -> Result<Option<Healed>> {
     let (question, reason) = crate::flat_gate::flat_fixture_gate(s, project)?;
     if reason.is_empty() {
         return close_moot_question(s, project, opts);
@@ -460,6 +556,21 @@ mod tests {
     /// Three tied cycles that scored `name` at `base` on the baseline and
     /// at `variant` on the variant tree.
     fn scored_on(s: &pulse_store::Store, name: &str, base: f64, variant: f64) {
+        for (id, offset) in [("B-001", -30), ("B-002", -20), ("B-003", -10)] {
+            scored_row(s, id, offset, name, base, variant);
+        }
+    }
+
+    /// One archived cycle whose matrix scored `name` `base` on the baseline
+    /// (commit `abc`) and `variant` on the variant tree.
+    fn scored_row(
+        s: &pulse_store::Store,
+        id: &str,
+        offset: i64,
+        name: &str,
+        base: f64,
+        variant: f64,
+    ) {
         let tree = |r#ref: &str, score: f64| {
             let fixtures = vec![crate::api::FixtureScore {
                 name: name.into(),
@@ -477,18 +588,16 @@ mod tests {
                 ..Default::default()
             }
         };
-        for (id, offset) in [("B-001", -30), ("B-002", -20), ("B-003", -10)] {
-            let pair = crate::archive::ScorePair {
-                baseline: Some(tree("abc", base)),
-                variant: Some(tree(&format!("v-{id}"), variant)),
-            };
-            tie_with(s, id, offset, &serde_json::to_string(&pair).unwrap());
-        }
+        let pair = crate::archive::ScorePair {
+            baseline: Some(tree("abc", base)),
+            variant: Some(tree(&format!("v-{id}"), variant)),
+        };
+        tie_with(s, id, offset, &serde_json::to_string(&pair).unwrap());
     }
 
     /// A flat store whose derived set dates from before the window, with
     /// derived-tests saturated since (the tree grew past its scale) and the
-    /// window's cycles scoring it `base` / `variant`.
+    /// window's three cycles scoring it `base` / `variant`.
     fn saturated_store(base: f64, variant: f64) -> (pulse_store::Store, String) {
         let (s, repo) = flat_base();
         scored_on(&s, "derived-tests", base, variant);
@@ -550,9 +659,10 @@ mod tests {
                     .contains("a Signal: check:<command> line is that card's card-check fixture"),
             "{body}"
         );
-        // A fixture that told a variant apart once in the window is still
+        // A fixture that told a variant apart in an earlier cycle is still
         // re-armed as before.
-        let (s, dated) = saturated_store(0.5, 0.6);
+        let (s, dated) = saturated_store(0.5, 0.5);
+        scored_row(&s, "B-000", -40, "derived-tests", 0.5, 0.6);
         let healed = heal_flat(&s, "demo", &opts()).unwrap().expect("healed");
         assert_eq!(healed.how, "derived");
         assert!(
@@ -563,6 +673,133 @@ mod tests {
             healed.line
         );
         assert!(derived_tests(&s).at > dated);
+    }
+
+    /// One archived cycle whose matrix scored `request` `rb` on baseline
+    /// commit `commit` and `rv` on the variant, with `metric` tied at 0.5.
+    fn request_cycle(
+        s: &pulse_store::Store,
+        id: &str,
+        commit: &str,
+        rb: f64,
+        rv: f64,
+        offset: i64,
+    ) {
+        let tree = |r#ref: &str, request: f64| {
+            let fixtures = vec![
+                crate::api::FixtureScore {
+                    name: "metric".into(),
+                    kind: "public".into(),
+                    score: 0.5,
+                    weight: 1.0,
+                    metric: true,
+                    note: String::new(),
+                },
+                crate::api::FixtureScore {
+                    name: "request".into(),
+                    kind: "public".into(),
+                    score: request,
+                    weight: 1.0,
+                    metric: false,
+                    note: String::new(),
+                },
+            ];
+            crate::api::Scores {
+                project: "demo".into(),
+                ref_name: r#ref.into(),
+                total: crate::dispute::weighted_total(&fixtures),
+                fixtures,
+                ..Default::default()
+            }
+        };
+        let pair = crate::archive::ScorePair {
+            baseline: Some(tree(commit, rb)),
+            variant: Some(tree(&format!("v-{id}"), rv)),
+        };
+        tie_with(s, id, offset, &serde_json::to_string(&pair).unwrap());
+    }
+
+    #[test]
+    fn a_fixture_that_flips_the_same_commit_both_ways_twice_is_retired() {
+        let _serial = serial();
+        let (s, _repo) = flat_base();
+        fixture(&s, "demo", "metric", "printf 1", 1.0);
+        fixture(&s, "demo", "request", "printf 1", 1.0);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE evolution_fixtures SET at = ? WHERE project = 'demo'",
+                [stamp(&s, -1000)],
+            )
+            .unwrap();
+        // request scored commit c2 1, 0, 1: two flips on one commit.
+        request_cycle(&s, "B-001", "c1", 1.0, 1.0, -60);
+        request_cycle(&s, "B-002", "c2", 1.0, 1.0, -50);
+        request_cycle(&s, "B-003", "c2", 0.0, 0.0, -40);
+        let (_, reason) = crate::flat_gate::flat_fixture_gate(&s, "demo").unwrap();
+        assert!(!reason.is_empty(), "the window tied on what could be read");
+        // One flip is evidence, not a verdict: nothing is retired yet, and
+        // the gate goes on as before (derived set, then the owner).
+        let healed = heal_flat(&s, "demo", &opts()).unwrap();
+        assert!(healed.is_none(), "{healed:?}");
+        assert!(fixture_named(&s, "request").enabled);
+        request_cycle(&s, "B-004", "c2", 1.0, 0.0, -30);
+        let healed = heal_flat(&s, "demo", &opts()).unwrap().expect("retired");
+        assert_eq!(healed.how, "retired");
+        assert_eq!(
+            healed.line,
+            "retired request (2 flips on one baseline commit)"
+        );
+        assert!(!fixture_named(&s, "request").enabled);
+        assert!(fixture_named(&s, "metric").enabled);
+        let (kind, summary, on) = post_kind(&s, &healed.post);
+        assert_eq!(
+            (kind.as_str(), summary.as_str(), on.as_str()),
+            ("finding", RETIRED_SUMMARY, "")
+        );
+        let body: String = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT body FROM posts WHERE id = ?", [&healed.post], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            body.contains("request (2 flips on one baseline commit)")
+                && body.contains("pulse evolve fixture enable NAME --project demo"),
+            "{body}"
+        );
+        assert_eq!(events(&s, "evolution.fixture.retired"), 1);
+        // Disabled, it is no candidate; re-enabled by the owner, the old
+        // evidence does not retire it again - only later cycles count.
+        assert_eq!(heal_flat(&s, "demo", &opts()).unwrap(), None);
+        crate::fixtures::set_fixture_enabled(&s, "demo", "request", true, "human").unwrap();
+        assert_eq!(heal_flat(&s, "demo", &opts()).unwrap(), None);
+        assert!(fixture_named(&s, "request").enabled);
+        request_cycle(&s, "B-005", "c3", 1.0, 1.0, 10);
+        request_cycle(&s, "B-006", "c3", 0.0, 0.0, 20);
+        request_cycle(&s, "B-007", "c3", 1.0, 1.0, 30);
+        let healed = heal_flat(&s, "demo", &opts())
+            .unwrap()
+            .expect("retired again");
+        assert_eq!(healed.how, "retired");
+        assert_eq!(events(&s, "evolution.fixture.retired"), 2);
+        // Heal off: the evaluators are the owner's.
+        crate::fixtures::set_fixture_enabled(&s, "demo", "request", true, "human").unwrap();
+        request_cycle(&s, "B-008", "c4", 1.0, 1.0, 40);
+        request_cycle(&s, "B-009", "c4", 0.0, 0.0, 50);
+        request_cycle(&s, "B-010", "c4", 1.0, 1.0, 60);
+        s.set_setting("human", HEAL_SETTING, "off").unwrap();
+        assert_eq!(heal_flat(&s, "demo", &opts()).unwrap(), None);
+        assert!(fixture_named(&s, "request").enabled);
+    }
+
+    fn fixture_named(s: &pulse_store::Store, name: &str) -> crate::fixtures::Fixture {
+        crate::fixtures::list_fixtures(s, "demo", false)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == name)
+            .unwrap()
     }
 
     #[test]
