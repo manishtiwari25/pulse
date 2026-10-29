@@ -56,6 +56,10 @@ pub const RECORD_KINDS: &[&str] = &[
     "template",
     "usage",
     "prompt",
+    "role",
+    "agent",
+    "brief",
+    "kind",
 ];
 pub fn record_prefix() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
@@ -74,6 +78,10 @@ pub fn record_prefix() -> BTreeMap<&'static str, &'static str> {
         ("template", "TPL"),
         ("usage", "USAGE"),
         ("prompt", "PROMPT"),
+        ("role", "ROLE"),
+        ("agent", "AGENT"),
+        ("brief", "BRIEF"),
+        ("kind", "KIND"),
     ])
 }
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +263,70 @@ impl Store {
             params![project, kind],
             |r| r.get(0),
         )?)
+    }
+    /// Rebuilds `records` when its `kind` CHECK predates the agent-pack
+    /// kinds. The table is the parent of `record_revisions` and
+    /// `record_drafts` and carries the no-delete trigger, so the rename-aside
+    /// widening other tables get would break it; it is rebuilt the way
+    /// SQLite's ALTER TABLE guide says - the new table beside it, the rows
+    /// copied, the old one dropped, the new one renamed - with foreign keys
+    /// off for that span, and the DDL puts the index and the triggers back
+    /// on the new table before the transaction ends.
+    pub(crate) fn widen_record_kinds(&self) -> Result<()> {
+        use crate::store::{table_columns, table_present, table_sql_has};
+        let conn = self.conn()?;
+        if !table_present(&conn, "records")? || table_sql_has(&conn, "records", "'brief'")? {
+            return Ok(());
+        }
+        let create = crate::records_ddl::RECORDS_DDL[0].replacen(
+            "CREATE TABLE IF NOT EXISTS records (",
+            "CREATE TABLE records_widened (",
+            1,
+        );
+        conn.pragma_update(None, "foreign_keys", 0)?;
+        let rebuilt = (|| -> Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE; DROP TABLE IF EXISTS records_widened;")?;
+            let work = (|| -> Result<i64> {
+                conn.execute_batch(&create)?;
+                let old = table_columns(&conn, "records")?;
+                let shared = table_columns(&conn, "records_widened")?
+                    .into_iter()
+                    .filter(|c| old.contains(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let rows = conn.execute(
+                    &format!("INSERT INTO records_widened ({shared}) SELECT {shared} FROM records"),
+                    [],
+                )?;
+                conn.execute_batch(
+                    "DROP TABLE records; ALTER TABLE records_widened RENAME TO records;",
+                )?;
+                for stmt in crate::records_ddl::RECORDS_DDL {
+                    conn.execute(stmt, [])?;
+                }
+                crate::store::event_insert(
+                    &conn,
+                    &self.now(),
+                    "pulse",
+                    "schema.widened",
+                    "records",
+                    &format!("rows={rows}"),
+                )?;
+                Ok(rows as i64)
+            })();
+            match work {
+                Ok(_) => Ok(conn.execute_batch("COMMIT")?),
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })();
+        // The connection goes back to the pool: foreign keys on again
+        // whatever happened.
+        let restored = conn.pragma_update(None, "foreign_keys", 1);
+        rebuilt?;
+        Ok(restored?)
     }
     pub fn put_record(
         &self,
@@ -460,6 +532,174 @@ mod tests {
             1
         );
         s.set_record_status("ADR-001", "Retired", "human").unwrap();
+    }
+
+    #[test]
+    fn pack_kinds_are_records_that_are_never_deleted() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            now: "2026-09-06T21:00:00Z".into(),
+            ..Options::default()
+        })
+        .unwrap();
+        for kind in RECORD_KINDS {
+            assert!(record_prefix().contains_key(kind), "{kind} has no prefix");
+        }
+        for (kind, id) in [
+            ("role", "ROLE-content-app"),
+            ("agent", "AGENT-reviewer-app"),
+            ("brief", "BRIEF-weekly-app"),
+            ("kind", "KIND-bench-app"),
+        ] {
+            let rec = Record {
+                id: id.into(),
+                project: "app".into(),
+                kind: kind.into(),
+                slug: id.split('-').nth(1).unwrap().into(),
+                title: kind.to_uppercase(),
+                origin: "store".into(),
+                ..Record::default()
+            };
+            s.put_record(
+                rec,
+                BTreeMap::new(),
+                "---\nevery: 1w\n---\nbody\n",
+                "tester",
+                "",
+            )
+            .unwrap();
+            let (head, rev) = s.get_record(id, 0).unwrap();
+            assert_eq!(head.kind, kind);
+            assert_eq!(rev.unwrap().body, "---\nevery: 1w\n---\nbody\n");
+            let err = s
+                .conn()
+                .unwrap()
+                .execute("DELETE FROM records WHERE id = ?", [id])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("never deleted"), "{kind}: {err}");
+        }
+        let bad = Record {
+            id: "PACK-x".into(),
+            project: "app".into(),
+            kind: "pack".into(),
+            slug: "x".into(),
+            ..Record::default()
+        };
+        assert!(
+            s.put_record(bad, BTreeMap::new(), "x", "tester", "")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn an_older_records_table_is_widened_for_the_pack_kinds() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            Store::open(Options {
+                home: dir.path().display().to_string(),
+                create: true,
+                now: "2026-09-06T21:00:00Z".into(),
+                ..Options::default()
+            })
+            .unwrap()
+        };
+        let s = open();
+        let rec = Record {
+            id: "ADR-001".into(),
+            project: "proj".into(),
+            kind: "adr".into(),
+            number: 1,
+            slug: "first".into(),
+            title: "First".into(),
+            ..Record::default()
+        };
+        s.put_record(rec, BTreeMap::new(), "# First\n", "tester", "")
+            .unwrap();
+        s.put_draft("ADR-001", "# First, again\n", "tester", "", "")
+            .unwrap();
+        // Give the table the shape a store made before the pack kinds has.
+        let narrow = crate::records_ddl::RECORDS_DDL[0]
+            .replace(",'role','agent','brief','kind'", "")
+            .replacen(
+                "CREATE TABLE IF NOT EXISTS records (",
+                "CREATE TABLE records_old (",
+                1,
+            );
+        {
+            let conn = s.conn().unwrap();
+            conn.pragma_update(None, "foreign_keys", 0).unwrap();
+            conn.execute_batch(&format!(
+                "BEGIN; {narrow}; INSERT INTO records_old SELECT * FROM records; DROP TABLE records; \
+                 ALTER TABLE records_old RENAME TO records; \
+                 UPDATE meta SET value = '5' WHERE key = 'records_version'; COMMIT;"
+            ))
+            .unwrap();
+            for stmt in &crate::records_ddl::RECORDS_DDL[1..] {
+                conn.execute(stmt, []).unwrap();
+            }
+            conn.pragma_update(None, "foreign_keys", 1).unwrap();
+            assert!(!crate::store::table_sql_has(&conn, "records", "'brief'").unwrap());
+        }
+        s.close().unwrap();
+        let s = open();
+        let conn = s.conn().unwrap();
+        assert!(crate::store::table_sql_has(&conn, "records", "'brief'").unwrap());
+        let objects: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE tbl_name = 'records' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(objects, vec!["records_kind", "records_no_delete"]);
+        let fk: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(fk, 0, "revisions and drafts still point at their records");
+        let widened: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'records'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(widened, 1);
+        drop(conn);
+        let (head, rev) = s.get_record("ADR-001", 0).unwrap();
+        assert_eq!(head.title, "First");
+        assert_eq!(rev.unwrap().body, "# First\n");
+        assert!(s.get_draft("ADR-001").unwrap().is_some());
+        let role = Record {
+            id: "ROLE-content-proj".into(),
+            project: "proj".into(),
+            kind: "role".into(),
+            slug: "content".into(),
+            title: "Content lead".into(),
+            origin: "store".into(),
+            ..Record::default()
+        };
+        s.put_record(role, BTreeMap::new(), "## Your concern\n", "tester", "")
+            .unwrap();
+        assert!(s.additive_complete());
+        s.close().unwrap();
+        let s = open();
+        let again: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'records'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, 1, "a widened table is not rebuilt again");
     }
 }
 

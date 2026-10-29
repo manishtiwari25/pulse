@@ -1411,7 +1411,13 @@ pulse backup --to az://myaccount/pulse-backups  # a gzip copy off this machine (
 
 Numbered kinds (ADR, PLAN, FEAT, WU) keep their numbers; the rest are
 `PREFIX-<slug>[-<project>]` (GUIDE-*, MEM-*, PROMPT-*, TPL-*, CTX-environment,
-EVO-constitution, EVO-evaluators, EVO-archive).
+EVO-constitution, EVO-evaluators, EVO-archive, and the agent-pack kinds
+ROLE-*, AGENT-*, BRIEF-*, KIND-*). `pulse migrate --records` also reads
+`.pulse/agents/*.md`: each file becomes an `agent` record holding the file
+whole, front matter included, and a file whose front matter has a `pulse:`
+block with a `role:` word also makes a `role` record (the block's other
+keys are its front matter, the file's body its text). `pulse seed export`
+bundles the pack kinds with the framework's.
 
 For a human-run quarterly prune, `pulse record show WF-prune` holds the
 script. It counts local `pulse/*` branches before deletion and saves the count

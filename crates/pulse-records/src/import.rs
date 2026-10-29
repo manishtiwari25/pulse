@@ -63,6 +63,7 @@ const IMPORT_PATHS: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
     ".github/copilot-instructions.md",
+    ".pulse/agents",
 ];
 
 fn folder_kind(folder: &str) -> &'static str {
@@ -199,12 +200,24 @@ pub fn import_repo(
                 &format!("git -C {:?} fsck", repo.display().to_string()),
             ));
         };
-        let (front, body) = match parse_frontmatter(text) {
+        let (mut front, section) = match parse_frontmatter(text) {
             Ok(v) => v,
             Err(e) => {
                 summary.skip(&file, &kind, &e.to_string());
                 continue;
             }
+        };
+        // An agent record keeps the file whole, front matter included: the
+        // harness reads the body the way it reads the file.
+        let body = if kind == "agent" {
+            if text_value(front.get("title")).is_empty()
+                && let Some(name) = front.get("name").and_then(|v| v.as_str())
+            {
+                front.insert("title".into(), serde_json::Value::String(name.into()));
+            }
+            text.clone()
+        } else {
+            section.clone()
         };
         let mut rec = pulse_store::Record {
             project: p.slug.clone(),
@@ -298,11 +311,90 @@ pub fn import_repo(
             );
             continue;
         }
+        let role = if kind == "agent" {
+            role_from_agent(&front, &rec.title)
+        } else {
+            None
+        };
+        let date = rec.date.clone();
         by_id.insert(rec.id.clone(), rec.clone());
         items.push(ImportItem {
             record: rec,
             front,
             body,
+            revise: imported,
+        });
+        let Some((role_slug, role_front)) = role else {
+            continue;
+        };
+        // The role an agent file declares is a second record from the same
+        // path; `#role` on the origin keeps the two apart.
+        let key = format!("{file}#role");
+        let prev = by_path.get(&key).cloned();
+        let imported = prev.is_some();
+        if let Some(prev) = &prev
+            && !opts.force_rev
+        {
+            summary.skip(
+                &file,
+                "role",
+                &format!("origin path already imported as {}", prev.id),
+            );
+            continue;
+        }
+        let mut rec = pulse_store::Record {
+            id: scoped_id("role", &role_slug, &p),
+            project: p.slug.clone(),
+            kind: "role".into(),
+            slug: role_slug,
+            path: file.clone(),
+            origin: format!("markdown:{key}@{}", summary.ref_),
+            ..pulse_store::Record::default()
+        };
+        if let Err(e) = apply_columns(&mut rec, &role_front, &section) {
+            summary.skip(&file, "role", &e.to_string());
+            continue;
+        }
+        if rec.date.is_empty() {
+            rec.date = date;
+        }
+        if let Some(prev) = prev {
+            let (_, revision) = s.get_record(&prev.id, 0)?;
+            let revision = revision.expect("current revision exists");
+            if revision.body == section && revision.frontmatter == role_front {
+                summary.skip(&file, "role", &format!("role unchanged from {}", prev.id));
+                continue;
+            }
+            if prev.id != rec.id {
+                summary.skip(
+                    &file,
+                    "role",
+                    &format!(
+                        "origin path changed identity; existing record is {}",
+                        prev.id
+                    ),
+                );
+                continue;
+            }
+            rec.created_at = prev.created_at;
+            rec.created_by = prev.created_by;
+            rec.origin = prev.origin;
+        } else if let Some(collision) = by_id.get(&rec.id) {
+            summary.skip(
+                &file,
+                "role",
+                &format!(
+                    "id {} already belongs to project {}, path {}",
+                    rec.id, collision.project, collision.path
+                ),
+            );
+            continue;
+        }
+        by_id.insert(rec.id.clone(), rec.clone());
+        items.push(ImportItem {
+            record: rec,
+            front: role_front,
+            body: section,
             revise: imported,
         });
     }
@@ -349,6 +441,28 @@ impl Summary {
     }
 }
 
+/// The role an agent file declares in its front matter's `pulse:` block
+/// (`pulse: {role: content, every: 1w, about: ...}`): the role word, and the
+/// block's other keys as the role record's front matter, titled after the
+/// agent when the block names no title. The agent's body is the role's
+/// section text.
+fn role_from_agent(front: &Frontmatter, title: &str) -> Option<(String, Frontmatter)> {
+    let block = front.get("pulse")?.as_object()?;
+    let role = slugify(block.get("role")?.as_str()?);
+    if role.is_empty() {
+        return None;
+    }
+    let mut out: Frontmatter = block
+        .iter()
+        .filter(|(k, _)| k.as_str() != "role")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if text_value(out.get("title")).is_empty() && !title.is_empty() {
+        out.insert("title".into(), serde_json::Value::String(title.into()));
+    }
+    Some((role, out))
+}
+
 pub fn classify_path(file: &str) -> (String, String, String) {
     match file {
         "AGENTS.md" => return ("instruction".into(), "agents".into(), String::new()),
@@ -365,6 +479,21 @@ pub fn classify_path(file: &str) -> (String, String, String) {
         _ => {}
     }
     let parts: Vec<_> = file.split('/').collect();
+    if parts.len() == 3 && parts[0] == ".pulse" && parts[1] == "agents" {
+        // An agent file the harness reads from `.pulse/agents/<name>.md`
+        // (or `<name>.agent.md`); the file is the record, front matter and
+        // all.
+        let base = parts[2];
+        let Some(stem) = base.strip_suffix(".md") else {
+            return (
+                "agent".into(),
+                String::new(),
+                "not a Markdown record".into(),
+            );
+        };
+        let stem = stem.strip_suffix(".agent").unwrap_or(stem);
+        return ("agent".into(), slugify(stem), String::new());
+    }
     if parts.len() < 3 || parts[0] != "docs" {
         return (
             String::new(),
@@ -698,6 +827,108 @@ mod tests {
             "folder index; use pulse record list"
         );
         assert_eq!(classify_path("README.md").2, "outside record folders");
+        assert_eq!(
+            classify_path(".pulse/agents/reviewer.agent.md"),
+            ("agent".into(), "reviewer".into(), String::new())
+        );
+        assert_eq!(
+            classify_path(".pulse/agents/notes.txt").2,
+            "not a Markdown record"
+        );
+        assert_eq!(
+            classify_path(".pulse/agents/deep/x.md").2,
+            "outside record folders"
+        );
+    }
+
+    #[test]
+    fn agent_files_import_whole_and_their_pulse_block_makes_a_role() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path().to_str().unwrap();
+        pulse_testutil::git(&["-C", root, "init", "-q", "-b", "main"]).unwrap();
+        std::fs::create_dir_all(repo.path().join(".pulse/agents")).unwrap();
+        let agent = "---\nname: content\ndescription: keeps the blog fed\npulse:\n  role: content\n  every: 1w\n  about: keeps the blog fed and the archive tidy\n  gaps: [stale-lockfile]\n---\n## Your concern: content for {slug}\n\n1. Read the drafts.\n";
+        std::fs::write(repo.path().join(".pulse/agents/content.md"), agent).unwrap();
+        std::fs::write(
+            repo.path().join(".pulse/agents/reviewer.agent.md"),
+            "---\nname: reviewer\n---\nRead the diff.\n",
+        )
+        .unwrap();
+        pulse_testutil::git(&["-C", root, "add", "."]).unwrap();
+        pulse_testutil::git(&["-C", root, "commit", "-q", "-m", "agents"]).unwrap();
+        add_project(&s, "app", repo.path(), false);
+        let opts = || ImportOptions {
+            author: "tester".into(),
+            ..ImportOptions::default()
+        };
+        let summary = import_repo(&s, root, "HEAD", "app", opts()).unwrap();
+        assert_eq!(summary.imported, 3, "{:?}", summary.skipped);
+        assert_eq!(summary.kinds["agent"].imported, 2);
+        assert_eq!(summary.kinds["role"].imported, 1);
+        let (rec, rev) = s.get_record("AGENT-content-app", 0).unwrap();
+        let rev = rev.unwrap();
+        assert_eq!(rec.title, "content");
+        assert_eq!(rev.body, agent, "the agent record is the file, whole");
+        assert!(rec.origin.starts_with("markdown:.pulse/agents/content.md@"));
+        let (role, role_rev) = s.get_record("ROLE-content-app", 0).unwrap();
+        let role_rev = role_rev.unwrap();
+        assert_eq!(role.kind, "role");
+        assert_eq!(role.slug, "content");
+        assert_eq!(role.title, "content");
+        assert!(
+            role.origin
+                .starts_with("markdown:.pulse/agents/content.md#role@")
+        );
+        assert_eq!(role_rev.frontmatter["every"], "1w");
+        assert_eq!(
+            role_rev.frontmatter["gaps"],
+            serde_json::json!(["stale-lockfile"])
+        );
+        assert!(!role_rev.frontmatter.contains_key("role"));
+        assert_eq!(
+            role_rev.body,
+            "## Your concern: content for {slug}\n\n1. Read the drafts.\n"
+        );
+        assert!(s.get_record("ROLE-reviewer-app", 0).is_err());
+        let again = import_repo(&s, root, "HEAD", "app", opts()).unwrap();
+        assert_eq!(again.imported, 0);
+        assert_eq!(again.skipped.len(), 2, "{:?}", again.skipped);
+        assert!(
+            again
+                .skipped
+                .iter()
+                .all(|k| k.reason.contains("origin path already imported"))
+        );
+        let forced = |s: &pulse_store::Store| {
+            import_repo(
+                s,
+                root,
+                "HEAD",
+                "app",
+                ImportOptions {
+                    force_rev: true,
+                    ..opts()
+                },
+            )
+            .unwrap()
+        };
+        let same = forced(&s);
+        assert_eq!(same.revised, 0);
+        assert!(same.skipped.iter().all(|k| k.reason.contains("unchanged")));
+        std::fs::write(
+            repo.path().join(".pulse/agents/content.md"),
+            agent.replace("every: 1w", "every: 2w"),
+        )
+        .unwrap();
+        pulse_testutil::git(&["-C", root, "commit", "-qam", "slower"]).unwrap();
+        let changed = forced(&s);
+        assert_eq!(changed.revised, 2, "{:?}", changed.skipped);
+        let (role2, rev2) = s.get_record("ROLE-content-app", 0).unwrap();
+        assert_eq!(rev2.unwrap().frontmatter["every"], "2w");
+        assert_eq!(role2.created_at, role.created_at);
+        assert_eq!(role2.current_rev, 2);
     }
 
     #[test]

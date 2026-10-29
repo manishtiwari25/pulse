@@ -2,7 +2,7 @@ pub const RECORDS_DDL: &[&str] = &[
     r####"CREATE TABLE IF NOT EXISTS records (
   id TEXT PRIMARY KEY,                -- ADR-027 | PLAN-026 | WU-022 | FEAT-016 | MEM-product | WF-board | SKILL-pulse-plan | GUIDE-new-repo | CTX-stack | ARCH-overview | EVO-constitution | INSTR-agents | USAGE-log | TPL-adr | PROMPT-eli5
   project TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('adr','plan','wu','feature','memory','workflow','skill','guide','context','architecture','evolution','instruction','template','usage','prompt')),
+  kind TEXT NOT NULL CHECK (kind IN ('adr','plan','wu','feature','memory','workflow','skill','guide','context','architecture','evolution','instruction','template','usage','prompt','role','agent','brief','kind')),
   number INTEGER,
   slug TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -38,4 +38,8 @@ pub const RECORDS_DDL: &[&str] = &[
   job_id TEXT NOT NULL DEFAULT ''     -- the job whose run filed it, when one did
 );"####,
 ];
-pub const RECORDS_VERSION: &str = "5";
+/// Bumped when a statement above changes shape; `Store::widen_record_kinds`
+/// rebuilds an older `records` table whose `kind` CHECK lacks the agent-pack
+/// kinds (role, agent, brief, kind), which the list must keep in step with
+/// `RECORD_KINDS`.
+pub const RECORDS_VERSION: &str = "6";
