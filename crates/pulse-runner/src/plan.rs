@@ -289,6 +289,25 @@ pub(crate) struct BallotListing {
     pub(crate) lines: Vec<String>,
 }
 
+/// Whether product cards may run on this project: the `Product scope:` line
+/// of its EVO-evaluators record, read through `pulse_evolve::status`. When
+/// the status cannot be read, a ballot that holds a product-class card is
+/// taken to be in scope.
+pub(crate) fn ballot_product_scope(
+    s: &pulse_store::Store,
+    slug: &str,
+    cards: &[pulse_tally::Suggestion],
+) -> bool {
+    match pulse_evolve::status(s, slug) {
+        Ok(status) => status.product_scope.allowed,
+        Err(_) => cards.iter().any(|c| {
+            tally_post(s, c.id.clone()).is_some_and(|p| {
+                pulse_tally::card_class(&p.summary, &p.body) == pulse_tally::CARD_CLASS_PRODUCT
+            })
+        }),
+    }
+}
+
 pub(crate) fn ballot_listing(
     s: &pulse_store::Store,
     cards: Vec<pulse_tally::Suggestion>,
@@ -457,6 +476,80 @@ fn drop_card_before_dispatch(
     }
 }
 
+pub(crate) const OWNER_ONLY_RESOLUTION: &str = "owner-only";
+
+/// Close a voted card the owner-path gate has held longer than `expiry_days`:
+/// a `result` with `resolution: owner-only` on its thread takes it out of the
+/// eligible set, where the gate would otherwise show it as "eligible, not
+/// plannable" for good (a voted card never expires), and leaves the owner one
+/// note to queue the work by hand or let it go. Posted once: a thread that
+/// already carries a resolution is left alone, so the planner's every pass
+/// (and a cached tally that still lists the card) adds nothing.
+fn close_owner_only_card_when_expired(
+    s: &pulse_store::Store,
+    slug: &str,
+    now: &str,
+    actor: &str,
+    card: &pulse_tally::Post,
+) -> bool {
+    let expiry_days = setting_int(s, "expiry_days");
+    let age = day_number(now) - day_number(&card.date);
+    if expiry_days < 1 || age <= expiry_days {
+        return false;
+    }
+    let Ok(conn) = s.conn() else { return false };
+    let resolved = must_one(
+        &conn,
+        "SELECT 1 AS x FROM posts WHERE project = ? AND area = ? AND thread = ? AND resolution != '' LIMIT 1",
+        &[&slug, &card.area, &card.thread],
+    );
+    if !resolved.0.is_empty() {
+        return false;
+    }
+    let summary = format!("owner-only: held {age} days; the owner queues this one or lets it go");
+    let body = format!(
+        "{summary}\nThe card's File: is an owner-only path ({}), so no worker can be sent and the landing would refuse the change; it waited past expiry_days ({expiry_days}) for the owner. Closed without a job: queue it by hand (`pulse job add`) or leave it closed.\nre: {}\n",
+        pulse_tally::card_file_paths(&card.body)
+            .into_iter()
+            .find(|p| {
+                pulse_tally::OWNER_PATHS
+                    .iter()
+                    .any(|o| p == o || p.starts_with(o))
+            })
+            .unwrap_or_else(|| "see its Signal".into()),
+        card.id
+    );
+    let res = crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "result".into(),
+            project: slug.to_string(),
+            area: card.area.clone(),
+            thread: card.thread.clone(),
+            summary: trunc(&summary, 230),
+            body,
+            resolution: OWNER_ONLY_RESOLUTION.into(),
+            on: card.id.clone(),
+            agent: crate::board::actor_agent(s, actor.to_string()),
+            date: now.to_string(),
+            ..Default::default()
+        },
+    );
+    let (action, detail) = match &res {
+        Ok(_) => (
+            "plan.owner_only_closed",
+            json!({"project": slug, "age_days": age, "summary": summary}),
+        ),
+        Err(e) => (
+            "plan.owner_only_closed.error",
+            json!({"project": slug, "error": e.to_string()}),
+        ),
+    };
+    event_at(&conn, now, actor, action, &card.id, detail);
+    res.is_ok()
+}
+
 pub(crate) fn plan_jobs_with_tally(
     s: &pulse_store::Store,
     slug: String,
@@ -577,10 +670,14 @@ pub(crate) fn plan_jobs_with_tally(
             }
             let post = tally_post(s, sg.id.clone());
             let project_path = project.str("path");
-            if !pulse_tally::plan_gate_with(s, plan_ctx.clone(), &project_path, sg, post.as_ref())
-                .is_empty()
-                || stuck.get(&sg.key).copied().unwrap_or(false)
-            {
+            let gate =
+                pulse_tally::plan_gate_with(s, plan_ctx.clone(), &project_path, sg, post.as_ref());
+            if !gate.is_empty() || stuck.get(&sg.key).copied().unwrap_or(false) {
+                if gate == pulse_tally::GATE_OWNER_PATHS
+                    && let Some(post) = post.as_ref()
+                {
+                    close_owner_only_card_when_expired(s, &slug, &now, &created_by, post);
+                }
                 continue;
             }
             eligible.push(sg.clone());
@@ -772,10 +869,19 @@ pub(crate) fn plan_jobs_with_tally(
             } else {
                 " An item marked `amendment` changes the constitution: read its Current and Proposed text in the Ballot section, check that the replaced text is still in the constitution (`pulse constitution --project SLUG`), and make your reason restate the change in your own words - the runner records it as the vote's `Read:` line with the proposal's hash, and only such informed votes count toward the amendment quorum; vote down a proposal that weakens a hard stop, the kill switch, or a guard row.".to_string()
             };
+            // With product scope off the operating layer is the project's
+            // only lane, so a test or check card is not voted down for
+            // being one; its Hypothesis still has to name what moves.
+            let scope_rule = if ballot_product_scope(s, &slug, &listing.cards) {
+                ", already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week."
+            } else {
+                " or already done. Product scope is off on this project, so an operating-layer card is in scope when its Hypothesis names the check, count or flake it moves."
+            };
             let brief = format!(
-                "{} on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when it is a guess, a duplicate (vote on the older same File+Variable), owner-only, already done, or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week.{} Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
+                "{} on this project's board have waited more than {} without quorum deciding, and nothing else is queued. Read each listed card in full (its body is in the Ballot section; check the path or post it names in the clone when it names one) and cast one `VOTE: <id> up|down <reason>` line per card in your report: up when the change is one measurable product defect, correctness, reliability or user-experience improvement, down when its Hypothesis names no check or user-visible behaviour that will move, or when it is a guess, a duplicate (vote on the older same File+Variable), owner-only{}{} Never vote on your own cards. A card leaves the ballot once quorum decides it. Change no files and make no commits; a ballot job lands nothing. Write `SUMMARY:` with how many votes you cast and the one pattern you saw across the cards.\n\nWaiting below quorum:\n{}",
                 waiting,
                 crate::util::format_minutes(wait),
+                scope_rule,
                 amendment_rule,
                 listed
             );
@@ -825,7 +931,8 @@ an error swallowed). If none is found, fix one flaky test, broken link, stale do
 Read `pulse evolve report --project "
                 .to_string()
                 + &slug
-                + "` for what the loop did this week - jobs done without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - and when one gap is measurable, post it as one SUGGESTION: line naming the product File:, Variable: and Hypothesis: outcome. Record every other signal as FINDING: lines so the runner posts them.";
+                + "` for what the loop did this week - jobs done without a change, card jobs that found nothing, experiments planned, questions waiting for the owner - and when one gap is measurable, post it as one SUGGESTION: line naming the product File:, Variable: and Hypothesis: outcome. Record every other signal as FINDING: lines so the runner posts them. \
+A quiet run is a completed task: when the checks pass and you find nothing to fix, end with `SUMMARY: done - checked <the checks you ran and the paths you read>` and one FINDING: line saying so. `SUMMARY: failed` is for a check you could not run or a defect you could not fix, never for finding nothing.";
             let (job, is_new) = crate::jobs::add_job(
                 s,
                 slug.clone(),
@@ -1596,6 +1703,37 @@ mod tests {
     }
 
     #[test]
+    fn daily_reflect_brief_ends_a_quiet_run_done() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("kind") == "reflect",
+            "daily reflect: {jobs:?}"
+        );
+        assert_eq!(
+            jobs[0].str("source"),
+            format!("reflect:proj:{}", &TEST_NOW[..10])
+        );
+        let brief = jobs[0].str("brief");
+        for want in [
+            "A quiet run is a completed task",
+            "end with `SUMMARY: done - checked <the checks you ran and the paths you read>` and one FINDING: line saying so",
+            "`SUMMARY: failed` is for a check you could not run or a defect you could not fix, never for finding nothing",
+        ] {
+            assert!(brief.contains(want), "missing {want:?} in:\n{brief}");
+        }
+        let mut report = crate::brief::parse_result_text(Some(
+            "SUMMARY: done - checked cargo test, README.md, src/main.rs\nFINDING: checks green, no Tier 0 defect found".into(),
+        ));
+        assert!(!report.incomplete(), "{:?}", report.summary);
+        assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
     fn plan_jobs_fills_every_free_lane_with_voted_cards() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -1757,6 +1895,126 @@ mod tests {
             .len(),
             1,
             "no second drop post"
+        );
+    }
+
+    #[test]
+    fn plan_jobs_closes_an_owner_only_hold_once_it_outlives_expiry_days() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        std::fs::create_dir_all(std::path::Path::new(&root).join(".github/workflows")).unwrap();
+        std::fs::write(
+            std::path::Path::new(&root).join(".github/workflows/ci.yml"),
+            "node: 18\n",
+        )
+        .unwrap();
+        set_setting(&s, "quorum", "1");
+        set_setting(&s, "evolve.draft_hours", "0");
+        set_setting(&s, "expiry_days", "14");
+        for agent in ["alice", "bob"] {
+            join(&s, agent);
+        }
+        suppress_planner_reflect(&s);
+        let card_at = |thread: &str, date: &str| {
+            let card = crate::board::create_post(&s, date.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: thread.into(), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: "CI runs node 22".into(), body: "Class: operating-layer\nFile: .github/workflows/ci.yml\nVariable: node version\nHypothesis: check:ci passes on node 22\nSignal: check:ci".into(), date: date.into(), ..Default::default() }).expect("card");
+            crate::board::create_post(
+                &s,
+                date.into(),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: card.str("thread"),
+                    agent: crate::board::actor_agent(&s, "bob".into()),
+                    session: "v-bob".into(),
+                    on: card.str("id"),
+                    vote: "up".into(),
+                    summary: "yes".into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .expect("vote");
+            card.str("id")
+        };
+        let old = card_at(
+            "ci-node-old",
+            &crate::util::plus_hours(TEST_NOW, -20.0 * 24.0),
+        );
+        let fresh = card_at(
+            "ci-node-fresh",
+            &crate::util::plus_hours(TEST_NOW, -2.0 * 24.0),
+        );
+        let conn = s.conn().expect("conn");
+        let held = |id: &str| {
+            crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into())
+                .into_iter()
+                .find(|sg| sg.id == id)
+                .map(|sg| sg.status)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            held(&old),
+            "eligible",
+            "a voted owner-only card never expires by itself"
+        );
+        let jobs =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan jobs");
+        assert!(
+            jobs.iter().all(|j| j.str("kind") != "improve"),
+            "no worker is sent to an owner-only path: {jobs:?}"
+        );
+        let closes = must_rows(
+            &conn,
+            "SELECT summary, body, resolution, thread FROM posts WHERE kind = 'result' AND resolution = 'owner-only'",
+            &[],
+        );
+        assert_eq!(
+            closes.len(),
+            1,
+            "one owner-only close, on the old card: {closes:?}"
+        );
+        assert_eq!(closes[0].str("thread"), "ci-node-old");
+        assert!(
+            closes[0]
+                .str("summary")
+                .starts_with("owner-only: held 20 days")
+                && closes[0].str("body").contains(".github/workflows/ci.yml"),
+            "the note names the hold and the path: {closes:?}"
+        );
+        assert_eq!(
+            held(&old),
+            "closed",
+            "the closed card leaves the eligible set"
+        );
+        assert_eq!(held(&fresh), "eligible", "a fresh hold waits for the owner");
+        assert_eq!(
+            must_rows(
+                &conn,
+                "SELECT subject FROM events WHERE action = 'plan.owner_only_closed'",
+                &[]
+            )
+            .len(),
+            1
+        );
+        plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan again");
+        plan_jobs(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 24.0),
+            "daemon".into(),
+        )
+        .expect("plan a day later");
+        assert_eq!(
+            must_rows(
+                &conn,
+                "SELECT id FROM posts WHERE kind = 'result' AND resolution = 'owner-only'",
+                &[]
+            )
+            .len(),
+            1,
+            "the close is posted once"
         );
     }
 
@@ -2075,6 +2333,75 @@ mod tests {
     }
 
     #[test]
+    fn ballot_brief_judges_a_card_by_what_its_hypothesis_moves() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        join(&s, "boris");
+        suppress_planner_reflect(&s);
+        plan_handoff(
+            &s,
+            &crate::util::plus_minutes(TEST_NOW, -90.0),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "docs".into(),
+                thread: "readme".into(),
+                summary: "Shorten the install section".into(),
+                body: "The install section repeats the README's first paragraph.".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        );
+        let ballot_brief = || {
+            let jobs =
+                plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+            assert!(
+                jobs.len() == 1 && jobs[0].str("kind") == "ballot",
+                "ballot: {jobs:?}"
+            );
+            jobs[0].str("brief")
+        };
+        const HYPOTHESIS_RULE: &str =
+            "down when its Hypothesis names no check or user-visible behaviour that will move";
+        const OPERATING_RULE: &str = "or only adds/fixes a test/lint/format unless it unblocks landing or fixes a flake that failed a job this week";
+        const SCOPE_OFF: &str = "Product scope is off on this project, so an operating-layer card is in scope when its Hypothesis names the check, count or flake it moves";
+        // No EVO-evaluators record: product scope is off, and the operating
+        // layer is the only lane the ballot feeds.
+        let brief = ballot_brief();
+        assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
+        assert!(brief.contains(SCOPE_OFF), "{brief}");
+        assert!(!brief.contains(OPERATING_RULE), "{brief}");
+        assert!(brief.contains("owner-only or already done."), "{brief}");
+
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "DELETE FROM jobs WHERE kind = 'ballot'",
+            &[],
+        );
+        s.put_record(
+            pulse_store::Record {
+                id: "EVO-evaluators-proj".into(),
+                project: "proj".into(),
+                kind: "evolution".into(),
+                slug: "evaluators".into(),
+                ..Default::default()
+            },
+            BTreeMap::new(),
+            "Product scope: allowed\n",
+            pulse_store::HUMAN_AGENT,
+            "fixture",
+        )
+        .expect("evaluators record");
+        let brief = ballot_brief();
+        assert!(brief.contains(HYPOTHESIS_RULE), "{brief}");
+        assert!(brief.contains(OPERATING_RULE), "{brief}");
+        assert!(!brief.contains(SCOPE_OFF), "{brief}");
+    }
+
+    #[test]
     fn ballot_fires_for_an_open_amendment_below_its_quorum() {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
@@ -2195,14 +2522,24 @@ mod tests {
             "ballot brief:\n{}",
             jobs[0].str("brief")
         );
-        let part = crate::idle::ballot_idle_part(
-            &s,
-            "proj".into(),
-            TEST_NOW.into(),
-            crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into()),
-            crate::tally::amendment_records(&s, "proj".into(), TEST_NOW.into()),
+        // The queued ballot is a slot's worth of work: until a worker takes
+        // it the fleet is busy and the status shows the plain wait.
+        let idle_part = |now: &str| {
+            crate::idle::ballot_idle_part(
+                &s,
+                "proj".into(),
+                now.into(),
+                crate::tally::suggestion_records(&s, "proj".into(), now.into()),
+                crate::tally::amendment_records(&s, "proj".into(), now.into()),
+            )
+        };
+        assert_eq!(idle_part(TEST_NOW), "ballot in 1h");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'leased', lease_agent = 'aurora' WHERE kind = 'ballot'",
+            &[],
         );
-        assert_eq!(part, "ballot in 20m (fleet idle)");
+        assert_eq!(idle_part(TEST_NOW), "ballot in 20m (fleet idle)");
         crate::util::exec1(
             &s.conn().expect("conn"),
             "UPDATE jobs SET status = 'done', finished_at = ? WHERE kind = 'ballot'",

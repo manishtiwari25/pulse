@@ -2713,6 +2713,29 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // The owner gate reads the File (what the job edits), not the Signal
+    // (what the worker read): a card on an agent-writable file whose evidence
+    // cites an ADR plans; a card whose File is a workflow is the owner's.
+    let file_agent_owner_signal = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "20",
+        "runner-worker/model",
+        "agent-file-owner-signal",
+        "Worker card citing an ADR as evidence for a code change",
+        "Class: product\nFile: crates/src/redbase.rs\nVariable: redbase landing\nTier: 1\nSignal: crates/src/redbase.rs:1, the settings chosen in docs/decisions/adr.md",
+        "",
+        &["up", "up"],
+    );
+    let file_owner = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "21",
+        "runner-worker/model",
+        "workflow-file",
+        "Worker card that edits a workflow",
+        "Class: operating-layer\nFile: .github/workflows/ci.yml\nVariable: node version\nTier: 1\nSignal: check:ci",
+        "",
+        &["up", "up"],
+    );
     let file_new = test_fixture::add_eligible_suggestion(
         &mut f,
         "12",
@@ -2819,6 +2842,8 @@ fn plan_gate_outcomes() {
     )
     .unwrap();
     fs::write(f.repo.join("docs/eval.md"), "# Evaluators\n").unwrap();
+    fs::create_dir_all(f.repo.join(".github/workflows")).unwrap();
+    fs::write(f.repo.join(".github/workflows/ci.yml"), "node: 18\n").unwrap();
 
     let res = compute(
         &f.st,
@@ -2852,6 +2877,8 @@ fn plan_gate_outcomes() {
         (file_new.as_str(), ""),
         (file_stale.as_str(), GATE_FILE_STALE),
         (file_matches_path.as_str(), ""),
+        (file_agent_owner_signal.as_str(), ""),
+        (file_owner.as_str(), GATE_OWNER_PATHS),
         (clone_evidence.as_str(), ""),
         (clone_root.as_str(), GATE_NO_EVIDENCE),
         (thread_evidence.as_str(), ""),
@@ -3005,6 +3032,79 @@ fn run_check_is_no_op() {
         "check: go test ./x -run TestMissing",
         ""
     ));
+}
+
+#[test]
+fn owner_targeted_reads_the_file_line_before_the_signal() {
+    // The File is what the job edits: it decides, and the Signal is read only
+    // when the card names no concrete file.
+    assert!(
+        !owner_targeted(
+            "Default the retry count",
+            "Class: product\nFile: crates/x.rs\nVariable: retry count\nSignal: the settings page shows 0 retries; docs/decisions/adr.md chose 3"
+        ),
+        "an agent-writable File with an ADR cited as evidence is a worker's job"
+    );
+    assert!(
+        !owner_targeted(
+            "Settings default",
+            "File: crates/x.rs\nSignal: crates/x.rs:12 reads the settings"
+        ),
+        "prose in the Signal is not a path"
+    );
+    assert!(
+        owner_targeted(
+            "Bump the CI node version",
+            "File: .github/workflows/ci.yml\nVariable: node version\nSignal: check:ci"
+        ),
+        "a workflow File is the owner's"
+    );
+    assert!(
+        owner_targeted(
+            "x",
+            "- **File:** `.github/workflows/*.yml`\nSignal: check:ci"
+        ),
+        "a glob under .github/ is still under .github/"
+    );
+    assert!(
+        owner_targeted(
+            "x",
+            "File: crates/x.rs, docs/evolution/evaluators.md\nSignal: crates/x.rs"
+        ),
+        "one owner-only path among the files holds the card"
+    );
+    assert!(
+        owner_targeted(
+            "x",
+            "File: ./docs/decisions/0099-new.md\nVariable: record it\nSignal: crates/x.rs"
+        ),
+        "a new ADR is an owner path however it is spelled"
+    );
+    assert!(
+        owner_targeted("Worker owner path", "Signal: docs/decisions/adr.md"),
+        "without a File the Signal's paths decide, as before"
+    );
+    assert!(
+        owner_targeted(
+            "x",
+            "File: the three git callers\nSignal: .github/workflows/ci.yml:60"
+        ),
+        "a File in words names no path, so the Signal decides"
+    );
+    assert!(
+        owner_targeted("x", "File: none\nSignal: docs/decisions/adr.md"),
+        "`none` is not a file"
+    );
+    assert!(
+        !owner_targeted("x", "File: /etc/hosts\nSignal: crates/x.rs"),
+        "an absolute File is not a path of the checkout; the Signal is not owner-only"
+    );
+    assert!(!owner_targeted("x", "Signal: crates/x.rs"));
+    assert!(!owner_targeted("", ""));
+    assert_eq!(
+        card_file_paths("File: `crates/a.rs`, .github/CODEOWNERS, src/**/*.ts, none, the rest"),
+        vec!["crates/a.rs", ".github/CODEOWNERS", "src/**/*.ts"]
+    );
 }
 
 #[test]

@@ -1508,10 +1508,15 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   card whose own `Signal:` resolves nothing is held as `without evidence`
   until an `opinion`, `finding`, `answer` or `vote` on its thread carries one
   that does - the idle lead's brief lists each held card with its gate so the
-  fleet supplies the evidence or closes the thread - and that
-  evidence must stay off
+  fleet supplies the evidence or closes the thread - and the card's `File:`
+  (what the job would edit) must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`); a card whose `File:` names only paths whose
+  `docs/decisions/`, `.github/`): one owner-only path among its files holds
+  the card as `points at owner-only paths`, while a card on agent-writable
+  files may cite an ADR or a workflow as its `Signal:` evidence (only a card
+  that names no file is read by its Signal's paths), and a card held there
+  longer than `expiry_days` is closed with `resolution: owner-only` - the
+  owner queues it by hand or lets it go; a card whose `File:` names only paths whose
   whole top-level tree is gone from the checkout (written before a port, a
   rename or a removal) is held as `names gone paths` - a card that adds a file,
   however deep, under a tree that exists is fine; then the operating-layer cap
@@ -1530,9 +1535,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong
   message, a wrong default, a broken user path, a swallowed error) and only
-  then a flaky test, broken link, stale doc or lint finding; research jobs
+  then a flaky test, broken link, stale doc or lint finding; a quiet run
+  (checks green, nothing to fix) ends `SUMMARY: done - checked <paths>` with
+  a `FINDING:` line, not `failed`; research jobs
   rotate through their focuses starting with the product as its user sees
-  it, and keep to the product focuses while the day's operating-layer cap is
+  it, weighted by what the board accepted, and keep to the product focuses while the day's operating-layer cap is
   reached. The console's Votes page, `pulse queue`
   (`not planned: <gate>`) and `pulse status` (`planner <slug>: N eligible, M
   plannable (...)`) show the same gate for the same card, so a ballot that
@@ -1717,11 +1724,14 @@ suggestion that names no single `File:` and `Variable:` is not the owner's to
 fix: the planner queues one agent card job for it, which posts the card as a
 new suggestion on the same thread, where it earns its own votes and passes
 every gate before the loop runs it (ADR-044). Workers can post a complete card
-in one `SUGGESTION:` line with `;`-separated fields. A `SUGGESTION:` line that
+in one `SUGGESTION:` line with `;`-separated fields; the line's first prose
+segment is the card's summary, falling back to the Hypothesis, never to a
+`Class:` value standing alone (`product; File: …`). A `SUGGESTION:` line that
 only says the worker saw nothing (`none`, `nothing further`, `n/a`, `no
-suggestion`) is dropped by the runner rather than posted: an empty card on the
-ballot only spawns vote jobs, and each of those tends to end in another such
-line.
+suggestion`, `none identified`, `I did not find …`, `no defect`) is dropped by
+the runner rather than posted, even behind `File: n/a; Variable: none`: an
+empty card on the ballot only spawns vote jobs, and each of those tends to end
+in another such line.
 
 The loop may edit only the file classes the constitution's Editable scope
 table has raised to Stage 2 (Stage 4 for product code) whose paths exist in
@@ -4263,13 +4273,19 @@ lanes are open (fleet idle)` when the lanes are full). A queued job is work
 waiting for a slot, however few leases the load governor lets out: the fleet
 is not idle over it, and research keeps the plain cadence rather than
 lengthening the queue it would be feeding. The research job is a `reflect` job whose
-brief points a worker at one focus in turn (the product as its user sees it,
+brief points a worker at one focus (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the
-project's checks, the loop's report, the docs against the code, the
-dependencies, the board, the lessons the code could enforce) and requires one
+project's checks, the loop's report, the docs against the code, the board,
+the lessons the code could enforce) and requires one
 to three experiment cards with evidence, votes on the listed cards below
 quorum and findings for the rest - at most `lead.research_per_day` (default
-12) per project per day. The goal focus is the fleet's own source of new
+12) per project per day. The focuses take turns, but a focus whose cards
+the board accepted more often in the last 30 days (reached quorum with more
+up than down votes) comes around more often, down to one turn per cycle
+for the rest, so a focus the board keeps voting down stops taking the same
+share of runs as the one whose cards land and climbs back as the window
+forgets its rejections. The report focus leaves `FINDING:` lines only, no
+cards: its cards were guesses about the loop. The goal focus is the fleet's own source of new
 work: it reads `pulse goal`, holds it against what the product does today
 (the README's promises, roadmap or TODO lists, empty states, steps the user
 does by hand, the last ten landed commits) and cards the smallest slice a
@@ -4279,19 +4295,28 @@ operating-layer improve jobs have already reached
 `plan.operating_layer_per_day`, the rotation keeps to the product focuses
 (product, code, goal, docs): cards from the others would join a pile the cap
 holds until tomorrow while the slots stand idle for want of a product card. While fewer than
-half the local worker slots hold a lease and no decided work is queued (a
-queued reflect, ballot, lead or answer does not count) the fleet is idle, and research comes
+half the local worker slots hold a lease and no job is queued (a queued
+reflect, ballot or lead job wants a slot like any other, so the ballot the
+idle fleet just planned ends its idleness until a worker takes it) the fleet is idle, and research comes
 `lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
-that applies. A `needs votes` card
+that applies. A shallow last research run (fewer than 5 steps and no card)
+forfeits the shortcut: the next research comes at the plain cadence and the
+planner line says `(fleet idle, last run shallow)`. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
 first; while the fleet is idle that wait and gap are also divided by
 `lead.idle_factor` (never below 10 minutes), so a card reaches quorum within
 the hour instead of one ballot round per hour, and the planner line reads
-`ballot in 20m (fleet idle)`. Research, ballot and reflect jobs do not count as the project moving
+`ballot in 20m (fleet idle)`. The ballot brief's rule is to vote down a card
+whose Hypothesis names no check or user-visible behaviour that will move;
+a card that only adds or fixes a test, lint or format is a down vote only
+while the project's product scope is on (the EVO-evaluators record's
+`Product scope:` line) - with it off the operating layer is the only lane, so
+such a card is in scope when its Hypothesis names the check, count or flake it
+moves. Research, ballot and reflect jobs do not count as the project moving
 for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
 report` counts what research left behind (cards, votes, findings, answers) on
 its own row.
