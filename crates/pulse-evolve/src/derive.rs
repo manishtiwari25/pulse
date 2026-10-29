@@ -332,6 +332,20 @@ impl DeriveResult {
 /// Derive the project's fixtures from its checkout: add the ones it lacks,
 /// re-arm a saturated one, leave the owner's disabled ones alone.
 pub fn derive_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Result<DeriveResult> {
+    derive_fixtures_sparing(s, project, actor, &[])
+}
+
+/// [`derive_fixtures`] that leaves the derived fixtures named in `tired` as
+/// they are instead of re-arming them. The healer passes the ones that told
+/// no variant from its baseline in a whole window: a fresh date on such a
+/// fixture lifts the flat gate without changing what it can measure, and the
+/// card's own check is the fixture that can move.
+pub fn derive_fixtures_sparing(
+    s: &pulse_store::Store,
+    project: &str,
+    actor: &str,
+    tired: &[String],
+) -> Result<DeriveResult> {
     let p = crate::fixtures::valid_project(s, project)?;
     let actor = if actor.is_empty() {
         pulse_store::HUMAN_AGENT
@@ -396,6 +410,13 @@ pub fn derive_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Re
                 let saturated = spec.direction == Direction::Higher && raw >= scale;
                 let stacks_changed = scorer_command(&spec, scale) != f.scorer;
                 if !saturated && !stacks_changed {
+                    continue;
+                }
+                if tired.iter().any(|t| t == &f.name) {
+                    result.notes.push(format!(
+                        "{} not re-armed: it told no variant from its baseline in the archived cycles, so a fresh date would only lift the gate; a card that names its check (Signal: check:<command>) measures its own hypothesis instead",
+                        f.name
+                    ));
                     continue;
                 }
                 let scale = if saturated {

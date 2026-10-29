@@ -156,9 +156,45 @@ pub(crate) fn measure(
             metric: f.metric,
         });
     }
+    let card_check = opts.card_check.trim();
+    let wanted = |name: &str| {
+        !opts.exact || opts.fixtures.is_empty() || opts.fixtures.iter().any(|n| n == name)
+    };
+    if !card_check.is_empty() && wanted(CARD_CHECK) {
+        if pulse_store::secret_shaped(card_check) || card_check.contains(['\n', '\0']) {
+            return Err(crate::fixtures::input_error(
+                "Cannot measure fixture set",
+                "the card's check has unsafe text",
+                "pulse evolve status",
+            ));
+        }
+        if exe.is_empty() {
+            return Err(crate::fixtures::input_error(
+                "Cannot run measurement",
+                "the pulse executable behind the card-check scorer cannot be located",
+                &format!("pulse evolve fixture list --project {project}"),
+            ));
+        }
+        let quoted = card_check.replace('\'', r#"'\''"#);
+        matrix.push(MeasuredFixture {
+            name: CARD_CHECK.into(),
+            kind: "card".into(),
+            request: String::new(),
+            scorer: vec![
+                "sh".into(),
+                "-c".into(),
+                self_scorer(
+                    &format!("pulse evolve score check -- sh -c '{quoted}'"),
+                    &exe,
+                ),
+            ],
+            weight: 1.0,
+            metric: true,
+        });
+    }
     for (i, f) in private.iter().enumerate() {
         let name = format!("H{}", i + 1);
-        if opts.exact && !opts.fixtures.is_empty() && !opts.fixtures.contains(&name) {
+        if !wanted(&name) {
             continue;
         }
         matrix.push(MeasuredFixture {
@@ -1101,6 +1137,79 @@ fi
         // An empty diff exports the base and no list.
         let same = crate::api::diff_scope(&cancel, &repo, "main", "main").unwrap();
         assert!(same.is_empty());
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn the_card_check_runs_on_both_trees_as_a_fixture_of_its_own() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        experiment_branch(&repo);
+        fixture(&s, "demo", "F01", "printf 'score: 0.5\\n'", 1.0);
+        fake_harness(&s, "true");
+        // A pulse that answers `evolve score check -- CMD...` with the
+        // command's exit status and logs the command words it was given.
+        let tmp = crate::test_helpers::temp_path();
+        let log = tmp.join("checks");
+        let fake = tmp.join("fake pulse");
+        put_file(
+            &fake,
+            &format!(
+                "#!/bin/sh\nset -u\n[ \"$1\" = evolve ] && [ \"$2\" = score ] && [ \"$3\" = check ] && [ \"$4\" = -- ] || exit 2\nshift 4\ntest -s \"$PULSE_MEASURE_CHANGED\" || exit 3\ntest -d \"$PULSE_MEASURE_BASE_TREE\" || exit 4\nprintf '%s|%s\\n' \"$#\" \"$*\" >> '{}'\nif \"$@\"; then echo 'score: 1'; else echo 'score: 0'; fi\n",
+                log.display()
+            ),
+            0o700,
+        );
+        use_test_executable(&fake.display().to_string());
+        let cancel = pulse_bus::CancellationToken::new();
+        let scope = crate::api::diff_scope(&cancel, &repo, "main", "exp").unwrap();
+        let measured = |ref_: &str, check: &str| {
+            super::measure(
+                &cancel,
+                &s,
+                "demo",
+                &repo,
+                ref_,
+                crate::api::MeasureOptions {
+                    scope: Some(scope.clone()),
+                    card_check: check.into(),
+                    ..Default::default()
+                },
+            )
+        };
+        // The check passes on the variant (notes.txt exists there) and
+        // fails on the base: the card's own fixture tells them apart.
+        let variant = measured("exp", "test -f 'notes.txt'").unwrap();
+        let base = measured("main", "test -f 'notes.txt'").unwrap();
+        clear_test_executable();
+        let card = |scores: &crate::api::Scores| {
+            scores
+                .fixtures
+                .iter()
+                .find(|f| f.name == super::CARD_CHECK)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(card(&variant).kind, "card");
+        assert_eq!(card(&variant).weight, 1.0);
+        assert!(card(&variant).metric);
+        assert_eq!(card(&variant).score, 1.0);
+        assert_eq!(variant.card_check, Some(1.0));
+        assert_eq!(base.card_check, Some(0.0));
+        assert!((variant.total - 0.75).abs() < 1e-9);
+        assert!((base.total - 0.25).abs() < 1e-9);
+        assert!(crate::api::card_check_rose(&base, &variant));
+        // The command words reached the scorer intact, quotes included.
+        let log = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            log,
+            "3|sh -c test -f 'notes.txt'\n3|sh -c test -f 'notes.txt'\n"
+        );
+        // The archive takes the card fixture.
+        let public = crate::archive::public_scores(Some(&variant)).unwrap();
+        assert!(public.fixtures.iter().any(|f| f.kind == "card"));
         assert_no_clones(&s);
     }
 

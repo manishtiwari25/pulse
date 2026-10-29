@@ -226,9 +226,150 @@ pub fn run_metric_score_in(
     Ok(())
 }
 
+/// `pulse evolve score check -- CMD ARGS...`: the card-check scorer. The
+/// command runs from the tree root; a single integer on stdout is a
+/// lower-is-better count scored against the base tree's
+/// (`PULSE_MEASURE_BASE_TREE`, the measurement's diff scope) with
+/// [`diff_scale`], whatever the exit status (`grep -c` exits 1 on a count
+/// of 0); anything else scores the exit status, 1 for success and 0 for a
+/// failure.
+pub fn run_check_score(
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    argv: &[String],
+) -> Result<()> {
+    let base_tree = std::env::var_os("PULSE_MEASURE_BASE_TREE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    run_check_score_in(out, err, argv, None, base_tree.as_deref())
+}
+
+/// What a check printed and whether it passed, run from `cwd` (the current
+/// directory when `None`); a command that cannot start fails.
+fn check_result(
+    argv: &[String],
+    cwd: Option<&Path>,
+    err: &mut dyn std::io::Write,
+) -> (bool, String) {
+    let mut command = std::process::Command::new(&argv[0]);
+    command.args(&argv[1..]);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    match command.output() {
+        Ok(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ),
+        Err(e) => {
+            let _ = writeln!(err, "check failed to start: {e}");
+            (false, String::new())
+        }
+    }
+}
+
+/// Stdout that is one integer and nothing else.
+fn single_integer(stdout: &str) -> Option<f64> {
+    strip_ansi(stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|n| n as f64)
+}
+
+/// [`run_check_score`] on `tree` against an explicit base tree.
+pub fn run_check_score_in(
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    argv: &[String],
+    tree: Option<&Path>,
+    base_tree: Option<&Path>,
+) -> Result<()> {
+    if argv.is_empty() {
+        return Err(crate::fixtures::input_error(
+            "Cannot score check",
+            "a command after -- is required",
+            "pulse evolve score check -- CMD ARGS...",
+        ));
+    }
+    let (passed, stdout) = check_result(argv, tree, err);
+    match single_integer(&stdout) {
+        Some(raw) => {
+            let base_raw = base_tree
+                .and_then(|base| single_integer(&check_result(argv, Some(base), err).1))
+                .unwrap_or(raw);
+            let scale = diff_scale(false, base_raw);
+            writeln!(out, "score: {:.4}", metric_score(raw, false, scale, None))?;
+            writeln!(err, "count: {raw} (base {base_raw}, scale {scale})")?;
+        }
+        None => {
+            writeln!(out, "score: {:.4}", if passed { 1.0 } else { 0.0 })?;
+            writeln!(
+                err,
+                "{}",
+                if passed {
+                    "the check passed"
+                } else {
+                    "the check failed"
+                }
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn checked(argv: &[&str], tree: Option<&Path>, base: Option<&Path>) -> (String, String) {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        run_check_score_in(&mut out, &mut err, &argv, tree, base).unwrap();
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_card_check_scores_an_exit_status_or_a_falling_count() {
+        assert_eq!(
+            checked(&["sh", "-c", "exit 0"], None, None).0,
+            "score: 1.0000\n"
+        );
+        let (out, err) = checked(&["sh", "-c", "echo not a number; exit 1"], None, None);
+        assert_eq!(out, "score: 0.0000\n");
+        assert_eq!(err, "the check failed\n");
+        // A count, with no base tree, sits at 0.5 on its own.
+        let (out, err) = checked(&["echo", "3"], None, None);
+        assert_eq!(out, "score: 0.5000\n");
+        assert_eq!(err, "count: 3 (base 3, scale 3)\n");
+        // Against a base tree the count is read there too: 6 on the base,
+        // 3 on the variant, so the variant scores above 0.5; a count that
+        // exits non-zero (grep -c with no match) is still a count.
+        let base = crate::test_helpers::temp_path();
+        let variant = crate::test_helpers::temp_path();
+        std::fs::write(base.join("n"), "6").unwrap();
+        std::fs::write(variant.join("n"), "3").unwrap();
+        let count = ["sh", "-c", "cat n; exit 1"];
+        let (out, err) = checked(&count, Some(&variant), Some(&base));
+        assert_eq!(out, "score: 0.6667\n");
+        assert_eq!(err, "count: 3 (base 6, scale 6)\n");
+        let (out, _) = checked(&count, Some(&base), Some(&base));
+        assert_eq!(out, "score: 0.5000\n");
+        std::fs::write(variant.join("n"), "0").unwrap();
+        assert_eq!(
+            checked(&count, Some(&variant), Some(&base)).0,
+            "score: 1.0000\n"
+        );
+        // A command that cannot start fails the check.
+        let (out, err) = checked(&["/nonexistent/check"], None, None);
+        assert_eq!(out, "score: 0.0000\n");
+        assert!(err.starts_with("check failed to start:"), "{err}");
+        assert!(run_check_score_in(&mut Vec::new(), &mut Vec::new(), &[], None, None).is_err());
+    }
 
     #[test]
     fn metric_score_boundaries() {

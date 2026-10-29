@@ -1668,6 +1668,21 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   are measured again on the base in the same scope inside the same cycle,
   and the whole-tree numbers stay for the project-level report. A diff with
   no changed file exports the base alone and the scorers see the whole tree.
+- **Card check** - the card's own hypothesis, measured. A card whose
+  `Signal:` line reads `check:<command>` (or whose `Hypothesis:` names
+  `check:<command>`, backticks allowed) gets a fixture of its own for that
+  experiment, `card-check` (kind `card`, weight `1.0`, part of the card's
+  composite, recorded with the other fixtures in the archive row and as
+  `card_check` on each measurement). The command runs from the tree root
+  on the base and on the variant through `pulse evolve score check -- CMD
+  ARGS...`: its exit status scores `1` or `0`; a single integer on stdout
+  is a count that should fall, scored like a diff-scoped `--lower` metric
+  against the base's count (so `grep -c unwrap src/x.rs` on both trees
+  works, whatever its exit status). It takes a command, not a project
+  check name: the project's recipe checks live with the runner, out of the
+  measurement's reach, so `check:cargo test -p demo` must spell the command.
+  A card that names a check can win on a tie (the keep rule below), and the
+  worker brief asks every card for one.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
@@ -1762,7 +1777,7 @@ as any branch, where the project's own check decides it, but the archive,
 `pulse evolve status`, `report` and `lineage` show it apart from improvements
 and it earns no lineage credit - a tie means the card's hypothesis went
 unmeasured, so the worker brief asks every card to name a check that will move
-(`Signal: check:<command>`, the card-check fixture below). The one exception: a
+(`Signal: check:<command>`, the card check above). The one exception: a
 tie whose card-check score rose counts as `improved`. Held-out fixtures are
 mostly pass/fail, so a voted change that keeps every fixture green measures
 as an exact tie; before the tie lane such ties were discarded and no voted
@@ -1838,7 +1853,10 @@ The loop heals a flat evaluator set itself before it asks or waits
 (`evolve.heal`, default `on`). When the gate fires, the planner first derives
 the metric fixtures the project's tree affords (`derived-tests`,
 `derived-todo-markers`, above) and re-arms a derived fixture whose count
-reached its scale; a fixture dated after the window clears the gate at once,
+reached its scale - unless that fixture told no variant from its baseline in
+the whole window, which a fresh date would hide: that one stays as it is, and
+the healer's post points at the card check (`Signal: check:<command>`)
+instead; a fixture dated after the window clears the gate at once,
 and what was done is posted on `evolution/loop-gate` - as an answer on the
 open question when there is one, so your inbox folds it away, else as a
 finding (`Evolution healed: the loop derived fixtures from the tree`; event
@@ -1906,7 +1924,7 @@ record, read with `pulse record show WF-evolve`.
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
 | `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
-| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
+| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |

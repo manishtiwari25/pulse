@@ -19,7 +19,7 @@ impl RepeatedStrings {
 }
 /// Command metadata for `pulse evolve`.
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
-pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]   (--fixture NAME measures those public fixtures and, always, the held-out set)\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS...";
+pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]   (--fixture NAME measures those public fixtures and, always, the held-out set)\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS... | score check -- CMD ARGS...   (the card-check scorer: exit status 1/0, or a single integer on stdout as a count that should fall)";
 pub const REFLECT_SUMMARY: &str =
     "read-only working state, board, ballot, hygiene and evolution gates";
 pub const REFLECT_USAGE: &str = "pulse reflect [--project P] [--area A] [--agent R/M] [--json]";
@@ -574,6 +574,9 @@ pub(crate) fn run_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<(
     if args.first().is_some_and(|arg| arg == "metric") {
         return run_metric_score(c, &args[1..]);
     }
+    if args.first().is_some_and(|arg| arg == "check") {
+        return run_check_score(c, &args[1..]);
+    }
     let mut fs = pulse_cli::FlagSet::new("evolve score");
     add_common_flags(&mut fs, c);
     parse_command_flags(c, &mut fs, args)?;
@@ -637,6 +640,14 @@ fn run_metric_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
         floor,
         &argv,
     )
+}
+fn run_check_score(c: &mut pulse_cli::Context, args: &[String]) -> Result<()> {
+    let mut fs = pulse_cli::FlagSet::new("evolve score check");
+    add_common_flags(&mut fs, c);
+    parse_command_flags(c, &mut fs, args)?;
+    apply_common_flags(c, &fs);
+    let argv = fs.args().to_vec();
+    crate::metric::run_check_score(&mut *c.out, &mut *c.err, &argv)
 }
 pub fn run_fleet(
     c: &mut pulse_cli::Context,

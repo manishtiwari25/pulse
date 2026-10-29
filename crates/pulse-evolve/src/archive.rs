@@ -142,7 +142,7 @@ pub(crate) fn public_scores(input: Option<&Scores>) -> Result<Scores> {
             held += 1;
             f.name = format!("H{held}");
             f.note.clear();
-        } else if f.kind != "public" && f.kind != "signal" {
+        } else if f.kind != "public" && f.kind != "signal" && f.kind != "card" {
             return Err(anyhow!("unknown fixture kind"));
         }
     }

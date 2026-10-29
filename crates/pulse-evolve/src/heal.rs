@@ -107,8 +107,9 @@ pub fn heal_flat(
     if reason.is_empty() {
         return close_moot_question(s, project, opts);
     }
-    let derived = crate::derive::derive_fixtures(s, project, &opts.agent)?;
     let n = crate::flat_gate::flat_cycles(s).max(1);
+    let tired = tired_fixtures(s, project, n)?;
+    let derived = crate::derive::derive_fixtures_sparing(s, project, &opts.agent, &tired)?;
     if derived.changed() {
         let mut body = format!(
             "The flat-fixture gate paused {project}: {reason}.\n\nThe loop healed its evaluator set itself (evolve.heal on): {}.\n\n",
@@ -120,7 +121,7 @@ pub fn heal_flat(
             body.push_str(&format!("- {}: {}\n", spec.name, spec.about));
         }
         body.push_str(&format!(
-            "\nA derived fixture is a metric fixture read off the project's own tree with a scale set from today's count, so a voted change that brings tests or settles a marker scores differently from one that does not; a derived fixture whose count reaches its scale is re-armed with a larger one and a fresh date. The baseline is measured again on the next cycle because the fixture set changed. pulse evolve fixture list --project {project} shows the set; pulse evolve fixture disable NAME --project {project} retires one for good (the loop never re-adds a disabled fixture); pulse settings set evolve.heal off leaves this gate to you.\n"
+            "\nA derived fixture is a metric fixture read off the project's own tree with a scale set from today's count, so a voted change that brings tests or settles a marker scores differently from one that does not; a derived fixture whose count reaches its scale is re-armed with a larger one and a fresh date, unless it told no variant from its baseline in {n} cycles - that one stays as it is, and the check a card names (Signal: check:<command>) is the fixture that can move. The baseline is measured again on the next cycle because the fixture set changed. pulse evolve fixture list --project {project} shows the set; pulse evolve fixture disable NAME --project {project} retires one for good (the loop never re-adds a disabled fixture); pulse settings set evolve.heal off leaves this gate to you.\n"
         ));
         let post = heal_post(s, project, opts, &question, HEALED_SUMMARY, body)?;
         s.event(
@@ -162,7 +163,7 @@ pub fn heal_flat(
         derived.line()
     );
     body.push_str(&format!(
-        "To make the cycles count, add a fixture whose score moves with the change: pulse evolve fixture add --project {project} --name NAME --metric --scorer 'pulse evolve score metric --higher --scale S -- CMD ARGS...'. pulse settings set evolve.flat_wait_hours 0 leaves the next review to you.\n"
+        "To make the cycles count, have each card name the check its hypothesis moves - a Signal: check:<command> line is that card's card-check fixture, scored on the base and on the variant - or add a fixture whose score moves with the change: pulse evolve fixture add --project {project} --name NAME --metric --scorer 'pulse evolve score metric --higher --scale S -- CMD ARGS...'. pulse settings set evolve.flat_wait_hours 0 leaves the next review to you.\n"
     ));
     let post = heal_post(s, project, opts, &question, &summary, body)?;
     s.event(
@@ -185,6 +186,20 @@ pub fn heal_flat(
             "the gate question {question} waited {wait} h unanswered; the loop runs {n} more cycles and asks again"
         ),
     }))
+}
+
+/// Derived count fixtures that told no variant from its baseline in `n` or
+/// more archived cycles. Re-arming one would date it after the window and
+/// lift the gate while it still measures nothing a card does, so the healer
+/// leaves them and points at the card's own check instead.
+fn tired_fixtures(s: &pulse_store::Store, project: &str, n: usize) -> Result<Vec<String>> {
+    Ok(crate::flat_gate::fixture_evidence(s, project)?
+        .into_iter()
+        .filter(|e| {
+            e.name.starts_with(crate::derive::DERIVED_PREFIX) && e.told_apart == 0 && e.cycles >= n
+        })
+        .map(|e| e.name)
+        .collect())
 }
 
 /// A gate question still open after the gate went quiet - a fixture was
@@ -290,13 +305,17 @@ mod tests {
     }
 
     fn tie(s: &pulse_store::Store, id: &str, offset: i64) {
+        tie_with(s, id, offset, "{}");
+    }
+
+    fn tie_with(s: &pulse_store::Store, id: &str, offset: i64, fixtures_json: &str) {
         s.conn()
             .unwrap()
             .execute(
                 "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
 				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
-				VALUES (?, 'demo', 'S-1', 'one constant', '', 0.5, 0.5, 0.02, 1, '{}', ?)",
-                params![id, stamp(s, offset)],
+				VALUES (?, 'demo', 'S-1', 'one constant', '', 0.5, 0.5, 0.02, 1, ?, ?)",
+                params![id, fixtures_json, stamp(s, offset)],
             )
             .unwrap();
     }
@@ -304,6 +323,15 @@ mod tests {
     /// A project whose last three cycles tied, with one old hand-made
     /// fixture and no stack in its tree.
     fn flat_store() -> (pulse_store::Store, String) {
+        let (s, repo) = flat_base();
+        tie(&s, "B-001", -30);
+        tie(&s, "B-002", -20);
+        tie(&s, "B-003", -10);
+        (s, repo)
+    }
+
+    /// [`flat_store`] before its tied cycles.
+    fn flat_base() -> (pulse_store::Store, String) {
         let s = test_store();
         crate::test_helpers_plan::disable_project_hook();
         let repo = test_project(&s, "demo");
@@ -318,9 +346,6 @@ mod tests {
         join_test_agent(&s, "tester");
         s.set_setting("human", crate::flat_gate::FLAT_CYCLES_SETTING, "3")
             .unwrap();
-        tie(&s, "B-001", -30);
-        tie(&s, "B-002", -20);
-        tie(&s, "B-003", -10);
         (s, repo)
     }
 
@@ -430,6 +455,114 @@ mod tests {
         assert_eq!(events(&s, "evolution.healed"), 1);
         // Nothing more to heal.
         assert_eq!(heal_flat(&s, "demo", &opts()).unwrap(), None);
+    }
+
+    /// Three tied cycles that scored `name` at `base` on the baseline and
+    /// at `variant` on the variant tree.
+    fn scored_on(s: &pulse_store::Store, name: &str, base: f64, variant: f64) {
+        let tree = |r#ref: &str, score: f64| {
+            let fixtures = vec![crate::api::FixtureScore {
+                name: name.into(),
+                kind: "public".into(),
+                score,
+                weight: 1.0,
+                metric: true,
+                note: String::new(),
+            }];
+            crate::api::Scores {
+                project: "demo".into(),
+                ref_name: r#ref.into(),
+                total: score,
+                fixtures,
+                ..Default::default()
+            }
+        };
+        for (id, offset) in [("B-001", -30), ("B-002", -20), ("B-003", -10)] {
+            let pair = crate::archive::ScorePair {
+                baseline: Some(tree("abc", base)),
+                variant: Some(tree(&format!("v-{id}"), variant)),
+            };
+            tie_with(s, id, offset, &serde_json::to_string(&pair).unwrap());
+        }
+    }
+
+    /// A flat store whose derived set dates from before the window, with
+    /// derived-tests saturated since (the tree grew past its scale) and the
+    /// window's cycles scoring it `base` / `variant`.
+    fn saturated_store(base: f64, variant: f64) -> (pulse_store::Store, String) {
+        let (s, repo) = flat_base();
+        scored_on(&s, "derived-tests", base, variant);
+        std::fs::write(format!("{repo}/Cargo.toml"), "[package]\n").unwrap();
+        std::fs::create_dir_all(format!("{repo}/src")).unwrap();
+        std::fs::write(format!("{repo}/src/lib.rs"), "#[test]\nfn a() {}\n").unwrap();
+        crate::derive::derive_fixtures(&s, "demo", "tester").unwrap();
+        let many: String = (0..25)
+            .map(|i| format!("#[test]\nfn t{i}() {{}}\n"))
+            .collect();
+        std::fs::write(format!("{repo}/src/more.rs"), many).unwrap();
+        let dated = stamp(&s, -1000);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE evolution_fixtures SET at = ? WHERE project = 'demo'",
+                [&dated],
+            )
+            .unwrap();
+        (s, dated)
+    }
+
+    fn derived_tests(s: &pulse_store::Store) -> crate::fixtures::Fixture {
+        crate::fixtures::list_fixtures(s, "demo", true)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "derived-tests")
+            .unwrap()
+    }
+
+    #[test]
+    fn a_derived_fixture_that_tied_the_whole_window_is_not_re_armed() {
+        let _serial = serial();
+        let (s, dated) = saturated_store(0.5, 0.5);
+        // It tied every cycle of the window: the healer leaves it and its
+        // date alone, nothing lifts the gate, and with no question due the
+        // loop holds.
+        assert_eq!(heal_flat(&s, "demo", &opts()).unwrap(), None);
+        let tests = derived_tests(&s);
+        assert_eq!(tests.at, dated);
+        assert!(tests.scorer.contains("--scale 20 --"), "{}", tests.scorer);
+        let (_, reason) = crate::flat_gate::flat_fixture_gate(&s, "demo").unwrap();
+        assert!(!reason.is_empty());
+        // The self-review, once due, says why and points at the card's check.
+        question(&s, -3 * 3600 - 1);
+        s.set_setting("human", FLAT_WAIT_SETTING, "3").unwrap();
+        let healed = heal_flat(&s, "demo", &opts()).unwrap().expect("reviewed");
+        assert_eq!(healed.how, "self-reviewed");
+        let body: String = s
+            .conn()
+            .unwrap()
+            .query_row("SELECT body FROM posts WHERE id = ?", [&healed.post], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            body.contains("derived-tests not re-armed: it told no variant from its baseline")
+                && body
+                    .contains("a Signal: check:<command> line is that card's card-check fixture"),
+            "{body}"
+        );
+        // A fixture that told a variant apart once in the window is still
+        // re-armed as before.
+        let (s, dated) = saturated_store(0.5, 0.6);
+        let healed = heal_flat(&s, "demo", &opts()).unwrap().expect("healed");
+        assert_eq!(healed.how, "derived");
+        assert!(
+            healed.line.starts_with(
+                "re-armed derived-tests (its count reached its scale; 26 now, scale 52)"
+            ),
+            "{}",
+            healed.line
+        );
+        assert!(derived_tests(&s).at > dated);
     }
 
     #[test]
