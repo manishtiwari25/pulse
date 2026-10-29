@@ -1669,6 +1669,9 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   are measured again on the base in the same scope inside the same cycle,
   and the whole-tree numbers stay for the project-level report. A diff with
   no changed file exports the base alone and the scorers see the whole tree.
+  A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
+  `package-lock.json`, `yarn.lock`) is not measured: the variant takes the
+  base's numbers and is archived `neutral` with the reason `lockfile-only`.
 - **Card check** - the card's own hypothesis, measured. A card whose
   `Signal:` line reads `check:<command>` (or whose `Hypothesis:` names
   `check:<command>`, backticks allowed) gets a fixture of its own for that

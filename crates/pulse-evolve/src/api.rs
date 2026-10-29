@@ -137,7 +137,16 @@ pub struct MeasuredPair {
     pub base: Scores,
     pub variant: Scores,
     pub scope: DiffScope,
+    /// Why the variant was not measured (`lockfile-only`): it then carries
+    /// the base's scores, so an archive row still has its numbers, and
+    /// [`keep_pair`] gives the matching `neutral` verdict. `None` when both
+    /// trees were measured.
+    pub skipped: Option<String>,
 }
+
+/// The short reason [`MeasuredPair::skipped`] carries for a lock-file-only
+/// change.
+pub const LOCKFILE_ONLY: &str = "lockfile-only";
 
 pub type MeasureFn = dyn for<'a> Fn(
         &pulse_bus::CancellationToken,
@@ -231,6 +240,30 @@ pub fn measure_pair(
     mut out: Option<&mut dyn Write>,
 ) -> Result<MeasuredPair> {
     let scope = diff_scope(cancel, repo, base_ref, variant_ref)?;
+    if scope.lockfile_only() {
+        // Nothing a fixture could measure changed: the variant takes the
+        // base's numbers and goes to landing as a tie.
+        let base = match cached_base {
+            Some(cached) => cached,
+            None => measure(
+                cancel,
+                s,
+                project,
+                repo,
+                base_ref,
+                MeasureOptions {
+                    out,
+                    ..Default::default()
+                },
+            )?,
+        };
+        return Ok(MeasuredPair {
+            variant: base.clone(),
+            base,
+            scope,
+            skipped: Some(LOCKFILE_ONLY.to_string()),
+        });
+    }
     let variant = measure(
         cancel,
         s,
@@ -286,7 +319,22 @@ pub fn measure_pair(
         base,
         variant,
         scope,
+        skipped: None,
     })
+}
+
+/// [`keep`] for a [`MeasuredPair`]: a pair whose variant was not measured
+/// is a `neutral` tie with the reason it was skipped for
+/// ([`LOCKFILE_ONLY_VERDICT`] for a lock-file-only change).
+pub fn keep_pair(pair: &MeasuredPair, tolerance: f64) -> (bool, String) {
+    match pair.skipped.as_deref() {
+        None => keep(Some(&pair.base), Some(&pair.variant), tolerance),
+        Some(LOCKFILE_ONLY) => (true, LOCKFILE_ONLY_VERDICT.to_string()),
+        Some(why) => (
+            true,
+            format!("neutral ({why}: the variant was not measured)"),
+        ),
+    }
 }
 
 /// The cached whole-tree scores with the freshly measured fixtures laid over

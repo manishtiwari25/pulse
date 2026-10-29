@@ -1305,6 +1305,94 @@ fi
     }
 
     #[test]
+    fn a_lockfile_only_change_is_not_measured_and_ties_as_neutral() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let root = Path::new(&repo);
+        test_git(root, &["checkout", "--quiet", "-b", "lock"]);
+        put_file(root.join("Cargo.lock"), "# lock\n", 0o644);
+        put_file(
+            root.join("web/pnpm-lock.yaml"),
+            "lockfileVersion: 9\n",
+            0o644,
+        );
+        test_git(root, &["add", "."]);
+        test_git(root, &["commit", "--quiet", "-m", "bump the locks"]);
+        test_git(root, &["checkout", "--quiet", "main"]);
+        // The scorer fails on any tree that holds the lock file, so measuring
+        // the variant would fail the measurement.
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "whole".into(),
+                scorer: "test ! -f Cargo.lock && printf 'score: 0.4\\n'".into(),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cached = crate::api::Scores {
+            project: "demo".into(),
+            ref_name: test_git(root, &["rev-parse", "main"]),
+            fixtures: vec![crate::api::FixtureScore {
+                name: "whole".into(),
+                kind: "public".into(),
+                score: 0.3,
+                weight: 1.0,
+                metric: true,
+                note: String::new(),
+            }],
+            total: 0.3,
+            ..Default::default()
+        };
+        let pair = crate::api::measure_pair(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "main",
+            "lock",
+            Some(cached.clone()),
+            "",
+            None,
+        )
+        .unwrap();
+        assert_eq!(pair.scope.changed, ["Cargo.lock", "web/pnpm-lock.yaml"]);
+        assert!(pair.scope.lockfile_only());
+        assert_eq!(pair.skipped.as_deref(), Some(crate::api::LOCKFILE_ONLY));
+        assert_eq!(pair.base, cached);
+        assert_eq!(pair.variant, cached);
+        let (kept, why) = crate::api::keep_pair(&pair, 0.02);
+        assert!(kept, "{why}");
+        assert_eq!(why, crate::api::LOCKFILE_ONLY_VERDICT);
+        assert!(why.starts_with("neutral (lockfile-only"), "{why}");
+        // Without a cached base the base is measured once, whole tree.
+        let pair =
+            crate::api::measure_pair(&cancel, &s, "demo", &repo, "main", "lock", None, "", None)
+                .unwrap();
+        assert_eq!(pair.skipped.as_deref(), Some(crate::api::LOCKFILE_ONLY));
+        assert_eq!(pair.base.fixtures[0].score, 0.4);
+        assert!(pair.base.diff_scoped.is_empty());
+        assert_eq!(pair.variant, pair.base);
+        // A code change beside the lock file is measured as usual.
+        let measured =
+            crate::api::measure_pair(&cancel, &s, "demo", &repo, "main", "main", None, "", None)
+                .unwrap();
+        assert_eq!(measured.skipped, None);
+        assert_eq!(
+            crate::api::keep_pair(&measured, 0.02),
+            crate::api::keep(Some(&measured.base), Some(&measured.variant), 0.02)
+        );
+        assert_no_clones(&s);
+    }
+
+    #[test]
     fn measure_removes_each_clone_before_next_fixture() {
         let _serial = crate::test_helpers::serial();
         let _guard = measure_test_lock();
