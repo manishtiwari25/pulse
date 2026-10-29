@@ -618,6 +618,82 @@ mod tests {
         ))
     }
 
+    // Mirrors web/hub/src/lib/bundle-freshness.test.mjs so `cargo test
+    // --workspace` (the registered verify command) refuses a stale hub bundle
+    // even when the node suite was not run: the pulse binary embeds the
+    // committed `web/hub/out`, so a src/ change without a rebuilt out/ ships
+    // nothing. The bundle is a build output, so a file's mtime is whenever
+    // the checkout wrote it and proves nothing. What proves the bundle is
+    // fresh is that it was built from the src/ it ships beside: the build
+    // stamps out/ with the src/ tree hash (web/hub/scripts/
+    // write-build-stamp.mjs), and this test demands the committed stamp name
+    // the committed src/ tree. A stamp from a dirty src/ names no tree, so
+    // it falls back to being at most a minute older than its commit.
+    #[test]
+    fn embedded_bundle_is_built_from_the_committed_src() {
+        use std::path::Path;
+
+        let hub = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/hub");
+        let git = |args: &[&str]| -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&hub)
+                .output()
+                .unwrap_or_else(|err| panic!("run git {args:?}: {err}"));
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout)
+                .expect("git stdout is utf-8")
+                .trim()
+                .to_string()
+        };
+        let commit_ms = |path: &str| -> i64 {
+            let stamp = git(&["log", "-1", "--format=%cI", "--", path]);
+            chrono::DateTime::parse_from_rfc3339(&stamp)
+                .unwrap_or_else(|err| panic!("parse commit time of {path} ({stamp}): {err}"))
+                .timestamp_millis()
+        };
+
+        let stamp = std::fs::read_to_string(hub.join("out/.build-stamp"))
+            .expect("read web/hub/out/.build-stamp")
+            .trim()
+            .to_string();
+        let src_commit = commit_ms("src");
+        let out_commit = commit_ms("out");
+
+        if let Some(tree) = stamp.strip_prefix("src-tree ") {
+            // The build recorded the src/ tree it was made from; the commit
+            // must be carrying exactly that src/.
+            assert_eq!(
+                tree,
+                git(&["rev-parse", "HEAD^{tree}:./src"]),
+                "the committed out/ was built from a different src/ than the commit \
+                 carries - rebuild with `npm run build` and commit out/"
+            );
+        } else {
+            // A build of a dirty src/ names no tree: fall back to the stamp
+            // being fresh, so a just-built bundle waiting on a verify hook
+            // still passes.
+            let stamp_commit = commit_ms("out/.build-stamp");
+            assert!(
+                stamp_commit >= src_commit - 60_000,
+                "out/.build-stamp ({stamp}) is older than the newest src/ commit: \
+                 rebuild with `npm run build` and commit out/"
+            );
+        }
+
+        // The bundle and the source land together: no commit touches src/
+        // without touching out/ in the same or a later commit.
+        assert!(
+            out_commit >= src_commit,
+            "the newest out/ commit predates the newest src/ commit: rebuild with \
+             `npm run build` and commit out/"
+        );
+    }
+
     #[test]
     fn static_export() {
         let _serial = crate::test_helpers::serial();
