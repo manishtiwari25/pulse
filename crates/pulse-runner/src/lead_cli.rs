@@ -66,16 +66,27 @@ pub(crate) struct RoleOut {
     pub title: String,
     pub about: String,
     pub every: String,
+    /// `builtin`, or `store` for a role a `role` record defines.
+    pub source: leads::RoleSource,
 }
 
-pub(crate) fn builtin_roles_out() -> Vec<RoleOut> {
-    leads::BUILTIN_ROLES
-        .iter()
+#[derive(Serialize)]
+struct RolesOut<'a> {
+    project: &'a str,
+    roles: Vec<RoleOut>,
+    /// The words a role record's section may put in braces.
+    variables: &'static [&'static str],
+}
+
+pub(crate) fn roles_out(s: &pulse_store::Store, project: &str) -> Vec<RoleOut> {
+    leads::roles(s, project)
+        .into_iter()
         .map(|r| RoleOut {
-            role: r.name.into(),
-            title: r.title.into(),
-            about: r.about.into(),
-            every: r.every.into(),
+            role: r.name,
+            title: r.title,
+            about: r.about,
+            every: r.every,
+            source: r.source,
         })
         .collect()
 }
@@ -288,7 +299,9 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             }
             writeln!(c.out)?;
             if lead.brief.trim().is_empty() {
-                let about = leads::builtin(&lead.role).map(|r| r.about).unwrap_or("");
+                let about = leads::spec_of(store(c)?, &lead.project, &lead.role)
+                    .map(|r| r.about)
+                    .unwrap_or_default();
                 writeln!(c.out, "Built-in brief: {about}")?;
             } else {
                 writeln!(c.out, "{}", lead.brief.trim_end_matches('\n'))?;
@@ -356,13 +369,14 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             }
             let now = s.now();
             let gaps = crate::lead_roles::missing_leads(s, &project, &now);
+            let roles = roles_out(s, &project);
             if c.json {
                 return pulse_cli::write_json(
                     &mut c.out,
                     &SuggestOut {
                         project: &project,
                         suggestions: &gaps,
-                        roles: builtin_roles_out(),
+                        roles,
                     },
                 );
             }
@@ -377,6 +391,51 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
                 writeln!(c.out, "{} ({}): {}", g.title, g.role, g.why)?;
                 writeln!(c.out, "  {}", g.command)?;
             }
+            Ok(())
+        }
+        "roles" => {
+            let project = need_project(c)?;
+            let s = store(c)?;
+            if s.project(&project)?.is_none() {
+                return Err(pulse_cli::errorf(
+                    2,
+                    &format!("No project {project:?}"),
+                    "it is not registered in this store",
+                    "pulse projects",
+                )
+                .into());
+            }
+            let roles = roles_out(s, &project);
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &RolesOut {
+                        project: &project,
+                        roles,
+                        variables: crate::lead_roles::SECTION_VARIABLES,
+                    },
+                );
+            }
+            let st = c.style();
+            for r in &roles {
+                let source = match r.source {
+                    leads::RoleSource::Builtin => "built in",
+                    leads::RoleSource::Store => "role record",
+                };
+                writeln!(
+                    c.out,
+                    "{} {} every {}, {source}: {}",
+                    st.bold(&r.role),
+                    r.title,
+                    r.every,
+                    r.about
+                )?;
+            }
+            writeln!(
+                c.out,
+                "\nA `role` record (pulse record new role --project {project} --title T --body-file F) adds a role or replaces a built-in one; its section may use {{{}}}.",
+                crate::lead_roles::SECTION_VARIABLES.join("}, {")
+            )?;
             Ok(())
         }
         _ => Err(usage(sub)),

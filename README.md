@@ -859,7 +859,14 @@ in use; for `triage` the open threads and questions; for `tidy` whether the
 check runs a linter; for `dx` the jobs the environment blocked. A sitting
 queues Tier 0/1 worker jobs, posts findings and suggestions, and tells the
 owner in the project's chat what it did; it never decides for an absent
-owner. Like every job it counts against `jobs_per_day`.
+owner. Like every job it counts against `jobs_per_day`. The `rsi` sitting
+carries one step that binds: when the project's archive shows fewer than
+20% improved-or-kept over its last 20 cycles, the sitting must add one
+metric fixture that reads the project's own check output (`pulse evolve
+fixture add … --metric`), check that it scores HEAD (`pulse evolve measure
+--ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`;
+that sitting runs on the worker model (`worker_model`), the other roles'
+sittings on the light one.
 
 PULSE **suggests** a seat when the project shows the gap: the loop is at
 level D with no `rsi` lead; three or more landings in a fortnight changed
@@ -899,6 +906,7 @@ declined, is never seated unasked again.
 
 ```bash
 pulse lead suggest --project my-app          # the missing roles, why, and the command that seats each
+pulse lead roles --project my-app            # every role the project can seat, built in or from a role record
 pulse lead add --project my-app --role rsi   # seat a built-in role; its first sitting is queued now
 pulse lead add --project my-app --role content --title "Content lead" --brief-file content.md --every 1w
 pulse lead list --project my-app             # ID, role, agent, cadence, next sitting, sittings so far
@@ -917,8 +925,9 @@ queued), `lead.paused`, `lead.resumed`, `lead.run`, `lead.ended`,
 `lead.seated_away` (the security seat the daemon filled while you were
 away). The hub serves
 them at `GET /api/v1/leads?project=` (the seats, the suggestions and the
-built-in roles) and `POST /api/v1/leads` (`{project, role, title?, brief?,
-every?}`), `POST /api/v1/leads/<id>/pause|resume|end|run`.
+roles, each with its `source`: `builtin` or `store`) and `POST /api/v1/leads`
+(`{project, role, title?, brief?, every?}`),
+`POST /api/v1/leads/<id>/pause|resume|end|run`.
 
 ### Suggested work: `pulse task suggest`
 

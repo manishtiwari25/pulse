@@ -684,6 +684,17 @@ impl Store {
         }
     }
 
+    /// The model for a run of `kind` whose role asks for a model class of
+    /// its own: `worker` runs on the worker model, `light` on the light one,
+    /// anything else on the kind's own.
+    pub fn run_model_class(&self, kind: &str, class: &str) -> String {
+        match class.trim() {
+            "worker" => self.setting("worker_model", "").trim().to_string(),
+            "light" => self.light_model(),
+            _ => self.run_model(kind),
+        }
+    }
+
     /// The step budget for one run of `kind`, in the shape of the per-kind
     /// model settings: a task, improve or experiment run may raise its budget
     /// with `harness.task_max_steps` without giving the short kinds the same,

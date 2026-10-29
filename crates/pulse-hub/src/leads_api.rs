@@ -64,7 +64,7 @@ impl Handler {
                 "project": project,
                 "leads": list,
                 "suggestions": suggestions,
-                "roles": roles(),
+                "roles": roles(store, &project),
             }),
         );
     }
@@ -158,8 +158,10 @@ impl Handler {
     }
 }
 
-fn roles() -> Vec<serde_json::Value> {
-    leads::BUILTIN_ROLES
+/// The roles the project can seat: the built-in ones and the project's
+/// `role` records, each with its `source` (`builtin` or `store`).
+fn roles(store: &pulse_store::Store, project: &str) -> Vec<serde_json::Value> {
+    leads::roles(store, project)
         .iter()
         .map(|r| {
             json!({
@@ -167,6 +169,7 @@ fn roles() -> Vec<serde_json::Value> {
                 "title": r.title,
                 "about": r.about,
                 "every": r.every,
+                "source": r.source,
             })
         })
         .collect()

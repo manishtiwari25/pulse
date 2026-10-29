@@ -880,8 +880,9 @@ pub(crate) fn run_job(
         stop_watch();
         return r;
     }
+    let model_class = crate::lead_roles::model_class_of_job(s, &job);
     if agent != crate::util::HUMAN_AGENT {
-        let mut model = s.run_model(&job.str("kind"));
+        let mut model = s.run_model_class(&job.str("kind"), &model_class);
         if !o.worker_cmd.is_empty() {
             model.clear();
         }
@@ -1057,9 +1058,10 @@ pub(crate) fn run_job(
             // The carried conversation already holds the brief; the worker
             // opens with what changed since and resumes its trajectory.
             Some(r) => {
-                let (cmd, custom) = crate::exec::worker_command(
+                let (cmd, custom) = crate::exec::worker_command_as(
                     s,
                     &job.str("kind"),
+                    &model_class,
                     &continuation_message(&run_id, r, &clone),
                     &clone,
                     &o.worker_cmd,
@@ -1067,9 +1069,10 @@ pub(crate) fn run_job(
                 );
                 (crate::exec::with_resume(cmd, &r.session.trajectory), custom)
             }
-            None => crate::exec::worker_command(
+            None => crate::exec::worker_command_as(
                 s,
                 &job.str("kind"),
+                &model_class,
                 &brief_text,
                 &clone,
                 &o.worker_cmd,

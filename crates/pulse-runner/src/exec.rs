@@ -1039,6 +1039,20 @@ pub(crate) fn worker_command(
     worker_cmd: &str,
     remote: bool,
 ) -> (Vec<String>, bool) {
+    worker_command_as(s, kind, "", brief_text, clone, worker_cmd, remote)
+}
+
+/// `worker_command` for a run whose role asks for a model class of its own
+/// (`model_class`, empty for the kind's own model).
+pub(crate) fn worker_command_as(
+    s: &pulse_store::Store,
+    kind: &str,
+    model_class: &str,
+    brief_text: &str,
+    clone: &str,
+    worker_cmd: &str,
+    remote: bool,
+) -> (Vec<String>, bool) {
     if !worker_cmd.is_empty() {
         return (crate::util::split_shell(worker_cmd), true);
     }
@@ -1129,7 +1143,7 @@ pub(crate) fn worker_command(
     if pulse_store::settings::READ_ONLY_JOB_KINDS.contains(&kind) {
         cmd.push("--read-only".into());
     }
-    let model = s.run_model(kind);
+    let model = s.run_model_class(kind, model_class);
     if !model.is_empty() {
         cmd.extend(["--model".into(), model]);
     }
