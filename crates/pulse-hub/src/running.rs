@@ -189,11 +189,16 @@ impl Handler {
         ]))
     }
 
-    /// `POST /api/v1/running/restart`: the owner wants the update now. The
-    /// daemon is asked to restart (its runs in flight hold and carry on
-    /// under the next daemon; `daemon.hold_seconds` later the rest are
-    /// stopped and their jobs return to the queue), and a hub whose binary
-    /// changed goes too, its conversations carrying on under the next hub.
+    /// `POST /api/v1/running/restart`: the owner wants the daemon restarted.
+    /// By default the ask drains like a self-update: the daemon stops
+    /// starting runs and restarts once the runs in flight have ended or
+    /// `daemon.restart_drain_minutes` is up, so nothing is held or lost. A
+    /// payload of `{"now": true}` - which the console sends only after the
+    /// operator confirms, having seen the runs in flight - asks for the fast
+    /// path: the runs in flight hold and carry on under the next daemon, and
+    /// `daemon.hold_seconds` later the rest are stopped and their jobs
+    /// return to the queue. A hub whose binary changed goes either way, its
+    /// conversations carrying on under the next hub.
     pub(crate) fn addition_running_restart(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -209,7 +214,7 @@ impl Handler {
             );
             return;
         }
-        let (_payload, ok) = crate::server::read_payload(w, r);
+        let (payload, ok) = crate::server::read_payload(w, r);
         if !ok {
             return;
         }
@@ -227,7 +232,8 @@ impl Handler {
             return;
         };
         let daemon = matches!(store.meta("daemon"), Ok((_, true)));
-        let detail = json!({"from": "console", "hub_pid": std::process::id()});
+        let now = payload.get("now").and_then(Value::as_bool).unwrap_or(false);
+        let detail = json!({"from": "console", "hub_pid": std::process::id(), "now": now});
         if let Err(err) = pulse_runner::daemon::ask_restart(store, pulse_store::HUMAN_AGENT, detail)
         {
             crate::server::write_error(
@@ -243,7 +249,7 @@ impl Handler {
         crate::server::write_json(
             w,
             200,
-            json!({"asked": true, "daemon": daemon, "hub": hub, "at": store.now()}),
+            json!({"asked": true, "daemon": daemon, "hub": hub, "now": now, "at": store.now()}),
         );
     }
 
@@ -393,6 +399,29 @@ mod tests {
         assert_eq!(result["daemon"], false);
         assert_eq!(result["hub"], false);
         assert_eq!(went.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(result["now"], false, "the default ask drains");
+        // "now" is echoed and written into the ask's detail for the daemon.
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/running/restart",
+            "{\"now\": true}",
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["now"], true);
+        let detail: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT detail FROM events WHERE action = ? ORDER BY seq DESC LIMIT 1",
+                [pulse_runner::daemon::RESTART_ACTION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&detail).unwrap()["now"],
+            true
+        );
         let (actor, at): (String, String) = s
             .conn()
             .unwrap()

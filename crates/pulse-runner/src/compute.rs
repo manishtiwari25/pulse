@@ -1029,6 +1029,23 @@ pub(crate) fn release_compute(
             crate::run::err_message(&e)
         ));
     }
+    // Remove the ssh aliases the pair/provision wrote so a released machine leaves
+    // no dead alias in ~/.ssh/config and a reused name pairs again.
+    if !m.executor.is_empty() {
+        let hub_home = crate::util::home_dir();
+        if crate::pair::pair_remove_alias(&hub_home, &m.executor) {
+            say(&format!(
+                "compute {}: removed the {} block from ~/.ssh/config",
+                req.id, m.executor
+            ));
+        }
+        if crate::pair::pair_remove_alias(&hub_home, &format!("{}-admin", m.executor)) {
+            say(&format!(
+                "compute {}: removed the {}-admin block from ~/.ssh/config",
+                req.id, m.executor
+            ));
+        }
+    }
     let now = s.now();
     machine_released(s, &req.id, &now);
     if let Err(e) = pulse_tasks::set_compute_status(s, &req.id, "released", "", actor) {
