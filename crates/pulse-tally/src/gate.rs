@@ -28,6 +28,8 @@ pub const GATE_OPERATING_LAYER_CAP: &str = "operating-layer cap";
 pub const GATE_NO_OP_CHECK: &str =
     "check selects no test: its `go test -run` regex matches nothing in `go test -list`";
 pub const GATE_FILE_GONE: &str = "File: names a path whose whole tree is gone from the checkout; the card predates a move or removal";
+pub const GATE_FILE_STALE: &str =
+    "File holds none of the Signal's terms; the variable lives elsewhere now";
 
 pub fn signal_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -414,6 +416,147 @@ pub fn card_file_text(body: &str) -> String {
     .to_string()
 }
 
+/// Whether any term derived from the card's Signal appears in the named
+/// repository file. The planner uses this to flag a card whose `File:` exists
+/// but holds no production path for the variable: the worker would land in the
+/// wrong file and burn calls reconciling the stale pointer before touching the
+/// real one. Terms compare lowercase so a prose term matches any case; an
+/// identifier-shaped term (carrying `_` or `.`) compares verbatim so
+/// `Landing` in a doc does not satisfy `landing.rs`.
+pub fn signal_matches_file(project_path: &str, file: &str, signal: &str) -> bool {
+    if project_path.is_empty() || file.is_empty() {
+        return false;
+    }
+    let Some(clean) = signal_rel(project_path, file) else {
+        return false;
+    };
+    let path = Path::new(project_path).join(&clean);
+    // The Signal naming this very file (or a file under this directory) is the
+    // trivial match: the card points at the evidence.
+    let signal_names_file = signal_word_tokens(signal)
+        .iter()
+        .any(|tok| *tok == clean || tok.starts_with(&format!("{clean}/")));
+    if signal_names_file && path.exists() {
+        return true;
+    }
+    let read = |path: &Path| {
+        std::fs::read_to_string(path).ok().map(|body| {
+            let lower = body.to_lowercase();
+            signal_terms(signal).iter().any(|term| {
+                if term.ident {
+                    body.contains(term.text.as_str())
+                } else {
+                    lower.contains(term.text.as_str())
+                }
+            })
+        })
+    };
+    if let Some(found) = read(&path) {
+        return found;
+    }
+    if path.is_dir() {
+        // A File that names a directory matches when any file in it does.
+        let mut stack = vec![path];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    stack.push(entry_path);
+                } else if let Some(true) = read(&entry_path) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+struct SignalTerm {
+    text: String,
+    /// Identifier-shaped term (carries `_` or `.`): matched case-sensitively
+    /// so a prose mention of the word in another file does not satisfy it.
+    ident: bool,
+}
+
+/// Terms of a card's Signal: the basename of any repository path in it, the
+/// name after `check:`, and every word of five letters or more or carrying a
+/// digit (`verify_failures`, `base_red_detail`, `redbase.rs`).
+fn signal_terms(signal: &str) -> Vec<SignalTerm> {
+    let mut terms: Vec<SignalTerm> = Vec::new();
+    for tok in signal_word_tokens(signal) {
+        if let Some(rest) = tok.strip_prefix("check:") {
+            if !rest.is_empty() {
+                terms.push(SignalTerm {
+                    text: rest.to_lowercase(),
+                    ident: false,
+                });
+            }
+            continue;
+        }
+        let base = tok
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .trim_matches(['`', '\'', '"', '(', ')', '[', ']', ',', ';']);
+        let is_path = tok.contains('/') || Path::new(&tok).extension().is_some();
+        let term = if is_path && !base.is_empty() {
+            base.to_string()
+        } else {
+            tok.trim_matches(['`', '\'', '"', '(', ')', '[', ']', ',', ';'])
+                .to_string()
+        };
+        if term.is_empty() {
+            continue;
+        }
+        let ident = term.contains('_') || term.contains('.');
+        if !ident && term.len() < 5 && !term.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        terms.push(SignalTerm {
+            text: if ident { term } else { term.to_lowercase() },
+            ident,
+        });
+    }
+    terms.sort_by(|a, b| a.text.cmp(&b.text));
+    terms.dedup_by(|a, b| a.text == b.text && a.ident == b.ident);
+    terms
+}
+
+/// Text that carries the card's Signal: a `Signal:` line in the body when the
+/// card declares one, else the post's summary line (a plain suggestion's
+/// signal lives in the summary after `Signal:`).
+fn signal_text_of(summary: &str, body: &str) -> String {
+    let declared = body
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Signal:").map(str::trim))
+        .filter(|rest| !rest.is_empty());
+    match declared {
+        Some(rest) => rest.to_string(),
+        None => summary.to_string(),
+    }
+}
+
+/// Whitespace/punctuation-split words of a Signal string, cleaned the way
+/// `signal_rel` cleans a token. Unlike `signal_tokens` (which only reads text
+/// after a `Signal:` marker), this sees every word of a bare signal like
+/// `crates/src/keys.rs`.
+fn signal_word_tokens(signal: &str) -> Vec<String> {
+    signal
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .filter(|w| !w.is_empty())
+        .map(|w| match w.rfind("check:") {
+            // A `check:NAME` token keeps its name: rel_and_symbol would cut
+            // the token at the ':' and drop it.
+            Some(at) => format!("check:{}", rel_of_token(&w[at + "check:".len()..])),
+            None => rel_of_token(w),
+        })
+        .filter(|w| !w.is_empty() && w != "check:")
+        .collect()
+}
+
 pub fn card_file_gone(project_path: &str, body: &str) -> bool {
     if project_path.is_empty() {
         return false;
@@ -511,6 +654,27 @@ pub fn plan_gate_with(
     }
     if card_file_gone(project_path, body) {
         return GATE_FILE_GONE.into();
+    }
+    // A card whose Signal names a live repository path but whose existing File
+    // holds none of the Signal's terms is stale: the variable moved files and
+    // the worker would land in the wrong file reconciling the pointer. Hold it
+    // so the next card names the file the evidence actually lives in. Cards
+    // whose signal is a check name or a store post carry no production path to
+    // match a File against; the other gates speak for them.
+    if post.is_some() {
+        let file_text = card_file_text(body);
+        let signal_text = signal_text_of(summary, body);
+        let signal_has_path = signal_word_tokens(&signal_text)
+            .iter()
+            .any(|tok| !tok.starts_with("check:") && signal_rel(project_path, tok).is_some());
+        if !file_text.is_empty()
+            && signal_has_path
+            && is_worker_post(s, agent)
+            && signal_resolves(s, project_path, summary, body)
+            && !signal_matches_file(project_path, &file_text, &signal_text)
+        {
+            return GATE_FILE_STALE.into();
+        }
     }
     if let Some(post) = post
         && is_worker_post(s, agent)
