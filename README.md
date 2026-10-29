@@ -1557,21 +1557,22 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   share of experiments that should try an archived parent; eligible parents
   must have a saved patch and are weighted by clade metaproductivity
   `(improved descendants + 1) / (descendants + 2)` with the Beta prior keeping
-  unexplored nodes alive, times novelty `1 / (1 + children)`. A kept tie
-  (`kept (no regression)`, the usual result on pass/fail fixtures) counts as a
-  descendant but not as a productive one; only an improvement, a kept delta of
-  at least `evolve.tolerance`, earns productivity. `pulse evolve
-  lineage --project P [--json]` prints the archived tree, each row's outcome
-  (`improved`, `neutral`, `discarded`), CMP values and the current candidate
-  count.
+  unexplored nodes alive, times novelty `1 / (1 + children)`. A tie
+  (`neutral`, the usual result on pass/fail fixtures) counts as a descendant
+  but not as a productive one; only an improvement - a delta of at least
+  `evolve.tolerance`, or a tie whose card's own check rose - earns
+  productivity. `pulse evolve lineage --project P [--json]` prints the
+  archived tree, each row's outcome (`improved`, `neutral`, `discarded`), CMP
+  values and the current candidate count.
 - **Seeded records and starter fixtures** - registering a project (`pulse
   init`, `pulse onboard`, the console) seeds the loop's records and six public
   behaviour fixtures. The records: a project whose checkout commits
   `docs/evolution/constitution.md` / `evaluators.md` gets those files indexed
   as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other project
   gets a copy of the template's text marked `seeded_from` in its frontmatter,
-  with `loop: off`, no baseline and no product scope, so nothing runs until
-  you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
+  with `loop: off`, no baseline and the `Product scope:` placeholder (which
+  keeps product cards out until you replace it), so nothing runs until you
+  edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
   An existing record is never touched. You do not have to write the text
   yourself (ADR-046): while a project's constitution or evaluators is still
   the seeded copy, the daemon plans one `reflect` job (source `draft:<slug>`,
@@ -1600,8 +1601,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   that brings tests or settles a marker scores differently from one that
   does not - the starter set judges conduct and ties on every good change,
   so without a derived or hand-made metric no fixture would tell variants
-  apart. A derived fixture whose count reaches its scale is re-armed with a
-  larger one and a fresh date (event `evolution.fixture.rearmed`); a disabled
+  apart. In an experiment they count only inside the card's changed files
+  (the diff scope below), so one card's change moves them visibly. A derived
+  fixture whose count reaches its scale, or whose script changed, is re-armed
+  with a fresh date (event `evolution.fixture.rearmed`); a disabled
   one is never re-added. `pulse evolve seed [--project P]` seeds both for a
   project registered earlier (`pulse evolve fixture seed` for the fixtures
   alone, which also derives); `pulse evolve fixture list|disable` manages
@@ -1648,13 +1651,53 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   per-fixture scratch directory under the isolated home for work that must
   stay outside the tree. Each worker has at most one fixture clone at a time,
   and removes that clone as soon as its scorer finishes; the isolated homes
-  stay until the measurement root's final cleanup.
+  stay until the measurement root's final cleanup. An experiment's
+  measurement also exports its **diff scope**: `PULSE_MEASURE_BASE` (the base
+  commit), `PULSE_MEASURE_CHANGED` (a file listing the paths that differ
+  between the base and the measured tree, one per line) and
+  `PULSE_MEASURE_BASE_TREE` (a frozen, read-only checkout of the base, shared
+  by the fixtures). `pulse evolve score metric` then runs `CMD` on both trees
+  and takes the base's count as the scale in place of `--scale` (twice the
+  count for `--higher`, the count itself for `--lower`, never below 1), so
+  the base scores `0.5` and the variant's delta is relative to what the card
+  touched; the derived fixtures' scripts count only inside the listed files,
+  and your own `CMD` does the same by reading that list. Such a fixture
+  answers `scope: diff` after its score line, the log marks it
+  `[diff-scoped]` and the archive row records it (`diff_scoped` in the
+  measurement and in the `evolution.archived` event). A diff-scoped score is
+  per card, so the cached project baseline never serves it: those fixtures
+  are measured again on the base in the same scope inside the same cycle,
+  and the whole-tree numbers stay for the project-level report. A diff with
+  no changed file exports the base alone and the scorers see the whole tree.
+  A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
+  `package-lock.json`, `yarn.lock`) is not measured: the variant takes the
+  base's numbers and is archived `neutral` with the reason `lockfile-only`.
+- **Card check** - the card's own hypothesis, measured. A card whose
+  `Signal:` line reads `check:<command>` (or whose `Hypothesis:` names
+  `check:<command>`, backticks allowed) gets a fixture of its own for that
+  experiment, `card-check` (kind `card`, weight `1.0`, part of the card's
+  composite, recorded with the other fixtures in the archive row and as
+  `card_check` on each measurement). The command runs from the tree root
+  on the base and on the variant through `pulse evolve score check -- CMD
+  ARGS...`: its exit status scores `1` or `0`; a single integer on stdout
+  is a count that should fall, scored like a diff-scoped `--lower` metric
+  against the base's count (so `grep -c unwrap src/x.rs` on both trees
+  works, whatever its exit status). It takes a command, not a project
+  check name: the project's recipe checks live with the runner, out of the
+  measurement's reach, so `check:cargo test -p demo` must spell the command.
+  A card that names a check can win on a tie (the keep rule below), and the
+  worker brief asks every card for one.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
 **Readiness is not delivery.** Level D means the general evolution gates are
 open, not that a supported candidate exists or that product experiments are
-authorized. Product scope is a separate owner-controlled gate. Starter
+authorized. Product scope is a separate owner-controlled gate, open by
+default: an EVO-evaluators record with no `Product scope:` line lets product
+cards run, `Product scope: off` (or `operating-layer`) restricts the loop to
+the operating layer, and a line the loop cannot read - the seeded
+placeholder, an unknown word, two lines that disagree - restricts it too and
+`pulse evolve status` says why. Starter
 fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
@@ -1735,14 +1778,19 @@ that already contains the default branch, or one that conflicts with it, is
 measured as it is and landing reports the conflict); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
 and the archive notes `measured as … merged onto …` when that happened. The
-keep rule is *no regression*: a variant whose total score is not more than
-`evolve.tolerance` below the baseline is kept - an improvement as `kept`, a
-tie as `kept (no regression)` - and goes to the same landing as any branch,
-where the project's own check decides it; only a larger regression is
-`discarded` and loses its branch. Held-out fixtures are mostly pass/fail, so a
-voted change that keeps every fixture green measures as an exact tie; before
-this rule such ties were discarded and no voted experiment ever landed. A
-discard must reproduce: when a regression hinges on request fixtures alone (the
+keep rule is asymmetric: a variant whose total score falls more than
+`evolve.tolerance` below the baseline is `discarded` and loses its branch; a
+gain of at least `evolve.tolerance` is `improved`; anything in between is a
+tie, labelled `neutral`. A tie is not a win: it still goes to the same landing
+as any branch, where the project's own check decides it, but the archive,
+`pulse evolve status`, `report` and `lineage` show it apart from improvements
+and it earns no lineage credit - a tie means the card's hypothesis went
+unmeasured, so the worker brief asks every card to name a check that will move
+(`Signal: check:<command>`, the card check above). The one exception: a
+tie whose card-check score rose counts as `improved`. Held-out fixtures are
+mostly pass/fail, so a voted change that keeps every fixture green measures
+as an exact tie; before the tie lane such ties were discarded and no voted
+experiment ever landed. A discard must reproduce: when a regression hinges on request fixtures alone (the
 ones that run a harness, whose score depends on a model's answer - a metric
 fixture scores the frozen tree and is believed as measured), the lane measures
 those fixtures again on both trees before the discard stands (`--fixture` on
@@ -1795,7 +1843,19 @@ what the archived cycles show about it, so you know which one to replace:
 default branch` (its baseline score changed when the default branch did -
 it measures main's own commits, not the experiments), or `scored the same
 baseline commit two ways, so a difference it reports is not a signal on its
-own`; held-out fixtures appear by their archive names (`H1 (held-out)`).
+own`, or `scored as a tie by the discard dispute in 2 cycles`; held-out
+fixtures appear by their archive names (`H1 (held-out)`). Judge noise counts
+neither way: the streak is read fixture by fixture from each cycle's
+archived matrix, leaving out a fixture the discard dispute scored as a tie
+and one that scored the same baseline commit two ways inside the window, so
+such a fixture neither breaks a streak with a difference that is noise nor
+makes one with a tie that was a verdict; the question's cycle lines and the
+reason name what was left out (`request left out as judge noise`). A fixture
+that flips the same baseline commit both ways twice is retired by the
+healer below (disabled, event `evolution.fixture.retired`, one finding
+`Evolution fixture retired: it scored the same commit both ways twice`);
+`pulse evolve fixture enable NAME` brings it back and only later cycles
+count for it again.
 `pulse evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
@@ -1811,10 +1871,15 @@ set evolve.flat_cycles 0` turns the gate off; the smallest streak it accepts
 is `2`.
 
 The loop heals a flat evaluator set itself before it asks or waits
-(`evolve.heal`, default `on`). When the gate fires, the planner first derives
+(`evolve.heal`, default `on`). Whenever it plans, it first retires the judge
+noise described above (a public fixture that flipped the same baseline commit
+both ways twice since it was last enabled). When the gate fires, it derives
 the metric fixtures the project's tree affords (`derived-tests`,
 `derived-todo-markers`, above) and re-arms a derived fixture whose count
-reached its scale; a fixture dated after the window clears the gate at once,
+reached its scale - unless that fixture told no variant from its baseline in
+the whole window, which a fresh date would hide: that one stays as it is, and
+the healer's post points at the card check (`Signal: check:<command>`)
+instead; a fixture dated after the window clears the gate at once,
 and what was done is posted on `evolution/loop-gate` - as an answer on the
 open question when there is one, so your inbox folds it away, else as a
 finding (`Evolution healed: the loop derived fixtures from the tree`; event
@@ -1882,7 +1947,7 @@ record, read with `pulse record show WF-evolve`.
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
 | `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
-| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
+| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - retires a fixture that flipped the same commit both ways twice, derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |

@@ -136,6 +136,34 @@ fn grep_scope(includes: &[&str]) -> String {
     words.join(" ")
 }
 
+/// The `--include` globs alone, for a grep over listed files (`--exclude-dir`
+/// does not apply to files named on the command line; the list is filtered
+/// instead).
+fn grep_includes(includes: &[&str]) -> String {
+    includes
+        .iter()
+        .map(|glob| format!("--include=\"{glob}\""))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The changed files a diff scope lists, without dependency and build
+/// directories, NUL-separated for `xargs -0`.
+fn changed_files() -> String {
+    let skip: Vec<String> = SKIP_DIRS.iter().map(|d| d.replace('.', "\\.")).collect();
+    format!(
+        "grep -vE \"(^|/)({})/\" \"$PULSE_MEASURE_CHANGED\" | tr \"\\n\" \"\\0\"",
+        skip.join("|")
+    )
+}
+
+/// One script that counts inside the changed files when the measurement
+/// exports a diff scope (`PULSE_MEASURE_CHANGED` names a non-empty list) and
+/// over the whole tree otherwise. Both branches print one number.
+fn scoped_script(scoped: &str, whole: &str) -> String {
+    format!("if [ -s \"$PULSE_MEASURE_CHANGED\" ]; then {scoped}; else {whole}; fi")
+}
+
 /// The derived fixtures for a set of stacks; none without a stack.
 pub fn specs(stacks: &[&Stack]) -> Vec<DerivedSpec> {
     if stacks.is_empty() {
@@ -148,6 +176,17 @@ pub fn specs(stacks: &[&Stack]) -> Vec<DerivedSpec> {
                 "grep -rhIE \"{}\" {} .",
                 s.test_pattern,
                 grep_scope(s.includes)
+            )
+        })
+        .collect();
+    let scoped_tests: Vec<String> = stacks
+        .iter()
+        .map(|s| {
+            format!(
+                "{} | xargs -0 grep -hIE \"{}\" {} -- 2>/dev/null",
+                changed_files(),
+                s.test_pattern,
+                grep_includes(s.includes)
             )
         })
         .collect();
@@ -164,7 +203,10 @@ pub fn specs(stacks: &[&Stack]) -> Vec<DerivedSpec> {
         DerivedSpec {
             name: format!("{DERIVED_PREFIX}tests"),
             direction: Direction::Higher,
-            script: format!("{{ {}; }} | wc -l", tests.join("; ")),
+            script: scoped_script(
+                &format!("{{ {}; }} | wc -l", scoped_tests.join("; ")),
+                &format!("{{ {}; }} | wc -l", tests.join("; ")),
+            ),
             about: format!(
                 "test declarations in the tree ({}); a change that brings its tests scores higher, one that drops tests lower",
                 names.join(", ")
@@ -173,9 +215,16 @@ pub fn specs(stacks: &[&Stack]) -> Vec<DerivedSpec> {
         DerivedSpec {
             name: format!("{DERIVED_PREFIX}todo-markers"),
             direction: Direction::Lower,
-            script: format!(
-                "grep -rhoIwE \"TODO|FIXME|XXX|HACK\" {} . | wc -l",
-                grep_scope(&includes)
+            script: scoped_script(
+                &format!(
+                    "{} | xargs -0 grep -hoIwE \"TODO|FIXME|XXX|HACK\" {} -- 2>/dev/null | wc -l",
+                    changed_files(),
+                    grep_includes(&includes)
+                ),
+                &format!(
+                    "grep -rhoIwE \"TODO|FIXME|XXX|HACK\" {} . | wc -l",
+                    grep_scope(&includes)
+                ),
             ),
             about: format!(
                 "TODO, FIXME, XXX and HACK markers in the code ({}); a change that settles one scores higher, one that leaves more lower",
@@ -283,6 +332,20 @@ impl DeriveResult {
 /// Derive the project's fixtures from its checkout: add the ones it lacks,
 /// re-arm a saturated one, leave the owner's disabled ones alone.
 pub fn derive_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Result<DeriveResult> {
+    derive_fixtures_sparing(s, project, actor, &[])
+}
+
+/// [`derive_fixtures`] that leaves the derived fixtures named in `tired` as
+/// they are instead of re-arming them. The healer passes the ones that told
+/// no variant from its baseline in a whole window: a fresh date on such a
+/// fixture lifts the flat gate without changing what it can measure, and the
+/// card's own check is the fixture that can move.
+pub fn derive_fixtures_sparing(
+    s: &pulse_store::Store,
+    project: &str,
+    actor: &str,
+    tired: &[String],
+) -> Result<DeriveResult> {
     let p = crate::fixtures::valid_project(s, project)?;
     let actor = if actor.is_empty() {
         pulse_store::HUMAN_AGENT
@@ -349,6 +412,13 @@ pub fn derive_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Re
                 if !saturated && !stacks_changed {
                     continue;
                 }
+                if tired.iter().any(|t| t == &f.name) {
+                    result.notes.push(format!(
+                        "{} not re-armed: it told no variant from its baseline in the archived cycles, so a fresh date would only lift the gate; a card that names its check (Signal: check:<command>) measures its own hypothesis instead",
+                        f.name
+                    ));
+                    continue;
+                }
                 let scale = if saturated {
                     scale_for(spec.direction, raw)
                 } else {
@@ -367,7 +437,7 @@ pub fn derive_fixtures(s: &pulse_store::Store, project: &str, actor: &str) -> Re
                     if saturated {
                         "its count reached its scale"
                     } else {
-                        "the tree's stacks changed"
+                        "its script or the tree's stacks changed"
                     },
                     raw as i64,
                     scale as i64
@@ -477,6 +547,40 @@ mod tests {
         let only_rust = specs(&detect_stacks(&tree)[..1]);
         assert!(only_rust[0].script.contains("*.rs") && !only_rust[0].script.contains("*.py"));
         assert!(specs(&[]).is_empty());
+    }
+
+    /// The count a derived script prints with a diff scope exported, the
+    /// way the scorer runs it.
+    fn count_in_scope(tree: &Path, script: &str, list: &Path) -> f64 {
+        let out = std::process::Command::new("sh")
+            .args(["-c", script])
+            .current_dir(tree)
+            .env("LC_ALL", "C")
+            .env("PULSE_MEASURE_CHANGED", list)
+            .output()
+            .unwrap();
+        crate::metric::last_number(&String::from_utf8_lossy(&out.stdout)).unwrap()
+    }
+
+    #[test]
+    fn derived_scripts_count_inside_the_changed_files_when_a_scope_is_exported() {
+        let tree = temp_path();
+        polyglot(&tree);
+        let all = specs(&detect_stacks(&tree));
+        let list = temp_path().join("changed");
+        // The changed list names one source file per stack, a vendored
+        // file (skipped) and a deleted one (counts nothing).
+        std::fs::write(
+            &list,
+            "src/lib.rs\ntools/test_x.py\nnode_modules/dep/x.test.js\ngone/removed.go\n",
+        )
+        .unwrap();
+        assert_eq!(count_in_scope(&tree, &all[0].script, &list), 5.0);
+        assert_eq!(count_in_scope(&tree, &all[1].script, &list), 2.0);
+        // An empty list is no scope: the whole tree counts, as at derive time.
+        std::fs::write(&list, "").unwrap();
+        assert_eq!(count_in_scope(&tree, &all[0].script, &list), 10.0);
+        assert_eq!(count(&tree, &all[1].script).unwrap(), 3.0);
     }
 
     #[test]

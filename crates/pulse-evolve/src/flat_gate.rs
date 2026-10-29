@@ -8,6 +8,14 @@
 //! review, `evolve.flat_cycles` new tied cycles must accumulate before it asks
 //! again. The gate is a pure read: `plan` posts the question, the way it posts
 //! the failed-experiment gate's.
+//!
+//! Judge noise is not a signal either way. A cycle is read fixture by fixture
+//! from its archived matrix, leaving out the fixtures the discard dispute
+//! scored as a tie and those that scored the same baseline commit two ways
+//! inside the window: such a fixture neither breaks a streak (a difference it
+//! reports is noise) nor makes one (its tie was a verdict, not a reading).
+//! A fixture that flips the same commit both ways twice is retired by the
+//! healer ([`crate::heal`]), with an event and a finding on the board.
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -27,7 +35,16 @@ pub struct FlatCycle {
     pub baseline_score: f64,
     pub variant_score: f64,
     pub at: String,
+    /// Whether the fixtures that count read it as a tie. Without an archived
+    /// matrix the totals decide.
+    pub tied: bool,
+    /// The fixtures left out of that reading: disputed in this cycle, or
+    /// scoring the same baseline commit two ways inside the window.
+    pub skipped: Vec<String>,
 }
+
+/// The note the discard dispute leaves on a fixture scored as a tie.
+const DISPUTED_NOTE: &str = "scored as a tie";
 
 /// The window that fires the gate: the project's last N experiment cycles,
 /// newest first, every one a tie, with no enabled fixture and no reviewed gate
@@ -68,7 +85,95 @@ pub fn flat_cycles(s: &pulse_store::Store) -> usize {
 }
 
 pub fn tied(cycle: &FlatCycle) -> bool {
-    (cycle.variant_score - cycle.baseline_score).abs() < 1e-9
+    cycle.tied
+}
+
+fn same_score(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-9
+}
+
+/// The archived matrix of one row, as `(baseline, variant)`, when it has one.
+fn archived_pair(fixtures_json: &str) -> Option<(crate::api::Scores, crate::api::Scores)> {
+    let pair = serde_json::from_str::<crate::archive::ScorePair>(fixtures_json).ok()?;
+    let baseline = crate::archive::public_scores(pair.baseline.as_ref()).ok()?;
+    let variant = crate::archive::public_scores(pair.variant.as_ref()).ok()?;
+    if baseline.fixtures.is_empty() || variant.fixtures.is_empty() {
+        return None;
+    }
+    Some((baseline, variant))
+}
+
+/// Reads a window of archived rows `(id, baseline_score, variant_score, at,
+/// fixtures_json)` into cycles. A fixture that scored the same baseline
+/// commit two ways inside the window, or that the dispute scored as a tie in
+/// a cycle, is left out of that cycle's reading; a cycle with no fixture
+/// left to read is a tie (nothing told the trees apart). A row without an
+/// archived matrix is read from its totals.
+fn read_window(rows: Vec<(String, f64, f64, String, String)>) -> Vec<FlatCycle> {
+    let pairs: Vec<Option<(crate::api::Scores, crate::api::Scores)>> =
+        rows.iter().map(|r| archived_pair(&r.4)).collect();
+    // (name, kind) -> baseline commit -> the first score seen; a second
+    // score on the same commit marks the fixture flaky in this window.
+    let mut seen: std::collections::HashMap<
+        (String, String),
+        std::collections::HashMap<String, f64>,
+    > = Default::default();
+    let mut flaky: std::collections::HashSet<(String, String)> = Default::default();
+    for (baseline, _) in pairs.iter().flatten() {
+        if baseline.ref_name.is_empty() {
+            continue;
+        }
+        for b in &baseline.fixtures {
+            let key = (b.name.clone(), b.kind.clone());
+            let first = *seen
+                .entry(key.clone())
+                .or_default()
+                .entry(baseline.ref_name.clone())
+                .or_insert(b.score);
+            if !same_score(first, b.score) {
+                flaky.insert(key);
+            }
+        }
+    }
+    rows.into_iter()
+        .zip(pairs)
+        .map(|((id, baseline_score, variant_score, at, _), pair)| {
+            let (tied, skipped) = match pair {
+                None => (same_score(variant_score, baseline_score), Vec::new()),
+                Some((baseline, variant)) => {
+                    let mut tied = true;
+                    let mut skipped = Vec::new();
+                    for b in &baseline.fixtures {
+                        let Some(v) = variant
+                            .fixtures
+                            .iter()
+                            .find(|v| v.name == b.name && v.kind == b.kind)
+                        else {
+                            continue;
+                        };
+                        if v.note.contains(DISPUTED_NOTE)
+                            || flaky.contains(&(b.name.clone(), b.kind.clone()))
+                        {
+                            skipped.push(b.name.clone());
+                            continue;
+                        }
+                        if !same_score(v.score, b.score) {
+                            tied = false;
+                        }
+                    }
+                    (tied, skipped)
+                }
+            };
+            FlatCycle {
+                id,
+                baseline_score,
+                variant_score,
+                at,
+                tied,
+                skipped,
+            }
+        })
+        .collect()
 }
 
 /// The streak that fires the gate now, or `None` while the loop may plan:
@@ -85,21 +190,17 @@ pub fn flat_streak(s: &pulse_store::Store, project: &str) -> Result<Option<FlatS
     }
     let conn = s.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.id, a.baseline_score, a.variant_score, a.at FROM evolution_archive a
+        "SELECT a.id, a.baseline_score, a.variant_score, a.at, a.fixtures_json FROM evolution_archive a
 		WHERE a.project = ? AND NOT {}
 		ORDER BY a.at DESC, a.rowid DESC LIMIT ?",
         crate::status::BASELINE_ROW_SQL
     ))?;
-    let cycles: Vec<FlatCycle> = stmt
+    let rows: Vec<(String, f64, f64, String, String)> = stmt
         .query_map(params![project, n as i64], |r| {
-            Ok(FlatCycle {
-                id: r.get(0)?,
-                baseline_score: r.get(1)?,
-                variant_score: r.get(2)?,
-                at: r.get(3)?,
-            })
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    let cycles = read_window(rows);
     if cycles.len() < n || !cycles.iter().all(tied) {
         return Ok(None);
     }
@@ -170,8 +271,23 @@ pub fn other_owner_question_open(s: &pulse_store::Store, project: &str) -> Resul
 
 pub fn flat_reason(streak: &FlatStreak) -> String {
     let ids: Vec<&str> = streak.cycles.iter().rev().map(|c| c.id.as_str()).collect();
+    let mut skipped: Vec<&str> = streak
+        .cycles
+        .iter()
+        .flat_map(|c| c.skipped.iter().map(String::as_str))
+        .collect();
+    skipped.sort_unstable();
+    skipped.dedup();
+    let noise = if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; {} left out as judge noise - disputed, or scoring the same baseline commit two ways in the window",
+            skipped.join(", ")
+        )
+    };
     format!(
-        "the last {} experiment cycles all tied (variant score = baseline score in {}); the fixtures cannot tell a better variant from a worse one, so the loop pauses until a fixture whose score moves is added or the question is answered",
+        "the last {} experiment cycles all tied (variant score = baseline score in {}{noise}); the fixtures cannot tell a better variant from a worse one, so the loop pauses until a fixture whose score moves is added or the question is answered",
         streak.cycles.len(),
         ids.join(", ")
     )
@@ -194,26 +310,45 @@ pub struct FixtureEvidence {
     pub moved_with_main: usize,
     /// It scored the same baseline commit two ways.
     pub flaky: bool,
+    /// The most times its score on one baseline commit changed from one
+    /// cycle to the next; two is a flip both ways, and the healer retires
+    /// the fixture.
+    pub flips: usize,
+    /// Cycles where the discard dispute scored it as a tie.
+    pub disputed: usize,
 }
+
+/// Flips on one commit at which the healer retires a fixture.
+pub const RETIRE_FLIPS: usize = 2;
 
 /// The evidence for every fixture the project's archived experiment cycles
 /// scored, oldest cycle first, in the order the fixtures first appeared.
 pub fn fixture_evidence(s: &pulse_store::Store, project: &str) -> Result<Vec<FixtureEvidence>> {
+    fixture_evidence_since(s, project, "")
+}
+
+/// [`fixture_evidence`] from the cycles archived at or after `since` (an
+/// RFC 3339 time; empty for all of them).
+pub fn fixture_evidence_since(
+    s: &pulse_store::Store,
+    project: &str,
+    since: &str,
+) -> Result<Vec<FixtureEvidence>> {
     let conn = s.conn()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT a.fixtures_json FROM evolution_archive a
-		WHERE a.project = ? AND NOT {}
+		WHERE a.project = ? AND a.at >= ? AND NOT {}
 		ORDER BY a.at ASC, a.rowid ASC",
         crate::status::BASELINE_ROW_SQL
     ))?;
     let rows: Vec<String> = stmt
-        .query_map(params![project], |r| r.get(0))?
+        .query_map(params![project, since], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut out: Vec<FixtureEvidence> = Vec::new();
-    // Per fixture: the last baseline (commit, score) and every score seen
-    // per baseline commit.
+    // Per fixture: the last baseline (commit, score) and, per baseline
+    // commit, the last score seen there and the flips so far.
     let mut last: Vec<(String, f64)> = Vec::new();
-    let mut by_commit: Vec<std::collections::HashMap<String, f64>> = Vec::new();
+    let mut by_commit: Vec<std::collections::HashMap<String, (f64, usize)>> = Vec::new();
     for json in rows {
         let Ok(pair) = serde_json::from_str::<crate::archive::ScorePair>(&json) else {
             continue;
@@ -246,7 +381,9 @@ pub fn fixture_evidence(s: &pulse_store::Store, project: &str) -> Result<Vec<Fix
             };
             let e = &mut out[i];
             e.cycles += 1;
-            if (v.score - b.score).abs() > 1e-9 {
+            if v.note.contains(DISPUTED_NOTE) {
+                e.disputed += 1;
+            } else if (v.score - b.score).abs() > 1e-9 {
                 e.told_apart += 1;
             }
             let (commit, score) = &last[i];
@@ -256,12 +393,13 @@ pub fn fixture_evidence(s: &pulse_store::Store, project: &str) -> Result<Vec<Fix
             }
             last[i] = (baseline.ref_name.clone(), b.score);
             if !baseline.ref_name.is_empty() {
-                match by_commit[i].get(&baseline.ref_name) {
-                    Some(seen) if (seen - b.score).abs() > 1e-9 => e.flaky = true,
-                    Some(_) => {}
-                    None => {
-                        by_commit[i].insert(baseline.ref_name.clone(), b.score);
-                    }
+                let entry = by_commit[i]
+                    .entry(baseline.ref_name.clone())
+                    .or_insert((b.score, 0));
+                if (entry.0 - b.score).abs() > 1e-9 {
+                    *entry = (b.score, entry.1 + 1);
+                    e.flaky = true;
+                    e.flips = e.flips.max(entry.1);
                 }
             }
         }
@@ -294,6 +432,13 @@ pub fn evidence_line(e: &FixtureEvidence) -> String {
         line.push_str(
             "; scored the same baseline commit two ways, so a difference it reports is not a signal on its own",
         );
+    }
+    if e.disputed > 0 {
+        line.push_str(&format!(
+            "; scored as a tie by the discard dispute in {} cycle{}",
+            e.disputed,
+            if e.disputed == 1 { "" } else { "s" }
+        ));
     }
     line
 }
@@ -363,8 +508,16 @@ pub fn flat_fixture_question_body(s: &pulse_store::Store, project: &str) -> Resu
     );
     for c in streak.iter().flat_map(|st| st.cycles.iter().rev()) {
         body.push_str(&format!(
-            "- {}: {:.4} -> {:.4}, {}\n",
-            c.id, c.baseline_score, c.variant_score, c.at
+            "- {}: {:.4} -> {:.4}, {}{}\n",
+            c.id,
+            c.baseline_score,
+            c.variant_score,
+            c.at,
+            if c.skipped.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} left out as judge noise)", c.skipped.join(", "))
+            }
         ));
     }
     body.push_str(
@@ -634,6 +787,8 @@ mod tests {
                     told_apart: 0,
                     moved_with_main: 1,
                     flaky: false,
+                    flips: 0,
+                    disputed: 0,
                 },
                 FixtureEvidence {
                     name: "request".into(),
@@ -641,6 +796,8 @@ mod tests {
                     told_apart: 1,
                     moved_with_main: 0,
                     flaky: true,
+                    flips: 2,
+                    disputed: 0,
                 },
                 FixtureEvidence {
                     name: "H1".into(),
@@ -648,6 +805,8 @@ mod tests {
                     told_apart: 0,
                     moved_with_main: 0,
                     flaky: false,
+                    flips: 0,
+                    disputed: 0,
                 },
             ]
         );
@@ -713,6 +872,130 @@ mod tests {
         assert_eq!(
             tied,
             "no fixture (metric, request) told a variant from its baseline in 3 cycles"
+        );
+    }
+
+    /// One archived cycle with a matrix of two public fixtures: `metric`
+    /// scores `mb`/`mv` and `request` scores `rb`/`rv` (baseline commit
+    /// `commit`); `note` goes on the variant's request fixture.
+    fn noisy_cycle(
+        s: &pulse_store::Store,
+        id: &str,
+        commit: &str,
+        (mb, mv): (f64, f64),
+        (rb, rv): (f64, f64),
+        note: &str,
+        offset: i64,
+    ) {
+        let tree = |r#ref: &str, metric: f64, request: f64, note: &str| {
+            let fixtures = vec![
+                crate::api::FixtureScore {
+                    name: "metric".into(),
+                    kind: "public".into(),
+                    score: metric,
+                    weight: 1.0,
+                    metric: true,
+                    note: String::new(),
+                },
+                crate::api::FixtureScore {
+                    name: "request".into(),
+                    kind: "public".into(),
+                    score: request,
+                    weight: 1.0,
+                    metric: false,
+                    note: note.into(),
+                },
+            ];
+            crate::api::Scores {
+                project: "demo".into(),
+                ref_name: r#ref.into(),
+                total: crate::dispute::weighted_total(&fixtures),
+                fixtures,
+                ..Default::default()
+            }
+        };
+        let baseline = tree(commit, mb, rb, "");
+        let variant = tree(&format!("v-{id}"), mv, rv, note);
+        let pair = crate::archive::ScorePair {
+            baseline: Some(baseline.clone()),
+            variant: Some(variant.clone()),
+        };
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+				VALUES (?, 'demo', 'S-1', 'one constant', '', ?, ?, 0.02, 1, ?, ?)",
+                params![
+                    id,
+                    baseline.total,
+                    variant.total,
+                    serde_json::to_string(&pair).unwrap(),
+                    stamp(s, offset)
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn judge_noise_neither_breaks_a_streak_nor_makes_one() {
+        let _serial = crate::test_helpers::serial();
+        let s = gate_store("3");
+        let same = (0.5, 0.5);
+        // request scored baseline commit c1 two ways inside the window (1
+        // then 0) and "told apart" the variant in B-002 - the difference a
+        // fixture like that reports is noise, so the window still tied.
+        noisy_cycle(&s, "B-001", "c1", same, (1.0, 1.0), "", -30);
+        noisy_cycle(&s, "B-002", "c1", same, (1.0, 0.0), "", -20);
+        noisy_cycle(&s, "B-003", "c1", same, (0.0, 0.0), "", -10);
+        let streak = flat_streak(&s, "demo").unwrap().expect("a flat window");
+        assert!(streak.cycles.iter().all(tied));
+        assert_eq!(streak.cycles[1].skipped, ["request"]);
+        assert_eq!(
+            streak.cycles[1].variant_score, 0.25,
+            "the totals still differ"
+        );
+        let (_, reason) = flat_fixture_gate(&s, "demo").unwrap();
+        assert!(
+            reason.contains(
+                "B-001, B-002, B-003; request left out as judge noise - disputed, or scoring the same baseline commit two ways in the window)"
+            ),
+            "{reason}"
+        );
+        let body = flat_fixture_question_body(&s, "demo").unwrap();
+        assert!(
+            body.contains("- B-002: 0.7500 -> 0.2500, ")
+                && body.contains(" (request left out as judge noise)\n"),
+            "{body}"
+        );
+        // A fixture that is steady on its commit and moves the variant
+        // breaks the streak as ever.
+        noisy_cycle(&s, "B-004", "c2", (0.5, 0.6), (1.0, 1.0), "", -5);
+        assert_eq!(flat_streak(&s, "demo").unwrap(), None);
+        // A disputed fixture (scored as a tie by the second measurement)
+        // is no reading either: its tie does not make a cycle tied when
+        // the fixtures that count moved, and its cycle names it.
+        let s = gate_store("2");
+        let disputed = "baseline 1.0000 then 0.0000, variant 0.0000 then 0.0000; scored as a tie";
+        noisy_cycle(&s, "B-001", "c1", same, (1.0, 1.0), "", -30);
+        noisy_cycle(&s, "B-002", "c1", (0.5, 0.6), (1.0, 1.0), disputed, -20);
+        assert_eq!(flat_streak(&s, "demo").unwrap(), None);
+        noisy_cycle(&s, "B-003", "c1", same, (1.0, 1.0), "", -10);
+        noisy_cycle(&s, "B-004", "c1", same, (1.0, 1.0), disputed, -5);
+        let streak = flat_streak(&s, "demo").unwrap().expect("a flat window");
+        assert_eq!(streak.cycles[0].skipped, ["request"]);
+        assert!(streak.cycles[1].skipped.is_empty());
+        let evidence = fixture_evidence(&s, "demo").unwrap();
+        let request = evidence.iter().find(|e| e.name == "request").unwrap();
+        assert_eq!(
+            (request.told_apart, request.disputed, request.flips),
+            (0, 2, 0)
+        );
+        assert!(
+            evidence_line(request)
+                .ends_with("; scored as a tie by the discard dispute in 2 cycles"),
+            "{}",
+            evidence_line(request)
         );
     }
 
