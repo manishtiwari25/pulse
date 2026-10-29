@@ -2183,6 +2183,94 @@ mod tests {
     }
 
     #[test]
+    fn a_store_record_wins_over_the_owner_file_which_only_narrows() {
+        let _guard = pulse_testutil::env_lock();
+        unsafe {
+            std::env::set_var("PULSE_JOB", "");
+        }
+        let store_home = tempfile::tempdir().unwrap();
+        let s = pulse_store::Store::open(pulse_store::Options {
+            home: store_home.path().display().to_string(),
+            create: true,
+            now: "2026-09-06T21:00:00Z".into(),
+            ..pulse_store::Options::default()
+        })
+        .unwrap();
+        let put = |project: &str, slug: &str, status: &str, body: &str| {
+            s.put_record(
+                pulse_store::Record {
+                    id: format!("AGENT-{slug}-{project}"),
+                    project: project.into(),
+                    kind: "agent".into(),
+                    slug: slug.into(),
+                    title: slug.into(),
+                    status: status.into(),
+                    origin: "store".into(),
+                    ..Default::default()
+                },
+                [("model".to_string(), Value::String("record-model".into()))]
+                    .into_iter()
+                    .collect(),
+                body,
+                pulse_store::HUMAN_AGENT,
+                "",
+            )
+            .unwrap();
+        };
+        put(
+            "commons",
+            "x",
+            "live",
+            "---\ndescription: Commons x.\ntools: [read, grep, edit, bash]\n---\nCommons body.\n",
+        );
+        put(
+            "demo",
+            "x",
+            "live",
+            "---\ndescription: Demo x.\ntools: [read, grep, edit]\npulse:\n  kinds: [task]\n---\nDemo body.\n",
+        );
+        put("demo", "gone", "retired", "Retired body.\n");
+        put("demo", "plain", "live", "A record without front matter.\n");
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        write(
+            home.path(),
+            "agents/x.md",
+            "---\ndescription: Owner's x.\ntools: [read, grep]\nmodel: kimi-k3\n---\nOwner body.\n",
+        );
+        write(dir.path(), ".pulse/agents/y.md", "Repo y.\n");
+        let agents = load_agent_specs(
+            dir.path().to_str().unwrap(),
+            home.path().to_str().unwrap(),
+            Some(&s),
+            "demo",
+        );
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["x", "plain", "y"]);
+        let x = &agents[0];
+        assert_eq!(x.layer, AgentLayer::Store);
+        assert_eq!(x.source, "store:AGENT-x-demo");
+        assert_eq!(x.description, "Demo x.");
+        assert_eq!(x.body, "Demo body.");
+        assert_eq!(x.kinds, ["task"]);
+        assert_eq!(x.model.as_deref(), Some("record-model"));
+        assert_eq!(x.tools.as_deref(), Some(&strs(&["read", "grep"])[..]));
+        assert!(
+            x.warnings
+                .iter()
+                .any(|w| w.contains("owner file `~/.pulse/agents/x.md`") && w.contains("model")),
+            "{:?}",
+            x.warnings
+        );
+        let plain = &agents[1];
+        assert_eq!(plain.description, "A record without front matter.");
+        assert_eq!(plain.model.as_deref(), Some("record-model"));
+        let commons_only = load_agent_specs("", "", Some(&s), "other");
+        assert_eq!(commons_only.len(), 1);
+        assert_eq!(commons_only[0].source, "store:AGENT-x-commons");
+    }
+
+    #[test]
     fn model_allowed_reads_the_list() {
         assert!(model_allowed("", "anything"));
         assert!(model_allowed("kimi-k3, claude-*", "kimi-k3"));

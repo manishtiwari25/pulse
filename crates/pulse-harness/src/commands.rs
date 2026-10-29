@@ -1,4 +1,4 @@
-use crate::agents::load_agents;
+use crate::agents::{AgentDef, load_agent_specs};
 use crate::compact::DEFAULT_COMPACT_AT;
 use crate::fetch::FetchPolicy;
 use crate::harness::*;
@@ -768,7 +768,7 @@ pub(crate) fn prepare_agent_with(
         && st
             .as_ref()
             .is_none_or(|s| s.setting("harness.subagents", "on") != "off");
-    if agents_on && let Some(note) = attach_agents(&mut agent, &c.home) {
+    if agents_on && let Some(note) = attach_agents(&mut agent, st.as_ref(), &project, &c.home) {
         agent.note_at_start(note);
     }
     let hooks_on = !bare
@@ -1748,10 +1748,27 @@ pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &st
     notes
 }
 
-/// Offers the clone's and the owner's custom agents through the
-/// `subagent` tool. Returns the start note when there are any.
-pub fn attach_agents(agent: &mut Agent, home: &str) -> Option<String> {
-    let agents = load_agents(&agent.cfg.cwd, home);
+/// Offers the custom agents of the store's `agent` records, the owner's
+/// files and the clone's through the `subagent` tool. Returns the start
+/// note when there are any; a file that must not load gets a note of its
+/// own naming it.
+pub fn attach_agents(
+    agent: &mut Agent,
+    st: Option<&Store>,
+    project: &str,
+    home: &str,
+) -> Option<String> {
+    let (agents, rejected): (Vec<AgentDef>, Vec<AgentDef>) =
+        load_agent_specs(&agent.cfg.cwd, home, st, project)
+            .into_iter()
+            .partition(AgentDef::loads);
+    for r in &rejected {
+        agent.note_at_start(format!(
+            "custom agent {} not loaded: {}",
+            r.source,
+            r.rejected.as_deref().unwrap_or("rejected")
+        ));
+    }
     if agents.is_empty() {
         return None;
     }
@@ -5283,6 +5300,10 @@ bye
             ".claude/agents/reviewer.md",
             "---\ndescription: Reviews code.\ntools: Read, Grep\n---\nReport only.\n",
         );
+        write(
+            ".pulse/agents/free.md",
+            "---\ndescription: Wants it all.\npermissionMode: bypassPermissions\n---\nAnything.\n",
+        );
         fs::write(Path::new(&s.home).join("AGENTS.md"), "Sign off as PULSE.\n").unwrap();
         let cwd = dir.path().to_str().unwrap();
         let p = CommandFakeProvider::scripted(vec![
@@ -5300,6 +5321,12 @@ bye
         );
         assert!(
             err.contains("agents: reviewer (.claude/agents/reviewer.md)"),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "custom agent .pulse/agents/free.md not loaded: `permissionMode: bypassPermissions` asks to bypass the permission gate"
+            ),
             "{err}"
         );
         assert!(
