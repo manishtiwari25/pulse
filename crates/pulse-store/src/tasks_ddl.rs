@@ -85,7 +85,8 @@ pub const TASKS_DDL: &[&str] = &[
   state_since TEXT NOT NULL DEFAULT '',
   last_rc INTEGER,                    -- exit code of the last script run, NULL until one ran
   last_output TEXT NOT NULL DEFAULT '', -- redacted tail of the last script run
-  fails INTEGER NOT NULL DEFAULT 0    -- consecutive non-zero exits
+  fails INTEGER NOT NULL DEFAULT 0,   -- consecutive non-zero exits
+  agent TEXT NOT NULL DEFAULT ''      -- the custom agent its jobs run as; '' lets the runner choose
 );"####,
     r####"CREATE INDEX IF NOT EXISTS schedules_project_status ON schedules (project, status, next_at);"####,
     r####"CREATE TRIGGER IF NOT EXISTS schedules_no_delete BEFORE DELETE ON schedules BEGIN SELECT RAISE(ABORT, 'schedules are never deleted: end instead'); END;"####,
@@ -131,8 +132,8 @@ pub const TASKS_DDL: &[&str] = &[
 ];
 
 /// Columns added after the schedules table shipped: the script kinds
-/// (`check`, `watch`). `ensure_records` adds each one that is missing, so an
-/// older store gains them on first open.
+/// (`check`, `watch`) and the agent the jobs run as. `ensure_records` adds
+/// each one that is missing, so an older store gains them on first open.
 pub const SCHEDULE_COLUMNS: &[Column] = &[
     Column {
         table: r####"schedules"####,
@@ -168,6 +169,11 @@ pub const SCHEDULE_COLUMNS: &[Column] = &[
         table: r####"schedules"####,
         name: r####"fails"####,
         ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"agent"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
     },
 ];
 

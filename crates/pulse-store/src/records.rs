@@ -832,4 +832,47 @@ mod go_record_tests {
             .unwrap();
         assert_eq!(n, 1);
     }
+
+    /// A store from before jobs and schedules could name an agent gains
+    /// both `agent` columns on open.
+    #[test]
+    fn job_and_schedule_agent_columns_are_added_on_open() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        crate::store::configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-08T00:00:00Z").unwrap();
+        db.execute("ALTER TABLE jobs DROP COLUMN agent", [])
+            .unwrap();
+        for stmt in crate::TASKS_DDL {
+            db.execute(stmt, []).unwrap();
+        }
+        db.execute("ALTER TABLE schedules DROP COLUMN agent", [])
+            .unwrap();
+        assert!(!has_column(&db, "jobs", "agent").unwrap());
+        assert!(!has_column(&db, "schedules", "agent").unwrap());
+        drop(db);
+        let s = Store::open(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        })
+        .unwrap();
+        let conn = s.conn().unwrap();
+        assert!(has_column(&conn, "jobs", "agent").unwrap());
+        assert!(has_column(&conn, "schedules", "agent").unwrap());
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, created_at) VALUES ('job-1', 'p', 'task', 't', '2026-09-08T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let agent: String = conn
+            .query_row("SELECT agent FROM jobs WHERE id = 'job-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(agent, "");
+        assert!(s.additive_complete());
+    }
 }

@@ -301,7 +301,22 @@ pub const VENDORS: &[Vendor] = &[
         key_optional: true,
         ..TEMPLATE
     },
+    // Any other OpenAI-compatible server, described by settings alone:
+    // provider.custom.base_url, and optionally provider.custom.no_key and
+    // provider.custom.api_key_header.
+    Vendor {
+        name: CUSTOM,
+        label: "Custom (OpenAI-compatible)",
+        default_base_url: "",
+        base_url_hint: "https://<host>/v1",
+        api_key_env: &["PULSE_CUSTOM_API_KEY"],
+        base_url_env: &["PULSE_CUSTOM_BASE_URL"],
+        ..TEMPLATE
+    },
 ];
+
+/// The vendor the owner describes in settings.
+pub const CUSTOM: &str = "custom";
 
 /// Every vendor of the family, `openai` first.
 pub fn vendors() -> &'static [Vendor] {
@@ -318,6 +333,53 @@ impl Vendor {
     /// The store setting that overrides the base URL.
     pub fn settings_key(&self) -> String {
         format!("provider.{}.base_url", self.name)
+    }
+
+    /// The setting that lets the vendor work without a key, `on` or `off`.
+    pub fn no_key_key(&self) -> String {
+        format!("provider.{}.no_key", self.name)
+    }
+
+    /// The setting naming the header the key travels in when it is not
+    /// `Authorization: Bearer`.
+    pub fn key_header_key(&self) -> String {
+        format!("provider.{}.api_key_header", self.name)
+    }
+
+    /// True when the vendor works without a key: a local server, or
+    /// `provider.<name>.no_key` turned on.
+    pub fn resolve_key_optional(&self, settings: &BTreeMap<String, String>) -> bool {
+        self.key_optional
+            || settings.get(&self.no_key_key()).is_some_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "on" | "true" | "yes" | "1"
+                )
+            })
+    }
+
+    /// The header `provider.<name>.api_key_header` names for the raw key;
+    /// none while it is unset or says `Authorization`, which keeps the
+    /// vendor's own convention.
+    pub fn resolve_key_header(
+        &self,
+        settings: &BTreeMap<String, String>,
+    ) -> Result<Option<HeaderName>> {
+        let Some(name) = settings.get(&self.key_header_key()) else {
+            return Ok(None);
+        };
+        let name = name.trim();
+        if name.is_empty() || name.eq_ignore_ascii_case("authorization") {
+            return Ok(None);
+        }
+        HeaderName::from_bytes(name.as_bytes())
+            .map(Some)
+            .map_err(|e| {
+                anyhow!(
+                    "{} {name:?} is not a header name: {e}",
+                    self.key_header_key()
+                )
+            })
     }
 
     /// The base URL this configuration resolves to: the setting when it
@@ -548,6 +610,8 @@ fn from_options(vendor: &'static Vendor, options: &mut Options) -> Result<OpenAi
         vendor,
         http,
         base,
+        key_optional: vendor.resolve_key_optional(&options.settings),
+        key_header: vendor.resolve_key_header(&options.settings)?,
         max_body_bytes: provider_max_body_bytes(&options.settings),
         retry_after_cap: provider_retry_after_cap(&options.settings),
         keys,
@@ -576,6 +640,12 @@ pub struct OpenAiCompatible {
     vendor: &'static Vendor,
     http: Client,
     base: String,
+    /// Calls go out without a key: the vendor is a local server or the
+    /// owner set `provider.<name>.no_key`.
+    key_optional: bool,
+    /// The header a pasted or environment key travels in raw, when
+    /// `provider.<name>.api_key_header` names one.
+    key_header: Option<HeaderName>,
     max_body_bytes: usize,
     retry_after_cap: Duration,
     keys: ApiKeyLogin,
@@ -691,7 +761,7 @@ impl Provider for OpenAiCompatible {
                 ..Login::default()
             });
         }
-        if self.vendor.key_optional && self.keys.source()?.is_empty() {
+        if self.key_optional && self.keys.source()?.is_empty() {
             return Ok(Login {
                 logged_in: true,
                 user: host_label(&self.base),
@@ -814,7 +884,7 @@ impl OpenAiCompatible {
                 0,
                 "no_base_url",
                 format!(
-                    "no base URL configured; set {} to {}",
+                    "no base URL configured; run pulse settings set {} {}",
                     self.vendor.settings_key(),
                     self.vendor.base_url_hint
                 ),
@@ -872,7 +942,7 @@ impl OpenAiCompatible {
     fn key_for_call(&self) -> Result<KeySource> {
         self.check_base()?;
         let src = self.keys.source()?;
-        if src.is_empty() && !self.vendor.key_optional {
+        if src.is_empty() && !self.key_optional {
             return Err(err_not_logged_in().into());
         }
         if src.is_device_login()
@@ -1182,18 +1252,20 @@ impl OpenAiCompatible {
     }
 
     /// The headers of every call: the key as `auth` says (none when the
-    /// token is empty), JSON accept, and the vendor's extra headers.
+    /// token is empty; raw in the owner's header when the settings name
+    /// one), JSON accept, and the vendor's extra headers.
     fn headers(&self, token: &str, auth: Auth) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         if !token.is_empty() {
             remember_secret(token);
-            let (name, value) = match auth {
-                Auth::Bearer => (
+            let (name, value) = match (&self.key_header, auth) {
+                (Some(name), _) => (name.clone(), HeaderValue::from_str(token)?),
+                (None, Auth::Bearer) => (
                     AUTHORIZATION,
                     HeaderValue::from_str(&["Bearer ", token].concat())?,
                 ),
-                Auth::ApiKeyHeader => (
+                (None, Auth::ApiKeyHeader) => (
                     HeaderName::from_static("api-key"),
                     HeaderValue::from_str(token)?,
                 ),
@@ -1677,6 +1749,7 @@ const FACTORIES: &[Factory] = &[
     factory::<11>,
     factory::<12>,
     factory::<13>,
+    factory::<14>,
 ];
 
 const _: () = assert!(

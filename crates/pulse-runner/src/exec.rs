@@ -1826,16 +1826,30 @@ mod tests {
             j
         };
         let refactor = job("Tidy run.rs\nClass: refactor\nFile: crates/pulse-runner/src/run.rs\n");
-        let spec = crate::agent_specs::spec_for_job(&s, &refactor, "proj", checkout).unwrap();
+        let spec = crate::agent_specs::spec_for_job(&s, &refactor, "proj", checkout)
+            .spec
+            .unwrap();
         assert_eq!(spec.name, "rust-refactorer");
+        let feature = job("Add a feature\nClass: feature\n");
+        let chosen = crate::agent_specs::spec_for_job(&s, &feature, "proj", checkout);
+        assert!(chosen.spec.is_none() && chosen.warning.is_none());
+
+        // A job pinned to an agent runs as it whatever the card says and
+        // whatever the spec's kinds say; a pin to a name that is gone is a
+        // warning, and the card chooses as usual.
+        let mut pinned = feature.clone();
+        pinned.insert("agent", serde_json::json!("auditor"));
+        let chosen = crate::agent_specs::spec_for_job(&s, &pinned, "proj", checkout);
+        assert_eq!(chosen.spec.unwrap().name, "auditor");
+        assert!(chosen.warning.is_none());
+        let mut pinned = refactor.clone();
+        pinned.insert("agent", serde_json::json!("vanished"));
+        let chosen = crate::agent_specs::spec_for_job(&s, &pinned, "proj", checkout);
+        assert_eq!(chosen.spec.unwrap().name, "rust-refactorer");
+        let warning = chosen.warning.unwrap();
         assert!(
-            crate::agent_specs::spec_for_job(
-                &s,
-                &job("Add a feature\nClass: feature\n"),
-                "proj",
-                checkout
-            )
-            .is_none()
+            warning.starts_with("warning: job J-1: it was pinned to the agent vanished, but "),
+            "{warning}"
         );
 
         // models.allowed empty: the agent's model travels, with --agent and
@@ -1933,7 +1947,9 @@ mod tests {
 
         // A read-only agent makes a task run read-only.
         let audit = job("Check the login\nTags: security\n");
-        let spec = crate::agent_specs::spec_for_job(&s, &audit, "proj", checkout).unwrap();
+        let spec = crate::agent_specs::spec_for_job(&s, &audit, "proj", checkout)
+            .spec
+            .unwrap();
         assert_eq!(spec.name, "auditor");
         let (cmd, _) = worker_command_as(
             &s,

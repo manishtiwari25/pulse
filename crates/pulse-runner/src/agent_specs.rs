@@ -1,6 +1,8 @@
-//! The agent file a job's worker runs as. Of the project's agent specs -
-//! its store `agent` records, the owner's `~/.pulse/agents`, the
-//! checkout's `.pulse/agents`, `.claude/agents` and `.github/agents`
+//! The agent file a job's worker runs as. A job pinned to one (`pulse job
+//! add --run-as`, a schedule's or a hook's agent) runs as that spec when
+//! it still loads. Otherwise, of the project's agent specs - its store
+//! `agent` records, the owner's `~/.pulse/agents`, the checkout's
+//! `.pulse/agents`, `.claude/agents` and `.github/agents`
 //! ([`pulse_harness::agents`]) - the one whose `pulse.kinds` names the
 //! job's kind and whose `pulse.select` fits the card selects the job. The
 //! worker then runs `pulse harness run --agent NAME` with the spec's model
@@ -57,25 +59,76 @@ pub(crate) fn card_words(text: &str) -> CardWords {
     out
 }
 
-/// The spec that selects this job, if any: its `pulse.kinds` names the
-/// job's kind, its `pulse.select.tags` are empty or share a word with the
-/// card's, its `pulse.select.files` are empty or a glob of them matches a
-/// `File:` path of the card. The most specific wins (more tags and files
-/// matched), then the first by name. `checkout` is the directory whose
-/// agent files count: the project's checkout, which the clone is made from.
+/// The spec a job runs as, and the warning to log when the one it was
+/// pinned to is gone.
+#[derive(Debug, Default)]
+pub(crate) struct JobSpec {
+    pub(crate) spec: Option<AgentDef>,
+    pub(crate) warning: Option<String>,
+}
+
+/// The spec that runs this job, if any. A pinned agent (the job's `agent`
+/// column) wins when it loads, whatever its `pulse.kinds` say; one that is
+/// missing or rejected is a warning, and the card chooses instead. By the
+/// card: a spec whose `pulse.kinds` names the job's kind, whose
+/// `pulse.select.tags` are empty or share a word with the card's, whose
+/// `pulse.select.files` are empty or a glob of them matches a `File:` path
+/// of the card. The most specific wins (more tags and files matched), then
+/// the first by name. `checkout` is the directory whose agent files
+/// count: the project's checkout, which the clone is made from.
 pub(crate) fn spec_for_job(
     s: &pulse_store::Store,
     job: &Row,
     project_slug: &str,
     checkout: &str,
-) -> Option<AgentDef> {
+) -> JobSpec {
     let kind = job.str("kind").trim().to_ascii_lowercase();
-    if kind.is_empty() {
-        return None;
+    let pin = job.str("agent").trim().to_string();
+    if kind.is_empty() && pin.is_empty() {
+        return JobSpec::default();
     }
-    let card = card_words(&job.str("brief"));
     let specs = load_agent_specs(checkout, &s.home, Some(s), project_slug);
-    pick(specs, &kind, &card)
+    let mut warning = None;
+    if !pin.is_empty() {
+        match pinned(&specs, &pin) {
+            Ok(a) => {
+                return JobSpec {
+                    spec: Some(a),
+                    warning: None,
+                };
+            }
+            Err(why) => {
+                warning = Some(format!(
+                    "warning: job {}: it was pinned to the agent {pin}, but {why}; the card chooses the agent instead",
+                    job.str("id")
+                ));
+            }
+        }
+    }
+    let spec = if kind.is_empty() {
+        None
+    } else {
+        pick(specs, &kind, &card_words(&job.str("brief")))
+    };
+    JobSpec { spec, warning }
+}
+
+/// The spec a job is pinned to, by exact name then ignoring case; `Err`
+/// says why there is none to run as.
+pub(crate) fn pinned(specs: &[AgentDef], name: &str) -> Result<AgentDef, String> {
+    let found = specs
+        .iter()
+        .find(|a| a.name == name)
+        .or_else(|| specs.iter().find(|a| a.name.eq_ignore_ascii_case(name)));
+    match found {
+        Some(a) if a.loads() => Ok(a.clone()),
+        Some(a) => Err(format!(
+            "{} does not load: {}",
+            a.source,
+            a.rejected.as_deref().unwrap_or("rejected")
+        )),
+        None => Err("no agent file of that name loads for the project".to_string()),
+    }
 }
 
 pub(crate) fn pick(specs: Vec<AgentDef>, kind: &str, card: &CardWords) -> Option<AgentDef> {
@@ -175,5 +228,29 @@ mod tests {
         assert_eq!(pick(tie.clone(), "task", &card).unwrap().name, "a-agent");
         tie[1].rejected = Some("bypass".into());
         assert_eq!(pick(tie, "task", &card).unwrap().name, "b-agent");
+    }
+
+    #[test]
+    fn a_pinned_agent_runs_whatever_its_kinds_say_unless_it_is_gone() {
+        let mut specs = vec![
+            spec("answerer", &["answer"], &[], &[]),
+            spec("zed", &["task"], &[], &[]),
+        ];
+        assert_eq!(pinned(&specs, "answerer").unwrap().name, "answerer");
+        assert_eq!(
+            pinned(&specs, "Answerer").unwrap().name,
+            "answerer",
+            "case does not matter when nothing matches exactly"
+        );
+        assert_eq!(
+            pinned(&specs, "nobody").unwrap_err(),
+            "no agent file of that name loads for the project"
+        );
+        specs[0].rejected = Some("bypass".into());
+        specs[0].source = ".pulse/agents/answerer.md".into();
+        assert_eq!(
+            pinned(&specs, "answerer").unwrap_err(),
+            ".pulse/agents/answerer.md does not load: bypass"
+        );
     }
 }

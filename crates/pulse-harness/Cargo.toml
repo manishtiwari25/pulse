@@ -10,6 +10,7 @@ description = "PULSE: the built-in agent harness: bash-tool loop, limits, deny r
 
 [dependencies]
 base64.workspace = true
+pulse-board.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
 pulse-cred.workspace = true

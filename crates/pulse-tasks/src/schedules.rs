@@ -77,6 +77,9 @@ pub struct Schedule {
     pub last_output: String,
     /// Consecutive non-zero exits.
     pub fails: i32,
+    /// The custom agent every job it queues runs as; empty lets the runner
+    /// choose by the card.
+    pub agent: String,
 }
 
 impl Schedule {
@@ -126,6 +129,9 @@ pub struct ScheduleInput {
     /// `check`/`watch`: the kind of job to queue (task, improve); empty
     /// means task.
     pub job_kind: String,
+    /// The custom agent the jobs run as (`--run-as`); checked against the
+    /// project's agent files. Empty lets the runner choose.
+    pub agent: String,
 }
 
 /// What one due schedule did on a daemon tick.
@@ -139,7 +145,7 @@ pub struct Fired {
     pub ended: bool,
 }
 
-const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at, script, job_kind, state, state_since, last_rc, last_output, fails";
+const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at, script, job_kind, state, state_since, last_rc, last_output, fails, agent";
 
 fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     Ok(Schedule {
@@ -169,6 +175,7 @@ fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         last_rc: row.get(23)?,
         last_output: row.get(24)?,
         fails: row.get(25)?,
+        agent: row.get(26)?,
     })
 }
 
@@ -483,6 +490,7 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
         ));
     }
     check_project(s, &input.project)?;
+    let agent = pulse_board::check_run_as(s, &input.project, &input.agent)?;
     if script_kind {
         let Some(project) = s.project(&input.project)? else {
             return Err(self::input(
@@ -569,8 +577,8 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
     let id = next_id(&tx, "schedules", "SCHED-")?;
     let next_at = first_due(&now, every, at)?;
     tx.execute(
-        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at, script, job_kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at, script, job_kind, agent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             input.project,
@@ -587,7 +595,8 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
             now,
             now,
             script,
-            job_kind
+            job_kind,
+            agent
         ],
     )?;
     tx.event(
@@ -600,6 +609,7 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
             "kind": kind,
             "script": script,
             "job_kind": job_kind,
+            "agent": agent,
             "every": format_every(every),
             "next_at": next_at,
             "times": input.times,
@@ -1194,6 +1204,7 @@ pub fn fire_due(
                 priority: i64::from(sched.priority),
                 source: sched.source(),
                 created_by: sched.created_by.clone(),
+                agent: sched.agent.clone(),
                 ..Default::default()
             },
         )?;

@@ -674,10 +674,17 @@ footer naming the schedule, the run number and who set it. One open job per
 schedule: while the previous run's job is still queued or leased, the tick is
 skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
 stopped daemon missed collapse into one. Scheduled jobs are subject to
-`jobs_per_day` and the other runner caps like every job.
+`jobs_per_day` and the other runner caps like every job. `--run-as NAME`
+makes every job the schedule queues run as that custom agent (**Custom
+agents** under The harness; `pulse agents list --project P` names the ones
+that load, and `pulse job add --run-as NAME` pins a single job the same way):
+the name must load for the project when the schedule is set, and a job whose
+agent has since gone falls back to the usual choice by kind and tags, with a
+warning in the run log.
 
 ```bash
 pulse schedule add --project my-app --title "Nightly flake sweep" --every 1d --at 02:00 --kind task --brief "Run the suite three times; file each flake as a finding." --times 30
+pulse schedule add --project my-app --title "Weekly audit" --every 1w --kind task --brief "Audit the dependencies." --run-as auditor
 pulse schedule list --project my-app        # ID, status, cadence, next time, runs, who set it
 pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
 pulse schedule pause SCHED-001 --note "release week"
@@ -2008,8 +2015,9 @@ record, read with `pulse record show WF-evolve`.
 | `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
-| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
-| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm`, or `custom` for any other OpenAI-compatible server (**Other providers** under [The harness](#the-harness)). |
+| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai` and `custom`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider.custom.no_key`, `provider.custom.api_key_header` | `off`, empty | How the `custom` provider authenticates: `no_key` `on` calls the server without a key the way the local servers do; `api_key_header` names a header (`x-api-key`, `api-key`) the key travels in raw instead of `Authorization: Bearer`. |
 | `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
@@ -2071,6 +2079,8 @@ unanswered mentions for the running agent (`@human` addresses the owner).
 pulse watch --project my-app --action 'task.*'          # stream events
 pulse hook add 'post.*' --url https://example.test/hook  # webhook, 10 s
 pulse hook add 'job.*'  --script ./notify.sh             # env PULSE_EVENT_*, JSON on stdin, 30 s
+pulse hook add 'task.blocked' --job improve --project my-app \
+  --title 'Unblock {{subject}}' --brief '{{actor}} said: {{detail}}' --run-as auditor
 pulse hook deliveries 1 --json                           # newest attempts and retries
 ```
 
@@ -2080,6 +2090,21 @@ the third failed attempt the delivery is `failed` and PULSE emits one
 `hook.failed` event. Stopping the daemon does not kill a running hook or drop
 a queued hook event: running deliveries finish within their own timeout, and
 queued deliveries are stored for the next start.
+
+A `job` hook queues a job on the board instead of running a script: `--job`
+names the kind (`task`, `improve`, `clean` or `reflect`, the kinds a schedule
+may queue; never a lead, ballot or experiment), `--title` and `--brief` are
+the card, and in them `{{subject}}`, `{{detail}}`, `{{action}}`,
+`{{project}}`, `{{actor}}` and `{{at}}` stand for the event's fields (the
+detail is cut at 4000 characters). `--tier 0|1`, `--priority N` and
+`--run-as NAME` work as they do for `pulse job add`. A job belongs to a
+project and not every event names one, so `--project` is required. The job's
+source is `hook:<id>`, so a hook has at most one open job at a time: while it
+is queued or running, further events are delivered as `already queued`; a
+replayed event the hook already queued a job for is a delivery, not a retry;
+and an event about a job some hook queued never queues another, so a hook on
+`job.*` cannot feed itself. A `script` hook can do the same by hand: it
+receives `PULSE_HOME` and may call `pulse job add` or `pulse task suggest`.
 
 ## The harness
 
@@ -2255,7 +2280,10 @@ job whose kind is listed and whose `Tags:` (else `Class:`) words or
 `File:` paths match runs under that agent's model, tools, step cap and
 standing instructions, the runner handing the worker `pulse harness run
 --agent NAME` (a remote hand reads the clone's files; a store-only record
-is invisible to it); `max_steps` and `max_subagents` cap the run and the
+is invisible to it); a job pinned to an agent by name (`pulse job add
+--run-as NAME`, or a schedule's or a job hook's `--run-as`) runs as it
+whatever its `kinds` say, so long as it still loads; `max_steps` and
+`max_subagents` cap the run and the
 helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
 `quorum` and `project_scope` are read and linted for the phases that will
 consume them. `--agent NAME` runs any `pulse harness run` as that agent;
@@ -2975,7 +3003,18 @@ a GitHub personal access token with the `models:read` scope:
 which need no key - their status card says `no key needed` - though one in
 `OLLAMA_API_KEY`, `LMSTUDIO_API_KEY` or `VLLM_API_KEY` is sent when present.
 Every other base-URL variable is `<VENDOR>_BASE_URL` (`GROQ_BASE_URL`,
-`MISTRAL_BASE_URL`, …). Most of these endpoints report no context window, so
+`MISTRAL_BASE_URL`, …). Any other OpenAI-compatible server - a gateway, a
+proxy, a hosted model none of the names above covers - is the `custom`
+vendor, described by settings alone: `pulse settings set
+provider.custom.base_url https://<host>/v1` (or `PULSE_CUSTOM_BASE_URL`;
+there is no default, and a call without one fails before it is made), a key
+pasted in the Harness card, given to `pulse harness login --provider custom
+--with-token` or read from `PULSE_CUSTOM_API_KEY`; `provider.custom.no_key
+on` makes it keyless like the local servers, and
+`provider.custom.api_key_header x-api-key` sends the raw key in that header
+instead of `Authorization: Bearer`. Pick it like any vendor, `provider
+custom` in the settings or `--provider custom`, and name its models as the
+server lists them. Most of these endpoints report no context window, so
 with them context discipline stays at its first level (collapsed, never
 one-liners).
 

@@ -29,7 +29,7 @@ pub mod tasks_ddl;
 pub use chat::*;
 pub use chat_ddl::CHAT_DDL;
 pub use ctx::{CancellationToken, ContextError};
-pub use ddl::DDL;
+pub use ddl::{DDL, JOB_COLUMNS};
 pub use evolve_ddl::EVOLVE_DDL;
 pub use forget::*;
 pub use harness::*;

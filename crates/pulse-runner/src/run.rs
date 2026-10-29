@@ -904,10 +904,15 @@ pub(crate) fn run_job(
         return r;
     }
     let model_class = crate::lead_roles::model_class_of_job(s, &job);
-    // The agent file whose kinds and select fit the card, if any: the
-    // worker runs as it (`--agent NAME`), the clone being made from the
-    // checkout whose files are read here.
-    let agent_spec = crate::agent_specs::spec_for_job(s, &job, &project.str("slug"), &root);
+    // The agent file the job is pinned to, else the one whose kinds and
+    // select fit the card, if any: the worker runs as it (`--agent NAME`),
+    // the clone being made from the checkout whose files are read here.
+    let chosen = crate::agent_specs::spec_for_job(s, &job, &project.str("slug"), &root);
+    if let Some(w) = &chosen.warning {
+        eprintln!("run {run_id}: {w}");
+        log.add(w.clone());
+    }
+    let agent_spec = chosen.spec;
     if let Some(a) = &agent_spec {
         let travels = crate::exec::agent_flag_travels(a, ex.remote());
         log.add(format!(
