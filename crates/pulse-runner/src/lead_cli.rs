@@ -3,7 +3,7 @@
 
 use anyhow::{Result, anyhow};
 use pulse_cli::{Context, FlagSet};
-use pulse_tasks::leads::{self, Lead};
+use pulse_tasks::leads::{self, GapRule, Lead};
 use serde::Serialize;
 use std::io::Write;
 
@@ -76,6 +76,12 @@ struct RolesOut<'a> {
     roles: Vec<RoleOut>,
     /// The words a role record's section may put in braces.
     variables: &'static [&'static str],
+    /// The signals a role record's `gaps` may name.
+    signals: Vec<&'static str>,
+}
+
+fn signal_names() -> Vec<&'static str> {
+    leads::BUILTIN_SIGNALS.iter().map(GapRule::name).collect()
 }
 
 pub(crate) fn roles_out(s: &pulse_store::Store, project: &str) -> Vec<RoleOut> {
@@ -413,6 +419,7 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
                         project: &project,
                         roles,
                         variables: crate::lead_roles::SECTION_VARIABLES,
+                        signals: signal_names(),
                     },
                 );
             }
@@ -433,8 +440,9 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             }
             writeln!(
                 c.out,
-                "\nA `role` record (pulse record new role --project {project} --title T --body-file F) adds a role or replaces a built-in one; its section may use {{{}}}.",
-                crate::lead_roles::SECTION_VARIABLES.join("}, {")
+                "\nA `role` record (pulse record new role --project {project} --title T --body-file F) adds a role or replaces a built-in one; its section may use {{{}}}; its gaps may name {}.",
+                crate::lead_roles::SECTION_VARIABLES.join("}, {"),
+                signal_names().join(", ")
             )?;
             Ok(())
         }
@@ -521,5 +529,45 @@ mod tests {
         );
         let (_, _, code) = invoke(&s, "lead", "", &["dance"]);
         assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn lead_roles_lists_builtins_and_role_records() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let out = invoke_ok(&s, "lead", "proj", &["roles"]);
+        assert!(out.contains("rsi RSI lead every 1d, built in:"), "{out}");
+        assert!(out.contains("{slug}, {role}"), "{out}");
+        assert!(out.contains("evolve-loop-on, docs-without-pages"), "{out}");
+        assert!(!out.contains("role record:"), "{out}");
+        s.put_record(
+            pulse_store::Record {
+                id: "ROLE-content-proj".into(),
+                project: "proj".into(),
+                kind: "role".into(),
+                slug: "content".into(),
+                title: "Content lead".into(),
+                ..Default::default()
+            },
+            Default::default(),
+            "---\nevery: 1w\n---\nFeed the blog of {slug}.\n",
+            pulse_store::HUMAN_AGENT,
+            "",
+        )
+        .unwrap();
+        let out = invoke_ok(&s, "lead", "proj", &["roles"]);
+        assert!(
+            out.contains("content Content lead every 1w, role record:"),
+            "{out}"
+        );
+        // The record's role seats like a built-in one: no title or brief needed.
+        let out = invoke_ok(&s, "lead", "proj", &["add", "--role", "content"]);
+        assert!(
+            out.contains("LEAD-001 seated in proj: Content lead (content) as agent proj-lead-content, sits every 1w"),
+            "{out}"
+        );
+        let (_, err, code) = invoke(&s, "lead", "nope", &["roles"]);
+        assert!(code != 0 && err.contains("No project"), "{code} {err}");
     }
 }

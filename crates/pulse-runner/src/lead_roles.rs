@@ -1805,6 +1805,123 @@ mod tests {
     }
 
     #[test]
+    fn a_role_record_seats_a_lead_without_a_rebuild() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        set_setting(&s, "minutes_per_job", "1");
+        set_setting(&s, "worker_model", "heavy-test");
+        set_setting(&s, "light_model", "light-test");
+        let now = s.now();
+        assert!(leads::spec_of(&s, "proj", "content").is_none());
+        assert!(
+            missing_leads(&s, "proj", &now)
+                .iter()
+                .all(|g| g.role != "content")
+        );
+        // The owner writes one record; nothing is rebuilt.
+        s.put_record(
+            pulse_store::Record {
+                id: "ROLE-content-proj".into(),
+                project: "proj".into(),
+                kind: "role".into(),
+                slug: "content".into(),
+                title: "Content".into(),
+                ..Default::default()
+            },
+            Default::default(),
+            r#"---
+title: Content lead
+about: keeps the blog fed
+every: 1w
+model_class: worker
+gaps:
+  unwritten:
+    signal: sql
+    query: SELECT COUNT(*) FROM projects WHERE slug = ?1
+    threshold: 1
+    why: "{n} project waits for words"
+---
+## Your concern: {role}
+
+Feed the blog of {slug}; {blocked_jobs} wait on the environment.
+"#,
+            pulse_store::HUMAN_AGENT,
+            "",
+        )
+        .unwrap();
+        // The record's own gap rule reads the store and fires.
+        let gaps = missing_leads(&s, "proj", &now);
+        let gap = gaps
+            .iter()
+            .find(|g| g.role == "content")
+            .unwrap_or_else(|| panic!("no content gap in {gaps:?}"));
+        assert_eq!(gap.why, "1 project waits for words");
+        assert_eq!(gap.title, "Content lead");
+        assert_eq!(gap.command, "pulse lead add --project proj --role content");
+        let roles = crate::lead_cli::roles_out(&s, "proj");
+        assert_eq!(roles.len(), 13);
+        assert_eq!(roles[0].source, leads::RoleSource::Builtin);
+        assert_eq!(roles[12].role, "content");
+        assert_eq!(roles[12].source, leads::RoleSource::Store);
+
+        // Seating takes the record's title and cadence; the brief is the
+        // record's section, rendered with the project's signals.
+        let lead = seat(&s, "content");
+        assert_eq!(lead.agent, "proj-lead-content");
+        assert_eq!(lead.title, "Content lead");
+        assert_eq!(lead.every(), "1w");
+        let brief = role_brief(&s, &lead, &now, 2);
+        assert!(brief.contains("## Your concern: content\n"), "{brief}");
+        assert!(
+            brief.contains("Feed the blog of proj; 0 jobs wait on the environment."),
+            "{brief}"
+        );
+        assert!(brief.contains("Queue at most 2 worker jobs"), "{brief}");
+        // One sitting runs as the lead, on the model class the record names.
+        leads::run_now(&s, &lead.id, pulse_store::HUMAN_AGENT).unwrap();
+        let out = crate::test_helpers::OutBuf::new();
+        let result = crate::daemon::daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            crate::daemon::DaemonOpts {
+                max_loops: 1,
+                interval: 1,
+                worker_cmd: "sh -c 'echo SUMMARY: the blog is fed'".into(),
+                out: Some(out.writer()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result, "done", "daemon log:\n{}", out.string());
+        let jobs = must_rows(
+            &s,
+            "SELECT id, status, lease_agent, source FROM jobs WHERE kind = 'lead'",
+            &[],
+        );
+        assert_eq!(jobs.len(), 1, "lead jobs: {jobs:?}\n{}", out.string());
+        assert!(
+            jobs[0].str("status") == "done"
+                && jobs[0].str("lease_agent") == "proj-lead-content"
+                && jobs[0].str("source").starts_with("lead-role:proj:content:"),
+            "sitting: {:?}\n{}",
+            jobs[0],
+            out.string()
+        );
+        assert_eq!(model_class_of_job(&s, &jobs[0]), "worker");
+        assert_eq!(
+            s.agent("proj-lead-content").unwrap().unwrap().model,
+            "heavy-test"
+        );
+        // Seated once, the role is no longer a gap.
+        assert!(
+            missing_leads(&s, "proj", &now)
+                .iter()
+                .all(|g| g.role != "content")
+        );
+    }
+
+    #[test]
     fn rsi_sitting_runs_on_the_worker_model() {
         let _serial = crate::test_helpers::serial();
         let s = new_store();

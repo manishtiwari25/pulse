@@ -376,8 +376,425 @@ pub fn spec_of(s: &pulse_store::Store, project: &str, role: &str) -> Option<Role
     roles(s, project).into_iter().find(|r| r.name == role)
 }
 
-fn record_roles(_s: &pulse_store::Store, _project: &str) -> Vec<RoleSpec> {
-    Vec::new()
+/// Record statuses that take a role record out of the registry.
+const RETIRED_STATUSES: &[&str] = &[
+    "retired",
+    "deprecated",
+    "superseded",
+    "rejected",
+    "archived",
+    "ended",
+    "withdrawn",
+];
+
+/// The roles the project's `role` records define: the commons' records,
+/// then the project's own, so the most specific record of a name wins; in
+/// one project a record made in the store wins over one read from a
+/// repository. A record that names no role pulse can seat is skipped.
+fn record_roles(s: &pulse_store::Store, project: &str) -> Vec<RoleSpec> {
+    let mut out: Vec<RoleSpec> = Vec::new();
+    let mut scopes = vec![pulse_store::COMMONS_SLUG.to_string()];
+    if project != pulse_store::COMMONS_SLUG {
+        scopes.push(project.to_string());
+    }
+    for scope in scopes {
+        let Ok(mut records) = s.list_records(pulse_store::RecordFilter {
+            project: scope,
+            kind: "role".into(),
+            ..Default::default()
+        }) else {
+            continue;
+        };
+        records.sort_by_key(|r| !r.origin.starts_with("markdown:"));
+        for r in records {
+            if RETIRED_STATUSES
+                .iter()
+                .any(|st| r.status.eq_ignore_ascii_case(st))
+            {
+                continue;
+            }
+            let Ok((_, Some(rev))) = s.get_record(&r.id, 0) else {
+                continue;
+            };
+            let Some(spec) = spec_from_record(&r, &rev) else {
+                continue;
+            };
+            match out.iter_mut().find(|x| x.name == spec.name) {
+                Some(slot) => *slot = spec,
+                None => out.push(spec),
+            }
+        }
+    }
+    out
+}
+
+/// One role record as a spec. The record's front matter and the `---`
+/// block its body may open with (the block wins) say what the role changes;
+/// what they leave unsaid stays as built in for a built-in's name, and
+/// takes the custom defaults for a new one. The body after the block is the
+/// section. What widens the daemon's reach - a `sql` gap, `away_seatable`,
+/// `model_class` - is read from a record made in the store only, never from
+/// one a repository's file became.
+fn spec_from_record(r: &pulse_store::Record, rev: &pulse_store::Revision) -> Option<RoleSpec> {
+    let store_made = !r.origin.starts_with("markdown:");
+    let (block, body) = role_block(&rev.body);
+    let mut map: serde_json::Map<String, serde_json::Value> = rev
+        .frontmatter
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    map.extend(block);
+    let name = match map.get("role").and_then(serde_json::Value::as_str) {
+        Some(word) => check_role(word).ok()?,
+        None => check_role(&r.slug).ok()?,
+    };
+    let mut spec = builtin(&name).map(Role::spec).unwrap_or_else(|| RoleSpec {
+        name: name.clone(),
+        title: String::new(),
+        about: String::new(),
+        every: "1d".into(),
+        away_seatable: false,
+        model_class: String::new(),
+        section: CUSTOM_SECTION.into(),
+        gaps: Vec::new(),
+        source: RoleSource::Store,
+    });
+    spec.source = RoleSource::Store;
+    let text = |key: &str| -> String {
+        map.get(key)
+            .and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.trim().to_string()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    if !text("title").is_empty() {
+        spec.title = text("title");
+    } else if spec.title.is_empty() {
+        spec.title = if r.title.is_empty() {
+            format!("{name} lead")
+        } else {
+            r.title.clone()
+        };
+    }
+    if !text("about").is_empty() {
+        spec.about = text("about");
+    }
+    if !text("every").is_empty()
+        && parse_every(&text("every")).is_ok_and(|m| m >= MIN_EVERY_MINUTES)
+    {
+        spec.every = text("every");
+    }
+    if store_made {
+        match text("model_class").as_str() {
+            "worker" | "light" => spec.model_class = text("model_class"),
+            "" => {}
+            _ => spec.model_class.clear(),
+        }
+        if let Some(v) = map.get("away_seatable") {
+            spec.away_seatable = matches!(v, serde_json::Value::Bool(true))
+                || v.as_str().is_some_and(|s| s.trim() == "true");
+        }
+    }
+    if let Some(v) = map.get("gaps") {
+        spec.gaps = gap_rules_from(v, store_made);
+    }
+    let section = body.trim();
+    if !section.is_empty() {
+        spec.section = format!("{section}\n\n");
+    }
+    Some(spec)
+}
+
+/// The gap rules a record names: a list or a comma-separated word of
+/// signal names, or a mapping of rule name to a signal name or a
+/// `{signal: sql, query, threshold, why}` block. `sql` is kept from a
+/// store-made record only.
+fn gap_rules_from(v: &serde_json::Value, store_made: bool) -> Vec<GapRule> {
+    let mut out = Vec::new();
+    let mut push = |v: &serde_json::Value| {
+        if let Some(g) = gap_rule_from(v, store_made) {
+            out.push(g);
+        }
+    };
+    match v {
+        serde_json::Value::Array(items) => items.iter().for_each(&mut push),
+        serde_json::Value::Object(map) => map.values().for_each(&mut push),
+        serde_json::Value::String(words) => words
+            .split(',')
+            .for_each(|w| push(&serde_json::Value::String(w.trim().into()))),
+        _ => {}
+    }
+    out
+}
+
+fn gap_rule_from(v: &serde_json::Value, store_made: bool) -> Option<GapRule> {
+    match v {
+        serde_json::Value::String(name) => GapRule::named(name),
+        serde_json::Value::Object(m) => {
+            let signal = m
+                .get("signal")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if signal != "sql" {
+                return GapRule::named(signal);
+            }
+            if !store_made {
+                return None;
+            }
+            let query = m.get("query")?.as_str()?.trim().to_string();
+            if query.is_empty() {
+                return None;
+            }
+            let threshold = match m.get("threshold") {
+                Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(1),
+                Some(serde_json::Value::String(s)) => s.trim().parse().unwrap_or(1),
+                _ => 1,
+            };
+            let why = m
+                .get("why")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            Some(GapRule::Sql {
+                query,
+                threshold,
+                why,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Splits a role record's body into the `---` block it may open with and
+/// the section text after it. The block is the subset of YAML the records'
+/// front matter uses - `key: value`, nested mappings by indentation,
+/// `- item` lists, `[a, b]` and `{k: v}` flow forms, quoted strings,
+/// numbers and booleans - read leniently: a line that is none of these is
+/// skipped. A body without a block is all section.
+pub fn role_block(body: &str) -> (serde_json::Map<String, serde_json::Value>, &str) {
+    let mut map = serde_json::Map::new();
+    let Some(rest) = body.strip_prefix("---") else {
+        return (map, body);
+    };
+    let Some(rest) = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+    else {
+        return (map, body);
+    };
+    let mut lines: Vec<&str> = Vec::new();
+    let mut after = None;
+    let mut cursor = rest;
+    while !cursor.is_empty() {
+        let (line, remaining) = cursor.split_once('\n').unwrap_or((cursor, ""));
+        let line = line.trim_end_matches('\r');
+        if line.trim() == "---" {
+            after = Some(remaining);
+            break;
+        }
+        lines.push(line);
+        cursor = remaining;
+    }
+    let Some(after) = after else {
+        return (map, body);
+    };
+    let mut pos = 0;
+    map = block_mapping(&lines, &mut pos, 0);
+    (map, after)
+}
+
+fn block_indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+fn block_skip(lines: &[&str], pos: &mut usize) {
+    while *pos < lines.len() {
+        let s = lines[*pos].trim();
+        if !s.is_empty() && !s.starts_with('#') {
+            return;
+        }
+        *pos += 1;
+    }
+}
+
+fn block_mapping(
+    lines: &[&str],
+    pos: &mut usize,
+    indent: usize,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    loop {
+        block_skip(lines, pos);
+        if *pos >= lines.len() || block_indent(lines[*pos]) < indent {
+            return out;
+        }
+        let line = lines[*pos];
+        if block_indent(line) != indent || line.trim_start().starts_with("- ") {
+            // Not a key at this level: a list where a mapping was expected,
+            // or a deeper line without a key above it.
+            if line.trim_start().starts_with("- ") {
+                return out;
+            }
+            *pos += 1;
+            continue;
+        }
+        *pos += 1;
+        let Some((key, raw)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || key.contains([' ', '\t', '[', ']', '{', '}']) {
+            continue;
+        }
+        let raw = block_uncomment(raw).trim();
+        let value = if raw.is_empty() {
+            block_skip(lines, pos);
+            if *pos < lines.len() && block_indent(lines[*pos]) > indent {
+                let inner = block_indent(lines[*pos]);
+                if lines[*pos].trim_start().starts_with("- ") {
+                    serde_json::Value::Array(block_sequence(lines, pos, inner))
+                } else {
+                    serde_json::Value::Object(block_mapping(lines, pos, inner))
+                }
+            } else {
+                serde_json::Value::Null
+            }
+        } else {
+            block_scalar(raw)
+        };
+        out.insert(key.to_string(), value);
+    }
+}
+
+fn block_sequence(lines: &[&str], pos: &mut usize, indent: usize) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    loop {
+        block_skip(lines, pos);
+        if *pos >= lines.len() || block_indent(lines[*pos]) != indent {
+            return out;
+        }
+        let trimmed = lines[*pos].trim();
+        let Some(raw) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| (trimmed == "-").then_some(""))
+        else {
+            return out;
+        };
+        *pos += 1;
+        out.push(block_scalar(block_uncomment(raw).trim()));
+    }
+}
+
+/// Cuts a ` #comment` off a raw value: after the closing quote of a quoted
+/// one, at the first ` #` of a bare one.
+fn block_uncomment(raw: &str) -> &str {
+    let t = raw.trim_start();
+    let lead = raw.len() - t.len();
+    let bytes = t.as_bytes();
+    if let Some(&quote) = bytes.first().filter(|q| **q == b'"' || **q == b'\'') {
+        let mut i = 1;
+        while i < bytes.len() {
+            if quote == b'"' && bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == quote {
+                if quote == b'\'' && bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                return &raw[..lead + i + 1];
+            }
+            i += 1;
+        }
+        return raw;
+    }
+    match raw.find(" #") {
+        Some(i) => &raw[..i],
+        None => raw,
+    }
+}
+
+fn block_scalar(raw: &str) -> serde_json::Value {
+    use serde_json::Value;
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "~" || raw.eq_ignore_ascii_case("null") {
+        return Value::Null;
+    }
+    match raw.as_bytes()[0] {
+        b'"' => serde_json::from_str::<String>(raw)
+            .map(Value::String)
+            .unwrap_or_else(|_| Value::String(raw.trim_matches('"').to_string())),
+        b'\'' if raw.len() >= 2 && raw.ends_with('\'') => {
+            Value::String(raw[1..raw.len() - 1].replace("''", "'"))
+        }
+        b'[' if raw.ends_with(']') => Value::Array(
+            block_split_flow(&raw[1..raw.len() - 1])
+                .iter()
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| block_scalar(p))
+                .collect(),
+        ),
+        b'{' if raw.ends_with('}') => {
+            let mut out = serde_json::Map::new();
+            for part in block_split_flow(&raw[1..raw.len() - 1]) {
+                if let Some((k, v)) = part.split_once(':') {
+                    let key = k.trim().trim_matches(['"', '\'']);
+                    if !key.is_empty() {
+                        out.insert(key.to_string(), block_scalar(v));
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        _ => {
+            if raw == "true" || raw == "false" {
+                return Value::Bool(raw == "true");
+            }
+            if let Ok(n) = raw.parse::<i64>() {
+                return Value::Number(n.into());
+            }
+            if let Ok(f) = raw.parse::<f64>()
+                && let Some(n) = serde_json::Number::from_f64(f)
+            {
+                return Value::Number(n);
+            }
+            Value::String(raw.to_string())
+        }
+    }
+}
+
+/// Splits a flow list or map on the commas outside quotes and brackets.
+fn block_split_flow(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote = 0u8;
+    let mut start = 0;
+    let bytes = inner.as_bytes();
+    for (i, &c) in bytes.iter().enumerate() {
+        if quote != 0 {
+            if c == quote {
+                quote = 0;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => quote = c,
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(inner[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].to_string());
+    out
 }
 
 /// The agent a role lead runs as.
@@ -992,6 +1409,235 @@ mod tests {
         );
         assert_eq!(spec_of(&s, "demo", "content"), None);
         assert_eq!(role_names(&s, "demo"), builtin_names());
+    }
+
+    fn put_role(
+        s: &pulse_store::Store,
+        project: &str,
+        slug: &str,
+        origin: &str,
+        status: &str,
+        body: &str,
+    ) -> String {
+        let id = format!("ROLE-{slug}-{project}");
+        s.put_record(
+            pulse_store::Record {
+                id: id.clone(),
+                project: project.into(),
+                kind: "role".into(),
+                slug: slug.into(),
+                title: format!("{slug} record"),
+                status: status.into(),
+                origin: origin.into(),
+                ..Default::default()
+            },
+            Default::default(),
+            body,
+            pulse_store::HUMAN_AGENT,
+            "",
+        )
+        .unwrap();
+        id
+    }
+
+    const CONTENT_RECORD: &str = r#"---
+title: Content lead
+about: keeps the blog fed # and the archive tidy
+every: 1w
+model_class: light
+away_seatable: true
+gaps:
+  stale: stale-lockfile
+  failed:
+    signal: sql
+    query: SELECT COUNT(*) FROM jobs WHERE project = ?1 AND status = 'failed'
+    threshold: 3
+    why: "{n} jobs failed"
+---
+## Your concern: {role}
+
+Feed the blog of {slug}.
+"#;
+
+    #[test]
+    fn a_role_record_joins_the_registry_and_seats_a_lead() {
+        let s = store();
+        put_role(&s, "demo", "content", "store", "Active", CONTENT_RECORD);
+        // A record whose slug is not a role word is not a role.
+        put_role(
+            &s,
+            "demo",
+            "content-lead",
+            "store",
+            "",
+            "Twin of the project lead.\n",
+        );
+        let specs = roles(&s, "demo");
+        assert_eq!(specs.len(), 13);
+        let c = specs.last().unwrap();
+        assert_eq!(c.name, "content");
+        assert_eq!(c.source, RoleSource::Store);
+        assert_eq!(c.title, "Content lead");
+        assert_eq!(c.about, "keeps the blog fed");
+        assert_eq!(c.every, "1w");
+        assert_eq!(c.model_class, "light");
+        assert!(c.away_seatable);
+        assert_eq!(c.gaps.len(), 2);
+        assert!(c.gaps.contains(&GapRule::StaleLockfile));
+        assert!(c.gaps.contains(&GapRule::Sql {
+            query: "SELECT COUNT(*) FROM jobs WHERE project = ?1 AND status = 'failed'".into(),
+            threshold: 3,
+            why: "{n} jobs failed".into(),
+        }));
+        assert_eq!(
+            c.section,
+            "## Your concern: {role}\n\nFeed the blog of {slug}.\n\n"
+        );
+        assert!(role_names(&s, "demo").ends_with(", content"));
+        assert_eq!(spec_of(&s, "other", "content"), None);
+
+        let l = seat(&s, "content");
+        assert_eq!(l.agent, "demo-lead-content");
+        assert_eq!(l.title, "Content lead");
+        assert_eq!(l.every(), "1w");
+        assert!(l.brief.is_empty());
+    }
+
+    #[test]
+    fn a_role_record_of_a_builtin_name_overlays_only_what_it_says() {
+        let s = store();
+        put_role(
+            &s,
+            "demo",
+            "docs",
+            "store",
+            "",
+            "Write the docs of {slug} in plain words.\n",
+        );
+        let specs = roles(&s, "demo");
+        assert_eq!(specs.len(), 12);
+        let docs = &specs[1];
+        let builtin_docs = builtin("docs").unwrap();
+        assert_eq!(docs.name, "docs");
+        assert_eq!(docs.source, RoleSource::Store);
+        assert_eq!(docs.title, builtin_docs.title);
+        assert_eq!(docs.about, builtin_docs.about);
+        assert_eq!(docs.every, builtin_docs.every);
+        assert_eq!(docs.gaps, builtin_docs.gaps.to_vec());
+        assert_eq!(docs.section, "Write the docs of {slug} in plain words.\n\n");
+    }
+
+    #[test]
+    fn a_repository_role_record_cannot_widen_the_daemon() {
+        let s = store();
+        put_role(
+            &s,
+            "demo",
+            "content",
+            "markdown:.pulse/agents/content.md#role@abc1234",
+            "",
+            "---\n\
+every: 30m\n\
+model_class: worker\n\
+away_seatable: true\n\
+gaps: [stale-lockfile, {signal: sql, query: SELECT 1, threshold: 1}, nope]\n\
+---\n\
+Repository words.\n",
+        );
+        let c = spec_of(&s, "demo", "content").unwrap();
+        assert_eq!(c.model_class, "");
+        assert!(!c.away_seatable);
+        assert_eq!(c.gaps, vec![GapRule::StaleLockfile]);
+        assert_eq!(c.every, "1d", "under MIN_EVERY the cadence stays default");
+        assert_eq!(c.title, "content record");
+        assert_eq!(c.section, "Repository words.\n\n");
+
+        // The same name made in the store wins over the repository's file.
+        s.put_record(
+            pulse_store::Record {
+                id: "ROLE-content-demo-store".into(),
+                project: "demo".into(),
+                kind: "role".into(),
+                slug: "content".into(),
+                title: "Content".into(),
+                ..Default::default()
+            },
+            Default::default(),
+            CONTENT_RECORD,
+            pulse_store::HUMAN_AGENT,
+            "",
+        )
+        .unwrap();
+        let c = spec_of(&s, "demo", "content").unwrap();
+        assert_eq!(c.model_class, "light");
+        assert_eq!(c.title, "Content lead");
+    }
+
+    #[test]
+    fn a_retired_role_record_leaves_the_registry() {
+        let s = store();
+        let id = put_role(&s, "demo", "content", "store", "Retired", CONTENT_RECORD);
+        assert_eq!(spec_of(&s, "demo", "content"), None);
+        s.set_record_status(&id, "Active", pulse_store::HUMAN_AGENT)
+            .unwrap();
+        assert!(spec_of(&s, "demo", "content").is_some());
+    }
+
+    #[test]
+    fn a_commons_role_record_is_shared_and_the_project_wins() {
+        let s = store();
+        put_role(
+            &s,
+            pulse_store::COMMONS_SLUG,
+            "content",
+            "store",
+            "",
+            "---\ntitle: Commons content\n---\nShared words.\n",
+        );
+        assert_eq!(
+            spec_of(&s, "demo", "content").unwrap().title,
+            "Commons content"
+        );
+        put_role(
+            &s,
+            "demo",
+            "content",
+            "store",
+            "",
+            "---\ntitle: Demo content\n---\nOwn words.\n",
+        );
+        let c = spec_of(&s, "demo", "content").unwrap();
+        assert_eq!(c.title, "Demo content");
+        assert_eq!(c.section, "Own words.\n\n");
+        assert_eq!(roles(&s, "demo").len(), 13);
+    }
+
+    #[test]
+    fn role_block_reads_the_leading_block_only() {
+        let (map, rest) = role_block(
+            "---\n# a comment\nrole: content\nevery: \"1w\" # quoted\nn: 3\nflag: true\n\
+list: [a, 'b c', 2]\nnested:\n  one: 1\n  deep:\n    - x\n    - y\n---\nBody {slug}\n",
+        );
+        assert_eq!(map["role"], "content");
+        assert_eq!(map["every"], "1w");
+        assert_eq!(map["n"], 3);
+        assert_eq!(map["flag"], true);
+        assert_eq!(map["list"], serde_json::json!(["a", "b c", 2]));
+        assert_eq!(
+            map["nested"],
+            serde_json::json!({"one": 1, "deep": ["x", "y"]})
+        );
+        assert_eq!(rest, "Body {slug}\n");
+
+        let plain = "## Your concern: {role}\n\nNo block here.\n";
+        let (map, rest) = role_block(plain);
+        assert!(map.is_empty());
+        assert_eq!(rest, plain);
+
+        let open = "---\ntitle: never closed\nBody\n";
+        let (map, rest) = role_block(open);
+        assert!(map.is_empty());
+        assert_eq!(rest, open);
     }
 
     #[test]

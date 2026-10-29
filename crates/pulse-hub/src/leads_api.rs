@@ -253,6 +253,32 @@ mod tests {
         assert_eq!(code, 200, "{v:?}");
         assert_eq!(v["lead"]["status"], "ended");
 
+        // A `role` record is a role the hub lists too, marked by its source.
+        s.store
+            .put_record(
+                pulse_store::Record {
+                    id: "ROLE-content-proj".into(),
+                    project: "proj".into(),
+                    kind: "role".into(),
+                    slug: "content".into(),
+                    title: "Content lead".into(),
+                    ..Default::default()
+                },
+                Default::default(),
+                "Feed the blog of {slug}.\n",
+                pulse_store::HUMAN_AGENT,
+                "",
+            )
+            .unwrap();
+        let (code, v) = call("GET", "/api/v1/leads?project=proj", "");
+        assert_eq!(code, 200);
+        let roles = v["roles"].as_array().unwrap();
+        assert_eq!(roles.len(), 13);
+        assert_eq!(roles[0]["source"], "builtin");
+        assert_eq!(roles[12]["role"], "content");
+        assert_eq!(roles[12]["title"], "Content lead");
+        assert_eq!(roles[12]["source"], "store");
+
         let (code, _) = call("POST", "/api/v1/leads/LEAD-001/dance", "{}");
         assert_eq!(code, 404);
         let (code, _) = call("GET", "/api/v1/leads/LEAD-001/pause", "");

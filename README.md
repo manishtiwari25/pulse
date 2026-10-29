@@ -837,6 +837,20 @@ lead" --brief "..."` (a custom role needs its title and brief; the built-in
 ones carry theirs). One live lead per role and project; the agent is named
 `<slug>-lead-<role>`.
 
+A **`role` record** makes a role the registry knows without a rebuild:
+`pulse record new role --project my-app --title content --body-file role.md`
+(the role word is the record's slug, or a `role:` key). The body may open
+with a `---` block - `title`, `about`, `every`, and `gaps` naming the
+signals the built-in roles watch (`pulse lead roles` lists them, and the
+`{variables}` the text may use) - and the rest is the concern's section,
+rendered with the project's signals at each sitting. A record named like a
+built-in role replaces what it states and keeps the rest; a record in the
+`commons` project counts for every project, the project's own wins; a
+retired status takes it out. Only a record made in the store (not one a
+repository's file became) may widen the daemon: a `gaps` entry
+`{signal: sql, query: <read-only SQL, ?1 = the project slug>, threshold: N,
+why: "{n} ..."}`, `model_class: worker|light`, `away_seatable: true`.
+
 Each **sitting** is an ordinary lead job (`source = lead-role:<slug>:<role>:…`)
 queued by the daemon when the seat is due and run by the role lead alone -
 the project lead never takes it, and a role lead never takes the project
