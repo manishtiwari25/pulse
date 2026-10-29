@@ -3202,7 +3202,9 @@ the daemon never ran). The verify command runs in a
 throwaway worktree that starts bare, so the daemon first runs the project's
 setup there - the recipe's `setup:` lines from the default branch, else the
 lockfile rules (`corepack pnpm install`, `uv sync`, `npm ci`, …) that a worker
-clone gets - within `minutes_per_job` or ten minutes, whichever is longer; a
+clone gets - within ten minutes (`SETUP_MINUTES`, the budget every setup
+gets, whatever `minutes_per_job` says: a hung `pnpm install` once held a slot
+for the two hours a job may run); a
 setup that fails on the machine defers the landing with a `land.deferred` event
 naming the file and the failure, and nothing is charged to the branch. Each worker is one `pulse harness
 run` process (the daemon's own binary here; on a paired hand the shipped

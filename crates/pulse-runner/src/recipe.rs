@@ -20,6 +20,9 @@ pub(crate) const RECIPE_UNFIT_MISE: &str = "mise";
 /// spending their attempts on runs that end before a worker starts.
 pub(crate) const RECIPE_UNFIT_INVALID: &str = "recipe invalid";
 pub(crate) const MISE_VERSION: &str = "v2026.9.1";
+/// Minutes a clone's setup may take (`mise install`, the recipe's `setup:`
+/// lines, the landing worktree's install), whatever `minutes_per_job` says:
+/// a hung `pnpm install` once held a slot for the two hours a job may run.
 pub(crate) const SETUP_MINUTES: i32 = 10;
 pub(crate) const UNFIT_HOURS: i32 = 24;
 
