@@ -34,6 +34,42 @@ struct FixtureResult {
     normalized_weight: f64,
     output: String,
     error: Option<anyhow::Error>,
+    /// The scorer said `scope: diff`: it counted inside the card's changed
+    /// files, against the base tree.
+    diff_scoped: bool,
+}
+
+/// The name of the per-card fixture that runs the card's own check.
+pub const CARD_CHECK: &str = "card-check";
+
+/// The diff scope as the scorers of one measurement receive it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ScopeEnv {
+    /// The base commit (`PULSE_MEASURE_BASE`).
+    base: String,
+    /// The changed-file list (`PULSE_MEASURE_CHANGED`); empty when no file
+    /// differs, and then the scorers see the whole tree.
+    changed: String,
+    /// The frozen base checkout (`PULSE_MEASURE_BASE_TREE`); empty when the
+    /// measured commit is the base itself, so each fixture's own clone is it.
+    base_tree: String,
+}
+
+/// The environment a scope adds for the scorer of one fixture clone.
+pub(crate) fn scope_env(scope: &ScopeEnv, clone: &str) -> Vec<String> {
+    let mut env = vec![format!("PULSE_MEASURE_BASE={}", scope.base)];
+    if !scope.changed.is_empty() {
+        env.push(format!("PULSE_MEASURE_CHANGED={}", scope.changed));
+        env.push(format!(
+            "PULSE_MEASURE_BASE_TREE={}",
+            if scope.base_tree.is_empty() {
+                clone
+            } else {
+                &scope.base_tree
+            }
+        ));
+    }
+    env
 }
 
 pub(crate) fn pulse_scorer(scorer: &str) -> bool {
@@ -179,6 +215,7 @@ pub(crate) fn measure(
     crate::clones::claim_measurement_root(&root)?;
     let cleanup_store = s.clone();
     let cleanup_id = id.clone();
+    let scope = opts.scope.as_ref();
     let mut scores = crate::api::Scores {
         project: project.to_string(),
         repo: repo.clone(),
@@ -194,6 +231,23 @@ pub(crate) fn measure(
         let max_weight = matrix.iter().map(|f| f.weight).fold(0.0_f64, f64::max);
         let len = matrix.len();
         let mut out = opts.out;
+        let (scope_env, scope_fingerprint) = match scope {
+            Some(scope) => {
+                let (env, fingerprint) =
+                    prepare_scope(cancel, &repo, &commit, &root, &keys, scope, &matrix)?;
+                (Some(env), fingerprint)
+            }
+            None => (None, None),
+        };
+        if let (Some(w), Some(scope)) = (out.as_deref_mut(), scope) {
+            writeln!(
+                w,
+                "diff scope: {} changed file{} against base {}",
+                scope.changed.len(),
+                if scope.changed.len() == 1 { "" } else { "s" },
+                &scope.base[..scope.base.len().min(12)]
+            )?;
+        }
         let requested_parallel = s.setting_int("evolve.measure_parallel");
         let parallel = if requested_parallel <= 1 {
             1
@@ -221,6 +275,7 @@ pub(crate) fn measure(
                 let next = &next;
                 let failed = &failed;
                 let matrix = &matrix;
+                let scope_env = scope_env.as_ref();
                 handles.push(scope.spawn(move || {
                     let mut worker_results = Vec::new();
                     loop {
@@ -244,6 +299,7 @@ pub(crate) fn measure(
                             max_weight,
                             matrix,
                             i,
+                            scope_env,
                         );
                         if result.error.is_some() {
                             failed.store(true, Ordering::SeqCst);
@@ -291,7 +347,22 @@ pub(crate) fn measure(
                 }
                 total += result.value * result.normalized_weight;
                 weights += result.normalized_weight;
+                if result.diff_scoped {
+                    scores.diff_scoped.push(score.name.clone());
+                }
+                if score.kind == "card" {
+                    scores.card_check = Some(result.value);
+                }
                 scores.fixtures.push(score);
+            }
+        }
+        if let (Some(scope_env), Some(before)) = (&scope_env, &scope_fingerprint) {
+            let base_root = crate::readonly::TreeRoot::open(&scope_env.base_tree)?;
+            if crate::readonly::tree_fingerprint(&base_root)? != *before {
+                return Err(crate::clones::ViolationError {
+                    reason: "a scorer changed the base tree".to_string(),
+                }
+                .into());
             }
         }
         if weights <= 0.0 {
@@ -331,6 +402,7 @@ fn measure_fixture(
     max_weight: f64,
     matrix: &[MeasuredFixture],
     i: usize,
+    scope: Option<&ScopeEnv>,
 ) -> FixtureResult {
     let f = &matrix[i];
     let len = matrix.len();
@@ -356,7 +428,7 @@ fn measure_fixture(
         .join((i + 1).to_string())
         .display()
         .to_string();
-    let fixture_result = (|| -> Result<(f64, String)> {
+    let fixture_result = (|| -> Result<(f64, String, bool)> {
         crate::clones::stripped_clone(cancel, repo, commit, &clone, keys)?;
         fs::create_dir_all(&home)?;
         crate::process::prepare_measurement_caches(&home)?;
@@ -386,52 +458,41 @@ fn measure_fixture(
             crate::clones::check_clone(cancel, &clone, keys)?;
         }
         let score_cancel = cancel.with_timeout(timeout);
-        score_clone(
-            &score_cancel,
-            &clone,
-            &scorer_env(&home, commit, exe),
-            &f.scorer,
-        )
-        .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
+        let mut env = scorer_env(&home, commit, exe);
+        if let Some(scope) = scope {
+            env.extend(scope_env(scope, &clone));
+        }
+        score_clone(&score_cancel, &clone, &env, &f.scorer)
+            .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
     })();
     let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, i + 1);
-    let (value, reason) = match (fixture_result, clone_cleanup) {
+    let failed = |output: String, error: anyhow::Error| FixtureResult {
+        index: i,
+        score: None,
+        value: 0.0,
+        normalized_weight: 0.0,
+        output,
+        error: Some(error),
+        diff_scoped: false,
+    };
+    let (value, reason, diff_scoped) = match (fixture_result, clone_cleanup) {
         (Ok(value), Ok(())) => value,
-        (Err(e), Ok(())) => {
-            return FixtureResult {
-                index: i,
-                score: None,
-                value: 0.0,
-                normalized_weight: 0.0,
-                output,
-                error: Some(e),
-            };
-        }
+        (Err(e), Ok(())) => return failed(output, e),
         (Ok(_), Err(e)) => {
-            return FixtureResult {
-                index: i,
-                score: None,
-                value: 0.0,
-                normalized_weight: 0.0,
-                output,
-                error: Some(anyhow!("measurement clone cleanup failed: {e}")),
-            };
+            return failed(output, anyhow!("measurement clone cleanup failed: {e}"));
         }
         (Err(e), Err(clean)) => {
-            return FixtureResult {
-                index: i,
-                score: None,
-                value: 0.0,
-                normalized_weight: 0.0,
+            return failed(
                 output,
-                error: Some(anyhow!("{e}; measurement clone cleanup failed: {clean}")),
-            };
+                anyhow!("{e}; measurement clone cleanup failed: {clean}"),
+            );
         }
     };
+    let scoped = if diff_scoped { " [diff-scoped]" } else { "" };
     if !reason.is_empty() && f.kind != "heldout" && !pulse_store::secret_shaped(&reason) {
         let _ = writeln!(
             &mut output,
-            "[{}/{}] {}: {:.4} ({})",
+            "[{}/{}] {}: {:.4}{scoped} ({})",
             i + 1,
             len,
             label,
@@ -439,7 +500,14 @@ fn measure_fixture(
             reason
         );
     } else {
-        let _ = writeln!(&mut output, "[{}/{}] {}: {:.4}", i + 1, len, label, value);
+        let _ = writeln!(
+            &mut output,
+            "[{}/{}] {}: {:.4}{scoped}",
+            i + 1,
+            len,
+            label,
+            value
+        );
     }
     FixtureResult {
         index: i,
@@ -455,7 +523,54 @@ fn measure_fixture(
         normalized_weight: f.weight / max_weight,
         output,
         error: None,
+        diff_scoped,
     }
+}
+
+/// Lay the scope out under the measurement root: the changed-file list and,
+/// when a metric or card fixture will read it and the measured commit is not
+/// the base, one frozen stripped clone of the base shared by every fixture.
+/// Returns the environment and, for a shared base tree, its fingerprint.
+fn prepare_scope(
+    cancel: &pulse_bus::CancellationToken,
+    repo: &str,
+    commit: &str,
+    root: &str,
+    keys: &[String],
+    scope: &crate::api::DiffScope,
+    matrix: &[MeasuredFixture],
+) -> Result<(ScopeEnv, Option<String>)> {
+    let mut env = ScopeEnv {
+        base: scope.base.clone(),
+        ..Default::default()
+    };
+    if scope.changed.is_empty() {
+        return Ok((env, None));
+    }
+    let list = Path::new(root).join("changed-files");
+    let mut text = String::new();
+    for path in &scope.changed {
+        if path.contains(['\n', '\0']) {
+            continue;
+        }
+        text.push_str(path);
+        text.push('\n');
+    }
+    fs::write(&list, text)?;
+    env.changed = list.display().to_string();
+    let reads_scope = matrix.iter().any(|f| f.metric || f.kind == "card");
+    if !reads_scope || scope.base == commit {
+        return Ok((env, None));
+    }
+    let base_tree = Path::new(root).join("base").display().to_string();
+    crate::clones::stripped_clone(cancel, repo, &scope.base, &base_tree, keys)?;
+    let tree = crate::readonly::TreeRoot::open(&base_tree)?;
+    // The clone is removed with the measurement root, which makes it
+    // writable again first; the scorers only ever read it.
+    let _restore = crate::readonly::freeze_tree(&tree)?;
+    let fingerprint = crate::readonly::tree_fingerprint(&tree)?;
+    env.base_tree = base_tree;
+    Ok((env, Some(fingerprint)))
 }
 
 pub(crate) fn measurement_failure(
@@ -491,12 +606,15 @@ pub(crate) fn measurement_failure(
     )
 }
 
+/// Run a scorer against a frozen clone: `(score, reason, diff_scoped)`, the
+/// reason being the first line of stderr and `diff_scoped` whether stdout
+/// carried a `scope: diff` line.
 pub(crate) fn score_clone(
     cancel: &pulse_bus::CancellationToken,
     clone: &str,
     env: &[String],
     scorer: &[String],
-) -> Result<(f64, String)> {
+) -> Result<(f64, String, bool)> {
     let root = crate::readonly::TreeRoot::open(clone)?;
     let restore = crate::readonly::freeze_tree(&root)?;
     let before = crate::readonly::tree_fingerprint(&root)?;
@@ -525,11 +643,22 @@ pub(crate) fn score_clone(
     if out.overflow {
         return Err(anyhow!("scorer output exceeds its limit"));
     }
-    let value = parse_score(&String::from_utf8_lossy(&out.buf))?;
+    let stdout = String::from_utf8_lossy(&out.buf);
+    let value = parse_score(&stdout)?;
     Ok((
         value,
         first_line(&String::from_utf8_lossy(&stderr.buf), 200),
+        parse_scope(&stdout),
     ))
+}
+
+/// Whether a scorer's stdout says `scope: diff`.
+pub(crate) fn parse_scope(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.trim().split_once(':').is_some_and(|(key, value)| {
+            key.trim().eq_ignore_ascii_case("scope") && value.trim().eq_ignore_ascii_case("diff")
+        })
+    })
 }
 
 pub(crate) fn first_line(text: &str, limit: usize) -> String {
@@ -604,8 +733,9 @@ fn select_fixtures(
     for name in selected {
         if let Some(f) = fixtures.iter().find(|f| &f.name == name) {
             out.push(f.clone());
-        } else if exact && heldout_name(name) {
-            // Named by its archive name; the held-out loop picks it up.
+        } else if exact && (heldout_name(name) || name == CARD_CHECK) {
+            // Named by its archive name; the held-out loop or the card's
+            // check picks it up.
         } else {
             return Err(crate::fixtures::input_error(
                 "Cannot select fixture",
@@ -852,6 +982,216 @@ printf 'score: 0.75\n'
         assert_eq!(scores.fixtures.len(), 1);
         assert_eq!(scores.fixtures[0].score, 0.75);
         assert!(scores.fixtures[0].metric);
+        assert_no_clones(&s);
+    }
+
+    /// A metric fixture that reads the scope the measurement exports and
+    /// scores `base` on the base commit, `variant` on any other.
+    fn scoped_fixture(s: &pulse_store::Store, name: &str, base: &str, variant: &str) {
+        crate::fixtures::add_fixture(
+            s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: name.into(),
+                scorer: format!(
+                    r#"set -e
+test -n "$PULSE_MEASURE_BASE"
+test -s "$PULSE_MEASURE_CHANGED"
+test -d "$PULSE_MEASURE_BASE_TREE"
+test "$(sort "$PULSE_MEASURE_CHANGED" | tr '\n' ,)" = "notes.txt,value.txt,"
+test "$(cat "$PULSE_MEASURE_BASE_TREE/value.txt")" = original
+test ! -e "$PULSE_MEASURE_BASE_TREE/notes.txt"
+if [ "$PULSE_MEASURE_COMMIT" = "$PULSE_MEASURE_BASE" ]; then
+  test "$(cat value.txt)" = original
+  printf 'score: {base}\nscope: diff\n'
+else
+  test "$(cat value.txt)" = changed
+  test -f notes.txt
+  if touch "$PULSE_MEASURE_BASE_TREE/scribble" 2>/dev/null; then exit 7; fi
+  printf 'score: {variant}\nscope: diff\n'
+fi
+"#
+                ),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// A branch `exp` on the test project that changes `value.txt` and adds
+    /// `notes.txt`; the checkout stays on `main`.
+    fn experiment_branch(repo: &str) {
+        let repo = Path::new(repo);
+        test_git(repo, &["checkout", "--quiet", "-b", "exp"]);
+        put_file(repo.join("value.txt"), "changed\n", 0o644);
+        put_file(repo.join("notes.txt"), "a note\n", 0o644);
+        test_git(repo, &["add", "."]);
+        test_git(repo, &["commit", "--quiet", "-m", "experiment"]);
+        test_git(repo, &["checkout", "--quiet", "main"]);
+    }
+
+    #[test]
+    fn measure_exports_the_diff_scope_and_a_frozen_base_tree() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        experiment_branch(&repo);
+        scoped_fixture(&s, "scoped", "0.5", "0.8");
+        let cancel = pulse_bus::CancellationToken::new();
+        let scope = crate::api::diff_scope(&cancel, &repo, "main", "exp").unwrap();
+        assert_eq!(scope.changed, ["notes.txt", "value.txt"]);
+        assert_eq!(
+            scope.base,
+            test_git(Path::new(&repo), &["rev-parse", "main"])
+        );
+        assert!(!scope.lockfile_only());
+        let mut log = Vec::new();
+        let variant = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "exp",
+            crate::api::MeasureOptions {
+                scope: Some(scope.clone()),
+                out: Some(&mut log),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert!(
+            log.contains("diff scope: 2 changed files against base"),
+            "{log}"
+        );
+        assert!(log.contains("scoped: 0.8000 [diff-scoped]"), "{log}");
+        assert_eq!(variant.fixtures[0].score, 0.8);
+        assert_eq!(variant.diff_scoped, ["scoped"]);
+        assert_eq!(variant.card_check, None);
+        // The base measured in the same scope: its own clone is the base tree.
+        let base = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "main",
+            crate::api::MeasureOptions {
+                scope: Some(scope.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(base.fixtures[0].score, 0.5);
+        assert_eq!(base.diff_scoped, ["scoped"]);
+        // Without a scope the same scorer sees no list and fails.
+        let err = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "exp",
+            crate::api::MeasureOptions::default(),
+        )
+        .expect_err("a scope-only scorer scored without a scope");
+        assert!(err.to_string().contains("read-only scorer"), "{err}");
+        // An empty diff exports the base and no list.
+        let same = crate::api::diff_scope(&cancel, &repo, "main", "main").unwrap();
+        assert!(same.is_empty());
+        assert_no_clones(&s);
+    }
+
+    #[test]
+    fn measure_pair_lays_diff_scoped_fixtures_over_the_cached_base() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        experiment_branch(&repo);
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "whole".into(),
+                scorer: "printf 'score: 0.4\\n'".into(),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        scoped_fixture(&s, "scoped", "0.5", "0.9");
+        let fixture = |name: &str, score: f64| crate::api::FixtureScore {
+            name: name.into(),
+            kind: "public".into(),
+            score,
+            weight: 1.0,
+            metric: true,
+            note: String::new(),
+        };
+        // The cached whole-tree baseline holds stale numbers for both; only
+        // the diff-scoped one is measured again.
+        let cached = crate::api::Scores {
+            project: "demo".into(),
+            ref_name: test_git(Path::new(&repo), &["rev-parse", "main"]),
+            fixtures: vec![fixture("whole", 0.3), fixture("scoped", 0.1)],
+            total: 0.2,
+            ..Default::default()
+        };
+        let cancel = pulse_bus::CancellationToken::new();
+        let pair = crate::api::measure_pair(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "main",
+            "exp",
+            Some(cached.clone()),
+            "",
+            None,
+        )
+        .unwrap();
+        let score = |scores: &crate::api::Scores, name: &str| {
+            scores
+                .fixtures
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.score)
+                .unwrap()
+        };
+        assert_eq!(pair.scope.changed, ["notes.txt", "value.txt"]);
+        assert_eq!(pair.variant.fixtures.len(), 2);
+        assert_eq!(score(&pair.variant, "whole"), 0.4);
+        assert_eq!(score(&pair.variant, "scoped"), 0.9);
+        assert_eq!(pair.variant.diff_scoped, ["scoped"]);
+        assert_eq!(pair.base.fixtures.len(), 2);
+        assert_eq!(score(&pair.base, "whole"), 0.3);
+        assert_eq!(score(&pair.base, "scoped"), 0.5);
+        assert_eq!(pair.base.diff_scoped, ["scoped"]);
+        assert!((pair.base.total - 0.4).abs() < 1e-9);
+        assert!((pair.variant.total - 0.65).abs() < 1e-9);
+        let (kept, why) = crate::api::keep(Some(&pair.base), Some(&pair.variant), 0.02);
+        assert!(kept && why.starts_with("improved"), "{why}");
+        // Nothing diff-scoped: the cached base stands as it is.
+        crate::fixtures::set_fixture_enabled(&s, "demo", "scoped", false, "human").unwrap();
+        let pair = crate::api::measure_pair(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "main",
+            "exp",
+            Some(cached.clone()),
+            "",
+            None,
+        )
+        .unwrap();
+        assert_eq!(pair.base, cached);
+        assert_eq!(pair.variant.fixtures.len(), 1);
         assert_no_clones(&s);
     }
 

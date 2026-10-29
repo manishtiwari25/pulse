@@ -1600,8 +1600,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   that brings tests or settles a marker scores differently from one that
   does not - the starter set judges conduct and ties on every good change,
   so without a derived or hand-made metric no fixture would tell variants
-  apart. A derived fixture whose count reaches its scale is re-armed with a
-  larger one and a fresh date (event `evolution.fixture.rearmed`); a disabled
+  apart. In an experiment they count only inside the card's changed files
+  (the diff scope below), so one card's change moves them visibly. A derived
+  fixture whose count reaches its scale, or whose script changed, is re-armed
+  with a fresh date (event `evolution.fixture.rearmed`); a disabled
   one is never re-added. `pulse evolve seed [--project P]` seeds both for a
   project registered earlier (`pulse evolve fixture seed` for the fixtures
   alone, which also derives); `pulse evolve fixture list|disable` manages
@@ -1648,7 +1650,24 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   per-fixture scratch directory under the isolated home for work that must
   stay outside the tree. Each worker has at most one fixture clone at a time,
   and removes that clone as soon as its scorer finishes; the isolated homes
-  stay until the measurement root's final cleanup.
+  stay until the measurement root's final cleanup. An experiment's
+  measurement also exports its **diff scope**: `PULSE_MEASURE_BASE` (the base
+  commit), `PULSE_MEASURE_CHANGED` (a file listing the paths that differ
+  between the base and the measured tree, one per line) and
+  `PULSE_MEASURE_BASE_TREE` (a frozen, read-only checkout of the base, shared
+  by the fixtures). `pulse evolve score metric` then runs `CMD` on both trees
+  and takes the base's count as the scale in place of `--scale` (twice the
+  count for `--higher`, the count itself for `--lower`, never below 1), so
+  the base scores `0.5` and the variant's delta is relative to what the card
+  touched; the derived fixtures' scripts count only inside the listed files,
+  and your own `CMD` does the same by reading that list. Such a fixture
+  answers `scope: diff` after its score line, the log marks it
+  `[diff-scoped]` and the archive row records it (`diff_scoped` in the
+  measurement and in the `evolution.archived` event). A diff-scoped score is
+  per card, so the cached project baseline never serves it: those fixtures
+  are measured again on the base in the same scope inside the same cycle,
+  and the whole-tree numbers stay for the project-level report. A diff with
+  no changed file exports the base alone and the scorers see the whole tree.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 

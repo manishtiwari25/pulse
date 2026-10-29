@@ -63,6 +63,53 @@ pub struct Scores {
     pub diff_scoped: Vec<String>,
 }
 
+/// DiffScope is one card's change as a measurement sees it: the base commit
+/// and the files that differ between it and the variant. Every scorer gets it
+/// as `PULSE_MEASURE_BASE`, `PULSE_MEASURE_CHANGED` (a file listing the
+/// changed paths, one per line) and `PULSE_MEASURE_BASE_TREE` (a read-only
+/// checkout of the base). A metric fixture that honours it counts only inside
+/// those files and takes the base tree's count as its scale, so the base
+/// scores 0.5 and the variant's delta is relative to what the card touched.
+/// Both trees must be measured with the same scope; a cached whole-tree
+/// baseline never stands in for a diff-scoped fixture.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DiffScope {
+    #[serde(rename = "base")]
+    pub base: String,
+    #[serde(rename = "changed")]
+    pub changed: Vec<String>,
+}
+
+/// The lock files a change may touch without touching code; a diff made of
+/// them alone has nothing a fixture could measure.
+pub const LOCKFILES: &[&str] = &[
+    "Cargo.lock",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+];
+
+/// The verdict a lockfile-only change gets instead of a measurement: it goes
+/// to landing as a tie and is archived as `neutral` with the reason.
+pub const LOCKFILE_ONLY_VERDICT: &str =
+    "neutral (lockfile-only: the change touches lock files alone, so there is nothing to measure)";
+
+impl DiffScope {
+    /// No file differs: the scorers see the whole tree, as without a scope.
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty()
+    }
+
+    /// Every changed file is a lock file ([`LOCKFILES`]).
+    pub fn lockfile_only(&self) -> bool {
+        !self.changed.is_empty()
+            && self.changed.iter().all(|path| {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                LOCKFILES.contains(&name)
+            })
+    }
+}
+
 /// MeasureOptions tunes Measure.
 #[derive(Default)]
 pub struct MeasureOptions<'a> {
@@ -74,6 +121,22 @@ pub struct MeasureOptions<'a> {
     pub exact: bool,
     pub shadow: bool,
     pub out: Option<&'a mut dyn Write>,
+    /// The card's diff scope ([`DiffScope`]); give the base measurement the
+    /// same one, so both trees count the same files.
+    pub scope: Option<DiffScope>,
+    /// The card's own check (`Signal: check:<command>`), run from the tree
+    /// root on each tree as the `card-check` fixture (weight 1.0): its exit
+    /// status scores 1 or 0, a single integer on stdout a lower-is-better
+    /// count against the base tree's. The score is `Scores::card_check`.
+    pub card_check: String,
+}
+
+/// MeasuredPair is one card's base and variant measured in the same scope.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeasuredPair {
+    pub base: Scores,
+    pub variant: Scores,
+    pub scope: DiffScope,
 }
 
 pub type MeasureFn = dyn for<'a> Fn(
@@ -109,6 +172,144 @@ pub fn measure(
     (MEASURE.read().expect("evolve Measure lock poisoned"))(
         cancel, s, project, repo, ref_name, opts,
     )
+}
+
+/// The files that differ between two commits of a checkout, as a
+/// [`DiffScope`] for measuring the second against the first.
+pub fn diff_scope(
+    cancel: &pulse_bus::CancellationToken,
+    repo: &str,
+    base_ref: &str,
+    variant_ref: &str,
+) -> Result<DiffScope> {
+    let (root, base) = crate::clones::resolve_revision(cancel, repo, base_ref)?;
+    let (_, variant) = crate::clones::resolve_revision(cancel, repo, variant_ref)?;
+    let mut changed: Vec<String> = Vec::new();
+    if base != variant {
+        let text = crate::process::git_raw(
+            cancel,
+            &root,
+            &[
+                "diff".into(),
+                "--name-only".into(),
+                "--no-renames".into(),
+                "-z".into(),
+                base.clone(),
+                variant,
+                "--".into(),
+            ],
+        )?;
+        changed = text
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        changed.sort();
+        changed.dedup();
+    }
+    Ok(DiffScope { base, changed })
+}
+
+/// Measure one card: its variant and its base in the same diff scope, so a
+/// metric fixture that counts inside the changed files is compared like for
+/// like. `cached_base` is the whole-tree baseline when the cache holds one;
+/// the fixtures the variant measured diff-scoped (and the card's check) are
+/// measured again on the base and laid over it, because a diff-scoped score
+/// is per card and the cached one is not. Without a cached base the whole
+/// base is measured in the scope. The measurement goes through
+/// [`measure`], so a hook set with [`set_measure`] sees both calls.
+#[allow(clippy::too_many_arguments)]
+pub fn measure_pair(
+    cancel: &pulse_bus::CancellationToken,
+    s: &pulse_store::Store,
+    project: &str,
+    repo: &str,
+    base_ref: &str,
+    variant_ref: &str,
+    cached_base: Option<Scores>,
+    card_check: &str,
+    mut out: Option<&mut dyn Write>,
+) -> Result<MeasuredPair> {
+    let scope = diff_scope(cancel, repo, base_ref, variant_ref)?;
+    let variant = measure(
+        cancel,
+        s,
+        project,
+        repo,
+        variant_ref,
+        MeasureOptions {
+            scope: Some(scope.clone()),
+            card_check: card_check.to_string(),
+            out: out.as_deref_mut().map(|w| w as &mut dyn Write),
+            ..Default::default()
+        },
+    )?;
+    let mut scoped: Vec<String> = variant.diff_scoped.clone();
+    if variant.card_check.is_some() && !scoped.iter().any(|n| n == crate::measure::CARD_CHECK) {
+        scoped.push(crate::measure::CARD_CHECK.to_string());
+    }
+    let base = match cached_base {
+        Some(cached) if scoped.is_empty() => cached,
+        Some(cached) => {
+            let fresh = measure(
+                cancel,
+                s,
+                project,
+                repo,
+                base_ref,
+                MeasureOptions {
+                    fixtures: scoped,
+                    exact: true,
+                    scope: Some(scope.clone()),
+                    card_check: card_check.to_string(),
+                    out: out.as_deref_mut().map(|w| w as &mut dyn Write),
+                    ..Default::default()
+                },
+            )?;
+            overlay_scores(cached, &fresh)
+        }
+        None => measure(
+            cancel,
+            s,
+            project,
+            repo,
+            base_ref,
+            MeasureOptions {
+                scope: Some(scope.clone()),
+                card_check: card_check.to_string(),
+                out,
+                ..Default::default()
+            },
+        )?,
+    };
+    Ok(MeasuredPair {
+        base,
+        variant,
+        scope,
+    })
+}
+
+/// The cached whole-tree scores with the freshly measured fixtures laid over
+/// them: same-name fixtures replaced, new ones (the card's check) added, the
+/// total recomputed, the scope notes taken from the fresh measurement.
+pub fn overlay_scores(mut cached: Scores, fresh: &Scores) -> Scores {
+    for f in &fresh.fixtures {
+        match cached
+            .fixtures
+            .iter_mut()
+            .find(|c| c.name == f.name && c.kind == f.kind)
+        {
+            Some(slot) => *slot = f.clone(),
+            None => cached.fixtures.push(f.clone()),
+        }
+    }
+    cached.total = crate::dispute::weighted_total(&cached.fixtures);
+    cached.card_check = fresh.card_check;
+    cached.diff_scoped = fresh.diff_scoped.clone();
+    if !fresh.sandbox.is_empty() {
+        cached.sandbox = fresh.sandbox.clone();
+    }
+    cached
 }
 
 /// A variant is discarded when it regresses the score by more than the
@@ -210,4 +411,68 @@ fn is_zero_i64(v: &i64) -> bool {
 }
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lockfile_only_diff_is_told_apart() {
+        let scope = |changed: &[&str]| DiffScope {
+            base: "abc".into(),
+            changed: changed.iter().map(|c| c.to_string()).collect(),
+        };
+        assert!(scope(&["Cargo.lock"]).lockfile_only());
+        assert!(
+            scope(&["web/hub/pnpm-lock.yaml", "package-lock.json", "yarn.lock"]).lockfile_only()
+        );
+        assert!(!scope(&["Cargo.lock", "src/lib.rs"]).lockfile_only());
+        assert!(!scope(&["Cargo.lockfile"]).lockfile_only());
+        assert!(!scope(&[]).lockfile_only());
+        assert!(scope(&[]).is_empty());
+    }
+
+    #[test]
+    fn overlay_replaces_the_measured_fixtures_and_recomputes_the_total() {
+        let fixture = |name: &str, kind: &str, score: f64, weight: f64| FixtureScore {
+            name: name.into(),
+            kind: kind.into(),
+            score,
+            weight,
+            metric: true,
+            note: String::new(),
+        };
+        let cached = Scores {
+            ref_name: "base".into(),
+            fixtures: vec![
+                fixture("tests", "public", 0.9, 1.0),
+                fixture("markers", "public", 0.1, 3.0),
+                fixture("H1", "heldout", 1.0, 1.0),
+            ],
+            total: 0.44,
+            heldout: 1,
+            ..Default::default()
+        };
+        let fresh = Scores {
+            fixtures: vec![
+                fixture("markers", "public", 0.5, 3.0),
+                fixture("card-check", "card", 1.0, 1.0),
+            ],
+            card_check: Some(1.0),
+            diff_scoped: vec!["markers".into()],
+            sandbox: "measure-2".into(),
+            ..Default::default()
+        };
+        let laid = overlay_scores(cached, &fresh);
+        let names: Vec<&str> = laid.fixtures.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["tests", "markers", "H1", "card-check"]);
+        assert_eq!(laid.fixtures[1].score, 0.5);
+        assert!((laid.total - (0.9 + 1.5 + 1.0 + 1.0) / 6.0).abs() < 1e-9);
+        assert_eq!(laid.card_check, Some(1.0));
+        assert_eq!(laid.diff_scoped, ["markers"]);
+        assert_eq!(laid.ref_name, "base");
+        assert_eq!(laid.heldout, 1);
+        assert_eq!(laid.sandbox, "measure-2");
+    }
 }
