@@ -682,6 +682,63 @@ pub(crate) fn pair_write_alias(
     true
 }
 
+/// Remove the `Host name` block the pair run wrote from `~/.ssh/config` (hub_home).
+/// Only removes the block when it exists and its HostName matches what the run wrote
+/// (or when host is empty, removes by name alone). Returns true when a block was removed.
+/// This mirrors pair_write_alias: it only touches a block that is present, and never
+/// touches other blocks. Used by the undo path so a failed hand leaves no dead alias.
+pub(crate) fn pair_remove_alias(hub_home: &str, name: &str) -> bool {
+    let config = Path::new(hub_home).join(".ssh").join("config");
+    let text = match std::fs::read_to_string(&config) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    if pair_alias_state(text.clone(), name.to_string()).is_none() {
+        return false;
+    }
+    // Remove the block: from the "Host name" line through the following blank line
+    // (or end of file), preserving everything else exactly.
+    let mut out: Vec<&str> = Vec::new();
+    let mut lines = text.lines().peekable();
+    let mut removed = false;
+    while let Some(line) = lines.next() {
+        let is_host = line.trim_start().to_ascii_lowercase().starts_with("host ");
+        let names: Vec<String> = if is_host {
+            line.trim()[5..]
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if is_host && names.iter().any(|n| n == name) {
+            removed = true;
+            // Skip lines until we hit a blank line (consume it too) or the next Host.
+            while let Some(next) = lines.peek() {
+                if next.trim().is_empty() {
+                    lines.next();
+                    break;
+                }
+                if next.trim_start().to_ascii_lowercase().starts_with("host ") {
+                    break;
+                }
+                lines.next();
+            }
+            continue;
+        }
+        out.push(line);
+    }
+    if !removed {
+        return false;
+    }
+    let mut new_text = out.join("\n");
+    if text.ends_with('\n') {
+        new_text.push('\n');
+    }
+    // Collapse a leading blank line left behind when the first block was removed.
+    std::fs::write(&config, new_text).is_ok()
+}
+
 pub(crate) fn pair_write_known_hosts(
     hub_home: String,
     host: String,
@@ -1305,6 +1362,16 @@ fn pair_apply_live(
     if broken {
         rep.lines.push(format!("probe FAILED: {note}"));
         pair_remote_undo(admin, host, &steps, &undo_script, &mut rep.lines);
+        // Remove the local ssh aliases this run wrote so a failed hand leaves no
+        // dead alias in ~/.ssh/config and a reused name pairs again.
+        if pair_remove_alias(hub_home, name) {
+            rep.lines
+                .push(format!("removed the {name} block from ~/.ssh/config"));
+        }
+        if pair_remove_alias(hub_home, &format!("{name}-admin")) {
+            rep.lines
+                .push(format!("removed the {name}-admin block from ~/.ssh/config"));
+        }
         if created {
             match pulse_board::remove_executor(s, name, actor, false) {
                 Ok(_) => rep
@@ -2279,9 +2346,11 @@ mod tests {
             events.len() == 1 && events[0]["probe_ok"] == false && events[0]["outcome"] == "undone",
             "pair.applied: {events:?}"
         );
+        let cfg = hub.path().join(".ssh/config");
+        let text = std::fs::read_to_string(&cfg).expect("ssh config");
         assert!(
-            hub.path().join(".ssh/config").is_file(),
-            "the local Host block stays (harmless)"
+            pair_alias_state(text, "hands-two".into()).is_none(),
+            "the failed hand left a dead alias in ~/.ssh/config"
         );
     }
 
@@ -2440,6 +2509,37 @@ mod tests {
             "executor.update events"
         );
         assert_eq!(pair_applied_events(&s).len(), 2, "pair.applied events");
+    }
+
+    #[test]
+    fn pair_remove_alias_drops_only_the_named_blocks() {
+        let hub = hub_with_key();
+        let original = "Host other\n    HostName other.example\n";
+        let config_path = hub.path().join(".ssh/config");
+        std::fs::write(
+            &config_path,
+            format!(
+                "{original}\n{}\n{}",
+                pair_host_block("hands-two".into(), "example.invalid".into(), 22),
+                pair_host_block("hands-two-admin".into(), "10.0.0.5".into(), 22),
+            ),
+        )
+        .expect("config");
+        let home = hub.path().to_str().expect("hub");
+        assert!(pair_remove_alias(home, "hands-two"));
+        assert!(pair_remove_alias(home, "hands-two-admin"));
+        let text = std::fs::read_to_string(&config_path).expect("config");
+        assert!(
+            pair_alias_state(text.clone(), "hands-two".into()).is_none()
+                && pair_alias_state(text.clone(), "hands-two-admin".into()).is_none(),
+            "dead aliases left behind:\n{text}"
+        );
+        assert!(
+            pair_alias_state(text.clone(), "other".into()).is_some(),
+            "the unrelated block was removed:\n{text}"
+        );
+        // Removing a block that is not there is a no-op that reports false.
+        assert!(!pair_remove_alias(home, "hands-two"));
     }
 
     #[test]
