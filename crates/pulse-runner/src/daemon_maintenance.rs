@@ -184,6 +184,17 @@ pub(crate) fn tend_unfit_reprobes(
                 Err(err) => (false, crate::run::err_message(&err)),
             };
             if ok {
+                let tool = mark.get("tool").cloned().unwrap_or_default();
+                if crate::executor::unfit_tool_present(s, &executor, &project, &tool) == Some(false)
+                {
+                    crate::recipe::keep_unfit_mark(&conn, &executor, &project);
+                    lines.push(format!(
+                        "unfit re-probe for {project} on {executor}: the machine passed but it still {}; the mark stays until a probe finds the tool or it expires {}h after the setup failed",
+                        crate::recipe::unfit_phrase(&tool),
+                        crate::recipe::UNFIT_HOURS
+                    ));
+                    continue;
+                }
                 crate::recipe::clear_unfit_project(&conn, &now, &executor, &project, &actor, &note);
                 let age = mark
                     .get("at")
@@ -1115,6 +1126,225 @@ mod tests {
         let mark = &marks[crate::executor::LOCAL_EXECUTOR][&slug];
         assert_eq!(mark.get("n").map(String::as_str), Some("1"));
         assert_eq!(mark.get("at").map(String::as_str), Some(now.as_str()));
+    }
+
+    /// A directory with a fake `uv` that answers and a fake `composer` that
+    /// does not, first on PATH: the tool the owner installed, and a shim that
+    /// is there but broken.
+    fn fake_tools_on_path() -> (tempfile::TempDir, pulse_testutil::SetenvGuard) {
+        let bin = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("uv", "#!/bin/sh\necho uv 0.1\n"),
+            ("composer", "#!/bin/sh\nexit 1\n"),
+        ] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let path = format!(
+            "{}:{}",
+            bin.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let guard = pulse_testutil::setenv("PATH", path);
+        (bin, guard)
+    }
+
+    #[test]
+    fn daemon_reprobe_keeps_a_mark_whose_tool_is_still_missing() {
+        let _serial = crate::test_helpers::serial();
+        let (_bin, _path) = fake_tools_on_path();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let local = crate::executor::LOCAL_EXECUTOR;
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let conn = s.conn().unwrap();
+        // (mark, what the re-probe says, whether the mark stays)
+        for (tool, said, kept) in [
+            (
+                "tool:nosuchtool-pulse@1",
+                "still lacks nosuchtool-pulse@1",
+                true,
+            ),
+            ("composer", "still lacks composer", true),
+            ("uv", "cleared by a passing probe", false),
+            ("setup:Gemfile.lock", "cleared by a passing probe", false),
+        ] {
+            crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, tool);
+            let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+            assert!(
+                lines.iter().any(|line| line.contains(said)),
+                "{tool}: lines = {lines:?}"
+            );
+            let marks = crate::recipe::unfit_marks(&conn);
+            let mark = marks.get(local).and_then(|m| m.get(&slug));
+            if kept {
+                let mark = mark.unwrap_or_else(|| panic!("{tool}: mark cleared"));
+                assert_eq!(mark.get("n").map(String::as_str), Some("1"), "{tool}");
+                assert_eq!(mark.get("at").map(String::as_str), Some(TEST_NOW), "{tool}");
+                assert!(
+                    lines.iter().any(|line| line.contains("the mark stays")),
+                    "{tool}: lines = {lines:?}"
+                );
+                // The next re-probe waits twice as long, like after a failed probe.
+                let again = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+                assert!(again.is_empty(), "{tool}: again = {again:?}");
+                crate::recipe::clear_unfit_project(&conn, &now, local, &slug, "test", "");
+            } else {
+                assert!(mark.is_none(), "{tool}: mark stayed: {mark:?}");
+            }
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.fit' AND subject = 'local' AND detail LIKE '%daemon%'",
+                &[]
+            ),
+            2
+        );
+        // A pin the recipe no longer lists is stale: the probe clears it.
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe_with(Some(&["other-tool@1"]), None, None, None, ""),
+            pulse_store::HUMAN_AGENT.into(),
+            "store".into(),
+            String::new(),
+        )
+        .unwrap();
+        crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, "tool:nosuchtool-pulse@1");
+        let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("cleared by a passing probe")),
+            "lines = {lines:?}"
+        );
+        assert!(crate::recipe::unfit_marks(&conn).is_empty());
+        // The owner's own probe keeps a still-missing tool's mark too, and says so.
+        crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, "composer");
+        let (ok, note) =
+            crate::executor::probe_executor(&s, local, pulse_store::HUMAN_AGENT, &now).unwrap();
+        assert!(
+            ok && note.contains("mark kept for proj: still lacks composer"),
+            "{ok} {note}"
+        );
+        assert!(!note.contains("unfit_cleared"), "{note}");
+        let marks = crate::recipe::unfit_marks(&conn);
+        assert_eq!(marks[local][&slug].get("n").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn daemon_reprobe_asks_remote_hands_about_the_tool() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let workdir = tempfile::tempdir().unwrap();
+        crate::executor::add_executor(
+            &s,
+            TEST_NOW,
+            "hands",
+            "pulse@hands",
+            &workdir.path().display().to_string(),
+            1,
+            "*",
+            pulse_store::HUMAN_AGENT,
+        )
+        .unwrap();
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let conn = s.conn().unwrap();
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // (what the hands answer to `tool`, whether the mark stays)
+        for (answer, kept) in [
+            (
+                (1, "", "mise ERROR nosuchtool-pulse@1 is not installed"),
+                true,
+            ),
+            ((2, "", "verb not allowed: tool"), false),
+            ((0, "/home/pulse/.local/share/mise/installs/x", ""), false),
+        ] {
+            let asked2 = asked.clone();
+            let _ssh = crate::test_helpers_hands::install_run_ssh(
+                move |_cancel, argv: &[String], _stdin: &[u8], _timeout| {
+                    let text = argv
+                        .last()
+                        .and_then(|v| v.strip_prefix("b64 "))
+                        .and_then(|v| {
+                            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v)
+                                .ok()
+                        })
+                        .map(|v| String::from_utf8_lossy(&v).replace('\0', " "))
+                        .unwrap_or_else(|| argv.join(" "));
+                    if text.starts_with("probe") {
+                        return Ok((0, "hands=ok pulse=ok git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=20480".into(), String::new()));
+                    }
+                    asked2.lock().unwrap().push(text.trim().to_string());
+                    Ok((answer.0, answer.1.to_string(), answer.2.to_string()))
+                },
+            );
+            crate::recipe::mark_unfit(&conn, TEST_NOW, "hands", &slug, "tool:nosuchtool-pulse@1");
+            let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+            let marks = crate::recipe::unfit_marks(&conn);
+            let mark = marks.get("hands").and_then(|m| m.get(&slug));
+            if kept {
+                assert!(mark.is_some(), "{answer:?}: lines = {lines:?}");
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains("still lacks nosuchtool-pulse@1")),
+                    "{answer:?}: lines = {lines:?}"
+                );
+                crate::recipe::clear_unfit_project(&conn, &now, "hands", &slug, "test", "");
+            } else {
+                assert!(mark.is_none(), "{answer:?}: lines = {lines:?}");
+            }
+        }
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 3, "{asked:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|a| a == "tool export MISE_YES=1; mise where nosuchtool-pulse@1"),
+            "{asked:?}"
+        );
     }
 
     #[test]

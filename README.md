@@ -3375,7 +3375,15 @@ failed setup marked unfit here, instead of waiting a day for the marks to
 expire. While queued work waits behind an unfit mark, the maintenance pass
 also re-probes after `daemon.unfit_reprobe_minutes` (default 60; 0 off), then
 doubles the wait for that executor/project/tool up to one day; a passing daemon
-probe clears only that project's mark. A setup that fails twice the same way marks the project unfit for that
+probe clears only that project's mark. A mark about a tool (`lacks node@22`,
+`lacks bundle`, `lacks mise`) is cleared only once the tool answers - the probe
+runs `mise where PIN` or `TOOL --version` on the machine first (on remote hands
+through their `tool` verb; older hands are cleared as before), since a probe
+that looked only at git and disk sent the jobs back into the same failing
+setup every hour; while the tool is still missing the mark stays, the re-probe
+wait doubles as after a failed probe, and the mark expires a day after the
+setup failed, so the setup gets one real try a day. A pin the recipe no longer
+lists is cleared whether or not it is installed. A setup that fails twice the same way marks the project unfit for that
 executor; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle

@@ -618,6 +618,32 @@ pub(crate) fn mise_failed_pin(pins: &[String], output: &str) -> String {
     }
     pins.first().cloned().unwrap_or_default()
 }
+/// The shell line that tells whether the tool an unfit mark names is usable
+/// now, or None when the mark is not about one tool (a setup signature,
+/// services, disk, the recipe itself). A probe runs it before it clears the
+/// mark: the mark came from a setup that ran the same tool, and a probe that
+/// looked only at git and disk sent the project's jobs back into that
+/// five-to-sixteen-minute failure every hour.
+pub(crate) fn unfit_tool_check(tool: &str) -> Option<String> {
+    if let Some(pin) = tool.strip_prefix("tool:") {
+        return Some(format!(
+            "export MISE_YES=1; mise where {}",
+            crate::util::shell_quote(pin)
+        ));
+    }
+    if tool == RECIPE_UNFIT_MISE {
+        return Some("mise --version".to_string());
+    }
+    if SETUP_RULES.iter().any(|rule| rule.tool == tool) {
+        // go takes `version`, not `--version`.
+        return Some(if tool == "go" {
+            "go version".to_string()
+        } else {
+            format!("{tool} --version")
+        });
+    }
+    None
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SetupRule {
     pub(crate) group: String,
@@ -1376,19 +1402,21 @@ pub(crate) fn bump_unfit_probe(q: &impl Querier, now: &str, executor: &str, proj
     mark.insert("at".to_string(), now.to_string());
     let _ = save_unfit_marks(q, &marks);
 }
-pub(crate) fn clear_unfit(q: &impl Querier, now: &str, executor: &str) {
+/// A re-probe found the machine fit but the mark's tool still missing: the
+/// mark stays as it is - it expires UNFIT_HOURS after the setup failed, so the
+/// setup gets one real try a day - and only the re-probe wait doubles.
+pub(crate) fn keep_unfit_mark(q: &impl Querier, executor: &str, project: &str) {
     let mut marks = unfit_marks(q);
-    if marks.remove(executor).is_some() {
-        let _ = save_unfit_marks(q, &marks);
-        crate::util::event_at(
-            q,
-            now,
-            "runner",
-            "executor.fit",
-            executor,
-            Value::String(String::new()),
-        );
-    }
+    let Some(mark) = marks.get_mut(executor).and_then(|m| m.get_mut(project)) else {
+        return;
+    };
+    let n = mark
+        .get("n")
+        .and_then(|n| n.parse::<i32>().ok())
+        .unwrap_or(0)
+        + 1;
+    mark.insert("n".to_string(), n.to_string());
+    let _ = save_unfit_marks(q, &marks);
 }
 pub(crate) fn clear_unfit_project(
     q: &impl Querier,
@@ -2034,6 +2062,35 @@ mod tests {
         let got = mise_wrap_shell(&pins, "go test ./...", "/tmp/clone");
         assert!(got.contains("export MISE_IGNORED_CONFIG_PATHS=/tmp/clone MISE_YES=1;"));
         assert!(got.contains("mise exec go@1.22 node@20 -- sh -c 'go test ./...'"));
+    }
+
+    #[test]
+    fn unfit_tool_check_names_the_tool_the_mark_is_about() {
+        assert_eq!(
+            unfit_tool_check("tool:node@22.1.0").as_deref(),
+            Some("export MISE_YES=1; mise where node@22.1.0")
+        );
+        assert_eq!(
+            unfit_tool_check(RECIPE_UNFIT_MISE).as_deref(),
+            Some("mise --version")
+        );
+        assert_eq!(
+            unfit_tool_check("bundle").as_deref(),
+            Some("bundle --version")
+        );
+        assert_eq!(unfit_tool_check("go").as_deref(), Some("go version"));
+        for mark in [
+            "setup:Gemfile.lock",
+            RECIPE_UNFIT_SERVICES,
+            RECIPE_UNFIT_HANDS,
+            RECIPE_UNFIT_CHECKOUT,
+            RECIPE_UNFIT_INVALID,
+            "environment:x",
+            "disk:2048",
+            "make-believe",
+        ] {
+            assert_eq!(unfit_tool_check(mark), None, "{mark}");
+        }
     }
 
     #[test]

@@ -1490,6 +1490,87 @@ pub(crate) fn disk_floor_note(s: &pulse_store::Store) -> Option<String> {
     })
 }
 
+/// Whether the tool an unfit mark names is usable on `executor` now. Some(false)
+/// keeps the mark; None leaves the clearing to the probe as before: the mark is
+/// not about one tool, the pin left the recipe (nobody will install it), the
+/// hands predate the verb, or the machine did not answer.
+pub(crate) fn unfit_tool_present(
+    s: &pulse_store::Store,
+    executor: &str,
+    project: &str,
+    tool: &str,
+) -> Option<bool> {
+    let check = crate::recipe::unfit_tool_check(tool)?;
+    if let Some(pin) = tool.strip_prefix("tool:")
+        && let Ok(conn) = s.conn()
+    {
+        let row = must_one(&conn, "SELECT * FROM projects WHERE slug = ?", &[&project]);
+        if !is_nil(&row)
+            && let (Some(r), _, _) = crate::recipe::recipe_at_head(s, row)
+            && !r.tools.iter().any(|t| t == pin)
+        {
+            return None;
+        }
+    }
+    if executor == LOCAL_EXECUTOR {
+        let work = local_work_root(s);
+        let _ = std::fs::create_dir_all(&work);
+        return crate::proc::run_group(
+            &pulse_bus::CancellationToken::new(),
+            &["/bin/sh".into(), "-c".into(), check],
+            &work.display().to_string(),
+            &crate::proc::environ(),
+            &[],
+            Duration::from_secs(60),
+        )
+        .ok()
+        .map(|out| !out.timeout && out.exit_code == 0);
+    }
+    let r = executor_row(s, executor);
+    if is_nil(&r) {
+        return None;
+    }
+    match ssh_run(&r, &["tool".into(), check], &[], Duration::from_secs(90)) {
+        Ok((0, _, _)) => Some(true),
+        Ok((_, _, err_text)) if err_text.contains("verb not allowed") => None,
+        Ok(_) => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// A human's passing probe clears the executor's unfit marks, except a mark about
+/// a tool that is still missing: the next setup would raise it again. Returns the
+/// projects cleared and a line per mark kept, for the probe note.
+fn clear_unfit_after_probe(
+    s: &pulse_store::Store,
+    conn: &impl crate::util::Querier,
+    executor: &str,
+    actor: &str,
+    now: &str,
+) -> (Vec<String>, Vec<String>) {
+    let mut cleared = Vec::new();
+    let mut kept = Vec::new();
+    for (project, tool) in crate::recipe::unfit_projects(conn, executor, now) {
+        if unfit_tool_present(s, executor, &project, &tool) == Some(false) {
+            kept.push(format!(
+                "mark kept for {project}: still {}",
+                crate::recipe::unfit_phrase(&tool)
+            ));
+        } else {
+            crate::recipe::clear_unfit_project(
+                conn,
+                now,
+                executor,
+                &project,
+                actor,
+                "probe passed",
+            );
+            cleared.push(project);
+        }
+    }
+    (cleared, kept)
+}
+
 fn probe_local(s: &pulse_store::Store, actor: &str, now: &str) -> (bool, String) {
     let mut problems = Vec::new();
     let gitv = std::process::Command::new("git")
@@ -1530,13 +1611,12 @@ fn probe_local(s: &pulse_store::Store, actor: &str, now: &str) -> (bool, String)
     if actor == crate::util::HUMAN_AGENT
         && let Ok(conn) = s.conn()
     {
-        let marks = crate::recipe::unfit_projects(&conn, LOCAL_EXECUTOR, now);
-        crate::recipe::clear_unfit(&conn, now, LOCAL_EXECUTOR);
-        if !marks.is_empty() {
-            note.push_str(&format!(
-                " unfit_cleared={}",
-                marks.keys().cloned().collect::<Vec<_>>().join(",")
-            ));
+        let (cleared, kept) = clear_unfit_after_probe(s, &conn, LOCAL_EXECUTOR, actor, now);
+        if !cleared.is_empty() {
+            note.push_str(&format!(" unfit_cleared={}", cleared.join(",")));
+        }
+        for line in kept {
+            note.push_str(&format!("; {line}"));
         }
     }
     (true, note)
@@ -1706,15 +1786,19 @@ pub(crate) fn probe_executor(
             ],
         );
     } else if ok {
+        if actor == crate::util::HUMAN_AGENT {
+            let (_, kept) = clear_unfit_after_probe(s, &conn, name, actor, now);
+            for line in kept {
+                note.push_str(&format!("; {line}"));
+            }
+            note = trunc(&note, 300);
+        }
         let args: [&dyn ToSql; 4] = [&now, &note, &actor, &name];
         exec1(
             &conn,
             "UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0, backoff_minutes = 0, next_probe_at = '', status = CASE WHEN status = 'drained' AND ? = 'human' THEN 'active' WHEN status = 'unreachable' THEN 'active' ELSE status END WHERE name = ?",
             &args,
         );
-        if actor == crate::util::HUMAN_AGENT {
-            crate::recipe::clear_unfit(&conn, now, name);
-        }
     } else {
         exec1(
             &conn,

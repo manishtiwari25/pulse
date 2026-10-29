@@ -578,6 +578,21 @@ impl Hands {
             )
         }))
     }
+    /// Answers the hub's question whether a tool a setup missed is usable
+    /// now, so a re-probe does not clear an unfit mark the next setup would
+    /// raise again. The check is the hub's line, run the way a setup line is.
+    pub(crate) fn tool(&mut self, check: &str) -> Result<()> {
+        let workdir = self.workdir.clone();
+        let _ = std::fs::create_dir_all(&workdir);
+        Err(anyhow!(HandsExit {
+            code: self.with_timeout(
+                Duration::from_secs(60),
+                &workdir,
+                &["bash".into(), "-c".into(), check.to_string()],
+                &BTreeMap::new()
+            )
+        }))
+    }
     pub(crate) fn clean(&mut self, job: &str) -> Result<()> {
         let dir = self.job_dir(job)?;
         // Processes the worker left running under the job directory go first;
@@ -721,6 +736,10 @@ impl Hands {
                 }
                 self.verify(&rest[0], &rest[1], &rest[2..])
             }
+            "tool" => {
+                need(1, "tool CHECK")?;
+                self.tool(&rest[0])
+            }
             "clean" => {
                 need(1, "clean JOB")?;
                 self.clean(&rest[0])
@@ -767,6 +786,27 @@ mod tests {
             stdout: Box::new(Vec::<u8>::new()),
             stderr: Box::new(Vec::<u8>::new()),
         }
+    }
+
+    #[test]
+    fn hands_tool_answers_with_the_checks_exit_code() {
+        let _serial = crate::test_helpers::serial();
+        let workdir = tempfile::tempdir().unwrap();
+        let mut h = make_hands(&workdir.path().display().to_string(), "");
+        for (check, code) in [
+            ("exit 0", 0),
+            ("exit 3", 3),
+            ("command -v no-such-tool-pulse >/dev/null", 1),
+        ] {
+            let err = h.hands_main(&["tool".into(), check.into()]).unwrap_err();
+            assert_eq!(
+                crate::test_helpers_hands::hands_exit_code(err),
+                code,
+                "{check}"
+            );
+        }
+        let err = h.hands_main(&["tool".into()]).unwrap_err().to_string();
+        assert!(err.contains("tool CHECK"), "{err}");
     }
 
     #[test]
