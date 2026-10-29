@@ -40,12 +40,14 @@ pub fn flags(fs: &mut FlagSet) {
 /// Runs `pulse agents list|lint|schema`; `args[0]` is the word.
 pub fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("");
+    if sub == "schema" {
+        return write_json(&mut c.out, &agent_schema());
+    }
     let store = open_store(c)?;
     let cwd = checkout(c, fs, store.as_ref());
     match sub {
         "list" => list(c, store.as_ref(), &cwd),
         "lint" => lint(c, store.as_ref(), &cwd, &args[1..]),
-        "schema" => write_json(&mut c.out, &agent_schema()),
         other => Err(errorf(
             2,
             &format!("pulse agents: unknown subcommand {other:?}"),

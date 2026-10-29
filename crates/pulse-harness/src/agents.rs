@@ -1692,7 +1692,7 @@ pub fn agent_schema() -> Value {
     let front = properties(FRONT_KEYS, "pulse", pulse);
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://github.com/manishtiwari25/pulse/schemas/agent-front-matter.json",
+        "$id": concat!(env!("CARGO_PKG_REPOSITORY"), "/schemas/agent-front-matter.json"),
         "title": "PULSE agent file front matter",
         "description": format!("The front matter of a `.pulse/agents/<name>.md` (or `.claude/agents`, `.github/agents`) file. The body after it is the agent's standing instructions, up to {AGENT_BODY_LIMIT} characters. Names fit ^[a-z0-9][a-z0-9-]{{0,63}}$."),
         "type": "object",
