@@ -37,6 +37,9 @@ pub const USEFUL_KINDS: &[&str] = &[
     "amendment",
     "opinion",
 ];
+/// The job-kind names, in the order the CLI lists them. The specs behind
+/// each name live in `pulse_store::kinds` (`kind("improve")`); a unit test
+/// there keeps this list and `KIND_SPECS` naming exactly the same kinds.
 pub const JOB_KINDS: &[&str] = &[
     "onboard",
     "task",
