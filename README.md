@@ -2955,11 +2955,16 @@ the daemon then says `self-update: brain HEAD <rev> differs from the running
 free so the build starts within one run, and the experiment lane measures
 nothing new meanwhile, as when the build waits for the lane. Nor does it start
 until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
-(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
-apart, and eight release builds a day, each followed by a restart drain, were
-the price of building on every landing - the daemon says `building once it has
-stood for 15 min` once, and a further landing restarts the clock, so the burst
-builds once, from its last commit. A build that then exits three times early is put back to
+(default 60; 0 builds at once): a fleet lands a burst of brain branches minutes
+apart, and five release builds a day, each followed by a restart window that
+refuses the long kinds of run, were the price of building on every landing -
+the daemon says `building once it has stood for 60 min` once, and a further
+landing restarts the clock, so the burst builds once, from its last commit. Nor
+does it start while an improve, task or experiment job is queued that the
+restart the build ends in would refuse (its run is not expected to end before
+the runs in flight): the daemon says `building once the queued improve runs on
+<project> have started` once and lets them start first, for at most an hour.
+A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
 when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
@@ -3253,7 +3258,8 @@ longer pays for waits while a smaller one starts (the first hour of the
 admission held every slot behind the fleet's largest footprint: 1455 MB of room
 and nothing started, while four of five projects took under 900 MB). One run is
 always admitted while none is in flight so a small disk still measures itself,
-and slots held back this way are not counted as hands wanted. A held project
+and a slot held back this way leaves the queue as short of hands as a busy
+one (below). A held project
 shows in the idle reason as `N queued wait: N for <project> (local needs M MB of
 disk)`, and a slot no project fits says `disk headroom: R MB above
 daemon.min_free_mb F with K run(s) setting up; waits: <project> (M MB), ...`;
@@ -3283,7 +3289,12 @@ the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
 macOS itself reports critical memory pressure; the runs in flight finish, the idle line
 says `machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 24` or `machine
 saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
-change rather than per tick, and slots held this way are not hands wanted.
+change rather than per tick. A queue behind held slots is as short of hands
+as one behind busy slots: once an improve or task job has waited half an hour
+that way, the daemon rents a machine itself when `compute.auto_approve` is on
+and `compute.max_vms` and `compute.max_hours_per_day` allow (one open request
+at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts `hands
+wanted` to the owner once, saying why no machine was rented.
 The kernel's memory warning (the level under critical, which a 16 GB laptop
 reports for hours with a browser open) is not a hold: while it stands the
 daemon starts half as many local runs at once (`daemon.max_jobs` halved,

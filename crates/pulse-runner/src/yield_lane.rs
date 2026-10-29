@@ -28,21 +28,13 @@ pub(crate) const YIELD_ACTION: &str = "job.yield";
 /// queued while an owner-driven work job of the same project waits. The red
 /// default branch's fix job passes: the owner's work waits behind it.
 pub(crate) fn fleet_waits_sql() -> String {
-    let work = work_kinds_sql();
+    let work = crate::jobs::work_kinds_sql();
     format!(
         "NOT (j.kind IN ({work}) AND NOT {} AND j.source NOT LIKE '{}%' AND EXISTS (SELECT 1 FROM jobs q JOIN projects qp ON qp.slug = q.project WHERE q.project = j.project AND q.status = 'queued' AND qp.status = 'active' AND q.kind IN ({work}) AND {}))",
         crate::jobs::OWNER_DRIVEN_SQL,
         crate::redbase::RED_BASE_SOURCE_PREFIX,
         crate::jobs::owner_driven_sql("q")
     )
-}
-
-fn work_kinds_sql() -> String {
-    crate::jobs::WORK_KINDS
-        .iter()
-        .map(|k| format!("'{k}'"))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 /// One pass: for every project with an owner-driven work job queued and
@@ -54,7 +46,7 @@ pub(crate) fn yield_lanes_to_owner(s: &pulse_store::Store, now: &str, actor: &st
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
-    let work = work_kinds_sql();
+    let work = crate::jobs::work_kinds_sql();
     let waiting = must_rows(
         &conn,
         &format!(

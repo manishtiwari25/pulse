@@ -114,6 +114,15 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
 /// read and post; they keep the plain `parallel_per_project` limit.
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
 
+/// [`WORK_KINDS`] as a SQL list for `kind IN (...)`.
+pub(crate) fn work_kinds_sql() -> String {
+    WORK_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// The jobs the owner is waiting on, as a clause over `j`: the lead's own
 /// runs, answers, the jobs a lead planned for an owner task
 /// (`task:TASK-NNN` or `task:TASK-NNN:label`), and the security updates the
@@ -345,11 +354,7 @@ pub(crate) fn lease_job(
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many work jobs as fit the
         // commit cap (project_lanes); its research, ballots and answers keep the plain limit.
-        let work_kinds = WORK_KINDS
-            .iter()
-            .map(|k| format!("'{k}'"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let work_kinds = work_kinds_sql();
         for (slug, lanes) in &narrowed {
             sql.push_str(&format!(
                 " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"

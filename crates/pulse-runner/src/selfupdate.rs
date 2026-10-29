@@ -32,7 +32,15 @@ pub(crate) struct SelfUpdateState {
     /// has stood for `daemon.self_update_settle_minutes`.
     pub(crate) settle_rev: String,
     pub(crate) settle_since: String,
+    /// Since when (store clock) the build waits for queued work the restart
+    /// it ends in would refuse; empty while it does not.
+    pub(crate) refused_since: String,
 }
+
+/// How long the build waits for queued work the restart would refuse to
+/// start first: past an hour the queue is stuck on something a restart does
+/// not change, and the update should not wait behind it.
+pub(crate) const REFUSED_WORK_WAIT_MINUTES: f64 = 60.0;
 
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
     LazyLock::new(|| RwLock::new(SelfUpdateState::default()));
@@ -53,6 +61,10 @@ pub(crate) struct SelfUpdateEnv {
     /// whenever the checkout differs, as before the governor.
     #[serde(skip)]
     pub governor: Option<crate::daemon_load::Limits>,
+    /// The queued work a restart armed now would refuse to start while the
+    /// runs in flight finish ("improve runs on brain"); the daemon sets it
+    /// per pass, empty when there is none.
+    pub refused_queued: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -212,6 +224,30 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
             return lines;
         }
     }
+    // The build ends in a restart, and a restart armed with runs in flight
+    // starts only the kinds of run that end before them: an improve job
+    // queued behind it would wait the whole window. It starts first.
+    if !env.refused_queued.is_empty() {
+        if st.refused_since.is_empty() {
+            st.refused_since = now.clone();
+        }
+        let until = crate::util::plus_minutes(&st.refused_since, REFUSED_WORK_WAIT_MINUTES);
+        if crate::util::must_iso(&now) < crate::util::must_iso(&until) {
+            say(
+                &mut st,
+                &mut lines,
+                format!(
+                    "brain HEAD {} differs from the running {}; building once the queued {} have started, as the restart the build ends in would refuse them while the runs in flight finish",
+                    short_rev(rev.clone()),
+                    short_rev(env.revision.clone()),
+                    env.refused_queued
+                ),
+            );
+            return lines;
+        }
+    } else {
+        st.refused_since.clear();
+    }
     if which::which(&env.cargo_cmd).is_err() {
         say(
             &mut st,
@@ -268,6 +304,7 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
         return lines;
     }
     st.last_skip.clear();
+    st.refused_since.clear();
     st.inflight = true;
     lines.push(format!(
         "self-update: brain HEAD {} differs from the running {}; building",
@@ -1044,6 +1081,49 @@ mod tests {
         assert!(
             lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &second[..12])),
             "one build for two landings: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn self_update_lets_queued_work_the_restart_would_refuse_start_first() {
+        let _serial = serial();
+        let _guard = pulse_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        let rev = head_of(&repo);
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let mut waiting = env.clone();
+        waiting.refused_queued = "improve runs on proj".into();
+        let lines = tend_binary(&s, at(0.0), waiting.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "brain HEAD {} differs from the running 000000000000; building once the queued improve runs on proj have started",
+                    &rev[..12]
+                )),
+            "queued work first: {lines:?}"
+        );
+        assert!(
+            !update_pending(),
+            "the wait keeps no slot free: the work needs it"
+        );
+        let lines = tend_binary(&s, at(5.0), waiting.clone());
+        assert!(lines.is_empty(), "said once: {lines:?}");
+        assert!(
+            !file_exists(&format!("{}.new", env.binary)),
+            "something was built while the work waited"
+        );
+        // An hour on, the queue is stuck on something else: the build goes ahead.
+        let lines = tend_binary(&s, at(REFUSED_WORK_WAIT_MINUTES), waiting);
+        assert!(
+            lines.len() == 1 && lines[0].ends_with("; building"),
+            "an hour is the most it waits: {lines:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, at(61.0), env);
+        assert!(
+            lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &rev[..12])),
+            "built after the wait: {lines:?}"
         );
     }
 
