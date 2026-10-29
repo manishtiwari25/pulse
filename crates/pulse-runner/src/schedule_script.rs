@@ -1060,7 +1060,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "schedules: 1 check/watch script due, held - machine saturated: load 40.2 is over daemon.max_load 4".to_string()
+                "schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 4".to_string()
             ]
         );
         assert!(is_hold_line(&lines[0]));
@@ -1204,7 +1204,7 @@ mod tests {
         });
         let out = once_daemon(&s, opts());
         assert!(
-            out.contains("schedules: 1 check/watch script due, held - machine saturated: load 40.2 is over daemon.max_load 4"),
+            out.contains("schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 4"),
             "{out}"
         );
         assert_eq!(schedules::get(&s, &sc.id).unwrap().runs, 0, "{out}");

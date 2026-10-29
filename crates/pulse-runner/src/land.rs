@@ -1415,7 +1415,7 @@ pub(crate) fn land_branch_with_registry(
             // The throwaway worktree starts bare: no node_modules, no .venv. The same setup a
             // worker clone gets (the recipe's `setup:` lines, else the lockfile rules) runs here
             // first, from {def}'s recipe so a branch cannot change what installs for its own check.
-            let setup_minutes = minutes.max(crate::recipe::SETUP_MINUTES);
+            let setup_minutes = crate::recipe::SETUP_MINUTES;
             let (base_recipe, base_problems, _) =
                 crate::recipe::read_recipe(s, &slug, &root, &before);
             let base_recipe = if base_problems.is_empty() {

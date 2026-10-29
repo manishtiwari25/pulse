@@ -191,7 +191,8 @@ pub(crate) fn env_check(
                 && valid
                 && let Some(r) = &recipe
             {
-                why = crate::recipe::recipe_block(r, name != crate::executor::LOCAL_EXECUTOR);
+                why =
+                    crate::recipe::recipe_block(r, crate::recipe::hands_lack_recipe(&conn, &name));
             }
             if why.is_empty() && name == crate::executor::LOCAL_EXECUTOR {
                 why = local_tools_missing(

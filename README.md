@@ -1777,7 +1777,13 @@ instead of waiting for another project's verify command. One worker holds a
 project's landing lock and lands that project's ready branches serially; later
 passes skip a project whose worker is still running. Experiments stay on a
 second thread, the experiment lane, which measures one experiment at a time; a
-ninety-minute measurement therefore holds no plain landing. The lane reuses a
+ninety-minute measurement therefore holds no plain landing. The lane obeys the
+load governor: while the machine is saturated (the `machine saturated` hold
+below) it does not start a measurement - the log says `landing experiment
+<branch> (<project>) waits: machine saturated: …` once per hold and the
+experiment is tried again after `lane.short_retry_minutes` - and a
+measurement in progress counts as a local run under `daemon.max_jobs`, since
+its two builds are load like any other. The lane reuses a
 cached baseline when the default-branch commit, fixture hash and TTL still
 match, logging `baseline for <commit7> reused from <at> (score <x>)`; archive
 notes say `baseline: reused <at>` or `baseline: measured`. It measures the
@@ -1815,7 +1821,12 @@ experiment the lane could not land stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
 `land.deferred` with the reason and `retry_after_min`. The daemon log says
-`retry in 20m` (or the configured value). The measurement harness the lane starts
+`retry in 20m` (or the configured value). The retries are bounded: an
+experiment still deferred for a reason of its own (a governor hold does not
+count) `lane.retry_minutes` × 72 (`EXPERIMENT_DEFERRAL_RETRIES`, a day at the
+default) after its first such deferral is given up - the job fails with a
+`land.missing` event naming the wait and the last reason, the branch stays
+for review - where one experiment was deferred for eight days. The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt; it runs on `measure_model`
 (`worker_model` while empty). When the daemon restarts on a new
@@ -2967,7 +2978,14 @@ Project fairness includes lease reservations before the worker's run thread
 records its start, so dispatch can spread work across projects without waiting
 for their processes to launch. Without the owner-first key a six-project fleet
 on four workers made an urgent task wait a full round of other projects'
-improve jobs (ninety minutes, measured) before its first job leased.
+improve jobs (ninety minutes, measured) before its first job leased. Between
+the owner's work and the fairness comes the work class: the last half of the
+local slots under `daemon.max_jobs` (rounded up: two of four) take a queued
+improve, task or experiment job before a reflect, ballot or clean, and every
+slot does once such a job has waited two hours (`WORK_WAITED_HOURS`) - the
+meta kinds are many and short, and four slots cycling through them for every
+project kept an improve job queued for a day while fairness saw each project
+served; a kept slot still takes the meta kinds when no work is queued.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
 ### Services and self-update
@@ -3024,11 +3042,16 @@ the daemon then says `self-update: brain HEAD <rev> differs from the running
 free so the build starts within one run, and the experiment lane measures
 nothing new meanwhile, as when the build waits for the lane. Nor does it start
 until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
-(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
-apart, and eight release builds a day, each followed by a restart drain, were
-the price of building on every landing - the daemon says `building once it has
-stood for 15 min` once, and a further landing restarts the clock, so the burst
-builds once, from its last commit. A build that then exits three times early is put back to
+(default 60; 0 builds at once): a fleet lands a burst of brain branches minutes
+apart, and five release builds a day, each followed by a restart window that
+refuses the long kinds of run, were the price of building on every landing -
+the daemon says `building once it has stood for 60 min` once, and a further
+landing restarts the clock, so the burst builds once, from its last commit. Nor
+does it start while an improve, task or experiment job is queued that the
+restart the build ends in would refuse (its run is not expected to end before
+the runs in flight): the daemon says `building once the queued improve runs on
+<project> have started` once and lets them start first, for at most an hour.
+A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
 when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
@@ -3259,7 +3282,9 @@ the daemon never ran). The verify command runs in a
 throwaway worktree that starts bare, so the daemon first runs the project's
 setup there - the recipe's `setup:` lines from the default branch, else the
 lockfile rules (`corepack pnpm install`, `uv sync`, `npm ci`, …) that a worker
-clone gets - within `minutes_per_job` or ten minutes, whichever is longer; a
+clone gets - within ten minutes (`SETUP_MINUTES`, the budget every setup
+gets, whatever `minutes_per_job` says: a hung `pnpm install` once held a slot
+for the two hours a job may run); a
 setup that fails on the machine defers the landing with a `land.deferred` event
 naming the file and the failure, and nothing is charged to the branch. Each worker is one `pulse harness
 run` process (the daemon's own binary here; on a paired hand the shipped
@@ -3322,7 +3347,8 @@ longer pays for waits while a smaller one starts (the first hour of the
 admission held every slot behind the fleet's largest footprint: 1455 MB of room
 and nothing started, while four of five projects took under 900 MB). One run is
 always admitted while none is in flight so a small disk still measures itself,
-and slots held back this way are not counted as hands wanted. A held project
+and a slot held back this way leaves the queue as short of hands as a busy
+one (below). A held project
 shows in the idle reason as `N queued wait: N for <project> (local needs M MB of
 disk)`, and a slot no project fits says `disk headroom: R MB above
 daemon.min_free_mb F with K run(s) setting up; waits: <project> (M MB), ...`;
@@ -3340,14 +3366,29 @@ governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
 cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
 children run at nice 10, builds at -jJ, the daemon itself at nice 5` names what
 is in force.
-Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive
-and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
-new while the load is over `daemon.max_load` (default: the number of CPUs) or
+Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive,
+speculative and purgeable pages on macOS - the caches the kernel drops on
+request, a gigabyte or two on a 16 GB laptop whose `free` reads a few hundred
+megabytes - `MemAvailable` on Linux) and leases nothing
+new while the load is over `daemon.max_load` (default: twice the number of
+CPUs - the load average counts runnable threads, and a laptop with an
+emulator or a browser build sits at its CPU count for hours while its CPUs
+are not busy; a line at the CPU count held the fleet all day) or
 the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
-macOS itself reports memory pressure; the runs in flight finish, the idle line
-says `machine saturated: load 40.1 is over daemon.max_load 12` or `machine
+macOS itself reports critical memory pressure; the runs in flight finish, the idle line
+says `machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 24` or `machine
 saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
-change rather than per tick, and slots held this way are not hands wanted.
+change rather than per tick. A queue behind held slots is as short of hands
+as one behind busy slots: once an improve or task job has waited half an hour
+that way, the daemon rents a machine itself when `compute.auto_approve` is on
+and `compute.max_vms` and `compute.max_hours_per_day` allow (one open request
+at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts `hands
+wanted` to the owner once, saying why no machine was rented.
+The kernel's memory warning (the level under critical, which a 16 GB laptop
+reports for hours with a browser open) is not a hold: while it stands the
+daemon starts half as many local runs at once (`daemon.max_jobs` halved,
+never under one), and the experiment lane's measurements in progress count
+as runs under the cap, since their builds are load like any other.
 A load hold alone (not memory, not a restart window) keeps one local slot
 open as the express lane: it leases only the owner's work - lead runs,
 answers, `task:` jobs - while the load stays under twice `daemon.max_load`
@@ -3392,7 +3433,9 @@ the laptop hot for most of a day, so the daemon also exports
 `CARGO_BUILD_JOBS=<daemon.build_jobs>` (default 0: half the physical cores) to
 everything it spawns - a worker's `cargo test`, the pre-commit verification
 that inherits the worker's environment, the landing verification, the
-self-update build's `-j` - whenever the environment does not set it already,
+self-update build's `-j`, the experiment lane's measurements (each fixture's
+share of the cores, `evolve.measure_parallel`, never over this cap) - whenever
+the environment does not set it already,
 so an owner's own export or a recipe's `env:` wins and a `-j` on a command
 line still overrides it. Other toolchains read their own variables
 (`GOMAXPROCS`, `MAKEFLAGS`); a recipe sets those where a project needs them. The daemon itself
@@ -3407,7 +3450,21 @@ failed setup marked unfit here, instead of waiting a day for the marks to
 expire. While queued work waits behind an unfit mark, the maintenance pass
 also re-probes after `daemon.unfit_reprobe_minutes` (default 60; 0 off), then
 doubles the wait for that executor/project/tool up to one day; a passing daemon
-probe clears only that project's mark. A setup that fails twice the same way marks the project unfit for that
+probe clears only that project's mark. A mark about a tool (`lacks node@22`,
+`lacks bundle`, `lacks mise`) is cleared only once the tool answers - the probe
+runs `mise where PIN` or `TOOL --version` on the machine first (on remote hands
+through their `tool` verb; older hands are cleared as before), since a probe
+that looked only at git and disk sent the jobs back into the same failing
+setup every hour; while the tool is still missing the mark stays, the re-probe
+wait doubles as after a failed probe, and the mark expires a day after the
+setup failed, so the setup gets one real try a day. A pin the recipe no longer
+lists is cleared whether or not it is installed. Remote hands take a recipe's
+`tools:` and `env:` the way the hub does - the worker runs under `mise exec
+PIN… --` with the recipe's env set, after the `setup:` lines ran there - once
+their probe answers `recipe=1` (hands shipped since this landed do; `pulse
+pair` refreshes older ones, then `pulse executor probe NAME`); until then such
+a project runs on the hub only, as before, which kept five of eight projects off
+the hands. A setup that fails twice the same way marks the project unfit for that
 executor; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle

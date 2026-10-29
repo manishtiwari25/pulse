@@ -289,12 +289,12 @@ pub(crate) fn hands_wanted(
     let slug = brain.str("slug");
     let summary = crate::util::trunc(
         &format!(
-            "hands wanted: {queued} job(s) waited {minutes} min with all {slots} slot(s) busy; pairing another machine (pulse pair) or raising workers/parallel_per_project would shorten the queue"
+            "hands wanted: {queued} job(s) waited {minutes} min with every slot busy or held ({slots} slot(s)); pairing another machine (pulse pair), compute.auto_approve, or raising workers/parallel_per_project would shorten the queue"
         ),
         230,
     );
     let body = format!(
-        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy ({now}). More hands would shorten the queue: pair another machine with `pulse pair` (pulse record show WF-executors), raise `workers` on a machine that has the capacity, or raise `parallel_per_project` when the wait is on one project. The human owns machines and money; this post is a measurement, not a request to act.\n"
+        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy or held by this machine's load or disk ({now}). More hands would shorten the queue: pair another machine with `pulse pair` (pulse record show WF-executors), set `compute.auto_approve` with `compute.max_vms` so the daemon rents one within your caps, raise `workers` on a machine that has the capacity, or raise `parallel_per_project` when the wait is on one project. The human owns machines and money; this post is a measurement, not a request to act.\n"
     );
     let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
@@ -322,6 +322,103 @@ pub(crate) fn hands_wanted(
         );
     }
     post
+}
+
+/// Hours a machine the daemon rents on its own is asked for: enough for
+/// the queued job and its verify, short enough that a machine the queue no
+/// longer needs costs an afternoon, not a day (the compute worker releases
+/// an idle one earlier).
+pub(crate) const AUTO_COMPUTE_HOURS: i32 = 4;
+
+/// Why `auto_compute` rented nothing: a request is open already (a machine
+/// is coming, or `pending` waits for the owner), or the caps or the queue
+/// said no.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NoAutoCompute {
+    Open { id: String, status: String },
+    Why(String),
+}
+
+impl std::fmt::Display for NoAutoCompute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open { id, status } => write!(f, "compute request {id} is {status}"),
+            Self::Why(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Rents a machine for a starved queue when the owner pre-authorised it:
+/// `compute.auto_approve` within `compute.max_vms` and
+/// `compute.max_hours_per_day`, one open request at a time, and only for a
+/// work kind (improve, task) that has itself waited `HANDS_WANTED_MINUTES`.
+/// Until now the daemon only posted "hands wanted" to an owner who may be
+/// away for the day while the caps said the machine could be rented.
+pub(crate) fn auto_compute(
+    s: &pulse_store::Store,
+    queued: i32,
+    waited: i32,
+    now: &str,
+    actor: &str,
+) -> Result<pulse_tasks::compute::ComputeRequest, NoAutoCompute> {
+    let why = |w: String| NoAutoCompute::Why(w);
+    let caps = pulse_tasks::compute::get_caps(s).map_err(|e| why(e.to_string()))?;
+    if !caps.auto_approve {
+        return Err(why("compute.auto_approve is off".into()));
+    }
+    if caps.vms_now >= caps.max_vms {
+        return Err(why(format!(
+            "compute.max_vms {} reached ({} in use)",
+            caps.max_vms, caps.vms_now
+        )));
+    }
+    if caps.max_hours_per_day > 0 && caps.hours_today + AUTO_COMPUTE_HOURS > caps.max_hours_per_day
+    {
+        return Err(why(format!(
+            "compute.max_hours_per_day {} would be passed ({} h today, {AUTO_COMPUTE_HOURS} h asked)",
+            caps.max_hours_per_day, caps.hours_today
+        )));
+    }
+    let conn = s.conn().map_err(|e| why(e.to_string()))?;
+    let open = crate::util::must_one(
+        &conn,
+        "SELECT id, status FROM compute_requests WHERE status IN ('pending', 'approved', 'provisioning', 'ready') ORDER BY id DESC LIMIT 1",
+        &[],
+    );
+    if !open.0.is_empty() {
+        return Err(NoAutoCompute::Open {
+            id: open.str("id"),
+            status: open.str("status"),
+        });
+    }
+    let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
+    let job = crate::util::must_one(
+        &conn,
+        &format!(
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? ORDER BY j.created_at LIMIT 1",
+            crate::jobs::work_kinds_sql()
+        ),
+        &[&since],
+    );
+    if job.0.is_empty() {
+        return Err(why(format!(
+            "no improve or task job has waited {HANDS_WANTED_MINUTES} min"
+        )));
+    }
+    let reason = format!(
+        "{queued} job(s) waited {waited} min with every slot on this machine busy or held; {} ({}) is first in line",
+        job.str("id"),
+        job.str("kind")
+    );
+    pulse_tasks::compute::request_compute(
+        s,
+        &job.str("project"),
+        actor,
+        "",
+        AUTO_COMPUTE_HOURS,
+        &reason,
+    )
+    .map_err(|e| why(e.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -714,6 +811,52 @@ fn kinds_within(fits: &Fits, left: Duration) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The queued work (project, kind pairs of `WORK_KINDS` and experiments on
+/// active projects) a restart armed now would refuse to start while the
+/// runs in flight finish. A self-update build ends in that restart, so it
+/// waits for them to start; with nothing in flight the restart is at once
+/// and refuses nothing.
+fn refused_queued_work(
+    s: &pulse_store::Store,
+    inflight: &BTreeMap<String, Dispatch>,
+    now: &str,
+) -> Vec<(String, String)> {
+    if inflight.is_empty() {
+        return Vec::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let queued: Vec<(String, String)> = crate::util::must_rows(
+        &conn,
+        &format!(
+            "SELECT DISTINCT j.project, j.kind FROM jobs j JOIN projects p ON p.slug = j.project
+             WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}, 'experiment')
+             ORDER BY j.project, j.kind",
+            crate::jobs::work_kinds_sql()
+        ),
+        &[],
+    )
+    .iter()
+    .map(|r| (r.str("project"), r.str("kind")))
+    .collect();
+    if queued.is_empty() {
+        return Vec::new();
+    }
+    let fits = kind_fits(s);
+    let anchors = inflight.keys().cloned().collect();
+    let window = restart_window(
+        restart_drain(s),
+        now,
+        anchor_ends(s, inflight, &anchors, &fits),
+    );
+    let within = kinds_within(&fits, window);
+    queued
+        .into_iter()
+        .filter(|pair| !within.contains(pair))
+        .collect()
+}
+
 /// The shortest expected run among the pairs: the window nothing fits.
 fn shortest_fit(fits: &Fits) -> Duration {
     fits.values().copied().min().unwrap_or_default()
@@ -806,6 +949,71 @@ fn restart_starts_phrase(
             "{who} may start for up to {}",
             pulse_cli::format_duration(drain)
         )
+    }
+}
+
+/// Whether the governor would admit work now: read between the polls of an
+/// idle sleep under a hold, so the queue moves when the load does.
+pub(crate) fn hold_lifted(
+    s: &pulse_store::Store,
+    machine: &crate::daemon_load::Machine,
+    flag_max_jobs: i32,
+) -> bool {
+    let limits = crate::daemon_load::limits(s, machine, flag_max_jobs);
+    crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure()).is_none()
+}
+
+/// What an idle sleep watches between its polls.
+pub(crate) struct IdleWatch<'a> {
+    pub(crate) s: &'a pulse_store::Store,
+    pub(crate) machine: &'a crate::daemon_load::Machine,
+    pub(crate) flag_max_jobs: i32,
+    pub(crate) done: crossbeam_channel::Receiver<()>,
+    pub(crate) compute_wake: &'a crossbeam_channel::Receiver<()>,
+    /// Time between polls: `DISPATCH_TICK_SECONDS` in the daemon.
+    pub(crate) poll: Duration,
+}
+
+/// Waits `d` while nothing runs, waking early when the queue changes, the
+/// bus or compute has news or, with `held` (the governor closed the slots
+/// this tick with work queued), when the machine's pressure no longer
+/// holds: a hold that lifted two minutes into a five-minute sleep used to
+/// cost the rest of it, every time. False once the loop is cancelled.
+pub(crate) fn idle_wait(
+    w: &IdleWatch<'_>,
+    wake_events: &mut Option<crossbeam_channel::Receiver<pulse_bus::Event>>,
+    d: Duration,
+    held: bool,
+) -> bool {
+    let never_wake = crossbeam_channel::never::<pulse_bus::Event>();
+    let start_queued = active_queued_count(w.s);
+    let deadline = std::time::Instant::now() + d;
+    loop {
+        let now_i = std::time::Instant::now();
+        if now_i >= deadline {
+            return true;
+        }
+        let wait = std::cmp::min(w.poll, deadline.saturating_duration_since(now_i));
+        let timer = crossbeam_channel::after(wait);
+        crossbeam_channel::select! {
+            recv(w.done) -> _ => return false,
+            recv(timer) -> _ => {
+                if active_queued_count(w.s) != start_queued {
+                    return true;
+                }
+                if held && hold_lifted(w.s, w.machine, w.flag_max_jobs) {
+                    return true;
+                }
+            },
+            recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
+                if msg.is_err() {
+                    *wake_events = None;
+                    continue;
+                }
+                return true;
+            },
+            recv(w.compute_wake) -> _ => return true,
+        }
     }
 }
 
@@ -1128,41 +1336,21 @@ pub(crate) fn daemon(
     };
     let sleep_idle_wait =
         |wake_events: &mut Option<crossbeam_channel::Receiver<pulse_bus::Event>>,
-         d: Duration|
+         d: Duration,
+         held: bool|
          -> bool {
             if let Some(sleep) = &o.sleep {
                 return sleep(d);
             }
-            let start_queued = active_queued_count(s);
-            let deadline = std::time::Instant::now() + d;
-            let done = cancel.done();
-            loop {
-                let now_i = std::time::Instant::now();
-                if now_i >= deadline {
-                    return true;
-                }
-                let wait = std::cmp::min(
-                    Duration::from_secs(DISPATCH_TICK_SECONDS as u64),
-                    deadline.saturating_duration_since(now_i),
-                );
-                let timer = crossbeam_channel::after(wait);
-                crossbeam_channel::select! {
-                    recv(done) -> _ => return false,
-                    recv(timer) -> _ => {
-                        if active_queued_count(s) != start_queued {
-                            return true;
-                        }
-                    },
-                    recv(wake_events.as_ref().unwrap_or(&never_wake)) -> msg => {
-                        if msg.is_err() {
-                            *wake_events = None;
-                            continue;
-                        }
-                        return true;
-                    },
-                    recv(compute_wake) -> _ => return true,
-                }
-            }
+            let watch = IdleWatch {
+                s,
+                machine: &machine,
+                flag_max_jobs: o.max_jobs,
+                done: cancel.done(),
+                compute_wake: &compute_wake,
+                poll: Duration::from_secs(DISPATCH_TICK_SECONDS as u64),
+            };
+            idle_wait(&watch, wake_events, d, held)
         };
     // The loop's exits name their result and the note the say lines carry.
     let leave: (&str, &str);
@@ -1400,8 +1588,11 @@ pub(crate) fn daemon(
         let mut slots: Vec<String> = Vec::new();
         let mut disk_trimmed = 0usize;
         // Local slots the load governor closed this tick (machine saturated):
-        // like disk_trimmed, not offered and not hands wanted.
+        // like disk_trimmed, not offered to the queue.
         let mut load_held = 0usize;
+        // Whether the one slot left open is the owner's express slot: the
+        // fleet's queued work could not have had it.
+        let mut express_slot = false;
         // A panic in the tick body becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
@@ -1474,6 +1665,7 @@ pub(crate) fn daemon(
                     // A changed daemon.build_jobs reaches the next child here.
                     crate::daemon_load::set_build_jobs(limits.build_jobs);
                     binary.governor = Some(limits);
+                    binary.refused_queued = fits_phrase(&refused_queued_work(s, &inflight, &now));
                     let inflight_jobs = inflight
                         .values()
                         .map(|d| (d.job.str("id"), true))
@@ -1825,12 +2017,17 @@ pub(crate) fn daemon(
                 // at daemon.max_jobs and all close while the machine is saturated.
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
+                // The last half of the local slots under daemon.max_jobs
+                // (rounded up) go to the work class first (jobs.rs
+                // work_first): with four slots and a queue of reflects and
+                // ballots for every project, the fairness between projects
+                // kept an improve job waiting all day.
+                let mut work_reserve = 0usize;
                 // While a soft hold (load, or the kernel's memory warning
                 // with free memory above the floor) closes the machine, or
                 // the fleet's own work fills daemon.max_jobs, one local slot
                 // stays open to the owner's work (jobs.rs OWNER_DRIVEN_SQL):
                 // the owner should not wait behind the fleet's own builds.
-                let mut express_slot = false;
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
                     let local = inflight
                         .values()
@@ -1842,10 +2039,13 @@ pub(crate) fn daemon(
                         .filter(|d| crate::jobs::is_owner_driven(&d.job))
                         .count();
                     let reserved = usize::from(crate::selfupdate::update_pending());
+                    let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
+                    work_reserve = (limits.max_jobs.max(0) as usize).div_ceil(2);
                     let verdict = crate::daemon_load::decide(
-                        &crate::daemon_load::limits(s, &machine, o.max_jobs),
+                        &limits,
                         &crate::daemon_load::pressure(),
                         running_local,
+                        crate::daemon_load::measuring(&s.home),
                         reserved,
                         owner_running,
                     );
@@ -1923,6 +2123,11 @@ pub(crate) fn daemon(
                         (unrestricted, *i)
                     });
                     let owner_lane = crate::jobs::owner_lane_fits();
+                    let local_free = slots
+                        .iter()
+                        .filter(|n| *n == crate::executor::LOCAL_EXECUTOR)
+                        .count();
+                    let mut local_leased = 0usize;
                     for i in order {
                         let slot = &slots[i];
                         let fits = if express_slot && slot == crate::executor::LOCAL_EXECUTOR {
@@ -1930,6 +2135,10 @@ pub(crate) fn daemon(
                         } else {
                             &restart_kinds
                         };
+                        // This and the local slots still to fill this tick
+                        // are the last of the cap: the work class goes first.
+                        let work_first = slot == crate::executor::LOCAL_EXECUTOR
+                            && local_free - local_leased <= work_reserve;
                         let mut held = BTreeMap::new();
                         if slot == crate::executor::LOCAL_EXECUTOR
                             && let Some(adm) = admission.as_ref()
@@ -1967,7 +2176,7 @@ pub(crate) fn daemon(
                                     continue;
                                 }
                             };
-                            let (job, _, why) = match crate::run::take_job(
+                            let (job, _, why) = match crate::run::take_job_first(
                                 s,
                                 &worker,
                                 "",
@@ -1978,6 +2187,7 @@ pub(crate) fn daemon(
                                 started.len() as i32,
                                 &held,
                                 fits,
+                                work_first,
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
@@ -1993,10 +2203,11 @@ pub(crate) fn daemon(
                             }
                             (worker, job)
                         };
-                        if slot == crate::executor::LOCAL_EXECUTOR
-                            && let Some(adm) = admission.as_mut()
-                        {
-                            adm.claim(&job.str("project"));
+                        if slot == crate::executor::LOCAL_EXECUTOR {
+                            local_leased += 1;
+                            if let Some(adm) = admission.as_mut() {
+                                adm.claim(&job.str("project"));
+                            }
                         }
                         names.push(worker.clone());
                         let wait_s = crate::jobs::job_wait_seconds(
@@ -2085,15 +2296,18 @@ pub(crate) fn daemon(
             }
             let queued = active_queued_count(s);
             // Slots the disk headroom or the load governor held back were not
-            // offered this tick and are not hands wanted: the machine, not the
-            // slot count, is what is short.
+            // offered this tick; the owner's express slot, unused, was not
+            // offered to the fleet's work either.
             let offered = slots.len() - disk_trimmed;
             let total_slots = inflight.len() as i32 + offered as i32 - started.len() as i32;
-            let starved = queued > 0
-                && offered - started.len() == 0
-                && !inflight.is_empty()
-                && disk_trimmed == 0
-                && load_held == 0;
+            let usable = offered - usize::from(express_slot && started.is_empty());
+            // Starved: work queued and nothing could start, whether every
+            // slot is busy or the governor or the disk held them. Why this
+            // machine is short does not change what would help - hands
+            // elsewhere - so a held machine counts as short like a busy one
+            // (before this a laptop held by its load all day never asked).
+            let short = !inflight.is_empty() || load_held > 0 || disk_trimmed > 0;
+            let starved = queued > 0 && usable == started.len() && short;
             if starved {
                 if starved_since.is_empty() {
                     starved_since = now.clone();
@@ -2167,17 +2381,43 @@ pub(crate) fn daemon(
                 let waited = (crate::util::must_iso(&now) - crate::util::must_iso(&starved_since))
                     .num_minutes() as i32;
                 if waited >= HANDS_WANTED_MINUTES {
-                    let post = hands_wanted(
-                        s,
-                        crate::board::brain_project(c),
-                        queued,
-                        total_slots,
-                        waited,
-                        now.clone(),
-                        actor.clone(),
-                    );
-                    if !post.0.is_empty() {
-                        say(&o, format!("hands wanted: {}", post.str("summary")));
+                    // A machine the owner pre-authorised first; the question
+                    // to the owner only when none may be rented.
+                    match auto_compute(s, queued, waited, &now, &actor) {
+                        Ok(req) => say(
+                            &o,
+                            format!(
+                                "hands wanted: compute request {} ({}, {} for {} h) made for {}: {}",
+                                req.id, req.status, req.size, req.hours, req.project, req.reason
+                            ),
+                        ),
+                        // A machine is on its way: no question to the owner.
+                        Err(NoAutoCompute::Open { id, status }) if status != "pending" => {
+                            if let Some(line) = idle_log.line(
+                                "hands",
+                                &format!("hands wanted: compute request {id} is {status}; waiting for the machine"),
+                                std::time::Instant::now(),
+                            ) {
+                                say(&o, line);
+                            }
+                        }
+                        Err(why) => {
+                            let post = hands_wanted(
+                                s,
+                                crate::board::brain_project(c),
+                                queued,
+                                total_slots,
+                                waited,
+                                now.clone(),
+                                actor.clone(),
+                            );
+                            if !post.0.is_empty() {
+                                say(
+                                    &o,
+                                    format!("hands wanted: {} ({why})", post.str("summary")),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -2273,7 +2513,8 @@ pub(crate) fn daemon(
             if !full_pass && let Some(began) = last_pass {
                 wait = wait.min(spacing.saturating_sub(began.elapsed()));
             }
-            if !sleep_idle_wait(&mut wake_events, wait) {
+            let held = load_held > 0 && active_queued_count(s) > 0;
+            if !sleep_idle_wait(&mut wake_events, wait, held) {
                 leave = ("interrupted", "stopping on signal");
                 break;
             }
@@ -2793,7 +3034,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("machine saturated: load 40.2 is over daemon.max_load 12"),
+            out.contains("machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 24"),
             "{out}"
         );
         assert!(!out.contains("leased "), "{out}");
@@ -2850,6 +3091,264 @@ mod tests {
             1,
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_held_machine_with_queued_work_counts_as_starved() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Waits behind the load".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+            .unwrap();
+        let starved_since = |out: &str| {
+            let (raw, _) = s.meta("capacity").unwrap();
+            let note: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            assert_eq!(note["queued"], 1, "{raw}\n{out}");
+            note["starved_since"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        // Held by the load with nothing in flight: the queue is short of
+        // hands all the same, so the starvation clock starts.
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        });
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(!out.contains("leased "), "{out}");
+        assert_eq!(starved_since(&out), TEST_NOW, "{out}");
+        drop(saturated);
+        // Under a soft hold the express slot stays open to the owner alone;
+        // the fleet's task could not have had it, so it still waits short.
+        let soft = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(30.0),
+            ..crate::daemon_load::CALM
+        });
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            out.contains("one express slot stays open") && !out.contains("leased "),
+            "{out}"
+        );
+        assert_eq!(starved_since(&out), TEST_NOW, "{out}");
+        drop(soft);
+        // Thirty minutes of that with nothing queued but a reflection would
+        // ask the owner; a task that waited rents a machine within the caps.
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ? WHERE project = 'proj'",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        let why = |w: &str| Err(NoAutoCompute::Why(w.into()));
+        assert_eq!(
+            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            why("compute.auto_approve is off")
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "compute.auto_approve", "1")
+            .unwrap();
+        assert_eq!(
+            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            why("compute.max_vms 0 reached (0 in use)")
+        );
+        for (k, v) in [("compute.max_vms", "1"), ("compute.max_hours_per_day", "2")] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        assert_eq!(
+            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            why("compute.max_hours_per_day 2 would be passed (0 h today, 4 h asked)")
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "compute.max_hours_per_day", "0")
+            .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET kind = 'reflect' WHERE project = 'proj'",
+            &[],
+        );
+        assert_eq!(
+            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            why("no improve or task job has waited 30 min")
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET kind = 'task' WHERE project = 'proj'",
+            &[],
+        );
+        let req = auto_compute(&s, 1, 31, TEST_NOW, "daemon").expect("no machine rented");
+        assert_eq!(
+            (req.project.as_str(), req.hours),
+            ("proj", AUTO_COMPUTE_HOURS)
+        );
+        assert_eq!(req.requested_by, "daemon");
+        assert!(req.reason.contains("waited 31 min"), "{}", req.reason);
+        // Approved on the spot where a login source exists; a proposal to
+        // the owner where none does (the machine could not log in).
+        let login = pulse_tasks::get_caps(&s).unwrap().login_source;
+        assert_eq!(req.status, if login { "approved" } else { "pending" });
+        let open = NoAutoCompute::Open {
+            id: req.id.clone(),
+            status: req.status.clone(),
+        };
+        assert_eq!(
+            open.to_string(),
+            format!("compute request {} is {}", req.id, req.status)
+        );
+        assert_eq!(
+            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            Err(open),
+            "a second machine while the first is open"
+        );
+    }
+
+    #[test]
+    fn an_idle_sleep_under_a_hold_wakes_when_the_load_drops() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        let machine = crate::daemon_load::Machine::detect();
+        let cancel = pulse_bus::CancellationToken::new();
+        let (_compute_tx, compute_rx) = crossbeam_channel::bounded::<()>(1);
+        let watch = IdleWatch {
+            s: &s,
+            machine: &machine,
+            flag_max_jobs: 0,
+            done: cancel.done(),
+            compute_wake: &compute_rx,
+            poll: Duration::from_millis(20),
+        };
+        let saturated = crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        };
+        let sleep = Duration::from_millis(400);
+        let mut no_bus = None;
+
+        // Still saturated: the sleep runs its course, one poll at a time.
+        let pin = crate::daemon_load::pin_pressure(saturated);
+        let began = std::time::Instant::now();
+        assert!(idle_wait(&watch, &mut no_bus, sleep, true));
+        assert!(began.elapsed() >= sleep, "woke with the hold still on");
+
+        // The hold lifts: the next poll wakes the loop, not the deadline.
+        drop(pin);
+        let began = std::time::Instant::now();
+        assert!(idle_wait(&watch, &mut no_bus, sleep, true));
+        assert!(
+            began.elapsed() < sleep,
+            "slept the whole interval after the hold lifted"
+        );
+
+        // Without a hold the load is nobody's business: the sleep runs out.
+        let began = std::time::Instant::now();
+        assert!(idle_wait(&watch, &mut no_bus, sleep, false));
+        assert!(began.elapsed() >= sleep);
+
+        // A queued job wakes it as before.
+        let began = std::time::Instant::now();
+        let s_add = s.clone();
+        let adder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            crate::util::exec1(
+                &*s_add.conn().unwrap(),
+                "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES ('queued-1', 'proj', 'task', 'queued', '', 'queued', ?)",
+                &[&TEST_NOW],
+            );
+        });
+        assert!(idle_wait(&watch, &mut no_bus, sleep, false));
+        adder.join().unwrap();
+        assert!(began.elapsed() < sleep, "slept through a queued job");
+
+        // Cancelled: false, so the loop stops.
+        cancel.cancel();
+        assert!(!idle_wait(&watch, &mut no_bus, sleep, true));
+    }
+
+    #[test]
+    fn daemon_counts_a_measurement_in_flight_as_a_local_run() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Fleet work waits".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        for (k, v) in [
+            ("workers", "2"),
+            ("daemon.max_jobs", "1"),
+            ("daemon.min_free_mb", "0"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        // The experiment lane is measuring (two builds) in another process or
+        // thread: its mark takes the one slot under the cap.
+        let mark = crate::daemon_load::MeasuringMark::new(&s.home);
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(!out.contains("leased "), "{out}");
+        assert!(
+            out.contains("every slot under daemon.max_jobs is busy with the fleet's work"),
+            "{out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        drop(mark);
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.matches("leased ").count(), 1, "{out}");
     }
 
     #[test]
@@ -3674,6 +4173,57 @@ mod tests {
             fits_phrase(&mixed),
             "any run on blog, fresh; ballot, reflect, lead runs on brain"
         );
+    }
+
+    #[test]
+    fn a_self_update_waits_for_queued_work_the_restart_would_refuse() {
+        let s = store_with_projects(&["proj"]);
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "0");
+        // Ten tasks of a minute and ten improve runs of an hour.
+        for n in 0..10 {
+            finished_run_of_kind(&s, n, "task", 60.0);
+        }
+        for n in 10..20 {
+            finished_run_of_kind(&s, n, "improve", 3600.0);
+        }
+        let queued = |n: usize, kind: &str| {
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, 'proj', ?, 'queued', '', 'queued', ?)",
+                &[&format!("queued-{n}"), &kind, &TEST_NOW],
+            );
+        };
+        queued(1, "improve");
+        queued(2, "task");
+        // A reflect is not work the fleet waits on; it never holds the build.
+        queued(3, "reflect");
+        let dispatch = |slot: &str, kind: &str| {
+            let mut job = Row::new();
+            job.0
+                .insert("kind".into(), serde_json::Value::String(kind.into()));
+            job.0
+                .insert("project".into(), serde_json::Value::String("proj".into()));
+            Dispatch {
+                slot: slot.into(),
+                worker: format!("w-{slot}"),
+                job,
+                started_at: TEST_NOW.into(),
+                ..Default::default()
+            }
+        };
+        // Nothing in flight: the restart is at once and refuses nothing.
+        assert!(refused_queued_work(&s, &BTreeMap::new(), TEST_NOW).is_empty());
+        // A task in flight ends within minutes: its window admits the queued
+        // task but not the hour-long improve run.
+        let mut inflight = BTreeMap::new();
+        inflight.insert("a".to_string(), dispatch("a", "task"));
+        let refused = refused_queued_work(&s, &inflight, TEST_NOW);
+        assert_eq!(refused, pairs("proj", &["improve"]));
+        assert_eq!(fits_phrase(&refused), "improve runs on proj");
+        // An improve run in flight stretches the window to its hour: all fit.
+        inflight.insert("b".to_string(), dispatch("b", "improve"));
+        assert!(refused_queued_work(&s, &inflight, TEST_NOW).is_empty());
     }
 
     #[test]
