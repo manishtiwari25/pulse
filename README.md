@@ -1570,8 +1570,9 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   `docs/evolution/constitution.md` / `evaluators.md` gets those files indexed
   as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other project
   gets a copy of the template's text marked `seeded_from` in its frontmatter,
-  with `loop: off`, no baseline and no product scope, so nothing runs until
-  you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
+  with `loop: off`, no baseline and the `Product scope:` placeholder (which
+  keeps product cards out until you replace it), so nothing runs until you
+  edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
   An existing record is never touched. You do not have to write the text
   yourself (ADR-046): while a project's constitution or evaluators is still
   the seeded copy, the daemon plans one `reflect` job (source `draft:<slug>`,
@@ -1688,7 +1689,12 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
 
 **Readiness is not delivery.** Level D means the general evolution gates are
 open, not that a supported candidate exists or that product experiments are
-authorized. Product scope is a separate owner-controlled gate. Starter
+authorized. Product scope is a separate owner-controlled gate, open by
+default: an EVO-evaluators record with no `Product scope:` line lets product
+cards run, `Product scope: off` (or `operating-layer`) restricts the loop to
+the operating layer, and a line the loop cannot read - the seeded
+placeholder, an unknown word, two lines that disagree - restricts it too and
+`pulse evolve status` says why. Starter
 fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
