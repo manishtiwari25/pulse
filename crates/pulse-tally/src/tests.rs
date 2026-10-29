@@ -2690,6 +2690,29 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // A card whose File still exists but holds none of the Signal's terms is
+    // stale (the variable moved files); one whose File is the Signal's own
+    // path plans.
+    let file_stale = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "17",
+        "runner-worker/model",
+        "stale-file",
+        "Worker card naming a file the variable left",
+        "Class: operating-layer\nFile: docs/eval.md\nVariable: redbase landing\nTier: 1\nSignal: crates/src/redbase.rs",
+        "",
+        &["up", "up"],
+    );
+    let file_matches_path = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "19",
+        "runner-worker/model",
+        "right-file",
+        "Worker card naming the file the variable lives in",
+        "Class: operating-layer\nFile: crates/src/redbase.rs\nVariable: redbase landing\nTier: 1\nSignal: crates/src/redbase.rs",
+        "",
+        &["up", "up"],
+    );
     let file_new = test_fixture::add_eligible_suggestion(
         &mut f,
         "12",
@@ -2787,6 +2810,15 @@ fn plan_gate_outcomes() {
     fs::create_dir_all(f.repo.join("docs/decisions")).unwrap();
     fs::write(f.repo.join("docs/decisions/adr.md"), "# ADR\n").unwrap();
     fs::write(f.repo.join(".nvmrc"), "22\n").unwrap();
+    // The tree the stale-File cards point at: redbase.rs carries the variable,
+    // docs/eval.md exists but holds none of its terms.
+    fs::create_dir_all(f.repo.join("crates/src")).unwrap();
+    fs::write(
+        f.repo.join("crates/src/redbase.rs"),
+        "fn redbase() { let _ = mark.failures; }\n",
+    )
+    .unwrap();
+    fs::write(f.repo.join("docs/eval.md"), "# Evaluators\n").unwrap();
 
     let res = compute(
         &f.st,
@@ -2818,6 +2850,8 @@ fn plan_gate_outcomes() {
         (gone_evidence.as_str(), GATE_NO_EVIDENCE),
         (file_gone.as_str(), GATE_FILE_GONE),
         (file_new.as_str(), ""),
+        (file_stale.as_str(), GATE_FILE_STALE),
+        (file_matches_path.as_str(), ""),
         (clone_evidence.as_str(), ""),
         (clone_root.as_str(), GATE_NO_EVIDENCE),
         (thread_evidence.as_str(), ""),
@@ -3198,6 +3232,54 @@ fn signal_unlanded_cache_follows_landing() {
         "card",
         "Signal: internal/x/b.go"
     ));
+}
+
+#[test]
+fn signal_matches_file_checks_the_signal_terms_against_one_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    fs::create_dir_all(dir.path().join("crates/src")).unwrap();
+    fs::create_dir_all(dir.path().join("docs")).unwrap();
+    fs::write(
+        dir.path().join("crates/src/redbase.rs"),
+        "fn base_red_detail() { let _ = mark.failures; }\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("docs/eval.md"), "# Evaluators\n").unwrap();
+
+    // The signal path's own basename and identifier terms match its file.
+    assert!(signal_matches_file(
+        root,
+        "crates/src/redbase.rs",
+        "crates/src/redbase.rs"
+    ));
+    assert!(signal_matches_file(
+        root,
+        "crates/src/redbase.rs",
+        "base_red_detail"
+    ));
+    // A symbol the file declares matches too (check-name / fn-name form).
+    assert!(signal_matches_file(
+        root,
+        "crates/src/redbase.rs",
+        "check:mark.failures"
+    ));
+    // An existing file holding none of the terms does not match.
+    assert!(!signal_matches_file(
+        root,
+        "docs/eval.md",
+        "crates/src/redbase.rs"
+    ));
+    assert!(!signal_matches_file(
+        root,
+        "docs/eval.md",
+        "base_red_detail"
+    ));
+    // A missing File does not match (card_file_gone already gates that).
+    assert!(!signal_matches_file(root, "crates/src/gone.rs", "redbase"));
+    // A File that names a directory matches when one file in it does.
+    assert!(signal_matches_file(root, "crates/src", "base_red_detail"));
+    assert!(!signal_matches_file(root, "docs", "base_red_detail"));
 }
 
 #[test]
