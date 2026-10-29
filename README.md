@@ -1508,10 +1508,15 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   card whose own `Signal:` resolves nothing is held as `without evidence`
   until an `opinion`, `finding`, `answer` or `vote` on its thread carries one
   that does - the idle lead's brief lists each held card with its gate so the
-  fleet supplies the evidence or closes the thread - and that
-  evidence must stay off
+  fleet supplies the evidence or closes the thread - and the card's `File:`
+  (what the job would edit) must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`); a card whose `File:` names only paths whose
+  `docs/decisions/`, `.github/`): one owner-only path among its files holds
+  the card as `points at owner-only paths`, while a card on agent-writable
+  files may cite an ADR or a workflow as its `Signal:` evidence (only a card
+  that names no file is read by its Signal's paths), and a card held there
+  longer than `expiry_days` is closed with `resolution: owner-only` - the
+  owner queues it by hand or lets it go; a card whose `File:` names only paths whose
   whole top-level tree is gone from the checkout (written before a port, a
   rename or a removal) is held as `names gone paths` - a card that adds a file,
   however deep, under a tree that exists is fine; then the operating-layer cap

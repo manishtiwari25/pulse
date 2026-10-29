@@ -457,6 +457,80 @@ fn drop_card_before_dispatch(
     }
 }
 
+pub(crate) const OWNER_ONLY_RESOLUTION: &str = "owner-only";
+
+/// Close a voted card the owner-path gate has held longer than `expiry_days`:
+/// a `result` with `resolution: owner-only` on its thread takes it out of the
+/// eligible set, where the gate would otherwise show it as "eligible, not
+/// plannable" for good (a voted card never expires), and leaves the owner one
+/// note to queue the work by hand or let it go. Posted once: a thread that
+/// already carries a resolution is left alone, so the planner's every pass
+/// (and a cached tally that still lists the card) adds nothing.
+fn close_owner_only_card_when_expired(
+    s: &pulse_store::Store,
+    slug: &str,
+    now: &str,
+    actor: &str,
+    card: &pulse_tally::Post,
+) -> bool {
+    let expiry_days = setting_int(s, "expiry_days");
+    let age = day_number(now) - day_number(&card.date);
+    if expiry_days < 1 || age <= expiry_days {
+        return false;
+    }
+    let Ok(conn) = s.conn() else { return false };
+    let resolved = must_one(
+        &conn,
+        "SELECT 1 AS x FROM posts WHERE project = ? AND area = ? AND thread = ? AND resolution != '' LIMIT 1",
+        &[&slug, &card.area, &card.thread],
+    );
+    if !resolved.0.is_empty() {
+        return false;
+    }
+    let summary = format!("owner-only: held {age} days; the owner queues this one or lets it go");
+    let body = format!(
+        "{summary}\nThe card's File: is an owner-only path ({}), so no worker can be sent and the landing would refuse the change; it waited past expiry_days ({expiry_days}) for the owner. Closed without a job: queue it by hand (`pulse job add`) or leave it closed.\nre: {}\n",
+        pulse_tally::card_file_paths(&card.body)
+            .into_iter()
+            .find(|p| {
+                pulse_tally::OWNER_PATHS
+                    .iter()
+                    .any(|o| p == o || p.starts_with(o))
+            })
+            .unwrap_or_else(|| "see its Signal".into()),
+        card.id
+    );
+    let res = crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "result".into(),
+            project: slug.to_string(),
+            area: card.area.clone(),
+            thread: card.thread.clone(),
+            summary: trunc(&summary, 230),
+            body,
+            resolution: OWNER_ONLY_RESOLUTION.into(),
+            on: card.id.clone(),
+            agent: crate::board::actor_agent(s, actor.to_string()),
+            date: now.to_string(),
+            ..Default::default()
+        },
+    );
+    let (action, detail) = match &res {
+        Ok(_) => (
+            "plan.owner_only_closed",
+            json!({"project": slug, "age_days": age, "summary": summary}),
+        ),
+        Err(e) => (
+            "plan.owner_only_closed.error",
+            json!({"project": slug, "error": e.to_string()}),
+        ),
+    };
+    event_at(&conn, now, actor, action, &card.id, detail);
+    res.is_ok()
+}
+
 pub(crate) fn plan_jobs_with_tally(
     s: &pulse_store::Store,
     slug: String,
@@ -577,10 +651,14 @@ pub(crate) fn plan_jobs_with_tally(
             }
             let post = tally_post(s, sg.id.clone());
             let project_path = project.str("path");
-            if !pulse_tally::plan_gate_with(s, plan_ctx.clone(), &project_path, sg, post.as_ref())
-                .is_empty()
-                || stuck.get(&sg.key).copied().unwrap_or(false)
-            {
+            let gate =
+                pulse_tally::plan_gate_with(s, plan_ctx.clone(), &project_path, sg, post.as_ref());
+            if !gate.is_empty() || stuck.get(&sg.key).copied().unwrap_or(false) {
+                if gate == pulse_tally::GATE_OWNER_PATHS
+                    && let Some(post) = post.as_ref()
+                {
+                    close_owner_only_card_when_expired(s, &slug, &now, &created_by, post);
+                }
                 continue;
             }
             eligible.push(sg.clone());
@@ -1757,6 +1835,126 @@ mod tests {
             .len(),
             1,
             "no second drop post"
+        );
+    }
+
+    #[test]
+    fn plan_jobs_closes_an_owner_only_hold_once_it_outlives_expiry_days() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        std::fs::create_dir_all(std::path::Path::new(&root).join(".github/workflows")).unwrap();
+        std::fs::write(
+            std::path::Path::new(&root).join(".github/workflows/ci.yml"),
+            "node: 18\n",
+        )
+        .unwrap();
+        set_setting(&s, "quorum", "1");
+        set_setting(&s, "evolve.draft_hours", "0");
+        set_setting(&s, "expiry_days", "14");
+        for agent in ["alice", "bob"] {
+            join(&s, agent);
+        }
+        suppress_planner_reflect(&s);
+        let card_at = |thread: &str, date: &str| {
+            let card = crate::board::create_post(&s, date.into(), crate::board::PostOpts { kind: "suggestion".into(), project: "proj".into(), area: "evolution".into(), thread: thread.into(), agent: crate::board::actor_agent(&s, "alice".into()), session: "s".into(), summary: "CI runs node 22".into(), body: "Class: operating-layer\nFile: .github/workflows/ci.yml\nVariable: node version\nHypothesis: check:ci passes on node 22\nSignal: check:ci".into(), date: date.into(), ..Default::default() }).expect("card");
+            crate::board::create_post(
+                &s,
+                date.into(),
+                crate::board::PostOpts {
+                    kind: "vote".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: card.str("thread"),
+                    agent: crate::board::actor_agent(&s, "bob".into()),
+                    session: "v-bob".into(),
+                    on: card.str("id"),
+                    vote: "up".into(),
+                    summary: "yes".into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .expect("vote");
+            card.str("id")
+        };
+        let old = card_at(
+            "ci-node-old",
+            &crate::util::plus_hours(TEST_NOW, -20.0 * 24.0),
+        );
+        let fresh = card_at(
+            "ci-node-fresh",
+            &crate::util::plus_hours(TEST_NOW, -2.0 * 24.0),
+        );
+        let conn = s.conn().expect("conn");
+        let held = |id: &str| {
+            crate::tally::suggestion_records(&s, "proj".into(), TEST_NOW.into())
+                .into_iter()
+                .find(|sg| sg.id == id)
+                .map(|sg| sg.status)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            held(&old),
+            "eligible",
+            "a voted owner-only card never expires by itself"
+        );
+        let jobs =
+            plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan jobs");
+        assert!(
+            jobs.iter().all(|j| j.str("kind") != "improve"),
+            "no worker is sent to an owner-only path: {jobs:?}"
+        );
+        let closes = must_rows(
+            &conn,
+            "SELECT summary, body, resolution, thread FROM posts WHERE kind = 'result' AND resolution = 'owner-only'",
+            &[],
+        );
+        assert_eq!(
+            closes.len(),
+            1,
+            "one owner-only close, on the old card: {closes:?}"
+        );
+        assert_eq!(closes[0].str("thread"), "ci-node-old");
+        assert!(
+            closes[0]
+                .str("summary")
+                .starts_with("owner-only: held 20 days")
+                && closes[0].str("body").contains(".github/workflows/ci.yml"),
+            "the note names the hold and the path: {closes:?}"
+        );
+        assert_eq!(
+            held(&old),
+            "closed",
+            "the closed card leaves the eligible set"
+        );
+        assert_eq!(held(&fresh), "eligible", "a fresh hold waits for the owner");
+        assert_eq!(
+            must_rows(
+                &conn,
+                "SELECT subject FROM events WHERE action = 'plan.owner_only_closed'",
+                &[]
+            )
+            .len(),
+            1
+        );
+        plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan again");
+        plan_jobs(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 24.0),
+            "daemon".into(),
+        )
+        .expect("plan a day later");
+        assert_eq!(
+            must_rows(
+                &conn,
+                "SELECT id FROM posts WHERE kind = 'result' AND resolution = 'owner-only'",
+                &[]
+            )
+            .len(),
+            1,
+            "the close is posted once"
         );
     }
 
