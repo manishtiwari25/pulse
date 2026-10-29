@@ -2015,8 +2015,9 @@ record, read with `pulse record show WF-evolve`.
 | `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
-| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
-| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm`, or `custom` for any other OpenAI-compatible server (**Other providers** under [The harness](#the-harness)). |
+| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai` and `custom`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider.custom.no_key`, `provider.custom.api_key_header` | `off`, empty | How the `custom` provider authenticates: `no_key` `on` calls the server without a key the way the local servers do; `api_key_header` names a header (`x-api-key`, `api-key`) the key travels in raw instead of `Authorization: Bearer`. |
 | `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
@@ -3002,7 +3003,18 @@ a GitHub personal access token with the `models:read` scope:
 which need no key - their status card says `no key needed` - though one in
 `OLLAMA_API_KEY`, `LMSTUDIO_API_KEY` or `VLLM_API_KEY` is sent when present.
 Every other base-URL variable is `<VENDOR>_BASE_URL` (`GROQ_BASE_URL`,
-`MISTRAL_BASE_URL`, …). Most of these endpoints report no context window, so
+`MISTRAL_BASE_URL`, …). Any other OpenAI-compatible server - a gateway, a
+proxy, a hosted model none of the names above covers - is the `custom`
+vendor, described by settings alone: `pulse settings set
+provider.custom.base_url https://<host>/v1` (or `PULSE_CUSTOM_BASE_URL`;
+there is no default, and a call without one fails before it is made), a key
+pasted in the Harness card, given to `pulse harness login --provider custom
+--with-token` or read from `PULSE_CUSTOM_API_KEY`; `provider.custom.no_key
+on` makes it keyless like the local servers, and
+`provider.custom.api_key_header x-api-key` sends the raw key in that header
+instead of `Authorization: Bearer`. Pick it like any vendor, `provider
+custom` in the settings or `--provider custom`, and name its models as the
+server lists them. Most of these endpoints report no context window, so
 with them context discipline stays at its first level (collapsed, never
 one-liners).
 
