@@ -285,6 +285,14 @@ fn log_patch_skip(s: &pulse_store::Store, actor: &str, now: &str, branch: &str, 
     }
 }
 
+/// Why a measurement must wait, if the machine is saturated. A measurement is
+/// two builds, so the lane obeys the daemon's hold like a leased run does,
+/// instead of adding load on top of the runs the governor already refused.
+fn measure_hold(s: &pulse_store::Store) -> Option<String> {
+    let limits = crate::daemon_load::limits(s, &crate::daemon_load::Machine::detect(), 0);
+    crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure())
+}
+
 pub(crate) fn land_experiment(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -488,6 +496,13 @@ pub(crate) fn land_experiment_context(
             Err(e) => return ("error".into(), crate::run::err_message(&e)),
         }
     }
+    if let Some(why) = measure_hold(s) {
+        return (
+            "deferred".into(),
+            format!("{branch} not landed: measuring waits - {why}"),
+        );
+    }
+    let _measuring = crate::daemon_load::MeasuringMark::new(&s.home);
     let ctx = parent.with_timeout(EXPERIMENT_MEASURE_BUDGET);
     let unavailable = |what: String, err: anyhow::Error| -> (String, String) {
         let summary = format!("experiment {suggestion} waits: measurement unavailable ({what})");
@@ -867,6 +882,65 @@ mod tests {
             ),
         );
         assert_eq!(experiment_parent(job), "B-017");
+    }
+
+    #[test]
+    fn measurement_waits_while_the_machine_is_saturated() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, _root, calls) = measured_keep_fixture();
+        let marks: std::sync::Arc<std::sync::Mutex<Vec<usize>>> = Default::default();
+        let seen = marks.clone();
+        let home = s.home.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                seen.lock()
+                    .unwrap()
+                    .push(crate::daemon_load::measuring(&home));
+                let score = if r#ref == "main" { 0.8 } else { 0.9 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        });
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "deferred", "{note}");
+        assert!(
+            note.contains("not landed: measuring waits - machine saturated: load 40.0 on"),
+            "{note}"
+        );
+        assert_eq!(*calls.lock().unwrap(), 0, "measured under a hold");
+        assert_eq!(
+            crate::daemon_maintenance::experiment_retry(&s, &state, &note),
+            Duration::from_secs(120),
+            "a held measurement waits the short retry"
+        );
+        assert_eq!(job_row(&s, &job.str("id")).str("branch"), job.str("branch"));
+        drop(saturated);
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "landed", "{note}");
+        // Both measurements ran under the lane's mark, and the mark went with them.
+        assert_eq!(marks.lock().unwrap().clone(), vec![1, 1]);
+        assert_eq!(crate::daemon_load::measuring(&s.home), 0);
     }
 
     #[test]

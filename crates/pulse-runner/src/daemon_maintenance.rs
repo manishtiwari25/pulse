@@ -109,11 +109,16 @@ pub(crate) fn landing_queue_state(
     state
 }
 
-/// The wait before the lane tries an experiment again after `state`.
+/// The wait before the lane tries an experiment again after `state`. A
+/// measurement the governor held waits the short retry: the hold lifts with
+/// the load, not with anything the lane could change.
 pub(crate) fn experiment_retry(s: &pulse_store::Store, state: &str, note: &str) -> Duration {
     if TERMINAL_STATES.contains(&state) {
         Duration::ZERO
-    } else if matches!(state, "locked" | "stopped") || crate::failure::is_transient_reason(note) {
+    } else if matches!(state, "locked" | "stopped")
+        || crate::failure::is_transient_reason(note)
+        || crate::daemon_load::is_hold_note(note)
+    {
         Duration::from_secs(60 * setting_minutes(s, "lane.short_retry_minutes", 2) as u64)
     } else {
         Duration::from_secs(60 * setting_minutes(s, "lane.retry_minutes", 20) as u64)
@@ -748,6 +753,15 @@ mod tests {
         assert_eq!(
             experiment_retry(&s, "error", "database is locked"),
             Duration::from_secs(2 * 60)
+        );
+        assert_eq!(
+            experiment_retry(
+                &s,
+                "deferred",
+                "evolve/B-1 not landed: measuring waits - machine saturated: load 40.0 on 12 CPUs is over daemon.max_load 24"
+            ),
+            Duration::from_secs(2 * 60),
+            "a measurement the governor held retries with the load, not the long retry"
         );
         set_retry_setting(&s, "lane.retry_minutes", "7");
         set_retry_setting(&s, "lane.short_retry_minutes", "3");

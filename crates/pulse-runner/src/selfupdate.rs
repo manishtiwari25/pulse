@@ -946,6 +946,7 @@ mod tests {
             min_free_mem_mb: 0,
             own_nice: 0,
             build_jobs: 6,
+            cpus: 12,
             source: "test",
         });
         let lines = tend_binary(&s, TEST_NOW.into(), full.clone());

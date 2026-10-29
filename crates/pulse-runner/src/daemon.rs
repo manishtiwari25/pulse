@@ -1846,6 +1846,7 @@ pub(crate) fn daemon(
                         &crate::daemon_load::limits(s, &machine, o.max_jobs),
                         &crate::daemon_load::pressure(),
                         running_local,
+                        crate::daemon_load::measuring(&s.home),
                         reserved,
                         owner_running,
                     );
@@ -2793,7 +2794,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("machine saturated: load 40.2 is over daemon.max_load 12"),
+            out.contains("machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 24"),
             "{out}"
         );
         assert!(!out.contains("leased "), "{out}");
@@ -2850,6 +2851,69 @@ mod tests {
             1,
             "{out}"
         );
+    }
+
+    #[test]
+    fn daemon_counts_a_measurement_in_flight_as_a_local_run() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Fleet work waits".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        for (k, v) in [
+            ("workers", "2"),
+            ("daemon.max_jobs", "1"),
+            ("daemon.min_free_mb", "0"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        // The experiment lane is measuring (two builds) in another process or
+        // thread: its mark takes the one slot under the cap.
+        let mark = crate::daemon_load::MeasuringMark::new(&s.home);
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(!out.contains("leased "), "{out}");
+        assert!(
+            out.contains("every slot under daemon.max_jobs is busy with the fleet's work"),
+            "{out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE project = 'proj' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "{out}"
+        );
+        drop(mark);
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(out.matches("leased ").count(), 1, "{out}");
     }
 
     #[test]

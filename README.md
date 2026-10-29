@@ -3265,14 +3265,24 @@ governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
 cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
 children run at nice 10, builds at -jJ, the daemon itself at nice 5` names what
 is in force.
-Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive
-and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
-new while the load is over `daemon.max_load` (default: the number of CPUs) or
+Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive,
+speculative and purgeable pages on macOS - the caches the kernel drops on
+request, a gigabyte or two on a 16 GB laptop whose `free` reads a few hundred
+megabytes - `MemAvailable` on Linux) and leases nothing
+new while the load is over `daemon.max_load` (default: twice the number of
+CPUs - the load average counts runnable threads, and a laptop with an
+emulator or a browser build sits at its CPU count for hours while its CPUs
+are not busy; a line at the CPU count held the fleet all day) or
 the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
-macOS itself reports memory pressure; the runs in flight finish, the idle line
-says `machine saturated: load 40.1 is over daemon.max_load 12` or `machine
+macOS itself reports critical memory pressure; the runs in flight finish, the idle line
+says `machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 24` or `machine
 saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
 change rather than per tick, and slots held this way are not hands wanted.
+The kernel's memory warning (the level under critical, which a 16 GB laptop
+reports for hours with a browser open) is not a hold: while it stands the
+daemon starts half as many local runs at once (`daemon.max_jobs` halved,
+never under one), and the experiment lane's measurements in progress count
+as runs under the cap, since their builds are load like any other.
 A load hold alone (not memory, not a restart window) keeps one local slot
 open as the express lane: it leases only the owner's work - lead runs,
 answers, `task:` jobs - while the load stays under twice `daemon.max_load`
