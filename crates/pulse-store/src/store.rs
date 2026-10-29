@@ -385,6 +385,11 @@ impl Store {
             let aside = format!("{table}_widening");
             tx.execute(&format!("DROP TABLE IF EXISTS {aside}"), [])?;
             tx.execute(&format!("ALTER TABLE {table} RENAME TO {aside}"), [])?;
+            // The rename takes the table's triggers with it; dropped here,
+            // the DDL below puts them back on the new table.
+            for trigger in triggers_of(&tx, &aside)? {
+                tx.execute(&format!("DROP TRIGGER {trigger}"), [])?;
+            }
             widened.push((*table, aside));
         }
         for list in additive_ddl() {
@@ -961,9 +966,10 @@ pub const SUPERSEDED_SHAPES: &[(&str, &str)] = &[("mcp_servers", "auth")];
 /// Tables whose current DDL widened a CHECK constraint, named with a token
 /// only the widened constraint carries. SQLite cannot alter a constraint in
 /// place, so `ensure_records` moves such a table aside, lets the additive DDL
-/// create the current shape, copies the rows over by column name and drops
-/// the old table. `mcp_servers`: `auth` gained `oauth`.
-pub const WIDENED_CHECKS: &[(&str, &str)] = &[("mcp_servers", "'oauth'")];
+/// create the current shape (its triggers too), copies the rows over by
+/// column name and drops the old table. `mcp_servers`: `auth` gained
+/// `oauth`; `hooks`: `kind` gained `job`.
+pub const WIDENED_CHECKS: &[(&str, &str)] = &[("mcp_servers", "'oauth'"), ("hooks", "'job'")];
 
 fn retired_settings_present(conn: &Connection) -> rusqlite::Result<bool> {
     let marks = vec!["?"; crate::settings::RETIRED_SETTINGS.len()].join(", ");
@@ -1103,6 +1109,14 @@ pub(crate) fn table_sql_has(conn: &Connection, table: &str, needle: &str) -> Res
         )
         .optional()?;
     Ok(sql.is_some_and(|s| s.contains(needle)))
+}
+
+/// The names of the triggers on `table`.
+pub(crate) fn triggers_of(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?")?;
+    let rows = stmt.query_map([table], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 pub(crate) fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -2323,6 +2337,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1, "the widening ran again on a current shape");
+    }
+
+    /// A store from before hooks could queue jobs has its `kind` CHECK
+    /// widened on open: the rows survive, `job` is accepted, and the
+    /// no-delete trigger is back on the new table.
+    #[test]
+    fn narrow_hook_kind_check_is_widened_with_its_trigger() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-09-11T00:00:00Z").unwrap();
+        // The hooks shape as it shipped before `job` joined the kinds, with
+        // its trigger.
+        let narrow = HOOKS_DDL[0].replace(",'job'", "");
+        assert!(!narrow.contains("'job'"));
+        db.execute_batch(&format!(
+            "{narrow}; {}; INSERT INTO hooks (event, kind, target, created_by, created_at) VALUES ('task.*', 'script', '/usr/local/bin/notify', 'owner', '2026-09-11T00:00:00Z')",
+            HOOKS_DDL[4]
+        ))
+        .unwrap();
+        assert!(
+            db.execute(
+                "INSERT INTO hooks (event, kind, target, created_by, created_at) VALUES ('*', 'job', '{}', 'owner', '')",
+                []
+            )
+            .is_err()
+        );
+        drop(db);
+        let s = open_temp(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        });
+        let conn = s.conn().unwrap();
+        assert!(table_sql_has(&conn, "hooks", "'job'").unwrap());
+        assert!(!table_present(&conn, "hooks_widening").unwrap());
+        assert_eq!(
+            triggers_of(&conn, "hooks").unwrap(),
+            vec!["hooks_no_delete".to_string()]
+        );
+        let (event, target): (String, String) = conn
+            .query_row("SELECT event, target FROM hooks WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            (event.as_str(), target.as_str()),
+            ("task.*", "/usr/local/bin/notify")
+        );
+        conn.execute(
+            "INSERT INTO hooks (event, kind, target, created_by, created_at) VALUES ('*', 'job', '{}', 'owner', '')",
+            [],
+        )
+        .unwrap();
+        assert!(conn.execute("DELETE FROM hooks WHERE id = 1", []).is_err());
+        assert!(s.additive_complete());
     }
 
     #[test]

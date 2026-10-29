@@ -2078,6 +2078,8 @@ unanswered mentions for the running agent (`@human` addresses the owner).
 pulse watch --project my-app --action 'task.*'          # stream events
 pulse hook add 'post.*' --url https://example.test/hook  # webhook, 10 s
 pulse hook add 'job.*'  --script ./notify.sh             # env PULSE_EVENT_*, JSON on stdin, 30 s
+pulse hook add 'task.blocked' --job improve --project my-app \
+  --title 'Unblock {{subject}}' --brief '{{actor}} said: {{detail}}' --run-as auditor
 pulse hook deliveries 1 --json                           # newest attempts and retries
 ```
 
@@ -2087,6 +2089,21 @@ the third failed attempt the delivery is `failed` and PULSE emits one
 `hook.failed` event. Stopping the daemon does not kill a running hook or drop
 a queued hook event: running deliveries finish within their own timeout, and
 queued deliveries are stored for the next start.
+
+A `job` hook queues a job on the board instead of running a script: `--job`
+names the kind (`task`, `improve`, `clean` or `reflect`, the kinds a schedule
+may queue; never a lead, ballot or experiment), `--title` and `--brief` are
+the card, and in them `{{subject}}`, `{{detail}}`, `{{action}}`,
+`{{project}}`, `{{actor}}` and `{{at}}` stand for the event's fields (the
+detail is cut at 4000 characters). `--tier 0|1`, `--priority N` and
+`--run-as NAME` work as they do for `pulse job add`. A job belongs to a
+project and not every event names one, so `--project` is required. The job's
+source is `hook:<id>`, so a hook has at most one open job at a time: while it
+is queued or running, further events are delivered as `already queued`; a
+replayed event the hook already queued a job for is a delivery, not a retry;
+and an event about a job some hook queued never queues another, so a hook on
+`job.*` cannot feed itself. A `script` hook can do the same by hand: it
+receives `PULSE_HOME` and may call `pulse job add` or `pulse task suggest`.
 
 ## The harness
 
@@ -2263,8 +2280,9 @@ job whose kind is listed and whose `Tags:` (else `Class:`) words or
 standing instructions, the runner handing the worker `pulse harness run
 --agent NAME` (a remote hand reads the clone's files; a store-only record
 is invisible to it); a job pinned to an agent by name (`pulse job add
---run-as NAME` or a schedule's `--run-as`) runs as it whatever
-its `kinds` say, so long as it still loads; `max_steps` and `max_subagents` cap the run and the
+--run-as NAME`, or a schedule's or a job hook's `--run-as`) runs as it
+whatever its `kinds` say, so long as it still loads; `max_steps` and
+`max_subagents` cap the run and the
 helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
 `quorum` and `project_scope` are read and linted for the phases that will
 consume them. `--agent NAME` runs any `pulse harness run` as that agent;

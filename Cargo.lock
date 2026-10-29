@@ -1427,6 +1427,7 @@ dependencies = [
  "pulse-goals",
  "pulse-store",
  "pulse-tally",
+ "pulse-tasks",
  "pulse-testutil",
  "regex",
  "reqwest",
