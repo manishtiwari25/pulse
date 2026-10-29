@@ -1577,8 +1577,8 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   `docs/evolution/constitution.md` / `evaluators.md` gets those files indexed
   as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other project
   gets a copy of the template's text marked `seeded_from` in its frontmatter,
-  with `loop: off`, no baseline and the `Product scope:` placeholder (which
-  keeps product cards out until you replace it), so nothing runs until you
+  with `loop: off`, no baseline and `Product scope: allowed` (amend the line
+  to `operating-layer` to keep product cards out), so nothing runs until you
   edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
   An existing record is never touched. You do not have to write the text
   yourself (ADR-046): while a project's constitution or evaluators is still

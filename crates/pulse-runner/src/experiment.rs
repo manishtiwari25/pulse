@@ -643,13 +643,20 @@ pub(crate) fn land_experiment_context(
         return ("stopped".into(), why);
     }
     let (variant_rev, merged_note) = measured_variant(&root, &def, &branch);
-    let variant = match pulse_evolve::measure(
+    // The variant and its base are measured in the card's diff scope: the
+    // whole-tree baseline stays the cached one, the fixtures the card scopes
+    // (and its own check) are measured again on the base and laid over it.
+    let card_check = pulse_evolve::card_check_of(&job.str("brief"));
+    let pair = match pulse_evolve::measure_pair(
         &ctx,
         s,
         &slug,
         &root,
+        &def,
         &variant_rev,
-        pulse_evolve::MeasureOptions::default(),
+        Some(baseline),
+        &card_check,
+        None,
     ) {
         Ok(v) => v,
         Err(e) if e.to_string() == pulse_evolve::err_not_implemented().to_string() => {
@@ -665,8 +672,18 @@ pub(crate) fn land_experiment_context(
             );
         }
     };
-    let (keep, reason) = pulse_evolve::keep(Some(&baseline), Some(&variant), tol);
-    let disputed = pulse_evolve::hinges_on(&baseline, &variant, tol);
+    let (keep, reason) = pulse_evolve::keep_pair(&pair, tol);
+    let pulse_evolve::MeasuredPair {
+        base: baseline,
+        variant,
+        scope,
+        skipped,
+    } = pair;
+    let disputed = if skipped.is_some() {
+        Vec::new()
+    } else {
+        pulse_evolve::hinges_on(&baseline, &variant, tol)
+    };
     let (keep, reason, variant, dispute_note) = if disputed.is_empty() {
         (keep, reason, variant, String::new())
     } else {
@@ -680,6 +697,8 @@ pub(crate) fn land_experiment_context(
                 pulse_evolve::MeasureOptions {
                     fixtures: disputed.clone(),
                     exact: true,
+                    scope: Some(scope.clone()),
+                    card_check: card_check.clone(),
                     ..Default::default()
                 },
             )
@@ -1434,7 +1453,7 @@ mod tests {
             row.note.contains(
                 "the discard hinged on starter-proposes-first, measured again on both trees: \
                  starter-proposes-first: baseline 1.0000 then 0.0000, variant 0.0000 then 0.0000; \
-                 a difference that does not reproduce scores as a tie; kept (no regression)"
+                 a difference that does not reproduce scores as a tie; neutral (a tie: the hypothesis went unmeasured"
             ),
             "{}",
             row.note
