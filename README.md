@@ -2144,17 +2144,45 @@ were read and how many rules wait.
 **Custom agents.** The helper the `subagent` tool runs can be one the
 repository or the owner described: a Markdown file with front matter under
 `.pulse/agents`, `.claude/agents` (Claude Code's `<name>.md`),
-`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, the
-first of a name winning in that order. Its `description` tells the model
-when to pick it (the tool lists them and takes `agent: NAME`), its body
-becomes the helper's standing instructions ahead of the sub-task, and its
-`tools` list - in any harness's spelling: `Read`, `view`, `shell`,
-`WebFetch`, `Task`, `mcp__github__*`; `Bash(git *)` counts as `bash` -
-narrows what the helper gets: a tool outside the list (or in
-`disallowedTools`) is neither offered to it nor run for it, the same way a
-`deny` rule works. A helper also inherits the run's permission rules and
-the path-scoped rules above. `--no-agents` leaves the agents out for one
-run; they follow `harness.subagents` otherwise.
+`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, or an
+`agent` record of the store (the importer makes one of each `.pulse/agents`
+file). A name belongs to its most trusted source - a store record, then
+`~/.pulse/agents`, then `.pulse/agents`, `.claude/agents`, `.github/agents`
+- and a lower twin of the same name may only narrow it: fewer `tools`, more
+denies, a smaller `max_steps`, read-only; whatever else it says is dropped
+with a warning. `pulse agents list` (and the hub) show which source won.
+Its `description` tells the model when to pick it (the tool lists them and
+takes `agent: NAME`), its body - up to 30,000 characters - becomes the
+helper's standing instructions ahead of the sub-task, and its `tools` list
+- in any harness's spelling: `Read`, `view`, `shell`, `WebFetch`, `Task`,
+`mcp__github__*`, Copilot's `github/*`, OpenCode's `mcp_github_search`;
+`Bash(git *)` counts as `bash` - narrows what the helper gets: a tool
+outside the list (or in `disallowedTools`) is neither offered to it nor
+run for it, the same way a `deny` rule works. `model`, `maxTurns` (it may
+only lower the step cap), `permissionMode: plan` and `readonly: true`
+apply too; `permissionMode: bypassPermissions` keeps the file from
+loading, and so does a `hooks:` block or an `allow: "*"` in a repository
+file. A helper also inherits the run's permission rules and the
+path-scoped rules above. Under a `pulse:` key the file speaks to PULSE
+itself: `kinds` and `select: {tags, files}` name the job cards it runs - a
+job whose kind is listed and whose `Tags:` (else `Class:`) words or
+`File:` paths match runs under that agent's model, tools, step cap and
+standing instructions, the runner handing the worker `pulse harness run
+--agent NAME` (a remote hand reads the clone's files; a store-only record
+is invisible to it); `max_steps` and `max_subagents` cap the run and the
+helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
+`quorum` and `project_scope` are read and linted for the phases that will
+consume them. `--agent NAME` runs any `pulse harness run` as that agent;
+its `model` applies only when `models.allowed` lets it (empty = any model
+the provider accepts; a comma or newline list, `claude-*` globs), else the
+run keeps the model it had and says so. `pulse agents lint [PATH…]` reads
+the files one by one - the keys, what each tool name became, the limits
+(1024 characters of description), the template, the Tier 0/1 rules, the
+twins - and exits 1 on an error; `pulse agents schema` prints the front
+matter's JSON Schema; `pulse agents list` what loads and from where
+(`pulse agent`, singular, manages the running workers). `--no-agents`
+leaves the agents out for one run; they follow `harness.subagents`
+otherwise.
 
 **MCP servers as tools.** With a store at hand, a run connects the
 project's enabled [MCP servers](#connecting-the-outside-world-pulse-mcp)
