@@ -81,7 +81,7 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
           {state.update ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
               <p className="text-sm text-muted-foreground anywhere">{daemonUpdateText(state.update)}.</p>
-              <RestartNow ask={running?.data?.restart_ask} size="xs" />
+              <RestartNow ask={running?.data?.restart_ask} inflight={r?.jobs.running ?? 0} size="xs" />
             </div>
           ) : null}
           {why ? <p className="text-sm leading-relaxed text-muted-foreground anywhere">{why}</p> : null}

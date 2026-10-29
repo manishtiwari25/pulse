@@ -2579,9 +2579,12 @@ export const writes = {
   // `id` is the contract field; `post_id` is what the original dashboard sent - the pulse hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) => post<{ ok?: boolean; decided?: unknown }>("decide", { id, post_id: id, answer, words }),
   setSetting: (name: string, value: string) => post<{ ok?: boolean; setting?: Setting }>("settings", { name, value }),
-  // The update now: the runner's runs hold and carry on under the new build, the console's
-  // conversations carry on under the new console.
-  restartNow: () => post<RestartNowResult>("running/restart", {}),
+  // Restarting the runner: by default it drains - nothing new starts and it
+  // swaps in the new build once the runs in flight have ended. `now` is the
+  // fast path the operator confirms after seeing the runs in flight: they
+  // hold and carry on under the new build. The console's conversations
+  // carry on under the new console either way.
+  restartNow: (now?: boolean) => post<RestartNowResult>("running/restart", now ? { now: true } : {}),
   harnessLogin: () => post<HarnessDeviceFlow>("harness/login", {}),
   harnessLoginPoll: (device_code: string) => post<HarnessPollResponse>("harness/login/poll", { device_code }),
   harnessLoginToken: (token: string) => post<{ login: HarnessLogin }>("harness/login/token", { token }),

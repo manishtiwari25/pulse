@@ -44,13 +44,17 @@ pub(crate) static DAEMON_WAKE: &[&str] = &[
     RESTART_ACTION,
 ];
 
-/// The event the owner writes (Settings, Running, "Restart now") to have
-/// the daemon restart without waiting for its runs to finish. Each run in
-/// flight is asked to hold: the harness saves its conversation and exits
-/// `held`, the job returns to the queue with its clone, and the job's next
-/// run carries on from there (run.rs). The daemon exits with code 3 once
-/// they have held, or after `daemon.hold_seconds`, when the runs still going
-/// are stopped and their jobs start over.
+/// The event the owner writes (Settings, Running, "Restart") to have the
+/// daemon restart. By default it drains like a self-update: new runs stop
+/// starting and the daemon exits with code 3 once the runs in flight have
+/// ended or `daemon.restart_drain_minutes` is up, and the restart waits for
+/// a landing after them the same `RESTART_DRAIN`. The hub asks first and
+/// adds `"now": true` only when the operator confirms the fast path: each
+/// run in flight is asked to hold - the harness saves its conversation and
+/// exits `held`, the job returns to the queue with its clone, and the job's
+/// next run carries on from there (run.rs) - and the daemon exits once they
+/// have held, or after `daemon.hold_seconds`, when the runs still going are
+/// stopped and their jobs start over.
 pub const RESTART_ACTION: &str = "daemon.restart";
 
 /// Writes the owner's ask; the daemon wakes on it within a second.
@@ -71,18 +75,27 @@ pub(crate) struct RestartAsk {
     pub(crate) seq: i64,
     pub(crate) at: String,
     pub(crate) actor: String,
+    // `now: true` on the ask: the operator confirmed the fast path (hold the
+    // runs in flight) after seeing how many there are; absent or false drains.
+    pub(crate) force: bool,
 }
 
 pub(crate) fn restart_asked(s: &pulse_store::Store, after: i64) -> Option<RestartAsk> {
     let conn = s.conn().ok()?;
     conn.query_row(
-        "SELECT seq, at, actor FROM events WHERE action = ? AND seq > ? ORDER BY seq DESC LIMIT 1",
+        "SELECT seq, at, actor, detail FROM events WHERE action = ? AND seq > ? ORDER BY seq DESC LIMIT 1",
         rusqlite::params![RESTART_ACTION, after],
         |r| {
+            let detail: String = r.get(3)?;
+            let force = serde_json::from_str::<serde_json::Value>(&detail)
+                .ok()
+                .and_then(|d| d.get("now").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false);
             Ok(RestartAsk {
                 seq: r.get(0)?,
                 at: r.get(1)?,
                 actor: r.get(2)?,
+                force,
             })
         },
     )
@@ -887,9 +900,10 @@ pub(crate) fn daemon(
     let mut last_pass: Option<std::time::Instant> = None;
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
     let mut idle_log = crate::idle_log::IdleLog::default();
-    // Set when the binary changed on disk while runs were in flight: the
-    // daemon keeps dispatching and landing for up to daemon.restart_drain_minutes
-    // and exits with code 3 as soon as nothing is in flight (restart handover).
+    // Set when the binary changed on disk or the owner asked for a restart
+    // while runs were in flight: the daemon keeps dispatching and landing
+    // for up to daemon.restart_drain_minutes and exits with code 3 as soon
+    // as nothing is in flight (restart handover).
     let mut restart_pending: Option<std::time::Instant> = None;
     // The runs in flight when the restart was armed: the window follows them.
     let mut restart_anchors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -898,6 +912,11 @@ pub(crate) fn daemon(
     // Set when the owner asked for the restart now: the runs in flight were
     // asked to hold and the wait after the loop is capped (daemon.hold_seconds).
     let mut restart_forced = false;
+    // Set when the owner asked for a restart without "now": the daemon drains
+    // like a self-update - it starts nothing new and exits with code 3 once
+    // the runs in flight have ended or daemon.restart_drain_minutes is up, so
+    // nothing is held or lost.
+    let mut console_drain = false;
     // Asks for a restart are read from here on: the ask that restarted the
     // daemon before this one is behind it.
     let restart_asks_after = pulse_bus::last_id(s).unwrap_or(0);
@@ -1212,6 +1231,16 @@ pub(crate) fn daemon(
         while let Ok(d) = results_rx.try_recv() {
             report(&o, &mut inflight, &mut completed, &mut all_errors, d);
         }
+        // A console restart asked with runs in flight drains: once they have
+        // all ended, go. (The drain-budget stop is below, with the rest.)
+        if console_drain && restart_pending.is_some() && inflight.is_empty() {
+            say(
+                &o,
+                "restart asked and nothing is in flight; exiting with code 3 so the service restarts it",
+            );
+            leave = ("restart", "restarting");
+            break;
+        }
         let only_maintenance_wake = maintenance_wake;
         maintenance_wake = false;
         for line in maintenance.drain(s) {
@@ -1260,45 +1289,70 @@ pub(crate) fn daemon(
             leave = ("stopped", "stopping");
             break;
         }
-        // The owner asked for the restart now: the runs in flight hold (the
-        // harness saves its conversation, the job's next run carries on) and
-        // this daemon leaves at once instead of draining; the wait for them
-        // after the loop is capped by daemon.hold_seconds.
+        // The owner asked for a restart: by default the daemon drains like
+        // a self-update (it stops starting runs and leaves when they end or
+        // the drain is up, so nothing is held or lost); with "now" the runs
+        // in flight hold (the harness saves its conversation, the job's next
+        // run carries on) and this daemon leaves at once, its wait after the
+        // loop capped by daemon.hold_seconds.
         if o.restart_on_change
             && let Some(ask) = restart_asked(s, restart_asks_after)
         {
-            let held = hold_runs_in_flight(s);
-            let heard = held.iter().filter(|(_, n)| *n > 0).count();
-            let cap = hold_cap(s);
-            say(
-                &o,
-                format!(
-                    "restart asked by {} at {}: {} run(s) in flight, {heard} asked to hold; exiting with code 3 once they have or after {} so the service restarts it",
-                    ask.actor,
-                    ask.at,
-                    inflight.len(),
-                    pulse_cli::format_duration(cap)
-                ),
-            );
-            for (run, n) in &held {
+            if ask.force {
+                let held = hold_runs_in_flight(s);
+                let heard = held.iter().filter(|(_, n)| *n > 0).count();
+                let cap = hold_cap(s);
                 say(
                     &o,
-                    if *n > 0 {
-                        format!("run {run}: {n} harness session(s) asked to hold")
-                    } else {
-                        format!(
-                            "run {run}: no harness session running (in its check, or a custom worker); it runs to the cap"
-                        )
-                    },
+                    format!(
+                        "restart asked by {} at {}: {} run(s) in flight, {heard} asked to hold; exiting with code 3 once they have or after {} so the service restarts it",
+                        ask.actor,
+                        ask.at,
+                        inflight.len(),
+                        pulse_cli::format_duration(cap)
+                    ),
                 );
+                for (run, n) in &held {
+                    say(
+                        &o,
+                        if *n > 0 {
+                            format!("run {run}: {n} harness session(s) asked to hold")
+                        } else {
+                            format!(
+                                "run {run}: no harness session running (in its check, or a custom worker); it runs to the cap"
+                            )
+                        },
+                    );
+                }
+                if restart_pending.is_none() {
+                    restart_anchors = inflight.keys().cloned().collect();
+                    restart_since = s.now();
+                }
+                restart_forced = true;
+                leave = ("restart", "restarting now, as asked");
+                break;
             }
             if restart_pending.is_none() {
+                restart_pending = Some(std::time::Instant::now());
                 restart_anchors = inflight.keys().cloned().collect();
                 restart_since = s.now();
+                say(
+                    &o,
+                    format!(
+                        "restart asked by {} at {}: {} run(s) in flight; draining - nothing new starts and the daemon exits with code 3 once they end or after {}",
+                        ask.actor,
+                        ask.at,
+                        inflight.len(),
+                        pulse_cli::format_duration(restart_drain(s))
+                    ),
+                );
             }
-            restart_forced = true;
-            leave = ("restart", "restarting now, as asked");
-            break;
+            console_drain = true;
+            if inflight.is_empty() {
+                leave = ("restart", "restarting, as asked");
+                break;
+            }
+            continue;
         }
         if o.restart_on_change
             && !stamp.is_empty()
@@ -1363,6 +1417,30 @@ pub(crate) fn daemon(
                     }
                 }
                 Some(_) => {}
+            }
+        } else if console_drain && restart_pending.is_some() {
+            // The console asked for a restart (no binary change): drain.
+            if inflight.is_empty() {
+                say(
+                    &o,
+                    "restart asked and nothing is in flight; exiting with code 3 so the service restarts it",
+                );
+                leave = ("restart", "restarting");
+                break;
+            }
+            let since = restart_pending.unwrap();
+            let drain = restart_drain(s);
+            if since.elapsed() >= drain {
+                say(
+                    &o,
+                    format!(
+                        "restart drain of {} over with {} run(s) in flight; exiting with code 3 after they finish",
+                        pulse_cli::format_duration(drain),
+                        inflight.len()
+                    ),
+                );
+                leave = ("restart", "restarting");
+                break;
             }
         } else if restart_pending.is_some() {
             // The binary was changed back: the handover is off.
@@ -1714,6 +1792,17 @@ pub(crate) fn daemon(
             // lease nothing else), or none (the slots close).
             let mut restart_kinds: Vec<(String, String)> = Vec::new();
             let restart_hold = restart_pending.and_then(|since| {
+                // A console drain starts nothing new: the restart is wanted,
+                // not just a new build, so the runs in flight are waited out.
+                if console_drain {
+                    restart_kinds = Vec::new();
+                    let drain_left = restart_drain(s).saturating_sub(since.elapsed());
+                    return Some(format!(
+                        "restarting as asked: no new runs, draining {} in flight with {} left",
+                        inflight.len(),
+                        pulse_cli::format_duration(drain_left)
+                    ));
+                }
                 let drain_left = restart_drain(s).saturating_sub(since.elapsed());
                 let fits = kind_fits(s);
                 let left = restart_window(
@@ -2365,11 +2454,12 @@ pub(crate) fn daemon(
             &o,
             format!("{note}: waiting for landing maintenance to finish"),
         );
-        // A restart (the binary changed on disk) cancels the experiment under
-        // measurement at once - the next daemon measures it again - and gives
-        // the plain landings RESTART_DRAIN before cancelling them too, so a
-        // self-update is never held for a ninety-minute measurement. A restart
-        // the owner asked for now gives them the hold cap, like the runs.
+        // A restart (the binary changed on disk, or the owner's ask)
+        // cancels the experiment under measurement at once - the next daemon
+        // measures it again - and gives the plain landings RESTART_DRAIN
+        // before cancelling them too, so a restart is never held for a
+        // ninety-minute measurement. A restart the owner asked for now gives
+        // them the hold cap, like the runs.
         let drain = if stuck_pass {
             Duration::from_secs(30)
         } else if restart_forced && result == "restart" {
@@ -3367,7 +3457,12 @@ mod tests {
                 );
                 std::thread::sleep(Duration::from_millis(50));
             }
-            ask_restart(&s, "owner", serde_json::json!({"from": "settings"})).unwrap();
+            ask_restart(
+                &s,
+                "owner",
+                serde_json::json!({"from": "settings", "now": true}),
+            )
+            .unwrap();
             done_rx
                 .recv_timeout(test_wait(Duration::from_secs(90)))
                 .expect("the daemon did not exit after the ask")
@@ -3429,6 +3524,101 @@ mod tests {
         );
         let left = crate::test_helpers::work_leftovers(&s.home);
         assert!(left.is_empty(), "clone left behind: {left:?}");
+    }
+
+    #[test]
+    fn a_restart_asked_without_now_drains_the_runs_in_flight_and_holds_nothing() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "1")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.hold_seconds", "1")
+            .unwrap();
+        // The default ask (no "now") drains: the run in flight is left alone
+        // and the daemon goes once it ends, inside the drain budget.
+        let (out, result) =
+            restart_with_ask_and_run_in_flight(&s, serde_json::json!({"from": "settings"}));
+        assert_eq!(result, "restart", "{out}");
+        assert!(
+            out.contains("draining - nothing new starts and the daemon exits with code 3"),
+            "{out}"
+        );
+        assert!(
+            out.contains("nothing is in flight; exiting with code 3"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("asked to hold"),
+            "a drained restart holds nothing: {out}"
+        );
+        assert!(
+            !out.contains("requeued"),
+            "a drained restart requeues nothing: {out}"
+        );
+    }
+
+    /// A console restart ask answered while a run is in flight: the daemon's
+    /// whole output and its exit line, so the caller asserts how it went.
+    fn restart_with_ask_and_run_in_flight(
+        s: &crate::test_helpers::TestStore,
+        detail: serde_json::Value,
+    ) -> (String, String) {
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            "Slow run".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let _ = job;
+        let out = OutBuf::new();
+        let (leased_tx, leased_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: leased_tx,
+            needle: "leased job-".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 1,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 3; echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            leased_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the run was never leased");
+            ask_restart(s, "owner", detail).unwrap();
+            done_rx
+                .recv_timeout(test_wait(Duration::from_secs(90)))
+                .expect("the daemon did not exit after the ask")
+        }));
+        cancel.cancel();
+        let result = match result {
+            Ok(result) => result,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        (out.string(), result)
     }
 
     #[test]
