@@ -655,6 +655,13 @@ mod tests {
             let s = crate::test_helpers_http::additions_store(false);
             crate::test_helpers_http::additions_project(&s, "one");
             for slug in ["constitution", "evaluators"] {
+                // Product scope is open when the line is absent, so the
+                // operating-layer-only flags below need an explicit off.
+                let body = if slug == "evaluators" {
+                    "Generic starter safety configuration.\nProduct scope: off\n"
+                } else {
+                    "Generic starter safety configuration.\n"
+                };
                 s.put_record(
                     pulse_store::Record {
                         id: format!("EVO-{slug}-one"),
@@ -669,7 +676,7 @@ mod tests {
                         .clone()
                         .into_iter()
                         .collect(),
-                    "Generic starter safety configuration.\n",
+                    body,
                     "human",
                     "test fixture",
                 )
