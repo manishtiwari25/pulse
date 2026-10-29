@@ -674,10 +674,17 @@ footer naming the schedule, the run number and who set it. One open job per
 schedule: while the previous run's job is still queued or leased, the tick is
 skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
 stopped daemon missed collapse into one. Scheduled jobs are subject to
-`jobs_per_day` and the other runner caps like every job.
+`jobs_per_day` and the other runner caps like every job. `--run-as NAME`
+makes every job the schedule queues run as that custom agent (**Custom
+agents** under The harness; `pulse agents list --project P` names the ones
+that load, and `pulse job add --run-as NAME` pins a single job the same way):
+the name must load for the project when the schedule is set, and a job whose
+agent has since gone falls back to the usual choice by kind and tags, with a
+warning in the run log.
 
 ```bash
 pulse schedule add --project my-app --title "Nightly flake sweep" --every 1d --at 02:00 --kind task --brief "Run the suite three times; file each flake as a finding." --times 30
+pulse schedule add --project my-app --title "Weekly audit" --every 1w --kind task --brief "Audit the dependencies." --run-as auditor
 pulse schedule list --project my-app        # ID, status, cadence, next time, runs, who set it
 pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
 pulse schedule pause SCHED-001 --note "release week"
@@ -2255,7 +2262,9 @@ job whose kind is listed and whose `Tags:` (else `Class:`) words or
 `File:` paths match runs under that agent's model, tools, step cap and
 standing instructions, the runner handing the worker `pulse harness run
 --agent NAME` (a remote hand reads the clone's files; a store-only record
-is invisible to it); `max_steps` and `max_subagents` cap the run and the
+is invisible to it); a job pinned to an agent by name (`pulse job add
+--run-as NAME` or a schedule's `--run-as`) runs as it whatever
+its `kinds` say, so long as it still loads; `max_steps` and `max_subagents` cap the run and the
 helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
 `quorum` and `project_scope` are read and linted for the phases that will
 consume them. `--agent NAME` runs any `pulse harness run` as that agent;

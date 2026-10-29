@@ -988,8 +988,9 @@ pub fn additive_ddl() -> Vec<&'static [&'static str]> {
     ]
 }
 pub fn additive_columns() -> Vec<Column> {
-    RUNNER_COLUMNS
+    crate::ddl::JOB_COLUMNS
         .iter()
+        .chain(RUNNER_COLUMNS.iter())
         .chain(HARNESS_COLUMNS.iter())
         .chain(crate::evolve_ddl::EVOLVE_COLUMNS.iter())
         .chain(SCHEDULE_COLUMNS.iter())

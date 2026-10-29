@@ -1386,6 +1386,7 @@ dependencies = [
  "chrono",
  "hex",
  "libc",
+ "pulse-board",
  "pulse-bus",
  "pulse-cli",
  "pulse-cred",

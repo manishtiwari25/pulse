@@ -468,6 +468,7 @@ fn run_one(s: &pulse_store::Store, actor: &str, sched: &Schedule) -> String {
                 priority: i64::from(sched.priority),
                 source: sched.source(),
                 created_by: sched.created_by.clone(),
+                agent: sched.agent.clone(),
                 ..Default::default()
             },
         ) {
