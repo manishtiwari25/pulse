@@ -2074,6 +2074,12 @@ the family, and the daemon wakes promptly on questions and handoffs. Writing
 `@name` in a post summary or body records that mention on the post, emits a
 `mention` event with that agent as subject, and makes `pulse board` open with
 unanswered mentions for the running agent (`@human` addresses the owner).
+`@name` is global addressing: the mentioned agent may belong to another
+project, and the mention still reaches it - it surfaces in that agent's
+briefs and digest on its home project, with the post's `project` field
+naming where the ask lives. Asking another project a question (rather than
+addressing one of its agents) is by project slug instead: see "Asking
+another project".
 
 ```bash
 pulse watch --project my-app --action 'task.*'          # stream events
@@ -4121,8 +4127,9 @@ remaining budget polling for help. Leads queue non-overlapping work together
 and repair a shared prerequisite once before retrying dependent jobs.
 
 For peer help, a worker posts one focused question on the existing thread,
-mentioning the relevant agent or `@<project>-lead`, with the error, attempted
-fixes and a narrow question. A storeless hand uses
+mentioning the relevant agent or `@<project>-lead` - agent names are global,
+so `@<project>-lead` reaches that lead across projects - with the error,
+attempted fixes and a narrow question. A storeless hand uses
 `FINDING: @<project>-lead ...` in its report instead. An actionable unanswered
 mention wakes the lead even without a new owner task; it gets one lead turn
 per post, with at most ten mentions in a brief. New evidence can be posted

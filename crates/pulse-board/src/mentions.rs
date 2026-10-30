@@ -71,6 +71,30 @@ pub(crate) fn post_mentions(
     Ok(out)
 }
 
+/// Projects whose posts may carry an unanswered mention of `agent`.
+///
+/// `@name` is global addressing: `post_mentions` records any registered
+/// agent in the store, whatever project hosts it, so an agent mentioned on
+/// another project's board is addressed there and the mention must still
+/// reach the agent. The scope is therefore the given project plus every
+/// other active project - agent names are store-global, and each lead runs
+/// on its own project's board. An empty `project` is the store-wide view
+/// and needs no extra scope rows.
+pub(crate) fn mention_scope_projects(s: &pulse_store::Store, project: &str) -> Result<Vec<String>> {
+    if project.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = s.conn()?;
+    let mut stmt = conn
+        .prepare("SELECT slug FROM projects WHERE slug != ? AND status = 'active' ORDER BY slug")?;
+    let rows = stmt.query_map([project], |r| r.get::<_, String>(0))?;
+    let mut out = vec![project.to_string()];
+    for r in rows.flatten() {
+        out.push(r);
+    }
+    Ok(out)
+}
+
 pub fn mentions_for(
     s: &pulse_store::Store,
     project: &str,
@@ -82,10 +106,18 @@ pub fn mentions_for(
     } else {
         agent
     };
+    let scope = mention_scope_projects(s, project)?;
+    let scope_filter = if scope.is_empty() {
+        "1 = 1".to_string()
+    } else {
+        let list = scope.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        format!("p.project IN ({list})")
+    };
     let mut q = "SELECT p.".to_string()
         + &POST_COLS.replace(", ", ", p.")
-        + r#" FROM posts p
-WHERE (? = '' OR p.project = ?)
+        + " FROM posts p\nWHERE "
+        + &scope_filter
+        + r#"
   AND p.agent != ?
   AND json_valid(p.extra)
   AND EXISTS (SELECT 1 FROM json_each(p.extra, '$.mentions') WHERE value = ?)
@@ -96,13 +128,10 @@ WHERE (? = '' OR p.project = ?)
   )
 ORDER BY p.date DESC, p.rowid DESC"#;
     let conn = s.conn()?;
-    let mut args = vec![
-        project.to_string(),
-        project.to_string(),
-        agent.to_string(),
-        agent.to_string(),
-        agent.to_string(),
-    ];
+    let mut args: Vec<String> = scope;
+    args.push(agent.to_string());
+    args.push(agent.to_string());
+    args.push(agent.to_string());
     if limit > 0 {
         q.push_str(" LIMIT ?");
         args.push(limit.to_string());
@@ -119,8 +148,10 @@ pub fn mention_count(s: &pulse_store::Store, project: &str, agent: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::{JoinInput, join_agent};
     use crate::posts::{PostInput, create_post};
-    use crate::test_helpers::{TEST_NOW, fixture};
+    use crate::projects::register_project;
+    use crate::test_helpers::{TEST_NOW, fixture, git_repo};
 
     #[test]
     fn parse_mentions_cases() {
@@ -262,5 +293,63 @@ mod tests {
             vec![p3.id.as_str()]
         );
         assert_eq!(mention_count(&s, "", "bob").unwrap(), 2);
+    }
+
+    #[test]
+    fn mentions_for_reaches_an_agent_of_another_project() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let other = git_repo();
+        register_project(
+            &s,
+            &other.path().display().to_string(),
+            "licht",
+            "",
+            false,
+            "",
+            "human",
+            "licht",
+        )
+        .expect("register licht");
+        join_agent(
+            &s,
+            JoinInput {
+                name: "licht-lead".into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: "sess-licht-lead".into(),
+                ..Default::default()
+            },
+        )
+        .expect("join licht-lead");
+        let ask = create_post(
+            &s,
+            PostInput {
+                kind: "question".into(),
+                project: "demo".into(),
+                area: "board".into(),
+                thread: "cross".into(),
+                summary: "@licht-lead how does your board treat claims?".into(),
+                agent: "alice".into(),
+                date: "2026-09-06T09:00:00Z".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Addressed on demo's board, delivered to the agent's home project.
+        let got = super::mentions_for(&s, "licht", "licht-lead", 0).unwrap();
+        assert_eq!(
+            got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec![ask.id.as_str()]
+        );
+        assert_eq!(got[0].project, "demo");
+        assert_eq!(mention_count(&s, "licht", "licht-lead").unwrap(), 1);
+        // A store-wide view sees it too; the posting project's agents do not.
+        assert_eq!(mention_count(&s, "", "licht-lead").unwrap(), 1);
+        assert!(
+            super::mentions_for(&s, "demo", "bob", 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
