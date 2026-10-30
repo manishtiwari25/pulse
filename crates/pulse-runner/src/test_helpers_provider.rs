@@ -1511,4 +1511,141 @@ mod tests {
             format!("question:{}", second.str("id"))
         );
     }
+
+    /// Two projects on one board, both with their daily reflect done so the
+    /// planner has nothing else to seed; `aurora` is a worker of `proj`.
+    fn two_projects() -> crate::test_helpers::TestStore {
+        let s = new_store();
+        new_bare_repo(&s);
+        crate::test_helpers::new_bare_repo_named(&s, "other");
+        suppress_planner_reflect(&s);
+        crate::jobs::add_job(
+            &s,
+            "other".into(),
+            "reflect".into(),
+            "Daily reflect".into(),
+            "already done".into(),
+            0,
+            1,
+            format!("reflect:other:{}", &TEST_NOW[..10]),
+            "daemon".into(),
+            true,
+        )
+        .expect("add reflect");
+        exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE project = 'other' AND kind = 'reflect'",
+            &[&TEST_NOW],
+        );
+        crate::test_helpers::join(&s, "aurora");
+        s
+    }
+
+    fn ask_other(s: &pulse_store::Store) -> crate::util::Row {
+        create_post(
+            s,
+            plus_hours(TEST_NOW, -2.0),
+            PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "api".into(),
+                thread: "ports".into(),
+                summary: "@other which port does your API listen on?".into(),
+                body: "proj's client needs the port other's API binds in its default config.\n"
+                    .into(),
+                agent: actor_agent(s, "aurora".into()),
+                session: "s-aurora".into(),
+                ..Default::default()
+            },
+        )
+        .expect("ask")
+    }
+
+    #[test]
+    fn plan_jobs_answers_asks_from_other_projects_in_the_tagged_project() {
+        let _serial = crate::test_helpers::serial();
+        let s = two_projects();
+        let q = ask_other(&s);
+        assert_eq!(
+            pulse_board::extra_projects(&q.str("extra")),
+            vec!["other".to_string()]
+        );
+        let plan = |slug: &str| {
+            plan_jobs(&s, slug.into(), TEST_NOW.into(), "daemon".into()).expect("plan")
+        };
+        let jobs = plan("other");
+        assert_eq!(jobs.len(), 1, "jobs for other: {jobs:?}");
+        let job = &jobs[0];
+        assert_eq!(job.str("kind"), "answer");
+        assert_eq!(job.str("project"), "other");
+        assert_eq!(job.str("source"), format!("question:{}", q.str("id")));
+        assert_eq!(
+            job.str("title"),
+            format!(
+                "Answer proj's question {}: @other which port does your API listen on?",
+                q.str("id")
+            )
+        );
+        let brief = job.str("brief");
+        for want in [
+            format!(
+                "Project proj asked this project (question {} on proj's thread api/ports, tagged @other):",
+                q.str("id")
+            ),
+            "proj's client needs the port other's API binds in its default config.".to_string(),
+            "Investigate in this clone (other) and write the answer as SUMMARY:; the runner posts it on proj's thread as an answer from other.".to_string(),
+        ] {
+            assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
+        }
+        assert!(
+            plan("proj").is_empty(),
+            "the asker's own workers must not answer a question addressed to other"
+        );
+        assert!(plan("other").is_empty(), "a second job for the same ask");
+    }
+
+    #[test]
+    fn post_result_answer_returns_the_answer_on_the_askers_thread() {
+        let _serial = crate::test_helpers::serial();
+        let s = two_projects();
+        let q = ask_other(&s);
+        let job = plan_jobs(&s, "other".into(), TEST_NOW.into(), "daemon".into())
+            .expect("plan")
+            .remove(0);
+        crate::run::post_result_answer(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            "run-1",
+            "",
+            crate::brief::Report {
+                summary: "8080, set in config/default.toml".into(),
+                ..Default::default()
+            },
+        )
+        .expect("post answer");
+        let conn = s.conn().expect("conn");
+        let answers =
+            crate::util::must_rows(&conn, "SELECT * FROM posts WHERE kind = 'answer'", &[]);
+        assert_eq!(answers.len(), 1, "answers: {answers:?}");
+        let a = &answers[0];
+        assert_eq!(a.str("project"), "proj");
+        assert_eq!(a.str("area"), "api");
+        assert_eq!(a.str("thread"), "ports");
+        assert_eq!(a.str("on_post"), q.str("id"));
+        assert_eq!(a.str("origin_project"), "other");
+        assert_eq!(a.str("summary"), "8080, set in config/default.toml");
+        assert!(
+            pulse_board::open_asks_to(&s, "other")
+                .expect("open asks")
+                .is_empty()
+        );
+        let asks = pulse_board::asks_from(&s, "proj", 0).expect("asks from");
+        assert_eq!(asks.len(), 1);
+        assert_eq!(
+            asks[0].answer.as_ref().map(|a| a.id.clone()),
+            Some(a.str("id"))
+        );
+    }
 }

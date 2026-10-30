@@ -387,6 +387,103 @@ pub(crate) fn answerable(q: Row, planner_actor: String) -> bool {
     q.str("summary") != pulse_evolve::STOP_SUMMARY
 }
 
+/// A board post as the row `answerable` reads.
+pub(crate) fn post_as_row(p: &pulse_board::Post) -> Row {
+    let mut r = Row::new();
+    r.insert("agent", json!(p.agent));
+    r.insert("summary", json!(p.summary));
+    r.insert("body", json!(p.body));
+    r.insert("for_owner", json!(p.for_owner));
+    r.insert("extra", json!(p.extra));
+    r
+}
+
+/// The project an ask speaks for: the question's project, or the project a
+/// commons question came from.
+pub(crate) fn ask_origin(p: &pulse_board::Post) -> String {
+    if p.project == pulse_store::COMMONS_SLUG && !p.origin_project.is_empty() {
+        p.origin_project.clone()
+    } else {
+        p.project.clone()
+    }
+}
+
+/// One `answer` job in `slug` for each question another project addressed
+/// to it (`--to slug` or `@slug`), up to `room` jobs. The question stays on
+/// the asker's thread; the job's source names it as a question of this
+/// project would, so "already tried" is read per project, and no second job
+/// is queued for a thread that already has one here.
+fn plan_ask_answers(
+    s: &pulse_store::Store,
+    conn: &impl Querier,
+    slug: &str,
+    created_by: &str,
+    room: usize,
+) -> anyhow::Result<Vec<Row>> {
+    let asks = pulse_board::open_asks_to(s, slug)?;
+    if asks.is_empty() || room == 0 {
+        return Ok(Vec::new());
+    }
+    let tried: std::collections::BTreeSet<String> = must_rows(
+        conn,
+        "SELECT source FROM jobs WHERE project = ? AND source LIKE 'question:%'",
+        &[&slug],
+    )
+    .into_iter()
+    .map(|r| r.str("source"))
+    .collect();
+    let thread_of = |p: &pulse_board::Post| format!("{}/{}/{}", p.project, p.area, p.thread);
+    let mut waiting: std::collections::BTreeSet<String> = asks
+        .iter()
+        .filter(|a| tried.contains(&format!("question:{}", a.post.id)))
+        .map(|a| thread_of(&a.post))
+        .collect();
+    let mut created = Vec::new();
+    for a in asks {
+        if created.len() >= room {
+            break;
+        }
+        let q = a.post;
+        let source = format!("question:{}", q.id);
+        let key = thread_of(&q);
+        if tried.contains(&source)
+            || waiting.contains(&key)
+            || !answerable(post_as_row(&q), created_by.to_string())
+            || !pulse_board::owner_only_proposal(&q.summary, &q.body).is_empty()
+            || crate::evolve_plan::hard_stop_text(format!("{}\n{}", q.summary, q.body))
+        {
+            continue;
+        }
+        let origin = ask_origin(&q);
+        let body = if q.body.trim().is_empty() {
+            q.summary.clone()
+        } else {
+            q.body.clone()
+        };
+        let brief = format!(
+            "Project {origin} asked this project (question {} on {origin}'s thread {}/{}, tagged @{slug}):\n\n{body}\n\nInvestigate in this clone ({slug}) and write the answer as SUMMARY:; the runner posts it on {origin}'s thread as an answer from {slug}. If only a human can answer it, write QUESTION: with what you need and stop.",
+            q.id, q.area, q.thread
+        );
+        let (job, is_new) = crate::jobs::add_job(
+            s,
+            slug.to_string(),
+            "answer".into(),
+            format!("Answer {origin}'s question {}: {}", q.id, q.summary),
+            brief,
+            0,
+            5,
+            source,
+            created_by.to_string(),
+            false,
+        )?;
+        if is_new {
+            created.push(job);
+            waiting.insert(key);
+        }
+    }
+    Ok(created)
+}
+
 pub(crate) fn tally_post(s: &pulse_store::Store, id: String) -> Option<pulse_tally::Post> {
     let Ok(conn) = s.conn() else { return None };
     let r = crate::board::post_row(&conn, id);
@@ -791,6 +888,7 @@ pub(crate) fn plan_jobs_with_tally(
                 || !answerable(q.clone(), created_by.clone())
                 || crate::lead::mentions_project_lead(q.clone())
                 || stuck.get(&key).copied().unwrap_or(false)
+                || !pulse_board::extra_projects(&q.str("extra")).is_empty()
             {
                 continue;
             }
@@ -817,6 +915,15 @@ pub(crate) fn plan_jobs_with_tally(
                 created.push(job);
             }
             break;
+        }
+        if created.len() < allowance {
+            created.extend(plan_ask_answers(
+                s,
+                &conn,
+                &slug,
+                &created_by,
+                allowance - created.len(),
+            )?);
         }
     }
     if created.is_empty() {

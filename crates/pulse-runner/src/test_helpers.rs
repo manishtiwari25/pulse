@@ -393,7 +393,13 @@ fn test_temp_dir(s: &pulse_store::Store) -> PathBuf {
 /// project.add event RegisterProject would, all in-process; the template is known to be a checkout
 /// on main with no remote. Tests that consult seeded records must keep using newRepo.
 pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
-    let dir = test_temp_dir(s).join("proj");
+    new_bare_repo_named(s, "proj")
+}
+
+/// `new_bare_repo` for a second project, so tests can put two projects on
+/// one board.
+pub(crate) fn new_bare_repo_named(s: &pulse_store::Store, slug: &str) -> (Row, String) {
+    let dir = test_temp_dir(s).join(slug);
     copy_dir(Path::new(&template_repo()), &dir).expect("copy template repo");
     let root = std::fs::canonicalize(&dir)
         .unwrap_or(dir)
@@ -401,13 +407,19 @@ pub(crate) fn new_bare_repo(s: &pulse_store::Store) -> (Row, String) {
         .to_string();
     let now = s.now();
     let conn = s.conn().expect("conn");
-    conn.execute("INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)", rusqlite::params!["proj", "Proj", root, now, util::HUMAN_AGENT, now]).expect("insert project");
-    pulse_bus::emit(s, util::HUMAN_AGENT, "project.add", "proj", root.as_str())
+    let name = {
+        let mut c = slug.chars();
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
+    };
+    conn.execute("INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)", rusqlite::params![slug, name, root, now, util::HUMAN_AGENT, now]).expect("insert project");
+    pulse_bus::emit(s, util::HUMAN_AGENT, "project.add", slug, root.as_str())
         .expect("project.add event");
-    pulse_goals::ensure_default(s, "proj").expect("default goal");
-    let p = crate::board::project_by_slug(&conn, "proj".into());
+    pulse_goals::ensure_default(s, slug).expect("default goal");
+    let p = crate::board::project_by_slug(&conn, slug.into());
     if p.0.is_empty() {
-        panic!("project proj not found after insert");
+        panic!("project {slug} not found after insert");
     }
     let path = p.str("path");
     (p, path)

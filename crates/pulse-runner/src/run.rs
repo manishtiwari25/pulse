@@ -2505,7 +2505,16 @@ pub(crate) fn post_result_answer(
     };
     let c = conn(s);
     let q = crate::board::post_row(&c, id.clone());
-    if is_nil(&q) || q.str("kind") != "question" || q.str("project") != job.str("project") {
+    // A question of another project may be answered here only when it was
+    // addressed to this project (`--to` or `@slug`); the answer then goes
+    // back on the asker's thread and names this project as its origin.
+    let asked_here = !is_nil(&q)
+        && q.str("project") != job.str("project")
+        && pulse_board::extra_projects(&q.str("extra")).contains(&job.str("project"));
+    if is_nil(&q)
+        || q.str("kind") != "question"
+        || (q.str("project") != job.str("project") && !asked_here)
+    {
         return Err(cli_err(
             2,
             format!(
@@ -2520,10 +2529,16 @@ pub(crate) fn post_result_answer(
     {
         return Err(cli_err(2, format!("question {} requires the owner", id)));
     }
-    if !crate::plan::open_questions(s, job.str("project"), now.to_string())
-        .iter()
-        .any(|r| r.str("id") == id)
-    {
+    let still_open = if asked_here {
+        pulse_board::open_asks_to(s, &job.str("project"))?
+            .iter()
+            .any(|a| a.post.id == id)
+    } else {
+        crate::plan::open_questions(s, job.str("project"), now.to_string())
+            .iter()
+            .any(|r| r.str("id") == id)
+    };
+    if !still_open {
         return Ok(());
     }
     if !crate::util::must_one(&c, "SELECT 1 FROM posts a JOIN posts q ON q.id = ? WHERE a.project = q.project AND a.kind = 'answer' AND a.area = q.area AND a.thread = q.thread AND a.date = q.date AND a.rowid > q.rowid LIMIT 1", &[&id]).0.is_empty() { return Ok(()); }
@@ -2541,6 +2556,11 @@ pub(crate) fn post_result_answer(
             agent: crate::board::actor_agent(s, agent.to_string()),
             session: run_id.to_string(),
             branch: Some(Box::new(branch.to_string())),
+            origin_project: if asked_here {
+                job.str("project")
+            } else {
+                String::new()
+            },
             ..Default::default()
         },
     )?;
