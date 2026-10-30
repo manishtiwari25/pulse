@@ -106,22 +106,28 @@ export const STREAM_WINDOW: FlushWindow = { quietMs: 1500, maxMs: 5000 };
 export class Coalescer {
   private readonly flush: (actions: Set<string>, lastAt: number) => void;
   private readonly window: FlushWindow;
+  private readonly clock: () => number;
   private actions = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private firstAt = 0;
   private lastAt = 0;
   private paused = false;
 
-  constructor(flush: (actions: Set<string>, lastAt: number) => void, window: FlushWindow = STREAM_WINDOW) {
+  constructor(
+    flush: (actions: Set<string>, lastAt: number) => void,
+    window: FlushWindow = STREAM_WINDOW,
+    clock: () => number = Date.now,
+  ) {
     this.flush = flush;
     this.window = window;
+    this.clock = clock;
   }
 
   get pending(): number {
     return this.actions.size;
   }
 
-  add(action: string, now = Date.now()): void {
+  add(action: string, now = this.clock()): void {
     if (isSilent(action)) return;
     this.actions.add(action);
     this.lastAt = now;
@@ -135,7 +141,7 @@ export class Coalescer {
 
   // Back from hidden: whatever queued flushes after one quiet window, so the
   // reconnecting stream's replay and the hooks' own wake-up loads settle first.
-  resume(now = Date.now()): void {
+  resume(now = this.clock()): void {
     this.paused = false;
     this.firstAt = 0;
     if (this.actions.size) this.arm(now);
@@ -146,12 +152,27 @@ export class Coalescer {
     if (!this.firstAt) this.firstAt = now;
     const due = Math.min(now + this.window.quietMs, this.firstAt + this.window.maxMs);
     this.clear();
-    this.timer = setTimeout(() => this.fire(), Math.max(0, due - now));
+    this.timer = setTimeout(() => this.wake(due), Math.max(0, due - now));
   }
 
   private clear(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  // A setTimeout fires when its wall-clock wait is over, not when the clock
+  // this coalescer was armed against reached the deadline: a sleep that
+  // wakes early (a hiccup that folded one pause into the next, a throttled
+  // background tab that wakes in bursts) must re-arm for what is left
+  // instead of flushing ahead of the quiet window.
+  private wake(due: number): void {
+    const now = this.clock();
+    if (now < due) {
+      this.clear();
+      this.timer = setTimeout(() => this.wake(due), due - now);
+      return;
+    }
+    this.fire();
   }
 
   private fire(): void {

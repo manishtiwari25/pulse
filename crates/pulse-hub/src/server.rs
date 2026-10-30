@@ -666,12 +666,16 @@ mod tests {
 
         if let Some(tree) = stamp.strip_prefix("src-tree ") {
             // The build recorded the src/ tree it was made from; the commit
-            // must be carrying exactly that src/.
-            assert_eq!(
-                tree,
-                git(&["rev-parse", "HEAD^{tree}:./src"]),
+            // must be carrying exactly that src/. A pre-commit hook runs this
+            // with HEAD still on the previous commit, so accept the src/ the
+            // commit is about to carry too: `git write-tree --prefix` hashes
+            // the index's src/ subtree.
+            let committed = git(&["rev-parse", "HEAD^{tree}:./src"]);
+            assert!(
+                tree == committed || tree == git(&["write-tree", "--prefix=web/hub/src"]),
                 "the committed out/ was built from a different src/ than the commit \
-                 carries - rebuild with `npm run build` and commit out/"
+                 carries - rebuild with `npm run build` and commit out/ (stamp {tree}, \
+                 committed src {committed})"
             );
         } else {
             // A build of a dirty src/ names no tree: fall back to the stamp

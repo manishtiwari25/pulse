@@ -76,23 +76,40 @@ test("a batch of actions refreshes the union of what they touch, once", () => {
 });
 
 test("a burst flushes once per ceiling and once more when it goes quiet", async () => {
+  // A burst at one instant: with the injected clock frozen, every event
+  // carries the same timestamp, so the quiet window and the ceiling are both
+  // still open when the burst ends - however long the event loop actually
+  // takes to run the adds. The old wall-clock version read a flush count off
+  // the timing of its own sleeps, which is why it flaked one run in three
+  // under load. The yields give every timer that a wake sets a wake-up.
+  let now = 1_000_000;
   const flushes = [];
-  const c = new Coalescer((actions, lastAt) => flushes.push({ actions: [...actions], lastAt }), { quietMs: 40, maxMs: 100 });
-  const start = Date.now();
-  // 1500 events in 300 ms: harness.step every tick, a job event now and then.
-  while (Date.now() - start < 300) {
-    for (let i = 0; i < 5; i++) c.add("harness.step");
-    c.add(flushes.length % 2 ? "job.done" : "post.vote");
-    await sleep(10);
+  const c = new Coalescer((actions, lastAt) => flushes.push({ actions: [...actions], lastAt }), { quietMs: 40, maxMs: 100 }, () => now);
+  for (let i = 0; i < 16; i++) {
+    for (let j = 0; j < 5; j++) c.add("harness.step");
+    c.add("job.done");
+    c.add("post.vote");
+    await sleep(5);
+    await sleep(0);
+    await sleep(0);
+    await sleep(0);
   }
-  assert.ok(flushes.length >= 2 && flushes.length <= 4, `ceiling held: ${flushes.length} flushes for a 300 ms burst`);
-  for (const f of flushes) assert.ok(!f.actions.includes("harness.step"), "steps are never queued");
-  const before = flushes.length;
-  await sleep(80);
-  assert.equal(flushes.length, before + 1, "the trailing flush after the burst");
+  // No time passed on the clock the coalescer reads, so nothing was ever
+  // due: if the timers used the wall clock, the ~80 ms of sleeps would have
+  // fired the 40 ms quiet window several times over.
+  assert.equal(flushes.length, 0, "the burst sits inside one quiet window and one ceiling");
+  // Move past the last event's quiet window and yield until the trailing
+  // flush fires (a wake reschedules by what is left, so give the
+  // rescheduled timer a second round of wake-ups).
+  now += 60;
+  for (let i = 0; i < 8 && flushes.length < 1; i++) await sleep(25);
+  for (let i = 0; i < 8 && flushes.length < 1; i++) await sleep(25);
+  assert.equal(flushes.length, 1, "one flush for the whole burst, once it went quiet");
+  assert.deepEqual(new Set(flushes[0].actions), new Set(["job.done", "post.vote"]), "the burst merged into one flush");
+  assert.ok(!flushes[0].actions.includes("harness.step"), "steps are never queued");
   assert.equal(c.pending, 0);
   await sleep(120);
-  assert.equal(flushes.length, before + 1, "nothing refreshes while nothing happens");
+  assert.equal(flushes.length, 1, "nothing refreshes while nothing happens");
 });
 
 test("a paused coalescer queues and flushes once on resume, reporting when the last event came", async () => {
