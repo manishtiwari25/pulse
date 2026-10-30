@@ -2007,6 +2007,8 @@ fn digest_shows_asks_between_projects() {
     )
     .unwrap();
     assert_eq!(q.projects(), vec!["other"]);
+    let shown = show(&f.st, &q.id).unwrap();
+    assert!(shown.contains("\nto: other\n"), "{shown}");
     let text = digest("other");
     let row = format!(
         "  {:<44} from {:<16} {:<30} by {:<14} {}",

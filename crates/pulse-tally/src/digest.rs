@@ -830,6 +830,10 @@ pub(crate) fn frontmatter(p: &Post) -> Vec<(String, String)> {
     if p.for_owner {
         out.push(("for_owner".into(), "true".into()));
     }
+    let to = pulse_board::extra_projects(&p.extra);
+    if !to.is_empty() {
+        out.push(("to".into(), to.join(", ")));
+    }
     out.push(("id".into(), p.id.clone()));
     out.push(("area".into(), p.area.clone()));
     out.push(("thread".into(), p.thread.clone()));
