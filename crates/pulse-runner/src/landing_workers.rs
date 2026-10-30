@@ -81,7 +81,9 @@ impl LandingWorkers {
             let ready = ready_landings(s, &slug, now);
             if ready > 0 {
                 with_landings.push((project, format!("{ready} ready")));
-            } else if push_on && crate::landing_hold::push_owed(s, slug.clone()) {
+            } else if (push_on && crate::landing_hold::push_owed(s, slug.clone()))
+                || pulse_tasks::pull_request_asked(s, &slug)
+            {
                 to_recheck.push((project, "push owed".to_string()));
             } else if held.contains_key(&slug) {
                 to_recheck.push((project, "hold to re-check".to_string()));

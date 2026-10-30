@@ -2003,12 +2003,33 @@ export interface LeadWork {
   read_at: string;
 }
 
+// Where a task's code stands after it landed on the default branch: still
+// on this machine (landed, held: the push did not go through, asked: a pull
+// request was asked for), or on the forge (pushed to the upstream, or on
+// the pull request from pulse/landed). `can_ask` says the owner may ask for
+// a pull request now (POST tasks/{id}/pull-request).
+export type TaskDeliveryState = "none" | "waiting" | "landed" | "held" | "asked" | "pushed" | "pr";
+
+export interface TaskDelivery {
+  state: TaskDeliveryState;
+  landed: number; // landings of this task's steps
+  waiting: number; // finished steps whose branch still waits to land
+  sha: string; // the default branch after the last landing
+  at: string;
+  remote: string; // origin/main
+  url: string; // the pull request
+  number: number;
+  note: string; // why it is held, or what the owner may do
+  can_ask: boolean;
+}
+
 export interface TaskDetail {
   task: Task;
   revisions: TaskRevision[];
   messages: Message[];
   jobs: TaskJob[];
   lead_work?: LeadWork | null;
+  delivery?: TaskDelivery | null;
 }
 
 // GET /tasks/{id}/activity: the task's story in order - what the owner
@@ -2022,7 +2043,7 @@ export interface ActivityItem {
   kind: ActivityKind;
   // task: created|revised|status|lead|cancelled|followup|nudged; job: added;
   // message: sent, or report (a worker's report on a job, `job_id` set);
-  // run: started|ended; step: the harness step kind; land: landed|held|…; post: its kind
+  // run: started|ended; step: the harness step kind; land: landed|pushed|pr|pr-asked|pr-answered|held|…; post: its kind
   what: string;
   who: string;
   job_id?: string;

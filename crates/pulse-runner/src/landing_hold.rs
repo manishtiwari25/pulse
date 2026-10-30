@@ -235,15 +235,27 @@ pub(crate) fn load_landing_holds(s: &pulse_store::Store) -> BTreeMap<String, Str
         .collect()
 }
 
+/// The daemon delivers after a landing: `main` pushes the default branch,
+/// `pr` pushes it to `pulse/landed` and keeps a pull request open
+/// (`landing_pr`).
 pub(crate) fn push_on(s: &pulse_store::Store) -> bool {
-    s.setting("landing.push", "off") == "main"
+    matches!(s.setting("landing.push", "off").as_str(), "main" | "pr")
 }
 
+/// A landing newer than the project's last push or pull request.
 pub(crate) fn push_owed(s: &pulse_store::Store, slug: String) -> bool {
     let Ok(conn) = s.conn() else { return false };
     let r = crate::util::must_one(&conn, "SELECT COALESCE((SELECT MAX(seq) FROM events WHERE action = 'land.landed' AND json_extract(detail, '$.project') = ?), 0) AS landed,
-		COALESCE((SELECT MAX(seq) FROM events WHERE action = 'land.pushed' AND subject = ?), 0) AS pushed", &[&slug, &slug]);
+		COALESCE((SELECT MAX(seq) FROM events WHERE action IN ('land.pushed', 'land.pr') AND subject = ?), 0) AS pushed", &[&slug, &slug]);
     !r.0.is_empty() && r.int("landed") > r.int("pushed")
+}
+
+/// The hold note's last clause when a push to the default branch did not
+/// go through: the way to a pull request instead.
+fn pull_request_hint(slug: &str) -> String {
+    format!(
+        "for a pull request instead: the task's \"Open a pull request\" in the hub, or pulse land --project {slug} --pr"
+    )
 }
 
 /// Where a push goes: the default branch's upstream, the url the push uses
@@ -934,18 +946,23 @@ pub(crate) fn push_landed(
     now: String,
     landed_now: bool,
 ) -> (Vec<String>, String) {
-    if !push_on(s) {
+    let slug = project.str("slug");
+    // The owner's one-time ask for a pull request counts whatever the
+    // setting says; it is answered below, by a pull request or by the word
+    // that nothing was ahead.
+    let asked = pulse_tasks::pull_request_asked(s, &slug);
+    if !push_on(s) && !asked {
         return (Vec::new(), String::new());
     }
-    let slug = project.str("slug");
     let root = project.str("path");
     let def = {
         let d = project.str("default_branch");
         if d.is_empty() { "main".to_string() } else { d }
     };
-    if !landed_now && !push_owed(s, slug.clone()) {
+    if !landed_now && !asked && !push_owed(s, slug.clone()) {
         return (Vec::new(), String::new());
     }
+    let via_pr = asked || crate::landing_pr::pr_mode(s);
     let up = crate::util::git_timeout(
         &root,
         Duration::from_secs(10),
@@ -991,6 +1008,23 @@ pub(crate) fn push_landed(
     };
     let mut n = ahead(&upstream);
     if n == 0 {
+        if asked && let Ok(conn) = s.conn() {
+            let why = format!("{def} has nothing {remote}/{remote_branch} lacks");
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "land.pr-answered",
+                &slug,
+                serde_json::json!({"project": slug, "why": why}),
+            );
+            return (
+                vec![format!(
+                    "landing pull request {slug}: nothing to deliver, {why}"
+                )],
+                String::new(),
+            );
+        }
         return (Vec::new(), String::new());
     }
     let (env, cleanup, why) = push_credential_env(s, root.clone());
@@ -1018,6 +1052,7 @@ pub(crate) fn push_landed(
     let mut lines = Vec::new();
     let mut ssh_tried = false;
     let mut url_note = String::new();
+    let mut conflict: Option<String> = None;
     let mut fetched = fetch_upstream(&t);
     if !fetched.ok() && no_http_credential(&fetched.stderr) {
         ssh_tried = true;
@@ -1062,19 +1097,35 @@ pub(crate) fn push_landed(
                 sync_upstream(s, project.clone(), &t, actor.clone(), now.clone(), behind);
             lines.extend(line);
             if let Some(hold) = hold {
-                return (
-                    lines,
-                    format!(
-                        "{n} {} landed but not pushed; {hold}",
-                        crate::util::plural(n, "commit")
-                    ),
-                );
-            }
-            n = ahead(&upstream);
-            if n == 0 {
-                return (lines, String::new());
+                if via_pr {
+                    // The pull request carries the conflict to the forge,
+                    // where the owner resolves it; nothing waits here.
+                    conflict = Some(hold);
+                } else {
+                    return (
+                        lines,
+                        format!(
+                            "{n} {} landed but not pushed; {hold}; {}",
+                            crate::util::plural(n, "commit"),
+                            pull_request_hint(&slug)
+                        ),
+                    );
+                }
+            } else {
+                n = ahead(&upstream);
+                if n == 0 {
+                    return (lines, String::new());
+                }
             }
         }
+    }
+    if via_pr {
+        let (pr_lines, note) = crate::landing_pr::deliver(s, &t, &actor, &now, n, conflict);
+        lines.extend(pr_lines);
+        if !note.is_empty() && !fetch_note.is_empty() {
+            return (lines, format!("{note}; {fetch_note}"));
+        }
+        return (lines, note);
     }
     let rev = |r: &str| {
         crate::util::git_timeout(&root, Duration::from_secs(10), &["rev-parse", r])
@@ -1104,7 +1155,7 @@ pub(crate) fn push_landed(
             crate::util::plural(n, "commit"),
             pulse_cred::redact(&why, &[])
         );
-        for extra in [url_note, fetch_note] {
+        for extra in [url_note, fetch_note, pull_request_hint(&slug)] {
             if !extra.is_empty() {
                 note.push_str("; ");
                 note.push_str(&extra);

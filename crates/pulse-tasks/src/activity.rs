@@ -573,15 +573,22 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
     // The daemon's part: landings of the jobs' branches, the task's own
     // turns of status and lead.
     {
+        // A landing's subject is the branch; a landed job's branch column
+        // is emptied, so the events naming one of the task's jobs are read
+        // too (one row per event).
         let mut stmt = conn.prepare(
             "SELECT seq, at, actor, action, subject, detail FROM events \
-             WHERE action LIKE 'land.%' AND subject = ? ORDER BY seq",
+             WHERE action LIKE 'land.%' AND (subject = ? OR json_extract(detail, '$.job') = ?) ORDER BY seq",
         )?;
-        let mut sorted: Vec<&String> = branches.iter().collect();
-        sorted.sort();
-        for branch in sorted {
+        let mut keys: Vec<String> = branches.iter().cloned().collect();
+        keys.extend(job_ids.iter().cloned());
+        keys.sort();
+        keys.dedup();
+        let mut landed_seqs: Vec<i64> = Vec::new();
+        let mut seen: HashSet<i64> = HashSet::new();
+        for key in &keys {
             let rows = stmt
-                .query_map([branch], |r| {
+                .query_map([key, key], |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
                         r.get::<_, String>(1)?,
@@ -593,6 +600,12 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (seq, at, actor, action, subject, detail) in rows {
+                if !seen.insert(seq) {
+                    continue;
+                }
+                if action == "land.landed" {
+                    landed_seqs.push(seq);
+                }
                 let what = action.trim_start_matches("land.").to_string();
                 let job = pulse_bus::detail_field(&detail, "job");
                 let text = ["note", "reason", "why"]
@@ -622,6 +635,39 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
                     who: actor,
                     job_id: job,
                     title: subject,
+                    text: clip(&text, TEXT_CAP).0,
+                    status,
+                    ..ActivityItem::default()
+                });
+            }
+        }
+        // What became of the landings: the project's push, pull request,
+        // ask or push hold from the first landing to the delivery after
+        // the last one, so the feed (and a lead reading it) says whether
+        // the work reached the remote.
+        if let (Some(&first), Some(&last)) = (landed_seqs.iter().min(), landed_seqs.iter().max()) {
+            for e in crate::delivery::delivery_events(&conn, &task.project, first, last)? {
+                let what = e.action.trim_start_matches("land.").to_string();
+                let f = |k: &str| crate::delivery::field(&e.detail, k);
+                let (text, status) = match what.as_str() {
+                    "pushed" => (
+                        format!("{} -> {}/{}", f("branch"), f("remote"), f("branch")),
+                        f("to"),
+                    ),
+                    "pr" => (f("url"), format!("#{}", f("number"))),
+                    "pr-asked" => (String::new(), String::new()),
+                    _ => {
+                        let note = f("note");
+                        (if note.is_empty() { f("why") } else { note }, String::new())
+                    }
+                };
+                items.push(ActivityItem {
+                    id: format!("land:{}", e.seq),
+                    at: e.at,
+                    kind: "land".into(),
+                    what,
+                    who: e.actor,
+                    title: task.project.clone(),
                     text: clip(&text, TEXT_CAP).0,
                     status,
                     ..ActivityItem::default()

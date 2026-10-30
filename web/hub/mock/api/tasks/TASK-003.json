@@ -1,4 +1,16 @@
 {
+  "delivery": {
+    "at": "2026-09-01T19:30:00Z",
+    "can_ask": true,
+    "landed": 1,
+    "note": "PULSE does not push for this machine (landing.push is off); you push, or ask for a pull request.",
+    "number": 0,
+    "remote": "",
+    "sha": "59f641d2c3b4a5968778899aabbccddeeff00112",
+    "state": "landed",
+    "url": "",
+    "waiting": 0
+  },
   "jobs": [],
   "messages": [],
   "revisions": [

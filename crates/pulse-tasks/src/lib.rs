@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod commands;
 pub mod compute;
+pub mod delivery;
 pub mod hands;
 pub mod leads;
 pub mod messages;
@@ -15,6 +16,7 @@ pub mod work;
 pub use activity::*;
 pub use commands::*;
 pub use compute::*;
+pub use delivery::*;
 pub use messages::*;
 pub use reports::*;
 pub use tasks::*;

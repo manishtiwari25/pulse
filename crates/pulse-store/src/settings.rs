@@ -246,7 +246,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.build_cache_keep_days"=>("count",Some(1),[],None,"days a shared build-cache lane may sit unused before the sweep removes it; lanes of projects the store no longer lists go at once, and dead units and stale incremental caches inside a lane are pruned like any shared Cargo target"),
         "hygiene.cargo_target"=>("choice",None,["on","off"],None,"on: the daemon sweep prunes dead or idle workspace-crate units, stale incremental caches and debug objects no binary's debug map names from shared Cargo target directories named by active projects' CARGO_TARGET_DIR verify commands, only under the project checkout or PULSE_HOME and only while verify/cargo locks are free; off: leave Cargo target directories alone"),
         "hygiene.cargo_target_hours"=>("count",Some(1),[],None,"hours an incremental cache directory, or a workspace crate's compiled unit, must sit unmodified before the hygiene sweep removes it from a shared Cargo target; registry and git dependencies are never pruned for idleness"),
-        "landing.push"=>("choice",None,["off","main"],None,"main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)"),
+        "landing.push"=>("choice",None,["off","main","pr"],None,"main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it (gh, logged in as the user the daemon runs as), so every landing waits for your merge on the forge; a conflict with the upstream shows on the pull request. off: you push - or ask for a pull request from a task's sheet or with pulse land --pr (ADR-037)"),
         "landing.auto_stash"=>("choice",None,["on","off"],None,"on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)"),
         "verify.lock"=>("choice",None,["off","project","machine"],None,"off: a worker commit, a finished run and a landing each verify whenever they are ready; project: verifications of one project take turns on a machine, so checkouts sharing one build cache (a Cargo target directory, a Gradle cache) never rewrite each other's artifacts mid-run; machine: every verification on the machine takes turns. While verifications take turns, a project runs only as many improve and task jobs at once as its measured check time fits into harness.step_timeout (its idle line names the lanes)"),
         "landing.base_red_retry_minutes"=>("count",Some(1),[],None,"minutes a project waits before the daemon re-checks landings after the default branch itself fails verify"),
@@ -1198,10 +1198,12 @@ mod go_settings_tests {
             s.set_setting("human", "landing.push", "origin")
                 .unwrap_err()
                 .to_string()
-                .contains("landing.push takes one of off, main")
+                .contains("landing.push takes one of off, main, pr")
         );
         s.set_setting("human", "landing.push", " Main ").unwrap();
         assert_eq!(s.setting("landing.push", ""), "main");
+        s.set_setting("human", "landing.push", "pr").unwrap();
+        assert_eq!(s.setting("landing.push", ""), "pr");
         assert!(DAEMON_RULES["landing.push"].description.contains("ADR-037"));
         assert_eq!(s.setting("push.credential", ""), "");
         assert!(

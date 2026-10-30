@@ -1042,10 +1042,11 @@
     {
       "choices": [
         "off",
-        "main"
+        "main",
+        "pr"
       ],
       "default": "off",
-      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. off: you push (ADR-037)",
+      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it (gh, logged in as the user the daemon runs as), so every landing waits for your merge on the forge; a conflict with the upstream shows on the pull request. off: you push - or ask for a pull request from a task's sheet or with pulse land --pr (ADR-037)",
       "kind": "choice",
       "min": null,
       "name": "landing.push",
