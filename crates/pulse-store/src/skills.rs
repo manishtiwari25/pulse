@@ -20,13 +20,30 @@ pub struct Skill {
     pub created_at: String,
     pub updated_at: String,
     pub uses: i64,
+    /// Empty for a skill added by hand or by an agent; `repo:<path>` for one
+    /// a `SKILL.md` of the project keeps (the daemon loads it from the
+    /// default branch and re-applies the file whenever it changes).
+    #[serde(default)]
+    pub origin: String,
 }
 
 impl Skill {
     pub fn enabled(&self) -> bool {
         self.status == "enabled"
     }
+    /// Whether a file of the project's repository keeps this skill.
+    pub fn from_repo(&self) -> bool {
+        self.origin.starts_with(REPO_ORIGIN)
+    }
+    /// The `SKILL.md` path the repository keeps this skill in; empty for a
+    /// skill added here.
+    pub fn repo_path(&self) -> &str {
+        self.origin.strip_prefix(REPO_ORIGIN).unwrap_or("")
+    }
 }
+
+/// The prefix of an `origin` a repository file keeps: `repo:<path>`.
+pub const REPO_ORIGIN: &str = "repo:";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SkillInput {
@@ -34,6 +51,10 @@ pub struct SkillInput {
     pub project: String,
     pub description: String,
     pub body: String,
+    /// `repo:<path>` when a file of the project keeps the skill; empty
+    /// otherwise.
+    #[serde(default)]
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -42,10 +63,13 @@ pub struct SkillPatch {
     pub project: Option<String>,
     pub description: Option<String>,
     pub body: Option<String>,
+    /// The daemon sets `repo:<path>` when a file of the project keeps the
+    /// skill; `pulse skill update` leaves it alone.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
-const COLS: &str =
-    "id, name, project, description, body, status, created_by, created_at, updated_at, uses";
+const COLS: &str = "id, name, project, description, body, status, created_by, created_at, updated_at, uses, origin";
 const MAX_BODY: usize = 64 * 1024;
 
 fn scan(r: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
@@ -60,6 +84,7 @@ fn scan(r: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
         uses: r.get(9)?,
+        origin: r.get(10)?,
     })
 }
 
@@ -127,6 +152,7 @@ impl Store {
             created_at: now.clone(),
             updated_at: now,
             uses: 0,
+            origin: input.origin.trim().to_string(),
         };
         validate(self, &k)?;
         let tx = self.begin()?;
@@ -143,7 +169,7 @@ impl Store {
         }
         let id = next_id(&tx, "skills", "SKILL-")?;
         tx.execute(
-            "INSERT INTO skills (id, name, project, description, body, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'enabled', ?, ?, ?)",
+            "INSERT INTO skills (id, name, project, description, body, status, created_by, created_at, updated_at, origin) VALUES (?, ?, ?, ?, ?, 'enabled', ?, ?, ?, ?)",
             params![
                 id,
                 k.name,
@@ -152,7 +178,8 @@ impl Store {
                 k.body,
                 k.created_by,
                 k.created_at,
-                k.updated_at
+                k.updated_at,
+                k.origin
             ],
         )?;
         tx.event(
@@ -163,6 +190,7 @@ impl Store {
                 "name": k.name,
                 "project": k.project,
                 "description": k.description,
+                "origin": k.origin,
             }))?,
         )?;
         tx.commit()?;
@@ -171,6 +199,34 @@ impl Store {
 
     pub fn update_skill(&self, actor: &str, id: &str, patch: SkillPatch) -> Result<Skill> {
         let old = self.skill_by_id(id)?;
+        if old.from_repo()
+            && (patch.name.is_some()
+                || patch.project.is_some()
+                || patch.description.is_some()
+                || patch.body.is_some())
+        {
+            return Err(input_err(format!(
+                "{} is kept by the repository: edit {} on the project's default branch and commit; the daemon loads that file and would write over a change made here",
+                old.id,
+                old.repo_path()
+            )));
+        }
+        self.update_skill_inner(actor, old, patch)
+    }
+
+    /// The file sync's update: the one writer that changes a skill the
+    /// repository keeps.
+    pub fn update_skill_from_repo(
+        &self,
+        actor: &str,
+        id: &str,
+        patch: SkillPatch,
+    ) -> Result<Skill> {
+        let old = self.skill_by_id(id)?;
+        self.update_skill_inner(actor, old, patch)
+    }
+
+    fn update_skill_inner(&self, actor: &str, old: Skill, patch: SkillPatch) -> Result<Skill> {
         let mut k = old.clone();
         if let Some(v) = patch.name {
             k.name = v.trim().to_string();
@@ -184,6 +240,9 @@ impl Store {
         if let Some(v) = patch.body {
             k.body = v.trim_end().to_string();
         }
+        if let Some(v) = patch.origin {
+            k.origin = v.trim().to_string();
+        }
         validate(self, &k)?;
         let mut changed = Vec::new();
         for (field, differs) in [
@@ -191,6 +250,7 @@ impl Store {
             ("project", k.project != old.project),
             ("description", k.description != old.description),
             ("body", k.body != old.body),
+            ("origin", k.origin != old.origin),
         ] {
             if differs {
                 changed.push(field);
@@ -215,8 +275,8 @@ impl Store {
             )));
         }
         tx.execute(
-            "UPDATE skills SET name = ?, project = ?, description = ?, body = ?, updated_at = ? WHERE id = ?",
-            params![k.name, k.project, k.description, k.body, k.updated_at, k.id],
+            "UPDATE skills SET name = ?, project = ?, description = ?, body = ?, origin = ?, updated_at = ? WHERE id = ?",
+            params![k.name, k.project, k.description, k.body, k.origin, k.updated_at, k.id],
         )?;
         tx.event(
             actor,
@@ -287,14 +347,21 @@ impl Store {
         if key.starts_with("SKILL-") {
             return self.skill_by_id(key);
         }
+        self.skill_named(key)?
+            .ok_or_else(|| input_err(format!("No skill named {key}; see pulse skill list")))
+    }
+
+    /// The skill of that name, whatever its project or status; `None` when
+    /// no row has it.
+    pub fn skill_named(&self, name: &str) -> Result<Option<Skill>> {
         let conn = self.conn()?;
-        conn.query_row(
-            &format!("SELECT {COLS} FROM skills WHERE name = ?"),
-            [key],
-            scan,
-        )
-        .optional()?
-        .ok_or_else(|| input_err(format!("No skill named {key}; see pulse skill list")))
+        Ok(conn
+            .query_row(
+                &format!("SELECT {COLS} FROM skills WHERE name = ?"),
+                [name.trim()],
+                scan,
+            )
+            .optional()?)
     }
 
     pub fn set_skill_status(&self, actor: &str, id: &str, status: &str) -> Result<Skill> {
@@ -368,6 +435,7 @@ mod tests {
             project: project.into(),
             description: format!("How to {name}"),
             body: format!("# {name}\n\n1. Run the thing.\n2. Check the output.\n"),
+            origin: String::new(),
         }
     }
 
@@ -443,6 +511,56 @@ mod tests {
         let mut i = input("x", "");
         i.description = "-----BEGIN OPENSSH PRIVATE KEY-----".into();
         assert!(err(i).contains("looks like a credential"));
+    }
+
+    #[test]
+    fn a_repository_kept_skill_changes_only_through_the_file() {
+        let (_h, s) = new_store();
+        let mut i = input("release", "demo");
+        i.origin = format!("{REPO_ORIGIN}.pulse/skills/release/SKILL.md");
+        let k = s.add_skill("daemon", i).unwrap();
+        assert!(k.from_repo());
+        assert_eq!(k.repo_path(), ".pulse/skills/release/SKILL.md");
+        let err = s
+            .update_skill(
+                "human",
+                &k.id,
+                SkillPatch {
+                    body: Some("# Mine\n".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.is::<crate::store::InputError>(), "{err}");
+        assert!(
+            err.to_string().starts_with(
+                "SKILL-001 is kept by the repository: edit .pulse/skills/release/SKILL.md"
+            ),
+            "{err}"
+        );
+        let same = s
+            .update_skill_from_repo(
+                "daemon",
+                &k.id,
+                SkillPatch {
+                    body: Some("# Release v2\n".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(same.body, "# Release v2");
+        // A skill added here says so and stays editable.
+        let mine = s.add_skill("human", input("mine", "")).unwrap();
+        assert!(!mine.from_repo() && mine.repo_path().is_empty());
+        s.update_skill(
+            "human",
+            &mine.id,
+            SkillPatch {
+                description: Some("How to do mine".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     }
 
     #[test]

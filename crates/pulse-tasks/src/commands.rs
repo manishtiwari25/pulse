@@ -1,4 +1,5 @@
 use crate::compute::*;
+use crate::manifest;
 use crate::messages::*;
 use crate::schedules;
 use crate::suggestions;
@@ -74,6 +75,26 @@ struct ComputeListOut<'a> {
     requests: &'a [ComputeRequest],
 }
 
+#[derive(Serialize)]
+struct ManifestCheckOut<'a> {
+    path: &'a str,
+    schedules: Vec<&'a str>,
+    problems: &'a [String],
+}
+
+#[derive(Serialize)]
+struct ManifestShowOut<'a> {
+    project: &'a str,
+    status: Option<&'a manifest::Status>,
+    schedules: &'a [schedules::Schedule],
+    skills: &'a [pulse_store::Skill],
+}
+
+#[derive(Serialize)]
+struct ManifestSyncOut<'a> {
+    synced: &'a manifest::Synced,
+}
+
 pub fn set_stdin_for_tests(data: Option<Vec<u8>>) {
     *STDIN_BUF.lock().expect("stdin lock poisoned") = data;
 }
@@ -83,7 +104,8 @@ pub fn register() {
         pulse_cli::register(Command { name:"task".into(), group:"agents".into(), summary:"the owner's tasks for a project: new, list, show, amend, cancel, status, reply; and suggested work any agent proposes and another reviews: suggest, suggestions, review, withdraw".into(), usage:"pulse task new --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]\npulse task list [--project P] [--status S] [--json]\npulse task show TASK-NNN|SUG-NNN [--json]\npulse task amend TASK-NNN [--title T] [--brief-file F | --brief TEXT | stdin] [--note WHY]\npulse task cancel TASK-NNN [--reason WHY]\npulse task status TASK-NNN <open|planned|in_progress|review|done|cancelled>\npulse task reply TASK-NNN <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse task suggest --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]   (any agent; another one reviews it)\npulse task suggestions [--project P] [--status open|suggested|reviewing|accepted|declined|owner|withdrawn] [--json]\npulse task review SUG-NNN <accept|decline|owner> --reason WHY [--title T] [--brief-file F | --brief TEXT] [--priority N]   (not your own)\npulse task withdraw SUG-NNN [--reason WHY]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_task, flags:Some(task_flags) });
         pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
         pulse_cli::register(Command { name:"compute".into(), group:"agents".into(), summary:"more machines for agents: request (agents), list, approve|deny (the owner)".into(), usage:"pulse compute request --project P [--size S] --hours N --reason WHY\npulse compute list [--project P] [--status S] [--json]\npulse compute approve CR-NNN [--words WHY]   (owner)\npulse compute deny CR-NNN [--words WHY]      (owner)\npulse compute providers [--json]             (the providers this binary can provision with)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_compute, flags:Some(compute_flags) });
-        pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
+        pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT] [--skill NAME]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)\n    --skill NAME: every job loads that pulse skill first and follows it; with no --brief the skill is the brief\n    a project's own .pulse/pulse.yaml keeps schedules too (pulse manifest); those show their origin and the file, not this command, changes them".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
+        pulse_cli::register(Command { name:"manifest".into(), group:"agents".into(), summary:"the project's own PULSE file, .pulse/pulse.yaml: the schedules it keeps and the SKILL.md folders the daemon loads from the default branch: check, show, sync".into(), usage:"pulse manifest check [PATH] [--project P] [--json]   (a working copy's file; PATH defaults to .pulse/pulse.yaml here; --project adds the store's checks: skills, agents, scripts)\npulse manifest show --project P [--json]            (what the daemon last applied: the commit, its problems, the schedules and skills the repository keeps)\npulse manifest sync --project P [--json]            (apply the default branch now instead of waiting for the daemon's next pass)\n    the file: schedules: [{name, title, every, at, kind, brief, skill, script, job_kind, tier, priority, run_as, times, paused}]\n    skills: every <dir>/<name>/SKILL.md under .pulse/skills, .claude/skills, .github/skills or .agents/skills on the default branch\n    exit 1 when check finds a problem; check without --project needs no store, so it runs on any machine".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:run_manifest, flags:None });
         pulse_cli::register(Command { name:"watch".into(), group:"agents".into(), summary:"stream store events as they happen (Ctrl-C exits 0)".into(), usage:"pulse watch [--project P] [--area A] [--thread T] [--action GLOB] [--since ID] [--detail] [--interval 1s] [--json]".into(), aliases:vec![], no_store:false, read_only:true, raw:false, run:run_watch, flags:Some(watch_flags) });
     });
 }
@@ -124,6 +146,11 @@ fn schedule_flags(fs: &mut FlagSet) {
         "run-as",
         "",
         "the custom agent every job it queues runs as, one that pulse agents list shows for the project (add)",
+    );
+    fs.string_var(
+        "skill",
+        "",
+        "the pulse skill every job loads first and follows, by name (pulse skill list); with no --brief the skill is the brief (add)",
     );
     fs.string_var("note", "", "why (pause, end)");
     fs.string_var("status", "", "list only active, paused or ended schedules");
@@ -430,6 +457,19 @@ fn print_schedule(c: &mut Context, sc: &schedules::Schedule) -> Result<()> {
     if !sc.agent.is_empty() {
         printf(c, format_args!("jobs run as {}\n", sc.agent))?;
     }
+    if !sc.skill.is_empty() {
+        printf(c, format_args!("jobs follow the skill {}\n", sc.skill))?;
+    }
+    if sc.from_repo() {
+        printf(
+            c,
+            format_args!(
+                "kept by the repository: {} (the file on the default branch changes it; pulse manifest show --project {})\n",
+                sc.origin.trim_start_matches(pulse_store::REPO_ORIGIN),
+                sc.project
+            ),
+        )?;
+    }
     if !sc.last_at.is_empty() {
         if sc.last_job.is_empty() {
             printf(c, format_args!("last run at {}\n", sc.last_at))?;
@@ -451,6 +491,332 @@ fn print_schedule(c: &mut Context, sc: &schedules::Schedule) -> Result<()> {
     Ok(())
 }
 
+pub fn run_manifest(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        return Err(usage("manifest", ""));
+    }
+    let (sub, rest) = (&args[0], &args[1..]);
+    match sub.as_str() {
+        "check" => {
+            let s = if c.project.trim().is_empty() {
+                None
+            } else {
+                Some(manifest_store(c, false)?)
+            };
+            manifest_check(
+                c,
+                s.as_ref(),
+                rest.first().map(String::as_str).unwrap_or(""),
+            )
+        }
+        "show" => {
+            let s = manifest_store(c, false)?;
+            let slug = need_project(c, &s, "show")?;
+            let status = manifest::status(&s, &slug)?;
+            let schedules: Vec<schedules::Schedule> = schedules::list(&s, &slug, "")?
+                .into_iter()
+                .filter(schedules::Schedule::from_repo)
+                .collect();
+            let skills: Vec<pulse_store::Skill> = s
+                .skills(&slug)?
+                .into_iter()
+                .filter(pulse_store::Skill::from_repo)
+                .collect();
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &ManifestShowOut {
+                        project: &slug,
+                        status: status.as_ref(),
+                        schedules: &schedules,
+                        skills: &skills,
+                    },
+                );
+            }
+            print_manifest_status(c, &slug, status.as_ref())?;
+            if schedules.is_empty() {
+                c.println("Schedules the file keeps: none.")?;
+            } else {
+                c.println("Schedules the file keeps:")?;
+                for sc in &schedules {
+                    let name = manifest::origin_name(&sc.origin).unwrap_or(&sc.title);
+                    let mut line =
+                        format!("  {} {} {} every {}", sc.id, name, sc.status, sc.every());
+                    if sc.is_script() {
+                        line.push_str(&format!(", {} `{}`", sc.kind, sc.script));
+                    } else if !sc.skill.is_empty() {
+                        line.push_str(&format!(", skill `{}`", sc.skill));
+                    }
+                    if sc.status == "active" {
+                        line.push_str(&format!(", next at {}", sc.next_at));
+                    } else if !sc.note.is_empty() {
+                        line.push_str(&format!(" ({})", sc.note));
+                    }
+                    c.println(&line)?;
+                }
+            }
+            if skills.is_empty() {
+                c.println("Skills the repository keeps: none.")?;
+            } else {
+                c.println("Skills the repository keeps:")?;
+                for sk in &skills {
+                    printf(
+                        c,
+                        format_args!(
+                            "  {} {} ({}): {}\n",
+                            sk.name,
+                            sk.status,
+                            sk.origin.trim_start_matches(pulse_store::REPO_ORIGIN),
+                            sk.description
+                        ),
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        "sync" => {
+            let s = manifest_store(c, true)?;
+            let slug = need_project(c, &s, "sync")?;
+            let Some(synced) = manifest::sync(&s, &slug, &actor(c), true)? else {
+                return Err(pulse_cli::errorf(
+                    2,
+                    &format!("No checkout of {slug} to read here"),
+                    "the project's path is not a git repository on this machine, or its default branch is not in it",
+                    "pulse projects show, then fetch the default branch",
+                )
+                .into());
+            };
+            if c.json {
+                return pulse_cli::write_json(&mut c.out, &ManifestSyncOut { synced: &synced });
+            }
+            c.println(synced.line())?;
+            if !synced.problems.is_empty() {
+                c.println(format!(
+                    "Fix the file on {} and commit; the daemon applies the next commit by itself.",
+                    synced.branch
+                ))?;
+            }
+            Ok(())
+        }
+        other => Err(usage("manifest", other)),
+    }
+}
+
+fn need_project(c: &Context, s: &pulse_store::Store, sub: &str) -> Result<String> {
+    if c.project.trim().is_empty() {
+        return Err(pulse_cli::errorf(
+            2,
+            &format!("pulse manifest {sub} needs --project"),
+            "the file belongs to one project's repository",
+            &format!("pulse manifest {sub} --project SLUG"),
+        )
+        .into());
+    }
+    crate::tasks::check_project(s, &c.project)?;
+    Ok(c.project.trim().to_string())
+}
+
+/// The store for `pulse manifest`, which opens none by itself so that
+/// `check` runs on a machine without one: the context's when the caller
+/// opened it, else the one at the PULSE home.
+fn manifest_store(c: &Context, writable: bool) -> Result<pulse_store::Store> {
+    if let Some(s) = &c.store {
+        return Ok(s.clone());
+    }
+    let path = std::path::Path::new(&c.home).join(pulse_store::STORE_NAME);
+    if !path.exists() {
+        return Err(pulse_cli::errorf(
+            2,
+            &format!("No store at {}", path.display()),
+            "this machine has no PULSE store yet; pulse manifest check without --project needs none",
+            "pulse init <project-path>",
+        )
+        .into());
+    }
+    pulse_store::Store::open(pulse_store::Options {
+        home: c.home.clone(),
+        read_only: !writable,
+        skip_records: !writable,
+        now: c.now.clone(),
+        ..pulse_store::Options::default()
+    })
+}
+
+/// Reads a working copy's file and lists what the daemon would refuse:
+/// the YAML, every entry's fields, and with `--project` the store's checks
+/// too (the skill, the agent, the script on the default branch).
+fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) -> Result<()> {
+    let path = if arg.is_empty() {
+        let found: Vec<&str> = manifest::MANIFEST_PATHS
+            .iter()
+            .copied()
+            .filter(|p| std::path::Path::new(p).is_file())
+            .collect();
+        if found.len() > 1 {
+            c.println(format!(
+                "note: both {} and {} exist; the daemon reads {} and reports the other",
+                found[0], found[1], found[0]
+            ))?;
+        }
+        match found.first() {
+            Some(p) => (*p).to_string(),
+            None => {
+                return Err(pulse_cli::errorf(
+                    2,
+                    "No PULSE file here",
+                    &format!(
+                        "none of {} exists under the current directory",
+                        manifest::MANIFEST_PATHS.join(", ")
+                    ),
+                    "run it from the repository root, or name the file: pulse manifest check PATH",
+                )
+                .into());
+            }
+        }
+    } else {
+        arg.to_string()
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        pulse_cli::errorf(
+            2,
+            &format!("Cannot read {path}"),
+            &e.to_string(),
+            "check the path",
+        )
+    })?;
+    let mut problems = Vec::new();
+    let mut names = Vec::new();
+    let mut parsed = None;
+    if text.len() > manifest::FILE_LIMIT {
+        problems.push(format!(
+            "{path} is {} bytes; the daemon reads at most {}",
+            text.len(),
+            manifest::FILE_LIMIT
+        ));
+    }
+    match manifest::parse(&text) {
+        Ok(m) => {
+            problems.extend(manifest::static_problems(&m));
+            parsed = Some(m);
+        }
+        Err(e) => problems.push(format!("{path} could not be read: {e}")),
+    }
+    if let Some(m) = &parsed {
+        let held: std::collections::BTreeSet<String> = problems
+            .iter()
+            .filter_map(|p| p.strip_prefix("schedule `"))
+            .filter_map(|p| p.split('`').next())
+            .map(str::to_string)
+            .collect();
+        let slug = c.project.trim().to_string();
+        if let Some(s) = s {
+            crate::tasks::check_project(s, &slug)?;
+        }
+        for e in &m.schedules {
+            let name = e.name.trim();
+            names.push(name);
+            let Some(s) = s else {
+                continue;
+            };
+            if held.contains(name) {
+                continue;
+            }
+            match schedules::check(s, &e.input(&slug, &path, &actor(c))) {
+                Ok(warning) if !warning.is_empty() => {
+                    problems.push(format!("schedule `{name}`: {warning}"));
+                }
+                Ok(_) => {}
+                Err(err) => problems.push(format!(
+                    "schedule `{name}`: {}",
+                    manifest::first_line(&err.to_string())
+                )),
+            }
+        }
+    }
+    if c.json {
+        pulse_cli::write_json(
+            &mut c.out,
+            &ManifestCheckOut {
+                path: &path,
+                schedules: names,
+                problems: &problems,
+            },
+        )?;
+    } else if problems.is_empty() {
+        let n = names.len();
+        let mut line = format!(
+            "{path}: sound; {n} schedule{}",
+            if n == 1 { "" } else { "s" }
+        );
+        if c.project.trim().is_empty() {
+            line.push_str(
+                " (add --project P to check skills, agents and scripts against the store)",
+            );
+        }
+        c.println(line)?;
+    } else {
+        c.println(format!(
+            "{path}: {} problem{}",
+            problems.len(),
+            if problems.len() == 1 { "" } else { "s" }
+        ))?;
+        for p in &problems {
+            c.println(format!("  - {p}"))?;
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(pulse_cli::errorf(
+            1,
+            &format!(
+                "{} problem{} in {path}",
+                problems.len(),
+                if problems.len() == 1 { "" } else { "s" }
+            ),
+            "the daemon would hold or refuse these entries",
+            "fix the file; pulse help manifest lists the fields",
+        )
+        .into())
+    }
+}
+
+fn print_manifest_status(
+    c: &mut Context,
+    slug: &str,
+    status: Option<&manifest::Status>,
+) -> Result<()> {
+    let Some(st) = status else {
+        return c
+            .println(format!(
+                "{slug}: the daemon has not read a PULSE file for this project yet (pulse manifest sync --project {slug} reads it now)"
+            ))
+            .map_err(Into::into);
+    };
+    if st.path.is_empty() {
+        c.println(format!(
+            "{slug}: no {} on the default branch at {} (read {})",
+            manifest::MANIFEST_PATHS[0],
+            st.commit,
+            st.at
+        ))?;
+    } else {
+        c.println(format!(
+            "{slug}: {} at {} (read {})",
+            st.path, st.commit, st.at
+        ))?;
+    }
+    if st.problems.is_empty() {
+        c.println("Problems: none.")?;
+    } else {
+        c.println(format!("Problems ({}):", st.problems.len()))?;
+        for p in &st.problems {
+            c.println(format!("  - {p}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     if args.is_empty() {
         return Err(usage("schedule", ""));
@@ -459,9 +825,12 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
     match sub.as_str() {
         "add" => {
             let kind = fs.get_string("kind");
+            let skill = fs.get_string("skill");
             let (brief_flag, brief_file) = (fs.get_string("brief"), fs.get_string("brief-file"));
-            // A check or watch needs no brief, so stdin is read only when asked for.
-            let brief = if schedules::SCRIPT_KINDS.contains(&kind.as_str())
+            // A check or watch, or a job that follows a skill, needs no
+            // brief, so stdin is read only when asked for.
+            let brief = if (schedules::SCRIPT_KINDS.contains(&kind.as_str())
+                || !skill.trim().is_empty())
                 && brief_flag.is_empty()
                 && brief_file.is_empty()
             {
@@ -485,6 +854,8 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
                     script: fs.get_string("script"),
                     job_kind: fs.get_string("job-kind"),
                     agent: fs.get_string("run-as"),
+                    skill,
+                    origin: String::new(),
                 },
             )?;
             if !warning.is_empty() {
@@ -552,7 +923,11 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
                         } else {
                             sc.runs.to_string()
                         },
-                        sc.created_by.clone(),
+                        if sc.from_repo() {
+                            "repository".to_string()
+                        } else {
+                            sc.created_by.clone()
+                        },
                         if sc.is_script() {
                             format!("{} ({})", sc.title, sc.script)
                         } else {

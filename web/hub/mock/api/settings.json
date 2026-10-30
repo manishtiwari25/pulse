@@ -90,6 +90,21 @@
       "value": "agents"
     },
     {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
+      "description": "on: the daemon reads each project's own PULSE file, .pulse/pulse.yaml on the default branch, and the SKILL.md folders beside it (.pulse/skills, .claude/skills, .github/skills, .agents/skills) whenever a commit changes them: the schedules the file names are added, updated, paused and ended in the store (pulse schedule list shows them with their origin), the skills join the project's pulse skill registry, and what the file gets wrong is a problem on the project board, never a stopped schedule; off: the files are left to the native harness, which still offers the skill folders to the model",
+      "kind": "choice",
+      "min": null,
+      "name": "manifest.load",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
       "choices": null,
       "default": "10",
       "description": "wall-clock minutes one worker run may take before the runner stops it",

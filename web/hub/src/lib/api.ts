@@ -2525,10 +2525,16 @@ export interface Skill {
   created_at: string;
   updated_at: string;
   uses: number;
+  origin: string; // "" = added here; "repo:<path>" = kept by that SKILL.md in the project's repository
 }
 
 export interface SkillsPayload {
   skills: Skill[];
+}
+
+// The SKILL.md path a repository keeps the skill in; "" for one added here.
+export function skillRepoPath(k: Pick<Skill, "origin">): string {
+  return k.origin?.startsWith("repo:") ? k.origin.slice("repo:".length) : "";
 }
 
 export interface SkillInput {

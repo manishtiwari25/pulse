@@ -31,6 +31,7 @@ The only Markdown in this repository is this file.
 - [Share PULSE](#share-pulse)
 - [The agents' path](#the-agents-path)
   - [Standing jobs: `pulse schedule`](#standing-jobs-pulse-schedule)
+  - [The project's own file: `.pulse/pulse.yaml`](#the-projects-own-file-pulsepulseyaml)
   - [Role leads: `pulse lead`](#role-leads-pulse-lead)
   - [Suggested work: `pulse task suggest`](#suggested-work-pulse-task-suggest)
   - [The toolkit: `pulse toolkit`](#the-toolkit-pulse-toolkit)
@@ -597,6 +598,7 @@ pulse job retry JOB_ID --brief "cause fixed" # by-hand recovery for a failed job
 pulse task list --project my-app             # the owner's tasks and their status
 pulse task suggest --project my-app --title "Pin the Node version in CI" --brief-file why.md   # propose the next task; another agent reviews it
 pulse schedule add --project my-app --title "Weekly dependency audit" --every 1w --at 09:00 --brief-file audit.md   # a standing job, queued again every cadence
+pulse manifest check                         # the schedules and skills a repository keeps in .pulse/pulse.yaml and its SKILL.md folders, before the commit
 pulse lead suggest --project my-app          # which role leads the project is missing, and the command that seats each
 pulse lead add --project my-app --role docs  # seat a lead that owns one concern (rsi, docs, security, monitor, or a word of your own)
 pulse msg list --project my-app --unread     # what the owner said
@@ -708,10 +710,19 @@ agents** under The harness; `pulse agents list --project P` names the ones
 that load, and `pulse job add --run-as NAME` pins a single job the same way):
 the name must load for the project when the schedule is set, and a job whose
 agent has since gone falls back to the usual choice by kind and tags, with a
-warning in the run log.
+warning in the run log. `--skill NAME` makes every job load that
+[`pulse skill`](#shared-skills-pulse-skill) first and follow it - the skill
+must be enabled for the project (or for every project) when the schedule is
+set - and with no `--brief` the skill is the whole brief, so a recipe the
+repository keeps as a `SKILL.md` folder runs on a cadence with one line. A
+project can also keep its schedules in its own repository,
+[`.pulse/pulse.yaml`](#the-projects-own-file-pulsepulseyaml); those show
+their origin in `pulse schedule show`, and the file, not this command,
+changes them.
 
 ```bash
 pulse schedule add --project my-app --title "Nightly flake sweep" --every 1d --at 02:00 --kind task --brief "Run the suite three times; file each flake as a finding." --times 30
+pulse schedule add --project my-app --title "Release notes" --every 1w --skill release          # the skill is the brief
 pulse schedule add --project my-app --title "Weekly audit" --every 1w --kind task --brief "Audit the dependencies." --run-as auditor
 pulse schedule list --project my-app        # ID, status, cadence, next time, runs, who set it
 pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
@@ -845,6 +856,120 @@ The first run writes the cursor and prints nothing; from then on every new
 issue wakes one agent with the list in its brief, and the cursor moves only
 when the script got that far, so a run that failed leaves the next one to
 report the same issues.
+
+### The project's own file: `.pulse/pulse.yaml`
+
+A project can carry its standing work in its repository instead of in
+commands typed at a store: a file, `.pulse/pulse.yaml` (or `.yml`), that
+names its schedules, and `SKILL.md` folders that hold its recipes. Both are
+reviewed, versioned and merged like any other file, and every machine whose
+daemon tends the project applies them from the **default branch**, never
+from a working copy or a feature branch: once per pass the daemon compares a
+fingerprint of the trees `.pulse`, `.claude/skills`, `.github/skills` and
+`.agents/skills` on that branch with the one it last applied, and when a
+commit changed them it reads the file and the folders again. A pass that
+changed nothing reads nothing and writes nothing.
+
+```yaml
+# .pulse/pulse.yaml
+schedules:
+  - name: deps-audit                 # the identity: a slug, unique in the file
+    title: Audit the dependencies
+    every: 1d
+    at: "02:00"                      # UTC; quote it, YAML reads 02:00 as a number otherwise
+    brief: Run the audit and fix what it names.
+  - name: nightly-store-tests
+    kind: check                      # or watch; both run `script`
+    script: scripts/store-tests.sh
+    every: daily
+    job_kind: improve                # the job a red check queues: task (default) or improve
+  - name: release-notes
+    skill: release                   # .pulse/skills/release/SKILL.md, below; the skill is the brief
+    every: weekly
+    tier: 0
+    priority: 2
+    run_as: release-manager          # a custom agent of the project (pulse agents list)
+  - name: summer-sweep
+    every: 1w
+    brief: Walk the open findings and close the stale ones.
+    paused: true                     # kept in the store, asleep, until the line goes
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Required. Lowercase letters, digits and dashes. A renamed entry is a new schedule; the old one ends. |
+| `title` | The title of every job; the name when empty. |
+| `every`, `at` | The cadence and its anchor, exactly as `pulse schedule add --every --at`. |
+| `kind` | `task` (the default), `improve`, `clean`, `reflect`; or `check` and `watch`, which run `script`. |
+| `brief`, `skill` | A job kind needs a brief, or a `skill` that is the brief; both together put the skill line first. |
+| `script`, `job_kind` | Check and watch: the script on the default branch and the kind of job a red run or a trigger queues. |
+| `tier`, `priority`, `times`, `run_as` | As the flags of the same names; `tier` is `1` when absent. |
+| `paused` | `true` keeps the schedule in the store but asleep, with the note *paused in the project's PULSE file*; removing the line wakes it, and only it: a schedule you paused yourself stays paused. |
+
+What the daemon does with the file, entry by entry: an entry whose name is
+new to the store is added; an entry whose definition changed updates its
+schedule in place, cadence and clock included (event `schedule.updated`, with
+the fields that changed); an entry that is unchanged is kept, so a pause or
+an `--at` you set by hand on an unchanged entry survives the next commit
+elsewhere in the file; an entry that is gone - or the whole file, when it is
+deleted - ends its schedule with the note *removed from the project's PULSE
+file*. The schedules the file keeps carry `origin = repo:<path>#<name>`:
+`pulse schedule show` says so and names the file, `pulse schedule list` shows
+them beside the ones set by hand, and `pulse schedule end` on one works but
+the next commit that touches the file adds it back - take the line out
+instead. Every check a typed `pulse schedule add` would make runs on each
+entry: the cadence, the kind, a script that exists on the default branch, a
+skill that is enabled for the project, a custom agent that loads. An entry
+that fails one is **held**: its schedule, if it had one, stays exactly as it
+was, the other entries apply, and the problem is written down. A file that
+is not valid YAML, or names a field that does not exist, is refused whole
+and its schedules stay as they were, with the parser's line in the problem.
+Problems do not fail quietly: when a sync has any and the last one had
+none, or the last one had some and this one has none, the daemon posts one
+`finding` on the project board, area `manifest`, thread the project's slug,
+naming every problem and the commit (`manifest.problems` and
+`manifest.problems_cleared` events; `manifest.synced` on every sync that read
+the file). Between those two transitions a file that stays broken is not
+posted about again.
+
+**Skills from the repository.** On the same pass the daemon reads every
+`<dir>/<name>/SKILL.md` under `.pulse/skills`, `.claude/skills`,
+`.github/skills` and `.agents/skills` on the default branch - the same
+folders the harness offers the model as the `skill` tool - and registers each
+as a [`pulse skill`](#shared-skills-pulse-skill) of the project, so a recipe
+the repository carries also reaches the brief's skill list, remote workers,
+`pulse skill show NAME`, the hub's *Skills* tab, and a schedule's `skill:`
+line. The folder name is the skill's name (it must be a slug); the description
+comes from the front matter's `description:` when there is one, else the
+first line of text that is not a heading, cut at 200 characters; the body is
+the file's body plus a footer listing the support files beside it, which a
+run loads with `skill(name, file)`. The first folder to define a name wins
+and a second one is a problem; a name a skill added by hand already uses is
+a problem too (rename one of them). The registered skill carries
+`origin = repo:<path>`: `pulse skill list` shows `repository` in its *BY*
+column, the hub shows *Kept by the repository* and no *Edit* button, and
+`pulse skill update` or the hub's editor refuse it, because the next sync
+would write the file's text over the change - edit the `SKILL.md` and commit.
+Deleting the folder disables the skill (the text stays for the record);
+adding it back enables it again. Turning one off by hand lasts until the next
+commit that changes the skill folders or the file.
+
+```bash
+pulse manifest check                            # the file in this working copy: YAML, names, cadences, kinds; exit 1 on a problem
+pulse manifest check --project my-app           # also the store's checks: skills, custom agents, scripts on the default branch
+pulse manifest show --project my-app            # what the daemon last applied: commit, problems, the schedules and skills the repository keeps
+pulse manifest sync --project my-app            # apply the default branch now instead of waiting for the next pass
+```
+
+`pulse manifest check` is for the commit that is about to happen: run it from
+the repository root (or name the file), fix what it lists, commit. `show`
+reads the store's record of the last sync, so it answers *why is my schedule
+not here* with the problem the daemon wrote down. `sync` forces one pass for
+one project, for the moment after a merge when the next tick feels long.
+`manifest.load` (`on`) turns the whole thing off; the harness still offers
+the skill folders to the model either way. A project whose checkout is not on
+this machine, or whose default branch is not fetched here, is skipped
+without a word.
 
 ### Role leads: `pulse lead`
 
@@ -1349,6 +1474,15 @@ markdown editor and preview, *Read*, *Edit*, *Enable* / *Disable*; routes
 `/api/v1/skills`, `/api/v1/skills/{id}` (`GET`, `PATCH`) and
 `/api/v1/skills/{id}/status`. Events: `skill.added`, `skill.updated`,
 `skill.enabled`, `skill.disabled`.
+
+A skill the repository itself carries - `<name>/SKILL.md` under
+`.pulse/skills`, `.claude/skills`, `.github/skills` or `.agents/skills` on
+the default branch - needs no `pulse skill add`: the daemon registers it for
+the project, keeps it in step with every commit that changes it, and marks
+it `origin = repo:<path>` so nobody edits it here by mistake (`pulse skill
+update` says to edit the file; the hub shows *Kept by the repository*).
+[The project's own file](#the-projects-own-file-pulsepulseyaml) has the
+rules; `pulse manifest show --project P` lists the skills it keeps.
 
 ### Shared project goals
 
@@ -2089,6 +2223,7 @@ record, read with `pulse record show WF-evolve`.
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
 | `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`pulse schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
 | `schedule.scripts_per_tick` | `2` scripts (minimum `1`) | Check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated. |
+| `manifest.load` | `on` | Whether the daemon reads each project's own PULSE file, `.pulse/pulse.yaml` on the default branch, and the `SKILL.md` folders beside it (`.pulse/skills`, `.claude/skills`, `.github/skills`, `.agents/skills`) whenever a commit changes them: the schedules the file names are added, updated, paused and ended in the store, the skills join the project's `pulse skill` registry, and what the file gets wrong is a problem on the project board, never a stopped schedule. `off` leaves the files to the harness, which still offers the skill folders to the model. |
 | `lead.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again to seat a role lead (`pulse lead add`) for a concern of a project nobody owns: a self-improvement loop with no `rsi` lead, code landing without docs and no `docs` lead, a dependency manifest with no `security` lead, no check or watcher and no `monitor` lead. One question per project per pass, on the board thread `lead/<role>`; a yes on it seats the lead. Nothing is asked while `owner.presence` is `away`, except that the `security` seat is then seated unasked, once, and said so on the thread `lead/security`. |
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`pulse toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `pulse goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
@@ -2377,7 +2512,10 @@ saying skills exist and how to load one; nothing is loaded that the model
 did not ask for, so a project with forty skills costs the context a few
 hundred tokens, not forty documents. `harness.skills` (`on`) turns it off,
 `--no-skills` for one run; the brief still carries the skills the lead
-chose, exactly as before. Each load is a `skill` step.
+chose, exactly as before. Each load is a `skill` step. With a daemon tending
+the project, the same folders on the default branch are also registered as
+`pulse skill`s of the project, so their names reach the brief, remote workers
+and schedules ([the project's own file](#the-projects-own-file-pulsepulseyaml)).
 
 **Hooks.** The clone's `.pulse/hooks.json` and the owner's
 `~/.pulse/hooks.json` name commands the harness runs at six moments of a

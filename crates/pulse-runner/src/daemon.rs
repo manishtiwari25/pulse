@@ -1774,6 +1774,9 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    for line in crate::manifest::tend_manifest(s, &slug, &now, &actor) {
+                        say(&o, line);
+                    }
                     for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);

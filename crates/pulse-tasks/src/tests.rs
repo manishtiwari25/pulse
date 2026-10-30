@@ -3541,3 +3541,652 @@ fn delivery_follows_a_landing_to_the_forge() {
         "the first task keeps its answer"
     );
 }
+
+// ---- manifest: the project's own .pulse/pulse.yaml and SKILL.md folders ----
+
+use crate::manifest;
+
+/// Writes `files` (path -> text) into the demo repo and commits them on
+/// main; an empty text removes the file.
+fn commit_files(dir: &str, files: &[(&str, &str)], message: &str) {
+    let git = |args: &[&str]| {
+        let mut full = vec!["-C", dir];
+        full.extend_from_slice(args);
+        pulse_testutil::git(&full).unwrap();
+    };
+    for (path, text) in files {
+        let full = Path::new(dir).join(path);
+        if text.is_empty() {
+            let _ = std::fs::remove_file(&full);
+        } else {
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, text).unwrap();
+        }
+    }
+    git(&["add", "-A", "."]);
+    git(&["commit", "-q", "--allow-empty", "-m", message]);
+}
+
+const MANIFEST_V1: &str = r#"
+schedules:
+  - name: deps-audit
+    title: Audit the dependencies
+    every: 1d
+    at: "02:00"
+    brief: Run the audit and fix what it names.
+  - name: nightly-check
+    kind: check
+    script: scripts/check.sh
+    every: daily
+    job_kind: improve
+  - name: release-notes
+    skill: release
+    every: weekly
+    tier: 0
+    priority: 2
+"#;
+
+const SKILL_RELEASE: &str = "---\nname: release\ndescription: How to cut a release of this project\n---\n# Release\n\n1. Tag.\n2. Push.\n";
+
+#[test]
+fn manifest_parses_entries_and_names_what_is_wrong() {
+    let m = manifest::parse(MANIFEST_V1).unwrap();
+    assert_eq!(m.schedules.len(), 3);
+    assert_eq!(m.schedules[0].at, "02:00");
+    assert_eq!(m.schedules[0].tier, 1, "tier defaults to 1");
+    assert_eq!(m.schedules[2].tier, 0);
+    assert!(manifest::static_problems(&m).is_empty());
+    assert_eq!(manifest::parse("").unwrap(), manifest::Manifest::default());
+    assert_eq!(
+        manifest::parse("# nothing yet\n").unwrap(),
+        manifest::Manifest::default()
+    );
+
+    let err = manifest::parse("schedules:\n  - name: x\n    evry: 1d\n").unwrap_err();
+    assert!(err.contains("evry"), "names the unknown key: {err}");
+    let err = manifest::parse("schedules:\n  - name: x\n   every: [\n").unwrap_err();
+    assert!(!err.is_empty());
+
+    let m = manifest::parse(
+        "schedules:\n  - name: Bad Name\n    every: 10m\n    at: \"09:00\"\n  - name: dup\n    every: 1d\n    brief: a\n  - name: dup\n    every: 1d\n    brief: b\n  - name: s\n    kind: check\n    every: 1d\n  - name: t\n    kind: task\n    every: 1d\n    skill: release\n    script: x.sh\n    tier: 2\n",
+    )
+    .unwrap();
+    let problems = manifest::static_problems(&m);
+    let text = problems.join("\n");
+    assert!(
+        text.contains("`Bad Name`: the name is not a slug"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`Bad Name`: `at` needs a cadence of whole days"),
+        "{text}"
+    );
+    assert!(text.contains("`Bad Name`: needs a `brief`"), "{text}");
+    assert!(text.contains("`dup`: the name is used twice"), "{text}");
+    assert!(text.contains("`s`: a check needs `script`"), "{text}");
+    assert!(
+        text.contains("`t`: `script` is for a check or a watch"),
+        "{text}"
+    );
+    assert!(text.contains("`t`: tier 2 is not 0 or 1"), "{text}");
+    assert_eq!(problems.len(), 7, "{text}");
+}
+
+#[test]
+fn manifest_sync_adds_updates_pauses_and_ends_schedules_and_imports_skills() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", MANIFEST_V1),
+            (".pulse/skills/release/SKILL.md", SKILL_RELEASE),
+            (".pulse/skills/release/checklist.md", "- changelog\n"),
+            (
+                ".claude/skills/triage/SKILL.md",
+                "# Triage\n\nRead the failing test first.\n",
+            ),
+            (
+                ".claude/skills/release/SKILL.md",
+                "# Shadowed\n\nnever loaded\n",
+            ),
+        ],
+        "pulse file",
+    );
+
+    let first = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(!first.skipped);
+    assert_eq!(first.path, ".pulse/pulse.yaml");
+    assert_eq!(first.schedules.added, 3, "{}", first.line());
+    assert_eq!(first.skills.added, 2, "{}", first.line());
+    assert_eq!(
+        first.problems,
+        vec![
+            "skill .claude/skills/release/SKILL.md: .pulse/skills/release/SKILL.md already gives the skill release; the first folder wins".to_string()
+        ]
+    );
+    let release = s.skill("release").unwrap();
+    assert_eq!(release.project, "demo");
+    assert_eq!(release.origin, "repo:.pulse/skills/release/SKILL.md");
+    assert_eq!(release.description, "How to cut a release of this project");
+    assert!(release.body.starts_with("# Release"), "{}", release.body);
+    assert!(
+        release.body.contains("Support files beside this SKILL.md")
+            && release.body.contains("checklist.md")
+    );
+    let triage = s.skill("triage").unwrap();
+    assert_eq!(triage.description, "Read the failing test first.");
+
+    let rows = schedules::list(s, "demo", "").unwrap();
+    assert_eq!(rows.len(), 3);
+    let by_name = |name: &str| {
+        rows.iter()
+            .find(|r| r.origin == manifest::origin_of(".pulse/pulse.yaml", name))
+            .cloned()
+            .unwrap_or_else(|| panic!("no schedule {name}: {rows:?}"))
+    };
+    let deps = by_name("deps-audit");
+    assert_eq!(
+        (
+            deps.title.as_str(),
+            deps.at_time.as_str(),
+            deps.every_minutes
+        ),
+        ("Audit the dependencies", "02:00", 1440)
+    );
+    assert!(deps.from_repo());
+    let check = by_name("nightly-check");
+    assert_eq!(
+        (
+            check.kind.as_str(),
+            check.script.as_str(),
+            check.job_kind.as_str()
+        ),
+        ("check", "scripts/check.sh", "improve")
+    );
+    let notes = by_name("release-notes");
+    assert_eq!(
+        (
+            notes.skill.as_str(),
+            notes.tier,
+            notes.priority,
+            notes.title.as_str()
+        ),
+        ("release", 0, 2, "release-notes")
+    );
+    let brief = schedules::job_brief(&notes, 1);
+    assert!(
+        brief.starts_with("Load the skill `release` first"),
+        "{brief}"
+    );
+    assert!(brief.contains("it is the whole brief"), "{brief}");
+    let st = manifest::status(s, "demo").unwrap().unwrap();
+    assert_eq!(
+        st.schedules,
+        vec!["deps-audit", "nightly-check", "release-notes"]
+    );
+    assert_eq!(st.skills, vec!["release", "triage"]);
+    assert_eq!(events(s, "manifest.synced").len(), 1);
+
+    // Nothing changed: no reads, no writes, no event.
+    let again = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(again.skipped, "{}", again.line());
+    assert_eq!(events(s, "manifest.synced").len(), 1);
+    assert_eq!(events(s, "schedule.updated").len(), 0);
+
+    // The owner pauses one by hand; an unrelated commit must not undo it.
+    schedules::pause(s, &deps.id, "holiday", pulse_store::HUMAN_AGENT).unwrap();
+    commit_files(&dir, &[("README.md", "# Demo\n")], "readme");
+    let third = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(
+        third.skipped,
+        "a commit outside the trees changes nothing: {}",
+        third.line()
+    );
+
+    // The file changes: one entry edited, one paused, one removed, one new;
+    // a skill edited, one removed.
+    let v2 = r#"
+schedules:
+  - name: deps-audit
+    title: Audit the dependencies
+    every: 2d
+    at: "03:30"
+    brief: Run the audit and fix what it names.
+  - name: nightly-check
+    kind: check
+    script: scripts/check.sh
+    every: daily
+    job_kind: improve
+    paused: true
+  - name: tidy
+    kind: clean
+    every: weekly
+    brief: Remove what nobody uses.
+"#;
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", v2),
+            (
+                ".pulse/skills/release/SKILL.md",
+                "---\nname: release\ndescription: How to cut a release\n---\n# Release\n\n1. Tag.\n2. Push.\n3. Announce.\n",
+            ),
+            (".claude/skills/triage/SKILL.md", ""),
+            (".claude/skills/release/SKILL.md", ""),
+        ],
+        "v2",
+    );
+    let fourth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(!fourth.skipped);
+    assert!(fourth.problems.is_empty(), "{:?}", fourth.problems);
+    assert_eq!(
+        (
+            fourth.schedules.added,
+            fourth.schedules.updated,
+            fourth.schedules.kept,
+            fourth.schedules.paused,
+            fourth.schedules.removed
+        ),
+        (1, 1, 1, 1, 1),
+        "{}",
+        fourth.line()
+    );
+    assert_eq!(
+        (fourth.skills.updated, fourth.skills.removed),
+        (1, 1),
+        "{}",
+        fourth.line()
+    );
+    let deps2 = schedules::get(s, &deps.id).unwrap();
+    assert_eq!(
+        (
+            deps2.every_minutes,
+            deps2.at_time.as_str(),
+            deps2.status.as_str(),
+            deps2.note.as_str()
+        ),
+        (2880, "03:30", "paused", "holiday")
+    );
+    assert_eq!(events(s, "schedule.updated").len(), 1);
+    let d = detail(&events(s, "schedule.updated")[0]);
+    assert_eq!(d["changed"], serde_json::json!(["every", "at"]));
+    let check2 = schedules::get(s, &check.id).unwrap();
+    assert_eq!(
+        (check2.status.as_str(), check2.note.as_str()),
+        ("paused", manifest::PAUSED_NOTE)
+    );
+    let notes2 = schedules::get(s, &notes.id).unwrap();
+    assert_eq!(
+        (notes2.status.as_str(), notes2.note.as_str()),
+        ("ended", manifest::ENDED_NOTE)
+    );
+    assert_eq!(s.skill("triage").unwrap().status, "disabled");
+    assert!(s.skill("release").unwrap().body.contains("3. Announce."));
+    assert_eq!(
+        s.skill("release").unwrap().description,
+        "How to cut a release"
+    );
+
+    // Un-pausing in the file resumes the file's pause; the owner's stays.
+    let v3 = v2.replace("    paused: true\n", "");
+    commit_files(&dir, &[(".pulse/pulse.yaml", &v3)], "v3");
+    let fifth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(
+        (fifth.schedules.resumed, fifth.schedules.kept),
+        (1, 3),
+        "{}",
+        fifth.line()
+    );
+    assert_eq!(schedules::get(s, &check.id).unwrap().status, "active");
+    assert_eq!(schedules::get(s, &deps.id).unwrap().status, "paused");
+
+    // A broken file keeps every schedule as it is and says so.
+    commit_files(
+        &dir,
+        &[(
+            ".pulse/pulse.yaml",
+            "schedules:\n  - name: tidy\n    evry: 1d\n",
+        )],
+        "typo",
+    );
+    let sixth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(sixth.problems.len(), 1, "{:?}", sixth.problems);
+    assert!(
+        sixth.problems[0].contains("could not be read, so its schedules stay as they were")
+            && sixth.problems[0].contains("evry"),
+        "{}",
+        sixth.problems[0]
+    );
+    assert_eq!(sixth.schedules, manifest::Counts::default());
+    assert_eq!(schedules::list(s, "demo", "active").unwrap().len(), 2);
+    assert!(!sixth.had_problems);
+    // Fixing it clears the problem; the daemon sees the transition.
+    commit_files(&dir, &[(".pulse/pulse.yaml", &v3)], "fixed");
+    let seventh = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(
+        seventh.problems.is_empty() && seventh.had_problems,
+        "{}",
+        seventh.line()
+    );
+
+    // Removing the file ends what it kept; a forced sync of the same tree runs again.
+    commit_files(&dir, &[(".pulse/pulse.yaml", "")], "drop");
+    let eighth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(eighth.schedules.removed, 3, "{}", eighth.line());
+    assert!(eighth.path.is_empty());
+    assert!(
+        schedules::list(s, "demo", "")
+            .unwrap()
+            .iter()
+            .all(|r| r.status == "ended")
+    );
+    let forced = manifest::sync(s, "demo", "daemon", true).unwrap().unwrap();
+    assert!(!forced.skipped);
+}
+
+#[test]
+fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reported() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    s.add_skill(
+        "demo-lead",
+        pulse_store::SkillInput {
+            name: "release".into(),
+            project: String::new(),
+            description: "The owner's own release recipe".into(),
+            body: "# Mine\n".into(),
+            origin: String::new(),
+        },
+    )
+    .unwrap();
+    commit_files(
+        &dir,
+        &[
+            (
+                ".pulse/pulse.yaml",
+                "schedules:\n  - name: audit\n    every: 1d\n    brief: Audit.\n",
+            ),
+            (".pulse/skills/release/SKILL.md", SKILL_RELEASE),
+        ],
+        "v1",
+    );
+    let first = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(first.schedules.added, 1);
+    assert_eq!(first.skills, manifest::Counts::default());
+    assert_eq!(first.problems.len(), 1, "{:?}", first.problems);
+    assert!(
+        first.problems[0].contains("SKILL-001 already uses the name release")
+            && first.problems[0].contains("added for every project by demo-lead"),
+        "{}",
+        first.problems[0]
+    );
+    assert_eq!(s.skill("release").unwrap().body, "# Mine");
+
+    // The entry goes bad (a script that is not on main): its row stays active.
+    commit_files(
+        &dir,
+        &[(
+            ".pulse/pulse.yaml",
+            "schedules:\n  - name: audit\n    kind: check\n    script: scripts/missing.sh\n    every: 1d\n",
+        )],
+        "v2",
+    );
+    let second = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(
+        second.schedules,
+        manifest::Counts::default(),
+        "{}",
+        second.line()
+    );
+    let row = &schedules::list(s, "demo", "active").unwrap()[0];
+    assert_eq!((row.kind.as_str(), row.brief.as_str()), ("task", "Audit."));
+    assert!(
+        second.problems.iter().any(|p| p
+            .contains("schedule `audit`: No file \"scripts/missing.sh\" on main")
+            && p.contains("stays as it was")),
+        "{:?}",
+        second.problems
+    );
+
+    // A schedule for a skill nobody has is refused with the way out.
+    commit_files(
+        &dir,
+        &[(
+            ".pulse/pulse.yaml",
+            "schedules:\n  - name: audit\n    every: 1d\n    brief: Audit.\n  - name: notes\n    every: 1d\n    skill: nothing-here\n",
+        )],
+        "v3",
+    );
+    let third = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(
+        (third.schedules.kept, third.schedules.added),
+        (1, 0),
+        "{}",
+        third.line()
+    );
+    assert!(
+        third
+            .problems
+            .iter()
+            .any(|p| p.contains("schedule `notes`: No enabled skill \"nothing-here\" for demo")),
+        "{:?}",
+        third.problems
+    );
+    // The hand-set schedule is untouched by the file.
+    let (mine, _) = schedules::add_checked(s, sched_input("1d")).unwrap();
+    commit_files(&dir, &[(".pulse/pulse.yaml", "")], "drop");
+    let fourth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(fourth.schedules.removed, 1);
+    assert_eq!(schedules::get(s, &mine.id).unwrap().status, "active");
+}
+
+#[test]
+fn manifest_sync_skips_a_project_without_a_checkout() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    assert!(
+        manifest::sync(s, "demo", "daemon", false)
+            .unwrap()
+            .is_none()
+    );
+    assert!(manifest::status(s, "demo").unwrap().is_none());
+    let err = manifest::sync(s, "nope", "daemon", false)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("No project"), "{err}");
+}
+
+#[test]
+fn schedule_skill_flag_is_checked_and_shapes_the_brief() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let err = schedules::add(
+        s,
+        schedules::ScheduleInput {
+            skill: "release".into(),
+            brief: String::new(),
+            ..sched_input("1d")
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("No enabled skill \"release\" for demo"),
+        "{err}"
+    );
+    s.add_skill(
+        "demo-lead",
+        pulse_store::SkillInput {
+            name: "release".into(),
+            project: "demo".into(),
+            description: "How to release".into(),
+            body: "# Release\n".into(),
+            origin: String::new(),
+        },
+    )
+    .unwrap();
+    let sc = schedules::add(
+        s,
+        schedules::ScheduleInput {
+            skill: "release".into(),
+            ..sched_input("1d")
+        },
+    )
+    .unwrap();
+    assert_eq!(sc.skill, "release");
+    let brief = schedules::job_brief(&sc, 1);
+    assert!(brief.starts_with("Load the skill `release` first (the skill tool, or `pulse skill show release`) and follow it for the work below.\n\n"), "{brief}");
+    let d = detail(events(s, "schedule.added").last().unwrap());
+    assert_eq!(d["skill"], "release");
+    // update: a changed brief and skill; an unchanged input writes nothing.
+    let (same, changed, _) = schedules::update(
+        s,
+        &sc.id,
+        &schedules::ScheduleInput {
+            skill: "release".into(),
+            ..sched_input("1d")
+        },
+        "demo-lead",
+    )
+    .unwrap();
+    assert!(changed.is_empty() && same == sc);
+    let (up, changed, _) = schedules::update(
+        s,
+        &sc.id,
+        &schedules::ScheduleInput {
+            skill: String::new(),
+            brief: "New brief".into(),
+            kind: "improve".into(),
+            ..sched_input("1d")
+        },
+        "demo-lead",
+    )
+    .unwrap();
+    assert_eq!(changed, vec!["kind", "brief", "job_kind", "skill"]);
+    assert_eq!(
+        (
+            up.kind.as_str(),
+            up.brief.as_str(),
+            up.skill.as_str(),
+            up.next_at.as_str()
+        ),
+        ("improve", "New brief", "", sc.next_at.as_str())
+    );
+    let err = schedules::update(s, &sc.id, &sched_input("1d"), "stranger")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("belongs to demo-lead"), "{err}");
+}
+
+#[test]
+fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    let file = Path::new(&dir).join(".pulse/pulse.yaml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, MANIFEST_V1).unwrap();
+    let path = file.to_str().unwrap();
+
+    // The file alone: sound, three schedules.
+    let (mut c, out) = ctx_for(s, "", "", false);
+    run_cmd(&mut c, "manifest", &["check", path]).unwrap();
+    assert!(
+        out.string().contains("sound; 3 schedules"),
+        "{}",
+        out.string()
+    );
+
+    // Against the store, the skill the third entry names does not exist yet.
+    let (mut c, out) = ctx_for(s, "", "demo", true);
+    let err = run_cmd(&mut c, "manifest", &["check", path]).unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<pulse_cli::Error>().unwrap().exit_code(),
+        1
+    );
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(
+        v["schedules"],
+        serde_json::json!(["deps-audit", "nightly-check", "release-notes"])
+    );
+    let problems = v["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0]
+            .as_str()
+            .unwrap()
+            .starts_with("schedule `release-notes`: No enabled skill \"release\""),
+        "{problems:?}"
+    );
+
+    // A broken file: the YAML error and the static problems, exit 1.
+    std::fs::write(&file, "schedules:\n  - name: Bad Name\n    evry: 1d\n").unwrap();
+    let (mut c, out) = ctx_for(s, "", "", false);
+    let err = run_cmd(&mut c, "manifest", &["check", path])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("1 problem in"), "{err}");
+    assert!(
+        out.string().contains("could not be read") && out.string().contains("evry"),
+        "{}",
+        out.string()
+    );
+
+    // Nothing applied yet: show says so; sync applies the committed file.
+    let (mut c, out) = ctx_for(s, "", "demo", false);
+    run_cmd(&mut c, "manifest", &["show"]).unwrap();
+    assert!(
+        out.string().contains("has not read a PULSE file"),
+        "{}",
+        out.string()
+    );
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", MANIFEST_V1),
+            (".pulse/skills/release/SKILL.md", SKILL_RELEASE),
+        ],
+        "pulse file",
+    );
+    let (mut c, out) = ctx_for(s, "", "demo", false);
+    run_cmd(&mut c, "manifest", &["sync"]).unwrap();
+    assert!(
+        out.string().contains("schedules: 3 added; skills: 1 added"),
+        "{}",
+        out.string()
+    );
+    let (mut c, out) = ctx_for(s, "", "demo", true);
+    run_cmd(&mut c, "manifest", &["show"]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(v["status"]["path"], ".pulse/pulse.yaml");
+    assert_eq!(v["schedules"].as_array().unwrap().len(), 3);
+    assert_eq!(v["skills"][0]["name"], "release");
+    let (mut c, out) = ctx_for(s, "", "demo", false);
+    run_cmd(&mut c, "manifest", &["show"]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains("Problems: none.")
+            && text.contains("release-notes active every 1w, skill `release`")
+            && text.contains("release enabled (.pulse/skills/release/SKILL.md)"),
+        "{text}"
+    );
+
+    // Without --project, show and sync refuse; an unknown subcommand too.
+    let (mut c, _) = ctx_for(s, "", "", false);
+    let err = run_cmd(&mut c, "manifest", &["show"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("needs --project"), "{err}");
+    let err = run_cmd(&mut c, "manifest", &["bogus"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown subcommand"), "{err}");
+}

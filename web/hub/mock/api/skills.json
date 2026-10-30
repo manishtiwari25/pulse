@@ -10,7 +10,8 @@
       "created_by": "human",
       "created_at": "2026-09-02T11:00:00Z",
       "updated_at": "2026-09-05T09:15:00Z",
-      "uses": 7
+      "uses": 7,
+      "origin": ""
     },
     {
       "id": "SKILL-002",
@@ -22,7 +23,8 @@
       "created_by": "demo-app-w1",
       "created_at": "2026-09-03T15:42:00Z",
       "updated_at": "2026-09-03T15:42:00Z",
-      "uses": 12
+      "uses": 12,
+      "origin": ""
     },
     {
       "id": "SKILL-003",
@@ -34,7 +36,21 @@
       "created_by": "human",
       "created_at": "2026-09-04T08:00:00Z",
       "updated_at": "2026-09-06T10:30:00Z",
-      "uses": 2
+      "uses": 2,
+      "origin": ""
+    },
+    {
+      "id": "SKILL-004",
+      "name": "release",
+      "project": "demo-app",
+      "description": "How to cut a release of demo-app: tag, notes, the smoke run.",
+      "body": "# Release\n\n1. Tag the commit `vX.Y.Z` and push the tag.\n2. Write the notes from `git log --oneline LAST..HEAD`.\n3. Run the smoke run the README describes.\n\nSupport files beside this SKILL.md in the repository: checklist.md.\n",
+      "status": "enabled",
+      "created_by": "daemon",
+      "created_at": "2026-09-06T08:00:00Z",
+      "updated_at": "2026-09-06T08:00:00Z",
+      "uses": 3,
+      "origin": "repo:.pulse/skills/release/SKILL.md"
     }
   ]
 }
