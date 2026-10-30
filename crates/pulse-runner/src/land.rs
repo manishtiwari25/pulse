@@ -1311,6 +1311,12 @@ pub(crate) fn land_branch_with_registry(
             ],
         );
     }
+    if !merged.ok()
+        && o.sync
+        && crate::landing_hold::resolve_hub_out_sync_conflict(&worktree, &branch)
+    {
+        merged = crate::util::git_timeout(&root, Duration::from_secs(30), &["rev-parse", "HEAD"]);
+    }
     if !merged.ok() {
         crate::util::git_timeout(&worktree, Duration::from_secs(60), &["merge", "--abort"]);
         let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
