@@ -397,6 +397,19 @@ pub fn digest_for(
             }
         }
         w!("  {}", shared.notice(&res.now));
+        w!(
+            "  ask another project what it knows: pulse post question --to SLUG --area A --thread T --summary S --body ... (or tag @SLUG in the text); it answers on your thread"
+        );
+        let asks_in = pulse_board::open_asks_to(s, project)?.len();
+        let answers_back = pulse_board::asks_from(s, project, 0)?
+            .iter()
+            .filter(|a| a.answer.is_some())
+            .count();
+        if asks_in > 0 || answers_back > 0 {
+            w!(
+                "  asks: {asks_in} from other projects wait for an answer here; {answers_back} answers to this project's asks arrived"
+            );
+        }
     }
     let awaiting = res
         .proposals
@@ -427,6 +440,54 @@ pub fn digest_for(
                     format!("{}/{}", p.area, p.thread),
                     trunc(&p.agent, 16),
                     trunc(&p.summary, 60)
+                );
+            }
+        }
+    }
+    if project != pulse_store::COMMONS_SLUG {
+        let asks_in = pulse_board::open_asks_to(s, project)?;
+        if !asks_in.is_empty() {
+            w!("");
+            w!("ASKS FROM OTHER PROJECTS ({})", asks_in.len());
+            for a in &asks_in {
+                let p = &a.post;
+                let origin =
+                    if p.project == pulse_store::COMMONS_SLUG && !p.origin_project.is_empty() {
+                        p.origin_project.as_str()
+                    } else {
+                        p.project.as_str()
+                    };
+                w!(
+                    "  {:<44} from {:<16} {:<30} by {:<14} {}",
+                    p.id,
+                    trunc(origin, 16),
+                    format!("{}/{}", p.area, p.thread),
+                    trunc(&p.agent, 14),
+                    p.summary
+                );
+            }
+            w!(
+                "  an answer here comes from a job in this project's clone; the runner posts it on the asker's thread"
+            );
+        }
+        let asks_out = pulse_board::asks_from(s, project, 0)?;
+        if !asks_out.is_empty() {
+            w!("");
+            w!("ASKS TO OTHER PROJECTS ({})", asks_out.len());
+            for a in &asks_out {
+                let status = match &a.answer {
+                    Some(ans) => format!(
+                        "answered by {} ({}): {}",
+                        ans.agent, ans.origin_project, ans.summary
+                    ),
+                    None => format!("waiting since {}", a.post.date),
+                };
+                w!(
+                    "  {:<44} -> {:<16} {:<30} {}",
+                    a.post.id,
+                    trunc(&a.to.join(","), 16),
+                    format!("{}/{}", a.post.area, a.post.thread),
+                    status
                 );
             }
         }

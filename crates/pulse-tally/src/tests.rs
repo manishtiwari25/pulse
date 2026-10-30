@@ -1954,6 +1954,115 @@ fn digest_shows_unanswered_mentions_for_agent() {
 }
 
 #[test]
+fn digest_shows_asks_between_projects() {
+    let _serial = crate::test_helpers::serial();
+    let f = test_fixture::new_fixture(false);
+    f.st.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO projects (slug, name, path, added_at) VALUES ('other', 'Other', ?, ?)",
+            params![
+                f.home.path().join("other").display().to_string(),
+                FIXTURE_NOW
+            ],
+        )
+        .unwrap();
+    for name in ["alice", "bob"] {
+        pulse_board::join_agent(
+            &f.st,
+            pulse_board::JoinInput {
+                name: name.into(),
+                runner: "copilot".into(),
+                model: "m".into(),
+                session: format!("sess-{name}"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let th = Thresholds {
+        now: FIXTURE_NOW.into(),
+        ..Default::default()
+    };
+    let digest =
+        |project: &str| digest_for(&f.st, project, "", th.clone(), "alice", "sess-alice").unwrap();
+    let ask_notice = "ask another project what it knows: pulse post question --to SLUG";
+    let before = digest("fixture");
+    assert!(before.contains(ask_notice), "{before}");
+    assert!(!before.contains("  asks: "), "{before}");
+    assert!(!before.contains("ASKS "), "{before}");
+    let q = pulse_board::create_post(
+        &f.st,
+        pulse_board::PostInput {
+            kind: "question".into(),
+            project: "fixture".into(),
+            area: "api".into(),
+            thread: "ports".into(),
+            summary: "@other which port does your API listen on?".into(),
+            agent: "alice".into(),
+            branch: Some(String::new()),
+            date: "2026-09-10T10:00:00Z".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(q.projects(), vec!["other"]);
+    let text = digest("other");
+    let row = format!(
+        "  {:<44} from {:<16} {:<30} by {:<14} {}",
+        q.id, "fixture", "api/ports", "alice", q.summary
+    );
+    for want in [
+        "  asks: 1 from other projects wait for an answer here; 0 answers to this project's asks arrived",
+        "ASKS FROM OTHER PROJECTS (1)",
+        row.as_str(),
+        "an answer here comes from a job in this project's clone; the runner posts it on the asker's thread",
+    ] {
+        assert!(text.contains(want), "missing {want:?}:\n{text}");
+    }
+    assert!(!text.contains("ASKS TO OTHER PROJECTS"), "{text}");
+    let text = digest("fixture");
+    let row = format!(
+        "  {:<44} -> {:<16} {:<30} waiting since 2026-09-10T10:00:00Z",
+        q.id, "other", "api/ports"
+    );
+    for want in ["ASKS TO OTHER PROJECTS (1)", row.as_str()] {
+        assert!(text.contains(want), "missing {want:?}:\n{text}");
+    }
+    assert!(!text.contains("  asks: "), "{text}");
+    assert!(!text.contains("ASKS FROM OTHER PROJECTS"), "{text}");
+    pulse_board::create_post(
+        &f.st,
+        pulse_board::PostInput {
+            kind: "answer".into(),
+            project: "fixture".into(),
+            area: "api".into(),
+            thread: "ports".into(),
+            summary: "8080, set in config/default.toml".into(),
+            on: q.id.clone(),
+            origin_project: "other".into(),
+            agent: "bob".into(),
+            branch: Some(String::new()),
+            date: "2026-09-10T11:00:00Z".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let text = digest("other");
+    assert!(!text.contains("ASKS FROM OTHER PROJECTS"), "{text}");
+    assert!(!text.contains("  asks: "), "{text}");
+    let text = digest("fixture");
+    for want in [
+        "  asks: 0 from other projects wait for an answer here; 1 answers to this project's asks arrived",
+        "ASKS TO OTHER PROJECTS (1)",
+        "answered by bob (other): 8080, set in config/default.toml",
+    ] {
+        assert!(text.contains(want), "missing {want:?}:\n{text}");
+    }
+    assert!(!text.contains("waiting since"), "{text}");
+}
+
+#[test]
 fn digest_lists_the_shared_board_with_each_threads_origin() {
     let _serial = crate::test_helpers::serial();
     let f = test_fixture::new_fixture(false);
