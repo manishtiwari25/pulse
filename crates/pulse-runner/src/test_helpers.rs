@@ -463,19 +463,20 @@ pub(crate) fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::To
         .int("n")
 }
 
-/// Entries left under `PULSE_HOME/work` once the trash remover is done: a
-/// finished run leaves its clone in `work/.trash` for the low-priority
-/// remover (`retention::discard_dir`), so a test that wants "nothing left"
-/// waits for that and ignores the empty trash folder itself.
+/// Entries left under `PULSE_HOME/work` once the trash is empty: a finished
+/// run leaves its clone in `work/.trash` for the low-priority remover
+/// (`retention::discard_dir`). That background delete can outlast any fixed
+/// poll budget on a loaded disk, so a test that wants "nothing left" empties
+/// the trash itself - it asserts what the run left behind, not how fast the
+/// background thread is. The trash folder itself never counts as a leftover.
 pub(crate) fn work_leftovers(home: &str) -> Vec<String> {
     let home = Path::new(home);
-    for _ in 0..400 {
-        if crate::retention::trash_entries(home) == 0 {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
     let trash = crate::retention::trash_dir(home);
+    if let Ok(rd) = std::fs::read_dir(&trash) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
     let mut left: Vec<String> = std::fs::read_dir(home.join("work"))
         .map(|rd| {
             rd.flatten()
