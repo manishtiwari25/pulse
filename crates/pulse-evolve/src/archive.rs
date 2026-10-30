@@ -4,6 +4,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ArchiveRow, Scores};
 
+/// ArchiveValidation marks an archive refusal that is deterministic for the
+/// given row: the same text is refused on every retry, so re-measuring buys
+/// nothing. The runner distinguishes these from transient store errors and
+/// holds the experiment once instead of deferring it for re-measurement.
+#[derive(Debug)]
+pub struct ArchiveValidation(pub anyhow::Error);
+
+impl std::fmt::Display for ArchiveValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ArchiveValidation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// invalid marks one deterministic row-validation refusal.
+fn invalid(err: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(ArchiveValidation(err))
+}
+
 /// ScorePair is the public archive fixture payload.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ScorePair {
@@ -171,31 +195,31 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
     let baseline = public_scores(row.baseline.as_ref())?;
     let variant = public_scores(row.variant.as_ref())?;
     if baseline.shadow || variant.shadow {
-        return Err(crate::fixtures::input_error(
+        return Err(invalid(crate::fixtures::input_error(
             "Cannot archive a shadow run",
             "only runner experiment landing may write the archive",
             "pulse evolve archive",
-        ));
+        )));
     }
     if !crate::fixtures::score_value(row.tolerance) {
-        return Err(crate::fixtures::input_error(
+        return Err(invalid(crate::fixtures::input_error(
             "Cannot archive experiment",
             "tolerance must be a finite fraction in [0,1]",
             "pulse settings set evolve.tolerance 0.02",
-        ));
+        )));
     }
     let (keep, _) = crate::api::keep(Some(&baseline), Some(&variant), row.tolerance);
     if row.kept && !keep && !baseline_shape(&row, &baseline, &variant) {
-        return Err(anyhow!(
+        return Err(invalid(anyhow!(
             "a kept archive row must satisfy the unchanged Keep rule"
-        ));
+        )));
     }
     if (!baseline.project.is_empty() && baseline.project != row.project)
         || (!variant.project.is_empty() && variant.project != row.project)
     {
-        return Err(anyhow!(
+        return Err(invalid(anyhow!(
             "measurement project does not match the archive project"
-        ));
+        )));
     }
     for value in [
         &row.hypothesis,
@@ -206,7 +230,9 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
         &row.run_id,
     ] {
         if pulse_store::secret_shaped(value) {
-            return Err(anyhow!("archive text must not contain credentials"));
+            return Err(invalid(anyhow!(
+                "archive text must not contain credentials"
+            )));
         }
     }
     let fixtures = pulse_store::gojson::to_string(&ScorePair {
