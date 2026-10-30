@@ -1,4 +1,4 @@
-use crate::agents::{AgentDef, describe_for_tool, withheld_tools};
+use crate::agents::{AgentDef, describe_for_tool, model_allowed, withheld_tools};
 use crate::background::{
     BACKGROUND_LIMIT, BACKGROUND_WAIT_DEFAULT, BACKGROUND_WAIT_LIMIT, PROCESS_TOOL,
     PROCESS_WAIT_DEFAULT, Process, ProcessAction, Procs, dropped_marker, fmt_dur, process_tool,
@@ -336,6 +336,20 @@ pub struct Config {
     /// `LESSON:` lines; the template's `{{.Teach}}` key places the paragraph
     /// ([`teach_paragraph`]).
     pub teach: bool,
+    /// The standing instructions of the custom agent the run runs as
+    /// (`pulse harness run --agent NAME`, see [`crate::agents`]), appended
+    /// to the system prompt once the template has rendered; empty when the
+    /// run is nobody's in particular.
+    pub agent_instructions: String,
+    /// The `models.allowed` setting: the models a custom agent file may
+    /// ask for, comma- or newline-separated with `*` wildcards; empty lets
+    /// any through. A helper whose agent asks for a model outside the list
+    /// keeps its parent's.
+    pub models_allowed: String,
+    /// How many helpers the run may start when its agent spec caps them
+    /// (`pulse.max_subagents`); None leaves it to the step and time
+    /// reserves, zero takes the `subagent` tool away.
+    pub max_subagents: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1439,7 +1453,7 @@ impl Agent {
     }
 
     fn offers_subagents(&self) -> bool {
-        self.cfg.subagents && self.cfg.depth == 0
+        self.cfg.subagents && self.cfg.depth == 0 && self.cfg.max_subagents != Some(0)
     }
 
     fn offers_question(&self) -> bool {
@@ -1486,6 +1500,12 @@ impl Agent {
         out.extend(self.mcp.advertised());
         out.retain(|t| !self.permissions.withdraws(&t.name));
         out
+    }
+
+    /// The names of the tools the run offers as it stands (the permission
+    /// rules withdraw what they deny whole).
+    pub fn offered_tool_names(&self) -> Vec<String> {
+        self.tool_names()
     }
 
     fn tool_names(&self) -> Vec<String> {
@@ -1786,6 +1806,13 @@ impl Agent {
                 DEFAULT_PROMPT_TEMPLATE
             };
             self.cfg.system_prompt = render_prompt(tmpl, prompt_data(&self.env.info(), &self.cfg))?;
+        }
+        if !self.cfg.agent_instructions.is_empty() {
+            // Appended after rendering so an owner's own template gets it too.
+            self.cfg.system_prompt.push_str("\n\n");
+            self.cfg
+                .system_prompt
+                .push_str(&self.cfg.agent_instructions);
         }
         if self.cfg.read_only {
             // Appended after rendering so an owner's own template gets it too.
@@ -2910,6 +2937,13 @@ impl Agent {
             Some(format!(
                 "subagent: only {remaining} model calls remain in this run; do the work yourself and finish"
             ))
+        } else if let Some(cap) = self.cfg.max_subagents
+            && self.result.subagents >= i32::try_from(cap).unwrap_or(i32::MAX)
+        {
+            Some(format!(
+                "subagent: this agent may start at most {cap} helper{}; do the work yourself",
+                if cap == 1 { "" } else { "s" }
+            ))
         } else if time_left.is_some_and(|t| t < Duration::from_secs(30)) {
             Some("subagent: too little of the run's time budget remains; do the work yourself and finish".to_string())
         } else if cost_left.is_some_and(|c| c <= 0.0) {
@@ -2917,11 +2951,34 @@ impl Agent {
         } else {
             None
         };
+        // The agent's own model, when `models.allowed` lets it through;
+        // the helper keeps its parent's otherwise, and the step says so.
+        let (model, model_note) = match custom.as_ref().and_then(|a| a.model.as_deref()) {
+            Some(m) if m != self.cfg.model && model_allowed(&self.cfg.models_allowed, m) => {
+                (Some(m.to_string()), format!(" on {m}"))
+            }
+            Some(m) if m != self.cfg.model => (
+                None,
+                format!(
+                    " (model {m} is not in models.allowed; keeping {})",
+                    self.cfg.model
+                ),
+            ),
+            _ => (None, String::new()),
+        };
+        let budget = match custom.as_ref().and_then(|a| a.max_steps) {
+            Some(cap) => budget.min(i32::try_from(cap).unwrap_or(i32::MAX)),
+            None => budget,
+        };
         self.emit(Step {
             kind: StepKind::Subagent,
             content: task.clone(),
             command: match &custom {
-                Some(a) => format!("{SUBAGENT_TOOL} {} ({} calls)", a.name, budget.max(0)),
+                Some(a) => format!(
+                    "{SUBAGENT_TOOL} {} ({} calls){model_note}",
+                    a.name,
+                    budget.max(0)
+                ),
                 None => format!("{SUBAGENT_TOOL} ({} calls)", budget.max(0)),
             },
             ..Step::default()
@@ -2954,7 +3011,14 @@ impl Agent {
         cfg.depth = self.cfg.depth.saturating_add(1);
         cfg.subagents = false;
         cfg.system_prompt = String::new();
+        cfg.agent_instructions = String::new();
         cfg.cancel_reason = String::new();
+        if let Some(m) = model {
+            cfg.model = m;
+        }
+        if let Some(a) = &custom {
+            cfg.read_only |= a.read_only;
+        }
         if let Some(t) = time_left {
             cfg.wall_time = t;
         }
@@ -2972,7 +3036,8 @@ impl Agent {
         child.permissions = self.permissions.clone();
         if let Some(a) = &custom {
             // The agent's tool list holds as deny rules, so a tool outside
-            // it is neither offered nor run.
+            // it is neither offered nor run; its `permissions` rules come
+            // along (a deny wins over any allow).
             let offered = self.tool_names();
             child
                 .permissions
@@ -2982,6 +3047,7 @@ impl Agent {
                     filter: None,
                     source: permissions::Source::Agent,
                 }));
+            child.permissions.extend(a.permission_rules());
         }
         child.path_rules = self.path_rules.clone();
         child.ui = self.ui.clone();
@@ -7522,6 +7588,11 @@ mod tests {
             denied: Vec::new(),
             body: "Report only; never edit.".into(),
             source: ".claude/agents/reviewer.md".into(),
+            model: Some("kimi-k3".into()),
+            max_steps: Some(3),
+            read_only: true,
+            permissions: vec!["deny:bash(git *)".into()],
+            ..Default::default()
         }]);
         assert!(
             h.environment()
@@ -7555,6 +7626,22 @@ mod tests {
             json!(["reviewer"])
         );
         let child = &reqs[1];
+        assert_eq!(
+            child.model, "kimi-k3",
+            "the agent's model applies while models.allowed is empty"
+        );
+        assert!(
+            child.messages[0]
+                .content
+                .contains("This is a read-only run"),
+            "the agent's readonly holds for the helper: {}",
+            child.messages[0].content
+        );
+        assert!(
+            child.messages[0].content.contains("at most 3 model calls"),
+            "the agent's max_steps lowers the helper's budget: {}",
+            child.messages[0].content
+        );
         let brief = &child.messages[1].content;
         assert!(
             brief.starts_with("You are the reviewer helper agent of a larger run"),
@@ -7585,7 +7672,7 @@ mod tests {
             .iter()
             .find(|s| s.kind == StepKind::Subagent)
             .unwrap();
-        assert_eq!(sub_step.command, "subagent reviewer (5 calls)");
+        assert_eq!(sub_step.command, "subagent reviewer (3 calls) on kimi-k3");
         let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
         assert!(
             replies["c1"].contains("SUMMARY: looked, nothing removed"),
@@ -7595,6 +7682,77 @@ mod tests {
         assert_eq!(
             replies["c2"],
             "subagent: there is no custom agent \"nobody\"; the agents are reviewer"
+        );
+    }
+
+    #[test]
+    fn a_helper_keeps_the_parent_model_outside_models_allowed_and_the_agent_rules_hold() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "subagent",
+                json!({"task": "tag it", "agent": "tagger"}),
+            )])),
+            resp(tool("git tag v1")),
+            resp(msg("SUMMARY: could not tag")),
+            resp(calls(&[("c2", "subagent", json!({"task": "again"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.subagents = true;
+        cfg.max_steps = 12;
+        cfg.models_allowed = "claude-*, gpt-5*".into();
+        cfg.max_subagents = Some(1);
+        let mut h = new(
+            Box::new(SharedFakeProvider(p.clone())),
+            Box::new(env.clone()),
+            cfg,
+            Vec::new(),
+        );
+        h.set_agents(vec![crate::agents::AgentDef {
+            name: "tagger".into(),
+            description: "Tags releases.".into(),
+            body: "Tag what the task says.".into(),
+            source: ".pulse/agents/tagger.md".into(),
+            model: Some("kimi-k3".into()),
+            permissions: vec!["deny:bash(git tag *)".into()],
+            ..Default::default()
+        }]);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        assert_eq!(got.subagents, 1);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 5);
+        assert_eq!(reqs[1].model, "m", "the parent's model stays");
+        let sub_step = h
+            .steps
+            .iter()
+            .find(|s| s.kind == StepKind::Subagent)
+            .unwrap();
+        assert_eq!(
+            sub_step.command,
+            "subagent tagger (7 calls) (model kimi-k3 is not in models.allowed; keeping m)"
+        );
+        assert!(
+            h.steps.iter().any(|s| s.depth == 1
+                && s.kind == StepKind::Error
+                && s.content
+                    .contains("refused by permission rule `deny bash(git tag *)`")),
+            "the agent's own deny rule holds for the helper: {:?}",
+            h.steps
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(env.lock().unwrap().commands.is_empty());
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["c2"]
+                .contains("subagent: this agent may start at most 1 helper; do the work yourself"),
+            "{}",
+            replies["c2"]
         );
     }
 

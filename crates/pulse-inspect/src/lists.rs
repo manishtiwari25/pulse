@@ -239,7 +239,26 @@ pub fn agent_scorecards(
 }
 
 pub fn run_agents(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    // `pulse agents list|lint|schema` are the custom agent definitions
+    // (the harness crate's); a bare `pulse agents` is the scorecards
+    if args
+        .first()
+        .is_some_and(|w| pulse_harness::agents_command::is_subcommand(w))
+    {
+        return pulse_harness::agents_command::run(c, fs, args);
+    }
     no_args(args)?;
+    // the command opens no store of its own (the definitions load
+    // without one); the scorecards still need it, read-only
+    if c.store.is_none() {
+        c.store = Some(pulse_store::Store::open(pulse_store::Options {
+            home: c.home.clone(),
+            read_only: true,
+            skip_records: true,
+            now: c.now.clone(),
+            ..pulse_store::Options::default()
+        })?);
+    }
     let agents = agent_scorecards(store(c)?, bool_flag(fs, "all"))?;
     if c.json {
         return json_output(c, &agents);
@@ -514,6 +533,69 @@ mod tests {
         let text = invoke(Some(s), false, "", "agents", &[]);
         assert!(text.out.contains("presence"));
         assert!(!text.out.contains("pruned"));
+    }
+
+    #[test]
+    fn agents_hands_the_definition_words_to_the_harness_and_opens_its_own_store() {
+        let (_dir, s) = temporary_store();
+        let got = invoke(Some(s.clone()), true, "", "agents", &["schema"]);
+        assert_eq!(got.code, 0, "{got:?}");
+        let v: Value = serde_json::from_str(&got.out).unwrap();
+        assert_eq!(v["$schema"], "https://json-schema.org/draft/2020-12/schema");
+
+        let checkout = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(checkout.path().join(".pulse/agents")).unwrap();
+        std::fs::write(
+            checkout.path().join(".pulse/agents/scout.md"),
+            "---\ndescription: looks around\ntools: Read, Grep\n---\nLook.\n",
+        )
+        .unwrap();
+        let cwd = checkout.path().to_string_lossy().to_string();
+        let got = invoke(
+            Some(s.clone()),
+            false,
+            "",
+            "agents",
+            &["--cwd", &cwd, "list"],
+        );
+        assert_eq!(got.code, 0, "{got:?}");
+        assert!(got.out.contains("scout"), "{got:?}");
+        assert!(got.out.contains(".pulse/agents"), "{got:?}");
+        let got = invoke(
+            Some(s.clone()),
+            false,
+            "",
+            "agents",
+            &["--cwd", &cwd, "lint"],
+        );
+        assert_eq!(got.code, 0, "{got:?}");
+        assert!(got.out.contains("tool Read -> read"), "{got:?}");
+
+        // a bare `pulse agents` opens the store itself now (the command
+        // word no longer asks the dispatcher for one)
+        let out = pulse_cli::Buffer::new();
+        let err = pulse_cli::Buffer::new();
+        let mut c = Context {
+            store: None,
+            home: s.home.clone(),
+            out: Box::new(out.clone()),
+            err: Box::new(err.clone()),
+            json: true,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: TEST_NOW.into(),
+            args: vec![],
+        };
+        let cmd = pulse_cli::lookup("agents").unwrap();
+        let mut fs = FlagSet::new("agents");
+        (cmd.flags.unwrap())(&mut fs);
+        fs.parse(&[]).unwrap();
+        (cmd.run)(&mut c, &fs, &[]).unwrap();
+        assert!(c.store.is_some());
+        serde_json::from_str::<Value>(&out.string()).unwrap();
     }
 
     #[test]

@@ -8,9 +8,10 @@
 //! at `daemon.max_jobs` (default derived from the hardware: half the cores,
 //! one run per 4 GB of RAM, never more than four), holds every local slot
 //! while the one-minute load average is over `daemon.max_load` (default:
-//! the number of CPUs) or the memory a new run could use is under
-//! `daemon.min_free_mem_mb` (default 1024), and runs the daemon's children
-//! at nice [`CHILD_NICE`] so the owner's own work stays responsive. Remote
+//! twice the number of CPUs) or the memory a new run could use is under
+//! `daemon.min_free_mem_mb` (default 1024), halves the runs it starts while
+//! the kernel's memory warning stands, and runs the daemon's children at
+//! nice [`CHILD_NICE`] so the owner's own work stays responsive. Remote
 //! executors keep their own `workers`: their load is not this machine's.
 //!
 //! [`decide`] is the pure decision the loop and the self-update build use;
@@ -18,7 +19,7 @@
 //! hardware, and each falls back to "no pressure" where the platform has
 //! no reading.
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
 /// Nice level the daemon's job children run at (`setpriority`); children
 /// of children inherit it, so a worker's `npm ci` and `cargo test` yield
@@ -28,6 +29,11 @@ pub(crate) const CHILD_NICE: i32 = 10;
 pub(crate) const MAX_NICE: i32 = 19;
 /// The hardware-derived default never admits more local runs than this.
 pub(crate) const DEFAULT_MAX_JOBS_CAP: i32 = 4;
+/// The default `daemon.max_load`, in load per CPU. macOS counts every
+/// runnable thread in the load average, and a laptop running an emulator
+/// or a browser build sits at twice its CPU count for hours while its CPUs
+/// are far from busy; a line at the CPU count held the fleet all day.
+pub(crate) const DEFAULT_LOAD_PER_CPU: f64 = 2.0;
 /// Megabytes of RAM one run is taken to need when the default is derived:
 /// a worker clone with its `npm ci`, a test run and the harness itself.
 const MB_PER_JOB: i64 = 4096;
@@ -120,11 +126,13 @@ impl Machine {
 pub(crate) struct Pressure {
     /// The one-minute load average; None where the platform has none.
     pub(crate) load1: Option<f64>,
-    /// Megabytes a new run could use without swapping: free, inactive and
-    /// speculative pages on macOS, `MemAvailable` on Linux; None elsewhere.
+    /// Megabytes a new run could use without swapping: free, inactive,
+    /// speculative and purgeable pages on macOS, `MemAvailable` on Linux;
+    /// None elsewhere.
     pub(crate) free_mem_mb: Option<i64>,
     /// The kernel itself reports memory pressure (macOS
-    /// `kern.memorystatus_vm_pressure_level` at warning or critical).
+    /// `kern.memorystatus_vm_pressure_level` at warning or critical). The
+    /// warning alone is a soft signal: it halves the runs that start.
     pub(crate) mem_warning: bool,
     /// The kernel reports critical memory pressure (the level at 4): the
     /// machine is swapping and one more run would only finish later.
@@ -138,6 +146,8 @@ pub(crate) struct Limits {
     pub(crate) max_jobs: i32,
     /// One-minute load average over which nothing new starts.
     pub(crate) max_load: f64,
+    /// Logical CPUs the load is read against, for the hold line.
+    pub(crate) cpus: i32,
     /// Megabytes of usable memory under which nothing new starts; 0 off.
     pub(crate) min_free_mem_mb: i64,
     /// Nice level the daemon's own process runs at from startup
@@ -153,8 +163,9 @@ pub(crate) struct Limits {
 
 /// The limits from the settings, the flag and the machine: a positive
 /// `--max-jobs` wins, then a positive `daemon.max_jobs`, then the machine's
-/// default; `daemon.max_load` 0 is the number of CPUs; `daemon.min_free_mem_mb`
-/// 0 turns the memory floor off; `daemon.build_jobs` 0 is half the cores.
+/// default; `daemon.max_load` 0 is [`DEFAULT_LOAD_PER_CPU`] times the number
+/// of CPUs; `daemon.min_free_mem_mb` 0 turns the memory floor off;
+/// `daemon.build_jobs` 0 is half the cores.
 pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i32) -> Limits {
     let setting_max_jobs = s.setting_int("daemon.max_jobs") as i32;
     let (max_jobs, source) = if flag_max_jobs > 0 {
@@ -164,9 +175,10 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
     } else {
         (machine.default_max_jobs(), "auto")
     };
+    let cpus = machine.cpus.max(1);
     let max_load = match s.setting_int("daemon.max_load") {
         n if n > 0 => n as f64,
-        _ => f64::from(machine.cpus.max(1)),
+        _ => f64::from(cpus) * DEFAULT_LOAD_PER_CPU,
     };
     let build_jobs = match s.setting_int("daemon.build_jobs") {
         n if n > 0 => n.min(i64::from(i32::MAX)) as i32,
@@ -175,6 +187,7 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
     Limits {
         max_jobs: max_jobs.max(1),
         max_load,
+        cpus,
         min_free_mem_mb: s.setting_int("daemon.min_free_mem_mb").max(0),
         own_nice: own_nice_level(s.setting_int("daemon.nice")),
         build_jobs,
@@ -185,22 +198,22 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
 /// What the governor says this tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Verdict {
-    /// Local runs that may still start under the cap (0 while held).
+    /// Local runs that may still start under the cap (0 while held; half
+    /// the cap, never under one, while the kernel's memory warning stands).
     pub(crate) room: usize,
     /// Why the machine takes nothing new right now, when it is saturated.
     pub(crate) hold: Option<String>,
     /// One local slot stays open to the owner's work alone (the lead's runs,
     /// answers, the jobs of owner tasks), in two cases. Under a soft hold -
-    /// load under [`EXPRESS_LOAD_FACTOR`] times the cap, or the kernel's
-    /// memory warning while the daemon's own reading keeps free memory above
-    /// the floor - while a slot is free under `daemon.max_jobs`. And when
-    /// the fleet's own work fills `daemon.max_jobs` with no owner-driven run
-    /// among it: one slot over the cap, so the owner's answer does not wait
-    /// out the fleet's verifies (never a second one; never while a
-    /// self-update build waits). The fleet's own builds are what saturate
-    /// the machine; the owner's request should not queue behind them.
-    /// Critical memory pressure, a floor breach and a load over twice the
-    /// cap shut it.
+    /// load under [`EXPRESS_LOAD_FACTOR`] times the cap - while a slot is
+    /// free under `daemon.max_jobs`. And when the fleet's own work fills
+    /// `daemon.max_jobs` (or the half of it the kernel's memory warning
+    /// leaves) with no owner-driven run among it: one slot over the cap, so
+    /// the owner's answer does not wait out the fleet's verifies (never a
+    /// second one; never while a self-update build waits). The fleet's own
+    /// builds are what saturate the machine; the owner's request should not
+    /// queue behind them. Critical memory pressure, a floor breach and a
+    /// load over twice the cap shut it.
     pub(crate) express: bool,
 }
 
@@ -209,22 +222,19 @@ pub(crate) struct Verdict {
 pub(crate) const EXPRESS_LOAD_FACTOR: f64 = 2.0;
 
 /// The pure decision: `running` local runs are in flight, `owner_running` of
-/// them owner-driven (`jobs::is_owner_driven`), `reserved` slots are kept
-/// free for something else (a self-update build that waits).
+/// them owner-driven (`jobs::is_owner_driven`), `measuring` measurements
+/// (the experiment lane's builds, [`measuring`]) run beside them and take a
+/// slot each, `reserved` slots are kept free for something else (a
+/// self-update build that waits).
 pub(crate) fn decide(
     limits: &Limits,
     pressure: &Pressure,
     running: usize,
+    measuring: usize,
     reserved: usize,
     owner_running: usize,
 ) -> Verdict {
     let hold = hold_reason(limits, pressure);
-    let cap = limits.max_jobs.max(0) as usize;
-    let room = if hold.is_some() {
-        0
-    } else {
-        cap.saturating_sub(running).saturating_sub(reserved)
-    };
     let hard = pressure.mem_critical
         || pressure
             .free_mem_mb
@@ -232,7 +242,22 @@ pub(crate) fn decide(
         || pressure
             .load1
             .is_some_and(|load| load > limits.max_load * EXPRESS_LOAD_FACTOR);
-    let under_cap = running + reserved < cap;
+    // The kernel's warning (level 2) stands for hours on a 16 GB laptop with
+    // a browser open; as a hold it closed the fleet for a day. It halves the
+    // cap instead, never under one, and only the critical level holds.
+    let cap = limits.max_jobs.max(0) as usize;
+    let cap = if pressure.mem_warning && !hard {
+        (cap / 2).max(1)
+    } else {
+        cap
+    };
+    let taken = running + measuring + reserved;
+    let room = if hold.is_some() {
+        0
+    } else {
+        cap.saturating_sub(taken)
+    };
+    let under_cap = taken < cap;
     let soft_hold = hold.is_some() && !hard && under_cap;
     let fleet_full = !hard && !under_cap && reserved == 0 && owner_running == 0;
     Verdict {
@@ -240,6 +265,15 @@ pub(crate) fn decide(
         hold,
         express: soft_hold || fleet_full,
     }
+}
+
+/// The prefix every hold line carries, so a lane that was held can tell
+/// the hold from a failure and retry soon rather than in twenty minutes.
+pub(crate) const HOLD_PREFIX: &str = "machine saturated: ";
+
+/// Whether `note` is a governor hold ([`hold_reason`]) rather than a failure.
+pub(crate) fn is_hold_note(note: &str) -> bool {
+    note.contains(HOLD_PREFIX)
 }
 
 /// Why nothing new should start on this machine, if the pressure says so.
@@ -250,22 +284,22 @@ pub(crate) fn hold_reason(limits: &Limits, pressure: &Pressure) -> Option<String
         && load > limits.max_load
     {
         return Some(format!(
-            "machine saturated: load {load:.1} is over daemon.max_load {:.0}",
+            "{HOLD_PREFIX}load {load:.1} on {} CPUs is over daemon.max_load {:.0}",
+            limits.cpus.max(1),
             limits.max_load
         ));
     }
     if pressure.mem_critical {
-        return Some("machine saturated: the kernel reports critical memory pressure".to_string());
-    }
-    if pressure.mem_warning {
-        return Some("machine saturated: the kernel reports memory pressure".to_string());
+        return Some(format!(
+            "{HOLD_PREFIX}the kernel reports critical memory pressure"
+        ));
     }
     if let Some(free) = pressure.free_mem_mb
         && limits.min_free_mem_mb > 0
         && free < limits.min_free_mem_mb
     {
         return Some(format!(
-            "machine saturated: {free} MB of memory free, under daemon.min_free_mem_mb {}",
+            "{HOLD_PREFIX}{free} MB of memory free, under daemon.min_free_mem_mb {}",
             limits.min_free_mem_mb
         ));
     }
@@ -387,6 +421,76 @@ pub(crate) fn build_env(env: &mut Vec<String>) {
         return;
     }
     env.push(format!("{prefix}{jobs}"));
+}
+
+/// Where a measurement in progress leaves its mark under the pulse home:
+/// one file per measurement, named by the process running it. The
+/// experiment lane runs inside the daemon, but `pulse land` and `pulse
+/// evolve measure` run in their own processes, and the governor must count
+/// every measurement's builds against the cap - two fixture builds at
+/// `-j6` beside four runs were the biggest load this machine put on itself.
+pub(crate) const MEASURING_DIR: &str = "measuring";
+
+static MEASURING_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// A measurement in progress; dropping it removes the mark.
+#[derive(Debug)]
+pub(crate) struct MeasuringMark {
+    path: std::path::PathBuf,
+}
+
+impl MeasuringMark {
+    pub(crate) fn new(home: &str) -> Self {
+        let dir = std::path::Path::new(home).join(MEASURING_DIR);
+        let _ = std::fs::create_dir_all(&dir);
+        let seq = MEASURING_SEQ.fetch_add(1, Ordering::SeqCst);
+        let path = dir.join(format!("{}-{seq}", std::process::id()));
+        let _ = std::fs::write(&path, format!("{}\n", std::process::id()));
+        Self { path }
+    }
+}
+
+impl Drop for MeasuringMark {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// How many measurements are in progress under `home`: the marks whose
+/// process is still alive. A measurement that died with its process left
+/// its mark behind; the count drops it rather than hold a slot for good.
+pub(crate) fn measuring(home: &str) -> usize {
+    let dir = std::path::Path::new(home).join(MEASURING_DIR);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut n = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let pid = name.split('-').next().and_then(|p| p.parse::<u32>().ok());
+        match pid {
+            Some(pid) if process_alive(pid) => n += 1,
+            _ => {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    n
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: kill with signal 0 only asks whether the process exists.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    true
 }
 
 /// Lowers the calling process's scheduling priority to the level the daemon
@@ -599,12 +703,58 @@ fn free_mem_mb() -> Option<i64> {
         )
     };
     if rc != libc::KERN_SUCCESS {
-        return None;
+        return vm_stat_text().and_then(|text| vm_stat_free_mb(&text, page));
     }
-    let pages = u64::from(stat.free_count)
-        + u64::from(stat.inactive_count)
-        + u64::from(stat.speculative_count);
-    Some((pages.saturating_mul(page) / (1024 * 1024)) as i64)
+    Some(usable_mb(
+        [
+            u64::from(stat.free_count),
+            u64::from(stat.inactive_count),
+            u64::from(stat.speculative_count),
+            u64::from(stat.purgeable_count),
+        ],
+        page,
+    ))
+}
+
+/// `vm_stat`'s report, the reading's fallback when the mach call fails.
+#[cfg(target_os = "macos")]
+fn vm_stat_text() -> Option<String> {
+    let out = std::process::Command::new("vm_stat").output().ok()?;
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Megabytes in `pages` of `page` bytes each.
+#[cfg(any(target_os = "macos", test))]
+fn usable_mb(pages: [u64; 4], page: u64) -> i64 {
+    let pages = pages.iter().fold(0u64, |sum, n| sum.saturating_add(*n));
+    (pages.saturating_mul(page) / (1024 * 1024)) as i64
+}
+
+/// The memory a new run could use, from `vm_stat`'s text: the free,
+/// inactive and speculative pages, and the purgeable ones - caches the
+/// kernel drops the moment something asks, which a 16 GB laptop holds a
+/// gigabyte or two of while `free` alone reads a few hundred megabytes and
+/// the floor holds the fleet for nothing.
+#[cfg(any(target_os = "macos", test))]
+fn vm_stat_free_mb(text: &str, page: u64) -> Option<i64> {
+    let field = |name: &str| -> Option<u64> {
+        text.lines().find_map(|line| {
+            let (key, rest) = line.split_once(':')?;
+            (key.trim() == name)
+                .then(|| rest.trim().trim_end_matches('.').parse::<u64>().ok())
+                .flatten()
+        })
+    };
+    let free = field("Pages free")?;
+    Some(usable_mb(
+        [
+            free,
+            field("Pages inactive").unwrap_or(0),
+            field("Pages speculative").unwrap_or(0),
+            field("Pages purgeable").unwrap_or(0),
+        ],
+        page,
+    ))
 }
 
 /// The kernel's own memory pressure level: 1 normal, 2 warning, 4 critical;
@@ -680,6 +830,7 @@ mod tests {
         Limits {
             max_jobs,
             max_load,
+            cpus: 12,
             min_free_mem_mb,
             own_nice: 0,
             build_jobs: 6,
@@ -746,35 +897,35 @@ mod tests {
     fn decide_admits_the_room_under_the_cap_and_nothing_under_pressure() {
         let l = limits(4, 12.0, 1024);
         assert_eq!(
-            decide(&l, &calm(), 0, 0, 0),
+            decide(&l, &calm(), 0, 0, 0, 0),
             Verdict {
                 room: 4,
                 hold: None,
                 express: false
             }
         );
-        assert_eq!(decide(&l, &calm(), 3, 0, 0).room, 1);
-        assert_eq!(decide(&l, &calm(), 4, 0, 0).room, 0, "the cap is full");
+        assert_eq!(decide(&l, &calm(), 3, 0, 0, 0).room, 1);
+        assert_eq!(decide(&l, &calm(), 4, 0, 0, 0).room, 0, "the cap is full");
         assert_eq!(
-            decide(&l, &calm(), 7, 0, 0).room,
+            decide(&l, &calm(), 7, 0, 0, 0).room,
             0,
             "over the cap never underflows"
         );
         assert_eq!(
-            decide(&l, &calm(), 2, 1, 0).room,
+            decide(&l, &calm(), 2, 0, 1, 0).room,
             1,
             "a reserved slot is not offered"
         );
-        assert_eq!(decide(&l, &calm(), 3, 1, 0).room, 0);
+        assert_eq!(decide(&l, &calm(), 3, 0, 1, 0).room, 0);
         let loaded = Pressure {
             load1: Some(40.1),
             ..calm()
         };
-        let v = decide(&l, &loaded, 0, 0, 0);
+        let v = decide(&l, &loaded, 0, 0, 0, 0);
         assert_eq!(v.room, 0, "load over the cap holds every slot: {v:?}");
         assert_eq!(
             v.hold.as_deref(),
-            Some("machine saturated: load 40.1 is over daemon.max_load 12")
+            Some("machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 12")
         );
         assert!(
             !v.express,
@@ -784,46 +935,102 @@ mod tests {
             free_mem_mb: Some(512),
             ..calm()
         };
-        let v = decide(&l, &tight, 0, 0, 0);
+        let v = decide(&l, &tight, 0, 0, 0, 0);
         assert_eq!(v.room, 0);
         assert_eq!(
             v.hold.as_deref(),
             Some("machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024")
         );
         assert!(!v.express, "memory under the floor has no express lane");
+        let critical = Pressure {
+            mem_warning: true,
+            mem_critical: true,
+            ..calm()
+        };
+        let v = decide(&l, &critical, 0, 0, 0, 0);
+        assert_eq!(v.room, 0);
+        assert_eq!(
+            v.hold.as_deref(),
+            Some("machine saturated: the kernel reports critical memory pressure")
+        );
+        assert!(!v.express, "critical memory pressure has no express lane");
+    }
+
+    #[test]
+    fn decide_halves_the_cap_under_the_kernels_memory_warning() {
+        let l = limits(4, 12.0, 1024);
         let warned = Pressure {
             mem_warning: true,
             ..calm()
         };
-        let v = decide(&l, &warned, 0, 0, 0);
-        assert_eq!(
-            v.hold.as_deref(),
-            Some("machine saturated: the kernel reports memory pressure")
-        );
+        let v = decide(&l, &warned, 0, 0, 0, 0);
+        assert_eq!(v.hold, None, "the warning alone is not a hold: {v:?}");
+        assert_eq!(v.room, 2, "half the cap starts: {v:?}");
+        assert!(!v.express, "room under the halved cap needs no lane");
+        let v = decide(&l, &warned, 2, 0, 0, 0);
+        assert_eq!(v.room, 0, "the halved cap is full");
         assert!(
             v.express,
-            "the kernel's warning with memory above the floor keeps the owner's lane: {v:?}"
+            "the fleet filling the halved cap lends the owner one slot: {v:?}"
+        );
+        assert!(
+            !decide(&l, &warned, 2, 0, 0, 1).express,
+            "not while an owner's run is among them"
+        );
+        assert_eq!(
+            decide(&limits(1, 12.0, 1024), &warned, 0, 0, 0, 0).room,
+            1,
+            "never under one"
+        );
+        assert_eq!(
+            decide(&limits(3, 12.0, 1024), &warned, 0, 0, 0, 0).room,
+            1,
+            "three halves down to one"
         );
         let warned_and_tight = Pressure {
             mem_warning: true,
             free_mem_mb: Some(512),
             ..calm()
         };
-        assert!(
-            !decide(&l, &warned_and_tight, 0, 0, 0).express,
-            "the warning with memory under the floor shuts it"
-        );
-        let critical = Pressure {
+        let v = decide(&l, &warned_and_tight, 0, 0, 0, 0);
+        assert_eq!(v.room, 0, "the floor still holds under the warning");
+        assert!(v.hold.is_some_and(|h| h.contains("512 MB of memory free")));
+        assert!(!v.express, "memory under the floor shuts the lane");
+        let warned_and_loaded = Pressure {
             mem_warning: true,
-            mem_critical: true,
+            load1: Some(15.0),
             ..calm()
         };
-        let v = decide(&l, &critical, 0, 0, 0);
+        let v = decide(&l, &warned_and_loaded, 0, 0, 0, 0);
+        assert_eq!(v.room, 0, "a load hold still closes the slots");
+        assert!(v.express, "a soft load hold keeps the lane: {v:?}");
+    }
+
+    #[test]
+    fn decide_counts_measurements_in_flight_against_the_cap() {
+        let l = limits(4, 12.0, 1024);
         assert_eq!(
-            v.hold.as_deref(),
-            Some("machine saturated: the kernel reports critical memory pressure")
+            decide(&l, &calm(), 2, 1, 0, 0).room,
+            1,
+            "a measurement takes a slot like a run"
         );
-        assert!(!v.express, "critical memory pressure has no express lane");
+        assert_eq!(decide(&l, &calm(), 2, 2, 0, 0).room, 0);
+        let v = decide(&l, &calm(), 3, 1, 0, 0);
+        assert_eq!(v.room, 0);
+        assert!(
+            v.express,
+            "runs and a measurement filling the cap are the fleet's work: {v:?}"
+        );
+        assert_eq!(
+            decide(&l, &calm(), 0, 9, 0, 0).room,
+            0,
+            "measurements over the cap never underflow"
+        );
+        assert_eq!(
+            decide(&l, &calm(), 1, 1, 1, 0).room,
+            1,
+            "a reserved slot counts beside them"
+        );
     }
 
     #[test]
@@ -833,35 +1040,35 @@ mod tests {
             load1: Some(15.0),
             ..calm()
         };
-        let v = decide(&l, &busy, 2, 0, 0);
+        let v = decide(&l, &busy, 2, 0, 0, 0);
         assert_eq!(v.room, 0, "the hold still closes the ordinary slots");
         assert!(v.hold.is_some());
         assert!(v.express, "load alone, under the cap: {v:?}");
         assert!(
-            decide(&l, &busy, 4, 0, 0).express,
+            decide(&l, &busy, 4, 0, 0, 0).express,
             "a full cap under a soft hold lends one slot over it"
         );
         assert!(
-            !decide(&l, &busy, 4, 0, 1).express,
+            !decide(&l, &busy, 4, 0, 0, 1).express,
             "and never a second while an owner's run is in flight"
         );
         assert!(
-            !decide(&l, &busy, 3, 1, 0).express,
+            !decide(&l, &busy, 3, 0, 1, 0).express,
             "a reserved slot counts against the cap and keeps the lane shut"
         );
         let swamped = Pressure {
             load1: Some(24.1),
             ..calm()
         };
-        assert!(!decide(&l, &swamped, 0, 0, 0).express);
+        assert!(!decide(&l, &swamped, 0, 0, 0, 0).express);
         let loaded_and_tight = Pressure {
             load1: Some(15.0),
             free_mem_mb: Some(512),
             ..calm()
         };
-        assert!(!decide(&l, &loaded_and_tight, 0, 0, 0).express);
+        assert!(!decide(&l, &loaded_and_tight, 0, 0, 0, 0).express);
         assert!(
-            !decide(&l, &calm(), 0, 0, 0).express,
+            !decide(&l, &calm(), 0, 0, 0, 0).express,
             "no hold, room under the cap: no lane needed"
         );
     }
@@ -871,45 +1078,45 @@ mod tests {
         let l = limits(2, 12.0, 1024);
         // The fleet's own work fills daemon.max_jobs on a calm machine: one
         // express slot opens over the cap, restricted to owner-driven jobs.
-        let v = decide(&l, &calm(), 2, 0, 0);
+        let v = decide(&l, &calm(), 2, 0, 0, 0);
         assert_eq!(v.room, 0, "nothing ordinary starts over the cap");
         assert_eq!(v.hold, None, "a full cap is not a hold");
         assert!(v.express, "{v:?}");
         assert!(
-            !decide(&l, &calm(), 1, 0, 0).express,
+            !decide(&l, &calm(), 1, 0, 0, 0).express,
             "room under the cap needs no lane"
         );
         assert!(
-            !decide(&l, &calm(), 3, 0, 1).express,
+            !decide(&l, &calm(), 3, 0, 0, 1).express,
             "the owner's run in flight is the lane in use: no second one"
         );
         assert!(
-            !decide(&l, &calm(), 2, 0, 1).express,
+            !decide(&l, &calm(), 2, 0, 0, 1).express,
             "an owner-driven run among the two is the owner served"
         );
         assert!(
-            !decide(&l, &calm(), 1, 1, 0).express,
+            !decide(&l, &calm(), 1, 0, 1, 0).express,
             "a self-update build waiting for room keeps the lane shut"
         );
         assert!(
-            decide(&l, &calm(), 5, 0, 0).express,
+            decide(&l, &calm(), 5, 0, 0, 0).express,
             "over the cap (lowered while runs were in flight) the owner still gets one"
         );
         let swamped = Pressure {
             load1: Some(24.1),
             ..calm()
         };
-        assert!(!decide(&l, &swamped, 2, 0, 0).express);
+        assert!(!decide(&l, &swamped, 2, 0, 0, 0).express);
         let critical = Pressure {
             mem_critical: true,
             ..calm()
         };
-        assert!(!decide(&l, &critical, 2, 0, 0).express);
+        assert!(!decide(&l, &critical, 2, 0, 0, 0).express);
         let tight = Pressure {
             free_mem_mb: Some(512),
             ..calm()
         };
-        assert!(!decide(&l, &tight, 2, 0, 0).express);
+        assert!(!decide(&l, &tight, 2, 0, 0, 0).express);
     }
 
     #[test]
@@ -917,7 +1124,7 @@ mod tests {
         let l = limits(2, 8.0, 1024);
         let blind = Pressure::default();
         assert_eq!(
-            decide(&l, &blind, 0, 0, 0),
+            decide(&l, &blind, 0, 0, 0, 0),
             Verdict {
                 room: 2,
                 hold: None,
@@ -929,16 +1136,34 @@ mod tests {
             free_mem_mb: Some(10),
             ..calm()
         };
-        assert_eq!(decide(&off, &tight, 0, 0, 0).hold, None, "floor 0 is off");
+        assert_eq!(
+            decide(&off, &tight, 0, 0, 0, 0).hold,
+            None,
+            "floor 0 is off"
+        );
         let at_the_line = Pressure {
             load1: Some(8.0),
             ..calm()
         };
         assert_eq!(
-            decide(&l, &at_the_line, 0, 0, 0).hold,
+            decide(&l, &at_the_line, 0, 0, 0, 0).hold,
             None,
             "a load equal to the cap is not over it"
         );
+    }
+
+    #[test]
+    fn a_hold_note_is_told_from_a_failure() {
+        let l = limits(4, 12.0, 1024);
+        let loaded = Pressure {
+            load1: Some(30.0),
+            ..calm()
+        };
+        assert!(is_hold_note(&hold_reason(&l, &loaded).unwrap()));
+        assert!(is_hold_note(
+            "branch not landed: measuring main deferred: machine saturated: load 30.0 on 12 CPUs is over daemon.max_load 12"
+        ));
+        assert!(!is_hold_note("verify failed: 3 tests"));
     }
 
     #[test]
@@ -1041,7 +1266,11 @@ mod tests {
         };
         let l = limits_from(&s, &m, 0);
         assert_eq!((l.max_jobs, l.source), (4, "auto"));
-        assert_eq!(l.max_load, 12.0, "daemon.max_load 0 is the CPU count");
+        assert_eq!(
+            l.max_load, 24.0,
+            "daemon.max_load 0 is twice the CPU count: the load average counts runnable threads"
+        );
+        assert_eq!(l.cpus, 12);
         assert_eq!(l.min_free_mem_mb, 1024, "the documented default floor");
         assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
         assert_eq!(l.build_jobs, 6, "daemon.build_jobs 0 is half the cores");
@@ -1109,6 +1338,57 @@ mod tests {
         assert_eq!(meminfo_field_mb(text, "MemAvailable"), Some(8192));
         assert_eq!(meminfo_field_mb(text, "MemTotal"), Some(15936));
         assert_eq!(meminfo_field_mb(text, "SwapFree"), None);
+    }
+
+    #[test]
+    fn vm_stat_text_counts_purgeable_pages_as_usable_memory() {
+        // A 16 GB laptop under the kernel's warning: 300 MB free, but a
+        // gigabyte and a half of caches the kernel drops on request.
+        let text = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+                    Pages free:                               19200.\n\
+                    Pages active:                            400000.\n\
+                    Pages inactive:                           32000.\n\
+                    Pages speculative:                         6400.\n\
+                    Pages throttled:                              0.\n\
+                    Pages wired down:                        120000.\n\
+                    Pages purgeable:                          96000.\n\
+                    \"Translation faults\":                 123456789.\n";
+        // (19200 + 32000 + 6400 + 96000) pages * 16 KiB = 2400 MB.
+        assert_eq!(vm_stat_free_mb(text, 16384), Some(2400));
+        assert_eq!(
+            vm_stat_free_mb("Pages free: 65536.\n", 16384),
+            Some(1024),
+            "a report without the other lines counts the free pages alone"
+        );
+        assert_eq!(vm_stat_free_mb("Pages active: 1.\n", 16384), None);
+        assert_eq!(usable_mb([0, 0, 0, 0], 4096), 0);
+    }
+
+    #[test]
+    fn measuring_marks_count_live_measurements_and_drop_stale_ones() {
+        let home = crate::test_helpers::new_store().home.clone();
+        assert_eq!(measuring(&home), 0, "no marks, no measurements");
+        let first = MeasuringMark::new(&home);
+        assert_eq!(measuring(&home), 1);
+        let second = MeasuringMark::new(&home);
+        assert_eq!(measuring(&home), 2, "one mark per measurement");
+        drop(first);
+        assert_eq!(
+            measuring(&home),
+            1,
+            "a finished measurement takes its mark away"
+        );
+        // A measurement whose process is gone (no pid is this large) left
+        // its mark: the count drops it and removes the file.
+        let dir = std::path::Path::new(&home).join(MEASURING_DIR);
+        let stale = dir.join("99999999-0");
+        std::fs::write(&stale, "99999999\n").unwrap();
+        std::fs::write(dir.join("not-a-pid"), "").unwrap();
+        assert_eq!(measuring(&home), 1, "only the live one counts");
+        assert!(!stale.exists(), "the stale mark is removed");
+        assert!(!dir.join("not-a-pid").exists());
+        drop(second);
+        assert_eq!(measuring(&home), 0);
     }
 
     #[test]

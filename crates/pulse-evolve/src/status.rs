@@ -343,34 +343,53 @@ pub(crate) fn evolution_record(
     Ok(rev.map(|r| (rec, r)))
 }
 pub(crate) static PRODUCT_SCOPE_LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?im)^\s*(?:[-*]\s+)?(?:\*\*)?product[- ]scope(?:\*\*)?\s*:\s*([^\r\n]+)")
-        .unwrap()
+    regex::Regex::new(
+        r"(?im)^\s*(?:[-*]\s+)?(?:\*\*)?product[- ]scope(?::\*\*|(?:\*\*)?\s*:)\s*([^\r\n]+)",
+    )
+    .unwrap()
 });
+pub(crate) const PRODUCT_SCOPE_ALLOWED: &str =
+    "product suggestions precede operating-layer suggestions";
+/// Product scope is open unless the owner closes it: an EVO-evaluators record
+/// without a `Product scope:` line allows product cards (the product is what
+/// the loop exists to improve), one explicit off-word restricts the loop to
+/// the operating layer, and anything the loop cannot read - two lines, an
+/// unknown word, the seeded placeholder - restricts it too, naming why.
 pub(crate) fn parse_product_scope(body: &str) -> ProductScope {
     let mut matches = PRODUCT_SCOPE_LINE.captures_iter(body);
-    let first = matches.next();
-    let mut result = ProductScope {
-        allowed: false,
-        reason: "operating layer only; owner: add Product scope: allowed to EVO-evaluators"
-            .to_string(),
+    let Some(first) = matches.next() else {
+        return ProductScope {
+            allowed: true,
+            reason: format!(
+                "{PRODUCT_SCOPE_ALLOWED} (EVO-evaluators has no Product scope: line; add Product scope: off to restrict evolution to the operating layer)"
+            ),
+        };
     };
-    if first.is_none() || matches.next().is_some() {
-        return result;
+    if matches.next().is_some() {
+        return ProductScope {
+            allowed: false,
+            reason: "ambiguous: EVO-evaluators has more than one Product scope: line; keep one, allowed or off".to_string(),
+        };
     }
-    let value = first.unwrap()[1].trim().to_lowercase();
+    let value = first[1].trim().to_lowercase();
     match value.as_str() {
         "allowed" | "on" | "yes" | "true" | "enabled" | "product" | "all" | "both" => {
             ProductScope {
                 allowed: true,
-                reason: "product suggestions precede operating-layer suggestions".to_string(),
+                reason: PRODUCT_SCOPE_ALLOWED.to_string(),
             }
         }
         "off" | "no" | "false" | "disabled" | "none" | "operating" | "operating-layer"
-        | "operating layer" => {
-            result.reason = "the owner restricted evolution to the operating layer".to_string();
-            result
-        }
-        _ => result,
+        | "operating layer" => ProductScope {
+            allowed: false,
+            reason: "the owner restricted evolution to the operating layer".to_string(),
+        },
+        other => ProductScope {
+            allowed: false,
+            reason: format!(
+                "EVO-evaluators says Product scope: {other}, which the loop does not read; write allowed, or off to keep evolution to the operating layer"
+            ),
+        },
     }
 }
 pub(crate) fn loop_start(s: &pulse_store::Store) -> Result<(String, i64)> {
@@ -678,11 +697,12 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
     };
     let hit = |r: &HitRate| match r.rate {
         Some(rate) => format!(
-            "{}/{} kept ({:.1}%), {} improved",
+            "{}/{} kept ({:.1}%): {} improved, {} neutral",
             r.kept,
             r.tried,
             100.0 * rate,
-            r.improved
+            r.improved,
+            r.kept - r.improved
         ),
         None => "0 tried; hit rate unavailable".to_string(),
     };
@@ -718,10 +738,12 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec!["Public fixtures".into(), s.public_fixtures.to_string()],
         vec!["Held-out fixtures".into(), heldout_label(&s.heldout)],
         vec![
-            "Kept / discarded".into(),
+            "Improved / neutral / discarded".into(),
             format!(
-                "{} / {}; {} of the kept improved, the rest tied",
-                s.kept, s.discarded, s.improved
+                "{} / {} / {}; only an improvement is a win, a neutral tie landed on the project's own check",
+                s.improved,
+                s.kept - s.improved,
+                s.discarded
             ),
         ],
         vec!["Voted suggestions".into(), hit(&s.voted)],
@@ -1179,9 +1201,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            text.contains("1/1 kept (100.0%), 1 improved")
-                && text.contains("1/2 kept (50.0%), 0 improved")
-                && text.contains("2 / 1; 1 of the kept improved, the rest tied"),
+            text.contains("1/1 kept (100.0%): 1 improved, 0 neutral")
+                && text.contains("1/2 kept (50.0%): 0 improved, 1 neutral")
+                && text.contains("Improved / neutral / discarded")
+                && text.contains("1 / 1 / 1; only an improvement is a win"),
             "{text}"
         );
     }
@@ -1353,10 +1376,29 @@ mod tests {
             assert!(super::parse_limits(value).is_err(), "{value}");
         }
         assert!(super::parse_product_scope("Product scope: allowed\n").allowed);
-        assert!(!super::parse_product_scope("## Product evaluators\n").allowed);
+        let absent = super::parse_product_scope("## Product evaluators\n");
+        assert!(absent.allowed, "no line means the product is in scope");
+        assert!(absent.reason.contains("add Product scope: off"));
+        for off in [
+            "Product scope: off\n",
+            "- **Product scope:** operating-layer\n",
+            "**Product scope**: operating layer\n",
+            "Product scope: none\n",
+        ] {
+            let scope = super::parse_product_scope(off);
+            assert!(!scope.allowed, "{off}");
+            assert!(scope.reason.contains("restricted"), "{off}");
+        }
+        let placeholder =
+            super::parse_product_scope("Product scope: <allowed | operating-layer>\n");
         assert!(
-            !super::parse_product_scope("Product scope: allowed\nProduct scope: off\n").allowed
+            !placeholder.allowed,
+            "the seeded placeholder keeps the gate shut"
         );
+        assert!(placeholder.reason.contains("does not read"));
+        let twice = super::parse_product_scope("Product scope: allowed\nProduct scope: off\n");
+        assert!(!twice.allowed);
+        assert!(twice.reason.starts_with("ambiguous"));
     }
 
     #[test]

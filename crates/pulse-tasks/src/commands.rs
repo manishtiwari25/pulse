@@ -83,7 +83,7 @@ pub fn register() {
         pulse_cli::register(Command { name:"task".into(), group:"agents".into(), summary:"the owner's tasks for a project: new, list, show, amend, cancel, status, reply; and suggested work any agent proposes and another reviews: suggest, suggestions, review, withdraw".into(), usage:"pulse task new --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]\npulse task list [--project P] [--status S] [--json]\npulse task show TASK-NNN|SUG-NNN [--json]\npulse task amend TASK-NNN [--title T] [--brief-file F | --brief TEXT | stdin] [--note WHY]\npulse task cancel TASK-NNN [--reason WHY]\npulse task status TASK-NNN <open|planned|in_progress|review|done|cancelled>\npulse task reply TASK-NNN <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse task suggest --project P --title T [--brief-file F | --brief TEXT | stdin] [--priority N]   (any agent; another one reviews it)\npulse task suggestions [--project P] [--status open|suggested|reviewing|accepted|declined|owner|withdrawn] [--json]\npulse task review SUG-NNN <accept|decline|owner> --reason WHY [--title T] [--brief-file F | --brief TEXT] [--priority N]   (not your own)\npulse task withdraw SUG-NNN [--reason WHY]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_task, flags:Some(task_flags) });
         pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
         pulse_cli::register(Command { name:"compute".into(), group:"agents".into(), summary:"more machines for agents: request (agents), list, approve|deny (the owner)".into(), usage:"pulse compute request --project P [--size S] --hours N --reason WHY\npulse compute list [--project P] [--status S] [--json]\npulse compute approve CR-NNN [--words WHY]   (owner)\npulse compute deny CR-NNN [--words WHY]      (owner)\npulse compute providers [--json]             (the providers this binary can provision with)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_compute, flags:Some(compute_flags) });
-        pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
+        pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
         pulse_cli::register(Command { name:"watch".into(), group:"agents".into(), summary:"stream store events as they happen (Ctrl-C exits 0)".into(), usage:"pulse watch [--project P] [--area A] [--thread T] [--action GLOB] [--since ID] [--detail] [--interval 1s] [--json]".into(), aliases:vec![], no_store:false, read_only:true, raw:false, run:run_watch, flags:Some(watch_flags) });
     });
 }
@@ -120,6 +120,11 @@ fn schedule_flags(fs: &mut FlagSet) {
     fs.int_var("tier", 1, "0 or 1 (add)");
     fs.int_var("priority", 0, "priority, higher first (add)");
     fs.int_var("times", 0, "end after this many jobs; 0 keeps going (add)");
+    fs.string_var(
+        "run-as",
+        "",
+        "the custom agent every job it queues runs as, one that pulse agents list shows for the project (add)",
+    );
     fs.string_var("note", "", "why (pause, end)");
     fs.string_var("status", "", "list only active, paused or ended schedules");
 }
@@ -422,6 +427,9 @@ fn print_schedule(c: &mut Context, sc: &schedules::Schedule) -> Result<()> {
     if sc.status == "active" {
         printf(c, format_args!("next at {}\n", sc.next_at))?;
     }
+    if !sc.agent.is_empty() {
+        printf(c, format_args!("jobs run as {}\n", sc.agent))?;
+    }
     if !sc.last_at.is_empty() {
         if sc.last_job.is_empty() {
             printf(c, format_args!("last run at {}\n", sc.last_at))?;
@@ -476,6 +484,7 @@ pub fn run_schedule(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()
                     author: actor(c),
                     script: fs.get_string("script"),
                     job_kind: fs.get_string("job-kind"),
+                    agent: fs.get_string("run-as"),
                 },
             )?;
             if !warning.is_empty() {

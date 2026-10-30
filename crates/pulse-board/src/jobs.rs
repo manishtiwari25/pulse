@@ -4,8 +4,9 @@ use rand::Rng;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde_json::json;
+use std::sync::RwLock;
 
-pub(crate) const JOB_COLS: &str = "id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, lease_agent, lease_until, generation, attempts, finished_at, result, branch";
+pub(crate) const JOB_COLS: &str = "id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, lease_agent, lease_until, generation, attempts, finished_at, result, branch, agent";
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct Job {
@@ -27,6 +28,9 @@ pub struct Job {
     pub finished_at: String,
     pub result: String,
     pub branch: String,
+    /// The custom agent the job is pinned to (`--run-as`); empty lets the
+    /// runner pick one by the card.
+    pub agent: String,
 }
 
 pub(crate) fn scan_job(row: &Row<'_>) -> rusqlite::Result<Job> {
@@ -49,6 +53,7 @@ pub(crate) fn scan_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         finished_at: row.get(15)?,
         result: row.get(16)?,
         branch: row.get(17)?,
+        agent: row.get(18)?,
     })
 }
 
@@ -85,6 +90,61 @@ pub struct JobInput {
     pub created_by: String,
     pub branch: String,
     pub no_dedupe: bool,
+    /// The custom agent the worker runs as, checked by the caller with
+    /// [`check_run_as`]; the runner falls back to its own choice when the
+    /// spec is gone by the time the job runs.
+    pub agent: String,
+}
+
+/// Answers whether the custom agent `name` loads for `project`, whose
+/// checkout is at `checkout` (empty when the store knows none); `Err`
+/// says why it does not. The harness installs one at start-up, since
+/// reading agent files is its business; without one only the name's
+/// shape is checked.
+pub type AgentSpecCheckFn =
+    fn(s: &pulse_store::Store, project: &str, checkout: &str, name: &str) -> Result<(), String>;
+
+pub static AGENT_SPEC_CHECK: RwLock<Option<AgentSpecCheckFn>> = RwLock::new(None);
+
+/// The agent a job, a schedule or a hook is asked to run as (`--run-as
+/// NAME`), trimmed and checked: a name of the agent-file shape that the
+/// installed check accepts for `project`. Empty is fine: the runner picks.
+pub fn check_run_as(s: &pulse_store::Store, project: &str, name: &str) -> Result<String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Ok(name);
+    }
+    let shaped = name.len() <= 64
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !shaped {
+        return Err(refuse_fix(
+            2,
+            format!("{} is not an agent name", py_repr(&name)),
+            "an agent is named by its file: lower-case letters, digits and dashes, 64 at most",
+            format!("pulse agents list --project {project} shows the agents that load"),
+        ));
+    }
+    let check = *AGENT_SPEC_CHECK.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(check) = check {
+        let checkout = s.project(project)?.map(|p| p.path).unwrap_or_default();
+        check(s, project, &checkout, &name).map_err(|why| {
+            refuse_fix(
+                2,
+                format!("No custom agent {name} runs jobs for {project}"),
+                why,
+                format!(
+                    "pulse agents list --project {project} shows the agents that load; pulse agents lint PATH says why one does not"
+                ),
+            )
+        })?;
+    }
+    Ok(name)
 }
 
 pub fn add_job(s: &pulse_store::Store, input: JobInput) -> Result<(Job, bool)> {
@@ -129,8 +189,8 @@ pub(crate) fn add_job_conn(
     }
     let id = new_id(s, "job");
     conn.execute(
-        "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
-        params![id, input.project, input.kind, input.tier, input.title, input.brief, input.source, input.priority, s.now(), input.created_by, input.branch],
+        "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, branch, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+        params![id, input.project, input.kind, input.tier, input.title, input.brief, input.source, input.priority, s.now(), input.created_by, input.branch, input.agent.trim()],
     )?;
     event_conn(
         conn,
@@ -427,6 +487,7 @@ fn retry_as_new(
             source: job.source.clone(),
             created_by: input.actor.clone(),
             no_dedupe: true,
+            agent: job.agent.clone(),
             ..Default::default()
         },
     )?;
@@ -1447,6 +1508,60 @@ mod tests {
         .unwrap();
         assert_eq!(again.job.id, copy.id);
         assert!(again.reused);
+    }
+
+    /// `--run-as` pins a job to a custom agent; the name is checked by
+    /// shape here (the harness installs the check that reads the agent
+    /// files) and a retried copy keeps the pin.
+    #[test]
+    fn job_add_run_as_pins_an_agent() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, s, _p) = fixture();
+        let (_, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &["job", "add", "--title", "t", "--run-as", "Big Agent"],
+        );
+        assert_eq!(
+            what_any(err.as_ref().unwrap_err()),
+            "'Big Agent' is not an agent name"
+        );
+        assert_eq!(check_run_as(&s, "demo", "  ").unwrap(), "");
+        assert_eq!(check_run_as(&s, "demo", " auditor ").unwrap(), "auditor");
+        let (out, err) = run_cmd(
+            &s,
+            Some(pulse_cli::Context {
+                agent: "alice".into(),
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &[
+                "job", "add", "--title", "Audit it", "--source", "task:9", "--run-as", "auditor",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
+        let pinned = job_by_id(&s, out.trim()).unwrap().unwrap();
+        assert_eq!(pinned.agent, "auditor");
+        assert_eq!(
+            pinned.created_by, "alice",
+            "--run-as does not change who queued it"
+        );
+        finish_job(&s, &pinned.id, "alice", "failed", "x", "", None).unwrap();
+        let copy = retry_job(
+            &s,
+            RetryInput {
+                job_id: pinned.id,
+                as_new: true,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .job;
+        assert_eq!(copy.agent, "auditor");
     }
 
     #[test]
@@ -2507,6 +2622,7 @@ mod tests {
         assert!(created);
         assert_eq!(exp.branch, "evolve/x");
         assert_eq!(exp.kind, "experiment");
+
         s.conn().unwrap().execute("UPDATE jobs SET status = 'leased', lease_agent = 'bob', lease_until = '2026-09-06T11:00:00Z' WHERE id = ?", [&id]).unwrap();
         let err = finish_job(&s, &id, "alice", "done", "", "", None).unwrap_err();
         assert_eq!(

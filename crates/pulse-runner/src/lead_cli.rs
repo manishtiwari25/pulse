@@ -3,7 +3,7 @@
 
 use anyhow::{Result, anyhow};
 use pulse_cli::{Context, FlagSet};
-use pulse_tasks::leads::{self, Lead};
+use pulse_tasks::leads::{self, GapRule, Lead};
 use serde::Serialize;
 use std::io::Write;
 
@@ -66,16 +66,33 @@ pub(crate) struct RoleOut {
     pub title: String,
     pub about: String,
     pub every: String,
+    /// `builtin`, or `store` for a role a `role` record defines.
+    pub source: leads::RoleSource,
 }
 
-pub(crate) fn builtin_roles_out() -> Vec<RoleOut> {
-    leads::BUILTIN_ROLES
-        .iter()
+#[derive(Serialize)]
+struct RolesOut<'a> {
+    project: &'a str,
+    roles: Vec<RoleOut>,
+    /// The words a role record's section may put in braces.
+    variables: &'static [&'static str],
+    /// The signals a role record's `gaps` may name.
+    signals: Vec<&'static str>,
+}
+
+fn signal_names() -> Vec<&'static str> {
+    leads::BUILTIN_SIGNALS.iter().map(GapRule::name).collect()
+}
+
+pub(crate) fn roles_out(s: &pulse_store::Store, project: &str) -> Vec<RoleOut> {
+    leads::roles(s, project)
+        .into_iter()
         .map(|r| RoleOut {
-            role: r.name.into(),
-            title: r.title.into(),
-            about: r.about.into(),
-            every: r.every.into(),
+            role: r.name,
+            title: r.title,
+            about: r.about,
+            every: r.every,
+            source: r.source,
         })
         .collect()
 }
@@ -288,7 +305,9 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             }
             writeln!(c.out)?;
             if lead.brief.trim().is_empty() {
-                let about = leads::builtin(&lead.role).map(|r| r.about).unwrap_or("");
+                let about = leads::spec_of(store(c)?, &lead.project, &lead.role)
+                    .map(|r| r.about)
+                    .unwrap_or_default();
                 writeln!(c.out, "Built-in brief: {about}")?;
             } else {
                 writeln!(c.out, "{}", lead.brief.trim_end_matches('\n'))?;
@@ -356,13 +375,14 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
             }
             let now = s.now();
             let gaps = crate::lead_roles::missing_leads(s, &project, &now);
+            let roles = roles_out(s, &project);
             if c.json {
                 return pulse_cli::write_json(
                     &mut c.out,
                     &SuggestOut {
                         project: &project,
                         suggestions: &gaps,
-                        roles: builtin_roles_out(),
+                        roles,
                     },
                 );
             }
@@ -377,6 +397,53 @@ pub(crate) fn cmd_lead(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result
                 writeln!(c.out, "{} ({}): {}", g.title, g.role, g.why)?;
                 writeln!(c.out, "  {}", g.command)?;
             }
+            Ok(())
+        }
+        "roles" => {
+            let project = need_project(c)?;
+            let s = store(c)?;
+            if s.project(&project)?.is_none() {
+                return Err(pulse_cli::errorf(
+                    2,
+                    &format!("No project {project:?}"),
+                    "it is not registered in this store",
+                    "pulse projects",
+                )
+                .into());
+            }
+            let roles = roles_out(s, &project);
+            if c.json {
+                return pulse_cli::write_json(
+                    &mut c.out,
+                    &RolesOut {
+                        project: &project,
+                        roles,
+                        variables: crate::lead_roles::SECTION_VARIABLES,
+                        signals: signal_names(),
+                    },
+                );
+            }
+            let st = c.style();
+            for r in &roles {
+                let source = match r.source {
+                    leads::RoleSource::Builtin => "built in",
+                    leads::RoleSource::Store => "role record",
+                };
+                writeln!(
+                    c.out,
+                    "{} {} every {}, {source}: {}",
+                    st.bold(&r.role),
+                    r.title,
+                    r.every,
+                    r.about
+                )?;
+            }
+            writeln!(
+                c.out,
+                "\nA `role` record (pulse record new role --project {project} --title T --body-file F) adds a role or replaces a built-in one; its section may use {{{}}}; its gaps may name {}.",
+                crate::lead_roles::SECTION_VARIABLES.join("}, {"),
+                signal_names().join(", ")
+            )?;
             Ok(())
         }
         _ => Err(usage(sub)),
@@ -462,5 +529,45 @@ mod tests {
         );
         let (_, _, code) = invoke(&s, "lead", "", &["dance"]);
         assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn lead_roles_lists_builtins_and_role_records() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let out = invoke_ok(&s, "lead", "proj", &["roles"]);
+        assert!(out.contains("rsi RSI lead every 1d, built in:"), "{out}");
+        assert!(out.contains("{slug}, {role}"), "{out}");
+        assert!(out.contains("evolve-loop-on, docs-without-pages"), "{out}");
+        assert!(!out.contains("role record:"), "{out}");
+        s.put_record(
+            pulse_store::Record {
+                id: "ROLE-content-proj".into(),
+                project: "proj".into(),
+                kind: "role".into(),
+                slug: "content".into(),
+                title: "Content lead".into(),
+                ..Default::default()
+            },
+            Default::default(),
+            "---\nevery: 1w\n---\nFeed the blog of {slug}.\n",
+            pulse_store::HUMAN_AGENT,
+            "",
+        )
+        .unwrap();
+        let out = invoke_ok(&s, "lead", "proj", &["roles"]);
+        assert!(
+            out.contains("content Content lead every 1w, role record:"),
+            "{out}"
+        );
+        // The record's role seats like a built-in one: no title or brief needed.
+        let out = invoke_ok(&s, "lead", "proj", &["add", "--role", "content"]);
+        assert!(
+            out.contains("LEAD-001 seated in proj: Content lead (content) as agent proj-lead-content, sits every 1w"),
+            "{out}"
+        );
+        let (_, err, code) = invoke(&s, "lead", "nope", &["roles"]);
+        assert!(code != 0 && err.contains("No project"), "{code} {err}");
     }
 }

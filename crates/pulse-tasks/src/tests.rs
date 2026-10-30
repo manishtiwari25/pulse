@@ -1724,6 +1724,69 @@ fn schedule_add_validates_and_lists() {
     assert!(schedules::get(&s, "SCHED-009").is_err());
 }
 
+/// `--run-as`: the agent is checked when the schedule is set, by shape
+/// alone without the harness, by the installed check with it, and every
+/// job the schedule queues carries it.
+#[test]
+fn schedule_run_as_is_checked_when_set_and_carried_to_its_jobs() {
+    fn only_the_auditor(
+        _s: &pulse_store::Store,
+        project: &str,
+        checkout: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        assert_eq!(project, "demo");
+        assert!(checkout.ends_with("demo"), "the project's path: {checkout}");
+        if name == "auditor" {
+            Ok(())
+        } else {
+            Err(format!("there is no custom agent {name:?}"))
+        }
+    }
+    let s = new_store();
+    let refused = |input: schedules::ScheduleInput, needle: &str| {
+        let err = schedules::add(&s, input).expect_err(needle).to_string();
+        assert!(err.contains(needle), "wanted {needle:?} in {err}");
+    };
+    refused(
+        schedules::ScheduleInput {
+            agent: "Not An Agent".into(),
+            ..sched_input("1d")
+        },
+        "is not an agent name",
+    );
+
+    *pulse_board::AGENT_SPEC_CHECK.write().unwrap() = Some(only_the_auditor);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        refused(
+            schedules::ScheduleInput {
+                agent: "nobody".into(),
+                ..sched_input("1d")
+            },
+            "No custom agent nobody runs jobs for demo",
+        );
+        let sc = schedules::add(
+            &s,
+            schedules::ScheduleInput {
+                agent: " auditor ".into(),
+                ..sched_input("1h")
+            },
+        )
+        .unwrap();
+        assert_eq!(sc.agent, "auditor", "stored trimmed");
+        assert_eq!(schedules::get(&s, &sc.id).unwrap().agent, "auditor");
+        let fired =
+            schedules::fire_due(&s, "2026-09-06T22:00:00Z", &["demo".to_string()], "daemon")
+                .unwrap();
+        assert_eq!(fired.len(), 1);
+        let job = pulse_board::job_by_id(&s, &fired[0].job).unwrap().unwrap();
+        assert_eq!(job.agent, "auditor");
+        assert_eq!(job.source, "schedule:SCHED-001");
+    }));
+    *pulse_board::AGENT_SPEC_CHECK.write().unwrap() = None;
+    outcome.unwrap();
+}
+
 #[test]
 fn schedule_fires_once_per_open_job_and_ends_after_its_runs() {
     let s = new_store();

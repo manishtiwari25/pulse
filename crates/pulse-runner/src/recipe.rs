@@ -20,6 +20,9 @@ pub(crate) const RECIPE_UNFIT_MISE: &str = "mise";
 /// spending their attempts on runs that end before a worker starts.
 pub(crate) const RECIPE_UNFIT_INVALID: &str = "recipe invalid";
 pub(crate) const MISE_VERSION: &str = "v2026.9.1";
+/// Minutes a clone's setup may take (`mise install`, the recipe's `setup:`
+/// lines, the landing worktree's install), whatever `minutes_per_job` says:
+/// a hung `pnpm install` once held a slot for the two hours a job may run.
 pub(crate) const SETUP_MINUTES: i32 = 10;
 pub(crate) const UNFIT_HOURS: i32 = 24;
 
@@ -43,7 +46,7 @@ static RECIPE_KEYS: &[&str] = &[
     "services",
     "suggested_check",
 ];
-static RECIPE_TOOL_RE: LazyLock<Regex> =
+pub(crate) static RECIPE_TOOL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9_.:-]*@[A-Za-z0-9][A-Za-z0-9_.+-]*$").unwrap());
 static RECIPE_ENV_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Z_][A-Z0-9_]*$").unwrap());
@@ -116,6 +119,10 @@ pub(crate) fn recipe_scalar(raw: &str, problems: &mut Vec<String>, where_: &str)
 }
 pub(crate) fn secret_shaped(value: &str) -> bool {
     pulse_store::secret_shaped(value)
+}
+/// A name a recipe's `env:` may set: shell-safe and not one that says secret.
+pub(crate) fn recipe_env_name_ok(name: &str) -> bool {
+    RECIPE_ENV_NAME_RE.is_match(name) && !RECIPE_SECRET_NAME_RE.is_match(name)
 }
 pub(crate) fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
@@ -546,14 +553,54 @@ pub(crate) fn recipe_env_exports(r: &Recipe) -> String {
         .collect();
     format!("export {}; ", parts.join(" "))
 }
-pub(crate) fn recipe_block(r: &Recipe, remote: bool) -> String {
+/// Why no run of this recipe can start on an executor: `services:` nowhere,
+/// `tools:` or `env:` on hands that lack the recipe verbs (`hands_lack_recipe`).
+pub(crate) fn recipe_block(r: &Recipe, hands_lack_recipe: bool) -> String {
     if !r.services.is_empty() {
         return RECIPE_UNFIT_SERVICES.to_string();
     }
-    if remote && (!r.tools.is_empty() || !r.env.is_empty()) {
+    if hands_lack_recipe && (!r.tools.is_empty() || !r.env.is_empty()) {
         return RECIPE_UNFIT_HANDS.to_string();
     }
     String::new()
+}
+const HANDS_RECIPE_KEY: &str = "hands_recipe";
+/// Remembers what the hands of `executor` answered to the last probe:
+/// `recipe=1` means they take a recipe's `tools:` and `env:` the way the hub
+/// does (pins through `mise exec`, env in the worker's environment).
+pub(crate) fn note_hands_recipe(q: &impl Querier, executor: &str, takes: bool) {
+    let r = crate::util::must_one(
+        q,
+        "SELECT value FROM meta WHERE key = ?",
+        &[&HANDS_RECIPE_KEY],
+    );
+    let mut map = crate::util::json_map(&r.str("value"));
+    if map.get(executor).and_then(Value::as_bool) == Some(takes) {
+        return;
+    }
+    map.insert(executor.to_string(), Value::Bool(takes));
+    let _ = q.conn().execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [HANDS_RECIPE_KEY, &crate::util::py_json(&map)],
+    );
+}
+/// The hub takes every recipe; hands do once a probe saw them answer `recipe=1`.
+pub(crate) fn hands_take_recipe(q: &impl Querier, executor: &str) -> bool {
+    if executor == crate::executor::LOCAL_EXECUTOR {
+        return true;
+    }
+    let r = crate::util::must_one(
+        q,
+        "SELECT value FROM meta WHERE key = ?",
+        &[&HANDS_RECIPE_KEY],
+    );
+    crate::util::json_map(&r.str("value"))
+        .get(executor)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+pub(crate) fn hands_lack_recipe(q: &impl Querier, executor: &str) -> bool {
+    !hands_take_recipe(q, executor)
 }
 pub(crate) fn mise_env(clone: &str) -> Vec<[String; 2]> {
     vec![
@@ -614,6 +661,32 @@ pub(crate) fn mise_failed_pin(pins: &[String], output: &str) -> String {
         }
     }
     pins.first().cloned().unwrap_or_default()
+}
+/// The shell line that tells whether the tool an unfit mark names is usable
+/// now, or None when the mark is not about one tool (a setup signature,
+/// services, disk, the recipe itself). A probe runs it before it clears the
+/// mark: the mark came from a setup that ran the same tool, and a probe that
+/// looked only at git and disk sent the project's jobs back into that
+/// five-to-sixteen-minute failure every hour.
+pub(crate) fn unfit_tool_check(tool: &str) -> Option<String> {
+    if let Some(pin) = tool.strip_prefix("tool:") {
+        return Some(format!(
+            "export MISE_YES=1; mise where {}",
+            crate::util::shell_quote(pin)
+        ));
+    }
+    if tool == RECIPE_UNFIT_MISE {
+        return Some("mise --version".to_string());
+    }
+    if SETUP_RULES.iter().any(|rule| rule.tool == tool) {
+        // go takes `version`, not `--version`.
+        return Some(if tool == "go" {
+            "go version".to_string()
+        } else {
+            format!("{tool} --version")
+        });
+    }
+    None
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SetupRule {
@@ -1061,7 +1134,7 @@ static TOOL_HINTS: LazyLock<BTreeMap<&'static str, &'static str>> = LazyLock::ne
         ),
         (
             RECIPE_UNFIT_HANDS,
-            "the recipe pins tools or env, which these hands cannot take yet; refresh them with `pulse pair <admin@host> --name <executor>` once the hub's hands support it",
+            "the recipe pins tools or sets env, which these hands predate; refresh them with `pulse pair <admin@host> --name <executor>`, then `pulse executor probe <executor>` (hands that take a recipe answer `recipe=1`)",
         ),
     ])
 });
@@ -1166,13 +1239,13 @@ pub(crate) fn recipe_blocks_inner(
     executor: &str,
     projects: &[String],
 ) -> BTreeMap<String, String> {
-    let remote = executor != crate::executor::LOCAL_EXECUTOR;
     let mut out = BTreeMap::new();
     let held = crate::checkout::held_checkouts();
     let conn = match s.conn() {
         Ok(c) => c,
         Err(_) => return out,
     };
+    let lack_recipe = hands_lack_recipe(&conn, executor);
     for p in crate::util::must_rows(&conn, "SELECT * FROM projects WHERE status = 'active'", &[]) {
         if !projects.is_empty() && !projects.iter().any(|x| x == &p.str("slug")) {
             continue;
@@ -1210,7 +1283,7 @@ pub(crate) fn recipe_blocks_inner(
         }
         if let Some(r) = r {
             adopt_suggested_check(s, &p, &r, source.as_ref(), &s.now());
-            let why = recipe_block(&r, remote);
+            let why = recipe_block(&r, lack_recipe);
             if !why.is_empty() {
                 out.insert(p.str("slug"), why);
             }
@@ -1373,19 +1446,21 @@ pub(crate) fn bump_unfit_probe(q: &impl Querier, now: &str, executor: &str, proj
     mark.insert("at".to_string(), now.to_string());
     let _ = save_unfit_marks(q, &marks);
 }
-pub(crate) fn clear_unfit(q: &impl Querier, now: &str, executor: &str) {
+/// A re-probe found the machine fit but the mark's tool still missing: the
+/// mark stays as it is - it expires UNFIT_HOURS after the setup failed, so the
+/// setup gets one real try a day - and only the re-probe wait doubles.
+pub(crate) fn keep_unfit_mark(q: &impl Querier, executor: &str, project: &str) {
     let mut marks = unfit_marks(q);
-    if marks.remove(executor).is_some() {
-        let _ = save_unfit_marks(q, &marks);
-        crate::util::event_at(
-            q,
-            now,
-            "runner",
-            "executor.fit",
-            executor,
-            Value::String(String::new()),
-        );
-    }
+    let Some(mark) = marks.get_mut(executor).and_then(|m| m.get_mut(project)) else {
+        return;
+    };
+    let n = mark
+        .get("n")
+        .and_then(|n| n.parse::<i32>().ok())
+        .unwrap_or(0)
+        + 1;
+    mark.insert("n".to_string(), n.to_string());
+    let _ = save_unfit_marks(q, &marks);
 }
 pub(crate) fn clear_unfit_project(
     q: &impl Querier,
@@ -1473,7 +1548,7 @@ pub(crate) fn tools_wanted(
                     230,
                 ),
                 format!(
-                    "The environment recipe of {project} (`{RECIPE_PATH}`, ADR-026) pins tools or sets env, and the hands on `{executor}` have no verb for that yet; the project runs where they can be honoured until the hands are refreshed."
+                    "The environment recipe of {project} (`{RECIPE_PATH}`, ADR-026) pins tools or sets env, and the hands on `{executor}` predate the verbs for that (their probe does not answer `recipe=1`); the project runs where they can be honoured until the hands are refreshed."
                 ),
             ),
             _ => {
@@ -2031,6 +2106,99 @@ mod tests {
         let got = mise_wrap_shell(&pins, "go test ./...", "/tmp/clone");
         assert!(got.contains("export MISE_IGNORED_CONFIG_PATHS=/tmp/clone MISE_YES=1;"));
         assert!(got.contains("mise exec go@1.22 node@20 -- sh -c 'go test ./...'"));
+    }
+
+    #[test]
+    fn unfit_tool_check_names_the_tool_the_mark_is_about() {
+        assert_eq!(
+            unfit_tool_check("tool:node@22.1.0").as_deref(),
+            Some("export MISE_YES=1; mise where node@22.1.0")
+        );
+        assert_eq!(
+            unfit_tool_check(RECIPE_UNFIT_MISE).as_deref(),
+            Some("mise --version")
+        );
+        assert_eq!(
+            unfit_tool_check("bundle").as_deref(),
+            Some("bundle --version")
+        );
+        assert_eq!(unfit_tool_check("go").as_deref(), Some("go version"));
+        for mark in [
+            "setup:Gemfile.lock",
+            RECIPE_UNFIT_SERVICES,
+            RECIPE_UNFIT_HANDS,
+            RECIPE_UNFIT_CHECKOUT,
+            RECIPE_UNFIT_INVALID,
+            "environment:x",
+            "disk:2048",
+            "make-believe",
+        ] {
+            assert_eq!(unfit_tool_check(mark), None, "{mark}");
+        }
+    }
+
+    #[test]
+    fn hands_take_a_tools_recipe_once_their_probe_said_so() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            crate::test_helpers::recipe_with(
+                Some(&["node@22.1.0"]),
+                None,
+                None,
+                Some(&[("CI", "1")]),
+                "make test",
+            ),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "pins".into(),
+        )
+        .unwrap();
+        let conn = s.conn().unwrap();
+        // Hands the hub has not heard from on this are the hands of before.
+        assert!(!hands_take_recipe(&conn, "hands-1"));
+        assert!(hands_take_recipe(&conn, crate::executor::LOCAL_EXECUTOR));
+        assert_eq!(
+            recipe_blocks(&s, "hands-1", &[])
+                .get("proj")
+                .map(String::as_str),
+            Some(RECIPE_UNFIT_HANDS)
+        );
+        assert!(recipe_blocks(&s, crate::executor::LOCAL_EXECUTOR, &[]).is_empty());
+        note_hands_recipe(&conn, "hands-1", true);
+        assert!(hands_take_recipe(&conn, "hands-1"));
+        assert!(!hands_take_recipe(&conn, "hands-2"), "one answer per hands");
+        assert!(
+            recipe_blocks(&s, "hands-1", &[]).is_empty(),
+            "hands that take the recipe still held"
+        );
+        assert_eq!(
+            recipe_blocks(&s, "hands-2", &[])
+                .get("proj")
+                .map(String::as_str),
+            Some(RECIPE_UNFIT_HANDS)
+        );
+        // A re-pair to older hands takes the project back to the hub.
+        note_hands_recipe(&conn, "hands-1", false);
+        assert_eq!(
+            recipe_blocks(&s, "hands-1", &[])
+                .get("proj")
+                .map(String::as_str),
+            Some(RECIPE_UNFIT_HANDS)
+        );
+        // `services:` is for nobody yet, whatever the hands answer.
+        let (svc, _) = parse_recipe(&crate::test_helpers::recipe_with(
+            None,
+            None,
+            Some(&["postgres:16"]),
+            None,
+            "",
+        ));
+        assert_eq!(recipe_block(&svc.unwrap(), false), RECIPE_UNFIT_SERVICES);
+        assert!(tool_hint(RECIPE_UNFIT_HANDS).contains("recipe=1"));
     }
 
     #[test]

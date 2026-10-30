@@ -39,6 +39,11 @@ pub(crate) fn set_stage(stage: Option<&Stage>, what: impl Into<String>) {
 /// Landing states after which the job is no longer pending; every other
 /// state leaves the experiment in the queue for a later attempt.
 const TERMINAL_STATES: &[&str] = &["landed", "merged", "dropped", "missing"];
+/// Retries of `lane.retry_minutes` a deferred experiment gets before the
+/// lane gives it up: a day of them at the default, since what a day of tries
+/// did not clear (a setup that fails, a base the branch lost) needs an owner,
+/// not more tries - one experiment was deferred for eight days.
+pub(crate) const EXPERIMENT_DEFERRAL_RETRIES: u64 = 72;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LaneResult {
@@ -76,6 +81,9 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) pass_noted: bool,
     pub(crate) pass_restart_noted: bool,
     pub(crate) lane_disk_floor: bool,
+    /// Whether the lane's wait for the load governor was said; it is said
+    /// once per hold, not every tick.
+    pub(crate) lane_load_hold: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -109,11 +117,16 @@ pub(crate) fn landing_queue_state(
     state
 }
 
-/// The wait before the lane tries an experiment again after `state`.
+/// The wait before the lane tries an experiment again after `state`. A
+/// measurement the governor held waits the short retry: the hold lifts with
+/// the load, not with anything the lane could change.
 pub(crate) fn experiment_retry(s: &pulse_store::Store, state: &str, note: &str) -> Duration {
     if TERMINAL_STATES.contains(&state) {
         Duration::ZERO
-    } else if matches!(state, "locked" | "stopped") || crate::failure::is_transient_reason(note) {
+    } else if matches!(state, "locked" | "stopped")
+        || crate::failure::is_transient_reason(note)
+        || crate::daemon_load::is_hold_note(note)
+    {
         Duration::from_secs(60 * setting_minutes(s, "lane.short_retry_minutes", 2) as u64)
     } else {
         Duration::from_secs(60 * setting_minutes(s, "lane.retry_minutes", 20) as u64)
@@ -171,6 +184,17 @@ pub(crate) fn tend_unfit_reprobes(
                 Err(err) => (false, crate::run::err_message(&err)),
             };
             if ok {
+                let tool = mark.get("tool").cloned().unwrap_or_default();
+                if crate::executor::unfit_tool_present(s, &executor, &project, &tool) == Some(false)
+                {
+                    crate::recipe::keep_unfit_mark(&conn, &executor, &project);
+                    lines.push(format!(
+                        "unfit re-probe for {project} on {executor}: the machine passed but it still {}; the mark stays until a probe finds the tool or it expires {}h after the setup failed",
+                        crate::recipe::unfit_phrase(&tool),
+                        crate::recipe::UNFIT_HOURS
+                    ));
+                    continue;
+                }
                 crate::recipe::clear_unfit_project(&conn, &now, &executor, &project, &actor, &note);
                 let age = mark
                     .get("at")
@@ -436,6 +460,21 @@ impl DaemonMaintenance {
         }
         self.lane_disk_floor = false;
         let (project, job) = self.next_experiment(s, projects, now)?;
+        // A measurement is two builds: while the governor holds, the lane
+        // waits like a leased run would, instead of deferring every two
+        // minutes on a thread of its own (the landing checks again itself).
+        if let Some(why) = crate::experiment::measure_hold(s) {
+            if self.lane_load_hold {
+                return None;
+            }
+            self.lane_load_hold = true;
+            return Some(format!(
+                "landing experiment {} ({}) waits: {why}",
+                job.str("branch"),
+                project.str("slug")
+            ));
+        }
+        self.lane_load_hold = false;
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = cancel.child();
         self.lane = Some(rx);
@@ -459,14 +498,14 @@ impl DaemonMaintenance {
                     state: "error".into(),
                     note: format!("experiment lane error: {}", panic_text(&panic)),
                 });
-                let result = LaneResult {
+                let mut result = LaneResult {
                     project: project.str("slug"),
                     job: job.str("id"),
                     branch: job.str("branch"),
                     state: lr.state,
                     note: lr.note,
                 };
-                record_lane_outcome(&s, &actor, &result);
+                record_lane_outcome(&s, &actor, &project, &job, &mut result);
                 let _ = tx.send(result);
             })
             .expect("spawn experiment lane thread");
@@ -687,19 +726,92 @@ fn recv_by<T>(
     }
 }
 
+/// How long the lane keeps retrying a deferred experiment.
+pub(crate) fn experiment_deferral_bound(s: &pulse_store::Store) -> Duration {
+    Duration::from_secs(
+        60 * setting_minutes(s, "lane.retry_minutes", 20) as u64 * EXPERIMENT_DEFERRAL_RETRIES,
+    )
+}
+
+/// When the experiment was first deferred for a reason of its own, if ever.
+/// A governor hold is the machine's reason, not the experiment's, and does
+/// not start the clock.
+fn first_own_deferral(q: &(impl crate::util::Querier + ?Sized), job: &str) -> Option<String> {
+    crate::util::query_rows(
+        q,
+        "SELECT at, json_extract(detail, '$.note') AS note FROM events
+         WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = ?
+           AND json_extract(detail, '$.state') = 'deferred'
+         ORDER BY at ASC, seq ASC",
+        &[&job],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .find(|r| !crate::daemon_load::is_hold_note(&r.str("note")))
+    .map(|r| r.str("at"))
+}
+
 /// Records a lane outcome that leaves the experiment pending as a
-/// `land.deferred` event; the terminal states write their own events.
-fn record_lane_outcome(s: &pulse_store::Store, actor: &str, result: &LaneResult) {
+/// `land.deferred` event; the terminal states write their own events. An
+/// experiment deferred for longer than `experiment_deferral_bound` is given
+/// up instead: its job fails with a `land.missing` event naming the wait and
+/// the last reason, and `result` says so; the branch stays for review.
+fn record_lane_outcome(
+    s: &pulse_store::Store,
+    actor: &str,
+    project: &Row,
+    job: &Row,
+    result: &mut LaneResult,
+) {
     if TERMINAL_STATES.contains(&result.state.as_str()) {
         return;
     }
     let Ok(conn) = s.conn() else {
         return;
     };
+    let now = s.now();
+    if result.state == "deferred"
+        && !crate::daemon_load::is_hold_note(&result.note)
+        && let Some(first) = first_own_deferral(&conn, &result.job)
+    {
+        let waited = crate::util::must_iso(&now) - crate::util::must_iso(&first);
+        let bound = experiment_deferral_bound(s);
+        if waited.to_std().unwrap_or_default() >= bound {
+            let why = format!(
+                "experiment {} was deferred for {} since {first} and still does not land ({}); the lane gives it up after {EXPERIMENT_DEFERRAL_RETRIES} retries of lane.retry_minutes - the branch stays for review",
+                result.branch,
+                crate::util::format_minutes(waited.num_minutes()),
+                result.note
+            );
+            let run = crate::experiment::last_run_id(s, result.job.clone());
+            match crate::landing_evidence::fail_missing_experiment(
+                s,
+                project.clone(),
+                job.clone(),
+                actor.to_string(),
+                run,
+                String::new(),
+                why.clone(),
+            ) {
+                Ok(()) => {
+                    result.state = "missing".into();
+                    result.note = why;
+                    return;
+                }
+                Err(e) => {
+                    result.note = format!(
+                        "{}; could not give it up: {}",
+                        result.note,
+                        crate::run::err_message(&e)
+                    );
+                }
+            }
+        }
+    }
     let wait = experiment_retry(s, &result.state, &result.note);
     crate::util::event_at(
         &conn,
-        &s.now(),
+        &now,
         actor,
         "land.deferred",
         &result.branch,
@@ -729,6 +841,98 @@ mod tests {
     }
 
     #[test]
+    fn a_deferred_experiment_is_given_up_once_it_has_waited_the_bound() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        set_retry_setting(&s, "lane.retry_minutes", "20");
+        let bound_minutes = 20.0 * EXPERIMENT_DEFERRAL_RETRIES as f64;
+        let long_ago = crate::util::plus_minutes(TEST_NOW, -(bound_minutes + 5.0));
+        pending_experiment(&s, &dir, "first", &long_ago);
+        let job = crate::jobs::job_row(&*s.conn().unwrap(), "first".into());
+        let deferred = LaneResult {
+            project: "proj".into(),
+            job: "first".into(),
+            branch: "evolve/first".into(),
+            state: "deferred".into(),
+            note: "setup failed on local: pnpm install exited 1".into(),
+        };
+        let deferral_at = |at: &str, note: &str| {
+            crate::util::event_at(
+                &*s.conn().unwrap(),
+                at,
+                "daemon",
+                "land.deferred",
+                "evolve/first",
+                serde_json::json!({"project": "proj", "job": "first", "state": "deferred", "note": note}),
+            );
+        };
+        // A governor hold long ago is the machine's reason, not the
+        // experiment's: the clock has not started, so this deferral is
+        // recorded and the experiment stays pending.
+        deferral_at(
+            &long_ago,
+            &format!(
+                "{}load 30.0 on 12 CPUs is over daemon.max_load 24",
+                crate::daemon_load::HOLD_PREFIX
+            ),
+        );
+        let mut result = deferred.clone();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut result);
+        assert_eq!(result.state, "deferred", "{result:?}");
+        assert_eq!(
+            crate::jobs::job_row(&*s.conn().unwrap(), "first".into()).str("status"),
+            "done"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = 'first'",
+                &[],
+            ),
+            2
+        );
+        // A stop past the bound is not the experiment's doing either.
+        deferral_at(&long_ago, "base check failed: cargo test exited 101");
+        let mut stopped = deferred.clone();
+        stopped.state = "stopped".into();
+        stopped.note = "daemon stopping".into();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut stopped);
+        assert_eq!(stopped.state, "stopped", "{stopped:?}");
+        // Deferred again a day after its own first deferral: the lane gives
+        // the experiment up with the wait and the last reason on record.
+        let mut result = deferred.clone();
+        record_lane_outcome(&s, "daemon", &proj, &job, &mut result);
+        assert_eq!(result.state, "missing", "{result:?}");
+        assert!(
+            result.note.contains("deferred for 24h05m")
+                && result.note.contains("pnpm install exited 1")
+                && result.note.contains("gives it up"),
+            "{}",
+            result.note
+        );
+        let failed = crate::jobs::job_row(&*s.conn().unwrap(), "first".into());
+        assert_eq!(failed.str("status"), "failed");
+        assert!(failed.str("result").contains("gives it up"), "{failed:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.missing' AND json_extract(detail, '$.job') = 'first'",
+                &[],
+            ),
+            1
+        );
+        let line = DaemonMaintenance::lane_result_line(
+            &result,
+            experiment_retry(&s, &result.state, &result.note),
+        );
+        assert!(
+            line.starts_with("landing missing: experiment evolve/first was deferred for"),
+            "{line}"
+        );
+    }
+
+    #[test]
     fn experiment_retry_by_state() {
         let s = new_store();
         assert_eq!(experiment_retry(&s, "landed", ""), Duration::ZERO);
@@ -748,6 +952,15 @@ mod tests {
         assert_eq!(
             experiment_retry(&s, "error", "database is locked"),
             Duration::from_secs(2 * 60)
+        );
+        assert_eq!(
+            experiment_retry(
+                &s,
+                "deferred",
+                "evolve/B-1 not landed: measuring waits - machine saturated: load 40.0 on 12 CPUs is over daemon.max_load 24"
+            ),
+            Duration::from_secs(2 * 60),
+            "a measurement the governor held retries with the load, not the long retry"
         );
         set_retry_setting(&s, "lane.retry_minutes", "7");
         set_retry_setting(&s, "lane.short_retry_minutes", "3");
@@ -915,6 +1128,225 @@ mod tests {
         assert_eq!(mark.get("at").map(String::as_str), Some(now.as_str()));
     }
 
+    /// A directory with a fake `uv` that answers and a fake `composer` that
+    /// does not, first on PATH: the tool the owner installed, and a shim that
+    /// is there but broken.
+    fn fake_tools_on_path() -> (tempfile::TempDir, pulse_testutil::SetenvGuard) {
+        let bin = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("uv", "#!/bin/sh\necho uv 0.1\n"),
+            ("composer", "#!/bin/sh\nexit 1\n"),
+        ] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let path = format!(
+            "{}:{}",
+            bin.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let guard = pulse_testutil::setenv("PATH", path);
+        (bin, guard)
+    }
+
+    #[test]
+    fn daemon_reprobe_keeps_a_mark_whose_tool_is_still_missing() {
+        let _serial = crate::test_helpers::serial();
+        let (_bin, _path) = fake_tools_on_path();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let local = crate::executor::LOCAL_EXECUTOR;
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let conn = s.conn().unwrap();
+        // (mark, what the re-probe says, whether the mark stays)
+        for (tool, said, kept) in [
+            (
+                "tool:nosuchtool-pulse@1",
+                "still lacks nosuchtool-pulse@1",
+                true,
+            ),
+            ("composer", "still lacks composer", true),
+            ("uv", "cleared by a passing probe", false),
+            ("setup:Gemfile.lock", "cleared by a passing probe", false),
+        ] {
+            crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, tool);
+            let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+            assert!(
+                lines.iter().any(|line| line.contains(said)),
+                "{tool}: lines = {lines:?}"
+            );
+            let marks = crate::recipe::unfit_marks(&conn);
+            let mark = marks.get(local).and_then(|m| m.get(&slug));
+            if kept {
+                let mark = mark.unwrap_or_else(|| panic!("{tool}: mark cleared"));
+                assert_eq!(mark.get("n").map(String::as_str), Some("1"), "{tool}");
+                assert_eq!(mark.get("at").map(String::as_str), Some(TEST_NOW), "{tool}");
+                assert!(
+                    lines.iter().any(|line| line.contains("the mark stays")),
+                    "{tool}: lines = {lines:?}"
+                );
+                // The next re-probe waits twice as long, like after a failed probe.
+                let again = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+                assert!(again.is_empty(), "{tool}: again = {again:?}");
+                crate::recipe::clear_unfit_project(&conn, &now, local, &slug, "test", "");
+            } else {
+                assert!(mark.is_none(), "{tool}: mark stayed: {mark:?}");
+            }
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'executor.fit' AND subject = 'local' AND detail LIKE '%daemon%'",
+                &[]
+            ),
+            2
+        );
+        // A pin the recipe no longer lists is stale: the probe clears it.
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe_with(Some(&["other-tool@1"]), None, None, None, ""),
+            pulse_store::HUMAN_AGENT.into(),
+            "store".into(),
+            String::new(),
+        )
+        .unwrap();
+        crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, "tool:nosuchtool-pulse@1");
+        let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("cleared by a passing probe")),
+            "lines = {lines:?}"
+        );
+        assert!(crate::recipe::unfit_marks(&conn).is_empty());
+        // The owner's own probe keeps a still-missing tool's mark too, and says so.
+        crate::recipe::mark_unfit(&conn, TEST_NOW, local, &slug, "composer");
+        let (ok, note) =
+            crate::executor::probe_executor(&s, local, pulse_store::HUMAN_AGENT, &now).unwrap();
+        assert!(
+            ok && note.contains("mark kept for proj: still lacks composer"),
+            "{ok} {note}"
+        );
+        assert!(!note.contains("unfit_cleared"), "{note}");
+        let marks = crate::recipe::unfit_marks(&conn);
+        assert_eq!(marks[local][&slug].get("n").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn daemon_reprobe_asks_remote_hands_about_the_tool() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_unfit_reprobe_minutes(&s, "60");
+        let (proj, _) = new_bare_repo(&s);
+        let slug = proj.str("slug");
+        crate::jobs::add_job(
+            &s,
+            slug.clone(),
+            "task".into(),
+            "Held job".into(),
+            "wait for daemon reprobe".into(),
+            0,
+            0,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        let workdir = tempfile::tempdir().unwrap();
+        crate::executor::add_executor(
+            &s,
+            TEST_NOW,
+            "hands",
+            "pulse@hands",
+            &workdir.path().display().to_string(),
+            1,
+            "*",
+            pulse_store::HUMAN_AGENT,
+        )
+        .unwrap();
+        let now = crate::util::plus_minutes(TEST_NOW, 61.0);
+        let conn = s.conn().unwrap();
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // (what the hands answer to `tool`, whether the mark stays)
+        for (answer, kept) in [
+            (
+                (1, "", "mise ERROR nosuchtool-pulse@1 is not installed"),
+                true,
+            ),
+            ((2, "", "verb not allowed: tool"), false),
+            ((0, "/home/pulse/.local/share/mise/installs/x", ""), false),
+        ] {
+            let asked2 = asked.clone();
+            let _ssh = crate::test_helpers_hands::install_run_ssh(
+                move |_cancel, argv: &[String], _stdin: &[u8], _timeout| {
+                    let text = argv
+                        .last()
+                        .and_then(|v| v.strip_prefix("b64 "))
+                        .and_then(|v| {
+                            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v)
+                                .ok()
+                        })
+                        .map(|v| String::from_utf8_lossy(&v).replace('\0', " "))
+                        .unwrap_or_else(|| argv.join(" "));
+                    if text.starts_with("probe") {
+                        return Ok((0, "hands=ok pulse=ok git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=20480".into(), String::new()));
+                    }
+                    asked2.lock().unwrap().push(text.trim().to_string());
+                    Ok((answer.0, answer.1.to_string(), answer.2.to_string()))
+                },
+            );
+            crate::recipe::mark_unfit(&conn, TEST_NOW, "hands", &slug, "tool:nosuchtool-pulse@1");
+            let lines = tend_unfit_reprobes(&s, now.clone(), "daemon".into());
+            let marks = crate::recipe::unfit_marks(&conn);
+            let mark = marks.get("hands").and_then(|m| m.get(&slug));
+            if kept {
+                assert!(mark.is_some(), "{answer:?}: lines = {lines:?}");
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains("still lacks nosuchtool-pulse@1")),
+                    "{answer:?}: lines = {lines:?}"
+                );
+                crate::recipe::clear_unfit_project(&conn, &now, "hands", &slug, "test", "");
+            } else {
+                assert!(mark.is_none(), "{answer:?}: lines = {lines:?}");
+            }
+        }
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 3, "{asked:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|a| a == "tool export MISE_YES=1; mise where nosuchtool-pulse@1"),
+            "{asked:?}"
+        );
+    }
+
     #[test]
     fn unfit_reprobe_interval_doubles_and_caps() {
         let mark = BTreeMap::from([
@@ -1021,6 +1453,60 @@ mod tests {
             m.next_experiment(&s, &projects, TEST_NOW).is_none(),
             "project under a landing retry hold was offered"
         );
+    }
+
+    #[test]
+    fn start_lane_waits_for_the_load_governor_and_says_so_once() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        let (proj, dir) = new_bare_repo(&s);
+        set_setting(&s, "landing", "agents");
+        set_setting(&s, "daemon.min_free_mb", "0");
+        pending_experiment(&s, &dir, "first", TEST_NOW);
+        let cancel = pulse_bus::CancellationToken::new();
+        let projects = vec![proj];
+        let mut m = DaemonMaintenance::default();
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        });
+        let line = m
+            .start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+            .expect("the hold was not said");
+        assert!(
+            line.contains(
+                "landing experiment evolve/first (proj) waits: machine saturated: load 40.0 on"
+            ),
+            "line = {line}"
+        );
+        assert!(m.lane.is_none(), "lane started under a hold");
+        assert!(
+            m.start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+                .is_none(),
+            "the hold was said twice"
+        );
+        drop(saturated);
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+        let old = pulse_evolve::set_measure(Box::new(move |ctx, _s, _p, _r, _ref, _o| {
+            let _ = started_tx.send(());
+            while !ctx.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            anyhow::bail!("context canceled")
+        }));
+        let line = m
+            .start_lane(&cancel, &s, &projects, "daemon", TEST_NOW, false)
+            .expect("lane did not start once the hold lifted");
+        assert!(line.contains("measuring on the experiment lane"), "{line}");
+        assert!(!m.lane_load_hold);
+        started_rx
+            .recv_timeout(test_wait(Duration::from_secs(10)))
+            .expect("lane never measured");
+        m.cancel_lane();
+        let _ = m.finish(&s, &cancel, None);
+        let _ = pulse_evolve::set_measure(old);
     }
 
     #[test]

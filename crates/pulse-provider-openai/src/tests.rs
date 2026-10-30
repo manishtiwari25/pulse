@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 const FAKE_KEY: &str = "sk-test-secret-abcdefghijklmnop";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-const EXPECTED_VENDORS: [&str; 14] = [
+const EXPECTED_VENDORS: [&str; 15] = [
     "openai",
     "azure-openai",
     "openrouter",
@@ -26,6 +26,7 @@ const EXPECTED_VENDORS: [&str; 14] = [
     "ollama",
     "lmstudio",
     "vllm",
+    "custom",
 ];
 
 fn new_test_vendor(
@@ -1001,6 +1002,119 @@ fn azure_without_a_base_url_asks_for_setup() {
             assert!(perr.message.contains("provider.azure-openai.base_url"));
         }
         assert!(!p.keys.path().exists());
+    }
+}
+
+#[test]
+fn custom_vendor_is_described_by_settings() {
+    // Without a base URL: not set up, and the first call fails before any
+    // network attempt, naming the setting to run.
+    let p = new_test_vendor(
+        CUSTOM,
+        "",
+        env_of(&[("PULSE_CUSTOM_API_KEY", FAKE_KEY)]),
+        None,
+    );
+    assert_eq!(p.base, "");
+    let status = p.status(&CancelToken::new()).unwrap();
+    assert!(!status.logged_in);
+    assert!(
+        status
+            .detail
+            .starts_with("Set provider.custom.base_url to https://<host>/v1"),
+        "{}",
+        status.detail
+    );
+    let err = p.chat(&CancelToken::new(), user_request("hi")).unwrap_err();
+    let perr = provider_error(&err).unwrap();
+    assert_eq!(
+        (perr.provider.as_str(), perr.code.as_str()),
+        ("custom", "no_base_url")
+    );
+    assert!(
+        perr.message
+            .contains("pulse settings set provider.custom.base_url https://<host>/v1"),
+        "{}",
+        perr.message
+    );
+
+    // With a base URL but no key and no_key off: not logged in, nothing sent.
+    let silent = Server::new(|_| panic!("no request expected without a key"));
+    let settings = BTreeMap::from([("provider.custom.no_key".to_string(), "off".to_string())]);
+    let p = new_test_vendor(CUSTOM, &silent.url(), None, Some(settings));
+    assert!(!p.key_optional);
+    let err = p.chat(&CancelToken::new(), user_request("hi")).unwrap_err();
+    assert!(pulse_provider::is_not_logged_in(&err), "{err:#}");
+    assert!(!p.status(&CancelToken::new()).unwrap().logged_in);
+
+    // no_key on: keyless like a local server.
+    let saw = Arc::new(Mutex::new(Vec::<(Option<String>, Option<String>)>::new()));
+    let saw_log = saw.clone();
+    let srv = Server::new(move |req| {
+        saw_log.lock().unwrap().push((
+            req.header("authorization").map(str::to_string),
+            req.header("x-api-key").map(str::to_string),
+        ));
+        TestResponse::json(200, &ok_chat_body())
+    });
+    let settings = BTreeMap::from([("provider.custom.no_key".to_string(), "on".to_string())]);
+    let p = new_test_vendor(CUSTOM, &srv.url(), None, Some(settings));
+    assert!(p.key_optional);
+    let status = p.status(&CancelToken::new()).unwrap();
+    assert!(status.logged_in);
+    assert_eq!(status.source, SOURCE_NO_KEY);
+    let resp = p.chat(&CancelToken::new(), user_request("hi")).unwrap();
+    assert_eq!(resp.message.unwrap().content, "ok");
+    assert_eq!(saw.lock().unwrap().as_slice(), [(None, None)]);
+
+    // A key from the environment travels as a bearer token by default, and
+    // raw in the header api_key_header names.
+    let env = env_of(&[("PULSE_CUSTOM_API_KEY", FAKE_KEY)]);
+    let p = new_test_vendor(CUSTOM, &srv.url(), env.clone(), None);
+    assert!(p.key_header.is_none());
+    p.chat(&CancelToken::new(), user_request("hi")).unwrap();
+    let settings = BTreeMap::from([(
+        "provider.custom.api_key_header".to_string(),
+        " X-Api-Key ".to_string(),
+    )]);
+    let p = new_test_vendor(CUSTOM, &srv.url(), env.clone(), Some(settings));
+    assert_eq!(p.key_header.as_ref().map(|h| h.as_str()), Some("x-api-key"));
+    p.chat(&CancelToken::new(), user_request("hi")).unwrap();
+    let saw = saw.lock().unwrap().clone();
+    assert_eq!(saw[1], (Some(format!("Bearer {FAKE_KEY}")), None));
+    assert_eq!(saw[2], (None, Some(FAKE_KEY.to_string())));
+
+    // Authorization by name keeps the bearer convention; a name that is
+    // not a header refuses to open.
+    let settings = BTreeMap::from([(
+        "provider.custom.api_key_header".to_string(),
+        "authorization".to_string(),
+    )]);
+    let p = new_test_vendor(CUSTOM, &srv.url(), env, Some(settings));
+    assert!(p.key_header.is_none());
+    let vendor = vendor(CUSTOM).unwrap();
+    let settings = BTreeMap::from([(
+        "provider.custom.api_key_header".to_string(),
+        "not a header".to_string(),
+    )]);
+    let err = vendor.resolve_key_header(&settings).unwrap_err();
+    assert!(
+        err.to_string().contains("provider.custom.api_key_header"),
+        "{err}"
+    );
+    for (value, want) in [
+        ("yes", true),
+        ("1", true),
+        ("TRUE", true),
+        ("", false),
+        ("no", false),
+    ] {
+        let settings = BTreeMap::from([(vendor.no_key_key(), value.to_string())]);
+        assert_eq!(
+            vendor.resolve_key_optional(&settings),
+            want,
+            "no_key={value:?}"
+        );
     }
 }
 

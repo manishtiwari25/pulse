@@ -30,7 +30,7 @@ pub mod metric;
 pub mod outcome;
 pub mod plan;
 pub mod private;
-pub mod process; // crate-private items only; not re-exported
+pub mod process; // not re-exported at the crate root; the runner reaches set_build_jobs through the module path
 pub mod readiness;
 pub mod readonly; // crate-private items only; not re-exported
 pub mod reflect;

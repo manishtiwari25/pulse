@@ -2,8 +2,8 @@ pub const HOOKS_DDL: &[&str] = &[
     r####"CREATE TABLE IF NOT EXISTS hooks (
   id INTEGER PRIMARY KEY,
   event TEXT NOT NULL,                -- action glob, e.g. post.* or task.amended or *
-  kind TEXT NOT NULL CHECK (kind IN ('script','webhook')),
-  target TEXT NOT NULL,               -- script path or URL
+  kind TEXT NOT NULL CHECK (kind IN ('script','webhook','job')),
+  target TEXT NOT NULL,               -- script path, URL or the JSON of the job to queue
   project TEXT NOT NULL DEFAULT '',   -- '' = every project
   enabled INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL,

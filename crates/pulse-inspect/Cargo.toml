@@ -13,6 +13,7 @@ pulse-board.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
 pulse-gitenv.workspace = true
+pulse-harness.workspace = true
 pulse-provider.workspace = true
 pulse-provider-copilot.workspace = true
 pulse-runner.workspace = true

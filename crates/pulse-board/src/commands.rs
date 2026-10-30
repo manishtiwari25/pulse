@@ -31,13 +31,13 @@ pub fn stdin_is_tty() -> bool {
 static REGISTER: Once = Once::new();
 pub fn register_commands() {
     REGISTER.call_once(|| {
-        cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
+        cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]\n       (`pulse agent` manages the running workers; `pulse agents` their definitions)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
         cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
         cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG] | pulse claim sweep [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       pulse thread show AREA/THREAD --project SLUG [--bodies]\n       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"pulse decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
-        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
+        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
         cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"pulse init [PATH] [--name N] [--remote URL] [--verify CMD] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"pulse move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"pulse export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
@@ -156,6 +156,11 @@ fn job_flags(fs: &mut FlagSet) {
         "source",
         "",
         "what queued it; an open job with the same source is reused (add)",
+    );
+    fs.string_var(
+        "run-as",
+        "",
+        "the custom agent the worker runs as, one that pulse agents list shows for the project (add)",
     );
     fs.string_var(
         "result",
@@ -822,6 +827,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 return Err(usage("job", "add needs --title"));
             }
             let p = current_project(s, &c.project)?;
+            let agent = check_run_as(s, &p.slug, &fs.get_string("run-as"))?;
             let (j, created) = add_job(
                 s,
                 JobInput {
@@ -833,6 +839,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     priority: fs.get_int("priority") as i64,
                     source: fs.get_string("source"),
                     created_by: c.agent.clone(),
+                    agent,
                     ..Default::default()
                 },
             )?;

@@ -48,14 +48,17 @@ pub fn register() {
             Command {
                 name: "agents".into(),
                 group: "inspect".into(),
-                summary: "agent scorecards; --all includes pruned agents".into(),
-                usage: "pulse agents [--all] [--json]".into(),
+                summary: "agent scorecards (--all includes pruned agents); list, lint, schema: the custom agent definitions".into(),
+                usage: format!(
+                    "pulse agents [--all] [--json]\n       {}",
+                    pulse_harness::agents_command::USAGE
+                ),
                 aliases: vec![],
-                no_store: false,
+                no_store: true,
                 read_only: true,
                 raw: false,
                 run: crate::lists::run_agents,
-                flags: Some(all_flag),
+                flags: Some(agents_flags),
             },
             Command {
                 name: "events".into(),
@@ -149,6 +152,11 @@ pub fn register() {
 
 pub fn all_flag(fs: &mut FlagSet) {
     fs.bool_var("all", false, "include finished jobs or pruned agents");
+}
+
+fn agents_flags(fs: &mut FlagSet) {
+    all_flag(fs);
+    pulse_harness::agents_command::flags(fs);
 }
 
 fn events_flags(fs: &mut FlagSet) {
