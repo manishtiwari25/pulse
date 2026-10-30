@@ -75,6 +75,11 @@ fn land_flags(fs: &mut FlagSet) {
     fs.int_var("limit", 5, "at most N branches per project");
     fs.bool_var("no-verify", false, "skip the verify command");
     fs.bool_var("dry-run", false, "list what waits, land nothing");
+    fs.bool_var(
+        "pr",
+        false,
+        "deliver what landed as a pull request from pulse/landed, whatever landing.push says",
+    );
 }
 
 fn daemon_flags(fs: &mut FlagSet) {
@@ -400,6 +405,9 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             if w > worst {
                 worst = w;
             }
+        }
+        if bool_flag(fs, "pr") {
+            pulse_tasks::ask_pull_request(&s, &slug, "", &actor)?;
         }
         let (push_lines, note) =
             crate::landing_hold::push_landed(&s, proj, actor.clone(), now.clone(), landed);

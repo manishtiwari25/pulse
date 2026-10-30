@@ -206,7 +206,7 @@ const HELP: Record<string, string> = {
   light_reasoning: "How hard the light model thinks on the smaller jobs: planning, answering, voting, reflecting. Empty means the reasoning effort setting; Model default sends nothing.",
   measure_reasoning: "How hard the measuring model thinks when it measures baselines, experiments and merges. Empty means the main effort. Like the measuring model it is part of the evaluator: a change measures every baseline again.",
   landing: "Whether agents merge their checked work into the main branch themselves, or leave it for you.",
-  "landing.push": "Whether PULSE pushes the main branch upstream after it merges work.",
+  "landing.push": "Whether PULSE pushes the main branch upstream after it merges work, or puts it on a pull request for you to merge.",
   "landing.auto_stash": "Whether PULSE sets aside uncommitted changes in a project folder before it merges, and puts them back after.",
   "landing.verify_memo": "Whether a merge skips its check when the exact same code already passed the same check on this machine.",
   "landing.verify_memo_hours": "How long an earlier passing check of the same code counts before the merge runs it again.",

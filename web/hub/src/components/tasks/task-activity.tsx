@@ -172,7 +172,7 @@ function Line({ item, task, onChat }: { item: ActivityItem; task: Task; onChat?:
     );
   }
   if (item.kind === "step" || item.kind === "quiet") return <StepLine item={item} />;
-  const tone = item.kind === "land" ? (item.what === "landed" || item.what === "pushed" ? "ok" : item.what === "conflict" ? "bad" : "warn") : item.kind === "task" && item.what === "cancelled" ? "bad" : "neutral";
+  const tone = item.kind === "land" ? (item.what === "landed" || item.what === "pushed" || item.what === "pr" ? "ok" : item.what === "conflict" ? "bad" : item.what === "pr-asked" || item.what === "pr-answered" ? "neutral" : "warn") : item.kind === "task" && item.what === "cancelled" ? "bad" : "neutral";
   return <SystemLine at={item.at} tone={tone} text={systemLine(item)} detail={item.kind === "task" && item.what === "status" && item.text ? item.text : item.kind === "task" && item.what === "revised" ? item.text : undefined} />;
 }
 

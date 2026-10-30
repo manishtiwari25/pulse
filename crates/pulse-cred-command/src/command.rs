@@ -319,9 +319,9 @@ fn run_set(
                 }
             }
             c.printf(format_args!("push.credential={}\n", res.reference))?;
-            if res.landing_push != "main" {
+            if res.landing_push != "main" && res.landing_push != "pr" {
                 c.println(
-                    "The daemon pushes only with landing.push=main: pulse settings set landing.push main",
+                    "The daemon pushes only with landing.push=main (the default branch) or pr (a pull request from pulse/landed): pulse settings set landing.push main",
                 )?;
             }
             Ok(())

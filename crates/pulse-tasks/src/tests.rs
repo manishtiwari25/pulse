@@ -3354,3 +3354,190 @@ fn collect_rs(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         }
     }
 }
+
+#[test]
+fn delivery_follows_a_landing_to_the_forge() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let task = new(
+        &s,
+        "demo",
+        "Add the Impressum page",
+        "the brief",
+        0,
+        "human",
+    )
+    .unwrap();
+    let id = task.id.clone();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+             ('JOB-imp', 'demo', 'task', 'Add the page', ?, 'done', '2026-10-30T14:00:00Z', 'demo-lead', 'pulse/worker/JOB-imp')",
+            params![format!("task:{id}:page")],
+        )
+        .unwrap();
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(
+        (d.state.as_str(), d.waiting, d.landed, d.can_ask),
+        ("waiting", 1, 0, false)
+    );
+
+    // The landing empties the job's branch and names the project.
+    s.conn()
+        .unwrap()
+        .execute("UPDATE jobs SET branch = '' WHERE id = 'JOB-imp'", [])
+        .unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.landed",
+        "pulse/worker/JOB-imp",
+        r#"{"project": "demo", "job": "JOB-imp", "before": "aaa", "code_delivery": {"after": "59f641d2c3b4"}}"#,
+    )
+    .unwrap();
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(
+        (d.state.as_str(), d.landed, d.sha.as_str(), d.can_ask),
+        ("landed", 1, "59f641d2c3b4", true)
+    );
+    assert!(d.note.contains("landing.push is off"), "{}", d.note);
+
+    // The push held: the hold is the task's, the lead can read it.
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.held",
+        "demo",
+        r#"{"project": "demo", "waiting": 0, "state": "push-failed", "note": "3 commits landed but not pushed; origin/main has 16 commits main does not"}"#,
+    )
+    .unwrap();
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(d.state, "held");
+    assert!(
+        d.note.starts_with("3 commits landed but not pushed"),
+        "{}",
+        d.note
+    );
+    assert!(d.can_ask);
+
+    // The owner asks for a pull request; nothing more can be asked until
+    // the daemon answers.
+    ask_pull_request(&s, "demo", &id, "human").unwrap();
+    assert!(pull_request_asked(&s, "demo"));
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!((d.state.as_str(), d.can_ask), ("asked", false));
+
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.pr",
+        "demo",
+        r#"{"project": "demo", "remote": "origin", "branch": "main", "head": "pulse/landed", "base": "main", "number": 12, "url": "https://github.com/o/r/pull/12", "commits": 3, "opened": true}"#,
+    )
+    .unwrap();
+    assert!(!pull_request_asked(&s, "demo"));
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(
+        (
+            d.state.as_str(),
+            d.number,
+            d.url.as_str(),
+            d.remote.as_str(),
+            d.can_ask
+        ),
+        (
+            "pr",
+            12,
+            "https://github.com/o/r/pull/12",
+            "origin/main",
+            false
+        )
+    );
+
+    // The task's story carries the project-level delivery, not just the
+    // branch landing.
+    let a = activity_for(&s, &id, 0).unwrap();
+    let land: Vec<(String, String, String)> = a
+        .items
+        .iter()
+        .filter(|i| i.kind == "land")
+        .map(|i| (i.what.clone(), i.status.clone(), i.text.clone()))
+        .collect();
+    assert_eq!(
+        land,
+        vec![
+            (
+                "landed".to_string(),
+                "59f641d2c3b4".to_string(),
+                String::new()
+            ),
+            (
+                "held".to_string(),
+                String::new(),
+                "3 commits landed but not pushed; origin/main has 16 commits main does not"
+                    .to_string()
+            ),
+            ("pr-asked".to_string(), String::new(), String::new()),
+            (
+                "pr".to_string(),
+                "#12".to_string(),
+                "https://github.com/o/r/pull/12".to_string()
+            ),
+        ]
+    );
+
+    // The first delivery after a task's last landing is its answer: a later
+    // push of the project does not rewrite it.
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.pushed",
+        "demo",
+        r#"{"project": "demo", "remote": "origin", "branch": "main", "from": "aaa", "to": "cccc", "commits": 4}"#,
+    )
+    .unwrap();
+    assert_eq!(delivery_for(&s, &id).unwrap().state, "pr");
+
+    // Another task, landed by a run's branch and pushed to the upstream.
+    let other = new(&s, "demo", "Fix the footer", "brief", 0, "human").unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+             ('JOB-foot', 'demo', 'task', 'Fix it', ?, 'done', '2026-10-30T15:00:00Z', 'demo-lead', '')",
+            params![format!("task:{}", other.id)],
+        )
+        .unwrap();
+    s.conn().unwrap().execute(
+        "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, exit_code, summary, branch, commits, mode, executor) VALUES \
+         ('RUN-foot', 'JOB-foot', 'cinder', 'demo', '2026-10-30T15:01:00Z', '2026-10-30T15:10:00Z', 'done', 0, 'fixed', 'pulse/cinder/JOB-foot', 1, 'real', 'local')",
+        [],
+    ).unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.landed",
+        "pulse/cinder/JOB-foot",
+        r#"{"project": "demo", "code_delivery": {"after": "dddd"}}"#,
+    )
+    .unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.pushed",
+        "demo",
+        r#"{"project": "demo", "remote": "origin", "branch": "main", "from": "cccc", "to": "dddd", "commits": 1}"#,
+    )
+    .unwrap();
+    let d = delivery_for(&s, &other.id).unwrap();
+    assert_eq!(
+        (d.state.as_str(), d.landed, d.remote.as_str(), d.can_ask),
+        ("pushed", 1, "origin/main", false)
+    );
+    assert_eq!(
+        delivery_for(&s, &id).unwrap().state,
+        "pr",
+        "the first task keeps its answer"
+    );
+}

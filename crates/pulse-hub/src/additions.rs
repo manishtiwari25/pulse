@@ -263,7 +263,8 @@ impl Handler {
             || (parts.len() == 3
                 && parts[2] != "amend"
                 && parts[2] != "cancel"
-                && parts[2] != "status")
+                && parts[2] != "status"
+                && parts[2] != "pull-request")
         {
             addition_not_found(w);
             return;
@@ -395,10 +396,16 @@ impl Handler {
                 return;
             }
         };
+        let delivery = self
+            .store
+            .as_deref()
+            .and_then(|store| pulse_tasks::delivery_for(store, &parts[1]).ok())
+            .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null))
+            .unwrap_or(serde_json::Value::Null);
         write_json(
             w,
             200,
-            json!({"task": task, "revisions": revisions, "messages": messages, "jobs": jobs, "lead_work": lead_work}),
+            json!({"task": task, "revisions": revisions, "messages": messages, "jobs": jobs, "lead_work": lead_work, "delivery": delivery}),
         );
     }
 
@@ -657,6 +664,10 @@ impl Handler {
             self.addition_task_status(w, r, store, &parts[1], &payload);
             return;
         }
+        if parts[2] == "pull-request" {
+            self.addition_task_pull_request(w, r, store, &parts[1]);
+            return;
+        }
         let (title, brief, note, reason, ok) = if parts[2] == "amend" {
             let has_title = payload.contains_key("title");
             let (title, ok1) = addition_string(w, &payload, "title", has_title);
@@ -792,6 +803,72 @@ impl Handler {
             }
         };
         write_json(w, 200, json!({"task": task}));
+    }
+
+    /// `POST /api/v1/tasks/{id}/pull-request`: the owner asks for what the
+    /// task landed to go to the forge as a pull request from `pulse/landed`,
+    /// whatever `landing.push` says. The daemon answers on its next landing
+    /// pass (`land.pr`, or `land.pr-answered` when nothing is ahead).
+    fn addition_task_pull_request(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        store: &pulse_store::Store,
+        id: &str,
+    ) {
+        let task = match self.addition_task(r, id) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        let delivery = match pulse_tasks::delivery_for(store, id) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        if !delivery.can_ask {
+            let (text, fix) = match delivery.state.as_str() {
+                "none" | "waiting" => (
+                    "Nothing of this task has landed on the default branch yet.".to_string(),
+                    "Wait for the landing; the pull request can be asked for then.".to_string(),
+                ),
+                "asked" => (
+                    "A pull request was already asked for; the daemon opens it on its next landing pass.".to_string(),
+                    "Watch the task's activity for the pull request.".to_string(),
+                ),
+                "pr" => (
+                    format!(
+                        "The landed work is on the pull request already{}.",
+                        if delivery.url.is_empty() { String::new() } else { format!(": {}", delivery.url) }
+                    ),
+                    "Merge it on the forge.".to_string(),
+                ),
+                _ => (
+                    "The landed work was pushed to the upstream already.".to_string(),
+                    "Nothing waits for a pull request.".to_string(),
+                ),
+            };
+            write_error(w, 409, "No pull request to ask for".to_string(), text, fix);
+            return;
+        }
+        let project = addition_row_string(&task, "project");
+        if let Err(e) = pulse_tasks::ask_pull_request(store, &project, id, pulse_store::HUMAN_AGENT)
+        {
+            addition_failure(w, e.to_string());
+            return;
+        }
+        let delivery = match pulse_tasks::delivery_for(store, id) {
+            Ok(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        write_json(w, 202, json!({"task": task, "delivery": delivery}));
     }
 
     pub(crate) fn addition_message_write(&self, w: &mut ResponseWriter, r: &Request) {
@@ -2362,6 +2439,78 @@ mod tests {
             r#"{"status":"in_progress"}"#,
         );
         assert_eq!(status, 409);
+    }
+
+    #[test]
+    fn task_detail_carries_delivery_and_the_owner_asks_for_a_pull_request() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let task =
+            pulse_tasks::new(&s.store, "one", "Impressum page", "add it", 0, "human").unwrap();
+        let id = task.id.clone();
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["delivery"]["state"], "none");
+        // Nothing landed: no pull request to ask for.
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/pull-request"),
+            "{}",
+        );
+        assert_eq!(status, 409, "{result:?}");
+
+        s.store
+            .conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+                 ('JOB-imp', 'one', 'task', 'Add the page', ?, 'done', '2026-10-30T14:00:00Z', 'one-lead', '')",
+                [format!("task:{id}")],
+            )
+            .unwrap();
+        pulse_bus::emit(
+            &s.store,
+            "daemon",
+            "land.landed",
+            "pulse/worker/JOB-imp",
+            r#"{"project": "one", "job": "JOB-imp", "code_delivery": {"after": "59f641d2c3b4"}}"#,
+        )
+        .unwrap();
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200);
+        assert_eq!(result["delivery"]["state"], "landed");
+        assert_eq!(result["delivery"]["sha"], "59f641d2c3b4");
+        assert_eq!(result["delivery"]["can_ask"], true);
+
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/pull-request"),
+            "{}",
+        );
+        assert_eq!(status, 202, "{result:?}");
+        assert_eq!(result["delivery"]["state"], "asked");
+        assert_eq!(result["delivery"]["can_ask"], false);
+        assert!(pulse_tasks::pull_request_asked(&s.store, "one"));
+        // Asked once; the daemon answers before another ask is taken.
+        let (status, _) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/pull-request"),
+            "{}",
+        );
+        assert_eq!(status, 409);
+        let (status, _) = http::additions_request(
+            http::handler(&s),
+            "GET",
+            &format!("/api/v1/tasks/{id}/pull-request"),
+            "",
+        );
+        assert_eq!(status, 405);
     }
 
     #[test]

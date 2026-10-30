@@ -287,7 +287,12 @@ activity fold under **Details for this machine**.
   it. **Full run** on a
   chapter opens the whole harness session; the feed keeps the newest 400
   lines and *Show everything* fetches the rest (`GET
-  /api/v1/tasks/<id>/activity?limit=0`).
+  /api/v1/tasks/<id>/activity?limit=0`). Under the title a delivery line
+  says where the task's code is once it landed: on this machine only, held
+  with the push's reason, pushed to the upstream, or on pull request #N -
+  with **Open a pull request** while it is not on GitHub yet (`delivery` on
+  `GET /api/v1/tasks/<id>`, `POST /api/v1/tasks/<id>/pull-request`; see
+  `landing.push`).
 - **Suggested work** - the agents propose the next task; another agent
   judges it before it reaches you. The Work tab's **Suggested next** panel
   lists each suggestion with who made it and where its review stands; a
@@ -3749,8 +3754,30 @@ and the hold note names the `git remote set-url --push` to run when it does
 not. A push that is still refused (no credentials, no upstream) never undoes
 the landing: it is a `landing` note in `pulse status` and the hub and a
 `land.held` event once per change, retried every tick until it goes through as
-`land.pushed`. `pulse land` by hand does the same. Workers never push,
-whatever the setting.
+`land.pushed`; the note ends with the way to a pull request instead. `pulse
+land` by hand does the same. Workers never push, whatever the setting.
+`pulse settings landing.push pr`: the daemon pushes the default branch to the
+PULSE-owned `pulse/landed` branch on the upstream instead - a plain push,
+never a force; a `pulse/landed` someone else moved holds with the reason -
+and keeps one pull request open from it into the upstream branch (`gh`, the
+GitHub CLI, logged in as the user the daemon runs as; its login never
+reaches git), so every landing waits for your merge on the forge. Later
+landings push to the same branch and update the open pull request; a merged
+one is followed by a fresh pull request with only what is new (merge with a
+merge commit: a squash or rebase merge lists the old commits again). When
+the upstream moved and merging it conflicts, the pull request still opens
+and shows the conflict for you to resolve there, nothing holds here. The
+pull request is `land.pr` in the log, with its number and url. Whatever the
+setting says, a task's sheet in the hub offers **Open a pull request** once
+its work landed and is not on the forge yet (the Task API: `POST
+/api/v1/tasks/{id}/pull-request`), and `pulse land --project <slug> --pr`
+asks the same way: the daemon's next landing pass delivers that project's
+landed work as a pull request (`land.pr-asked`, answered by `land.pr`, or by
+`land.pr-answered` when the upstream already has everything). The sheet's
+delivery line says where a task's code is - landed here only, held with the
+push's reason, on the upstream, or on pull request #N - and the task's
+activity feed carries the same, so the lead agent reads at close whether the
+work reached GitHub, not only that it landed.
 Before you push, `pulse verify <ref>` checks that a landed commit's signature
 and its `Pulse-Agent`/`Pulse-Job`/`Pulse-Executor` trailers match the run that
 made it (ADR-022); `pulse signers` lists the keys it trusts.
