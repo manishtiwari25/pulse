@@ -149,14 +149,6 @@ pub fn present(k: &SkillPick, shape: &Shape) -> bool {
 /// The name the draft is registered under: the recipe's own, unless another
 /// project's skill already holds it (names are unique across the registry),
 /// then `<slug>-<name>`.
-pub fn draft_name(k: &SkillPick, shape: &Shape) -> String {
-    if shape.skill_names_taken.contains(k.name) && !shape.skills.contains(k.name) {
-        format!("{}-{}", shape.project, k.name)
-    } else {
-        k.name.to_string()
-    }
-}
-
 fn migration_tool(s: &Shape) -> Option<(&'static str, &'static str)> {
     if s.has("prisma/migrations") || s.has("prisma/schema.prisma") {
         Some(("prisma/migrations", "prisma"))
@@ -520,13 +512,6 @@ mod tests {
         let mut s = shape(&["Dockerfile"], &[]);
         let k = pick("containers").unwrap();
         assert!(!present(k, &s));
-        assert_eq!(draft_name(k, &s), "containers");
-        s.skill_names_taken.insert("containers".into());
-        assert_eq!(
-            draft_name(k, &s),
-            "blog-containers",
-            "another project holds the name"
-        );
         s.skills.insert("docker".into());
         assert!(present(k, &s));
     }

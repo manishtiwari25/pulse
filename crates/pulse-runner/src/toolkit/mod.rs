@@ -53,11 +53,11 @@ pub struct ToolSuggestion {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SkillSuggestion {
     pub project: String,
-    /// The name the draft is registered under: the recipe's, or
-    /// `<slug>-<recipe>` when another project's skill holds it.
+    /// The name the draft is registered under: the recipe's. A name is
+    /// unique as the project sees it, so another project's skill of that
+    /// name never pushes a draft to a prefixed form.
     pub name: String,
-    /// The catalog recipe; the board thread and the summary use it, so a
-    /// name that falls back to the prefixed form is still the same ask.
+    /// The catalog recipe; the board thread and the summary use it.
     pub recipe: String,
     pub description: String,
     pub why: String,
@@ -138,7 +138,7 @@ fn tool_suggestion(t: &tools::ToolPick, shape: &Shape, why: String) -> ToolSugge
 }
 
 fn skill_suggestion(k: &skills::SkillPick, shape: &Shape, why: String) -> SkillSuggestion {
-    let name = skills::draft_name(k, shape);
+    let name = k.name.to_string();
     SkillSuggestion {
         project: shape.project.clone(),
         name: name.clone(),
@@ -222,16 +222,13 @@ pub fn add_skill(
     name: &str,
 ) -> Result<pulse_store::Skill> {
     let shape = shape::read(s, slug);
-    let Some(k) = skills::SKILLS
-        .iter()
-        .find(|k| k.name == name || skills::draft_name(k, &shape) == name)
-    else {
+    let Some(k) = skills::SKILLS.iter().find(|k| k.name == name) else {
         anyhow::bail!("No skill {name:?} in the catalog (pulse toolkit --json lists it)");
     };
     s.add_skill(
         actor,
         pulse_store::SkillInput {
-            name: skills::draft_name(k, &shape),
+            name: k.name.into(),
             project: slug.into(),
             description: k.description.into(),
             body: (k.body)(&shape),
@@ -462,6 +459,13 @@ fn add_toolkit_unasked(
         };
         let (summary, body, resolution) = match &added {
             Ok((id, auth)) => {
+                // By id: another project may hold a skill of the same name.
+                let undo = match &c {
+                    Candidate::Skill(_) => {
+                        format!("pulse skill disable {id}; edit it: pulse skill update {id}")
+                    }
+                    Candidate::Tool(_) => undo.clone(),
+                };
                 let sign_in = if auth == "oauth" {
                     format!(
                         "\n\nIt works once someone signs in: **Sign in** on its card under Connections, or `pulse mcp login {name}` in a terminal; until then agents see it as not signed in and skip it."
@@ -604,19 +608,10 @@ Connect it: `{add}`\n{after}\n\
 }
 
 fn skill_body(k: &SkillSuggestion, days: i32) -> String {
-    let named = if k.name == k.recipe {
-        String::new()
-    } else {
-        format!(
-            " Another project's skill holds the name `{recipe}`, so this one is registered as `{name}`.",
-            recipe = k.recipe,
-            name = k.name
-        )
-    };
     format!(
         "`{slug}` shows this: {why}.\n\n\
 A **{recipe}** skill would tell every agent: {description}\n\n\
-I drafted it from the checkout (the body is below the line); `pulse toolkit draft {recipe} --project {slug}` prints it alone.{named}\n\n\
+I drafted it from the checkout (the body is below the line); `pulse toolkit draft {recipe} --project {slug}` prints it alone.\n\n\
 Add it: `pulse toolkit add skill {recipe} --project {slug}`\n\n\
 {decline}\n\n\
 A **yes** on this question adds it as drafted; edit it after with `pulse skill update {name}`. The line below is how pulse knows which:\n\n\
@@ -972,7 +967,7 @@ pub(crate) fn cmd_toolkit(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
                     writeln!(
                         c.out,
                         "{} {} added for {}; edit it with pulse skill update {}",
-                        k.id, k.name, k.project, k.name
+                        k.id, k.name, k.project, k.id
                     )?;
                 }
             }
@@ -993,10 +988,7 @@ pub(crate) fn cmd_toolkit(c: &mut Context, fs: &FlagSet, args: &[String]) -> Res
                 .into());
             }
             let shape = shape::read(s, &project);
-            let Some(k) = skills::SKILLS
-                .iter()
-                .find(|k| k.name == name || skills::draft_name(k, &shape) == name)
-            else {
+            let Some(k) = skills::SKILLS.iter().find(|k| k.name == name) else {
                 return Err(pulse_cli::errorf(
                     2,
                     &format!("No skill {name:?} in the catalog"),
@@ -1213,7 +1205,8 @@ mod tests {
             names(&skills, |k| &k.name),
             ["dev-setup", "ui-check", "release-check", "db-migrations"]
         );
-        // A skill name another project holds moves the draft under this one.
+        // A skill name another project holds is no concern of this one: the
+        // draft keeps its name and registers beside theirs.
         s.add_skill(
             "human:owner",
             pulse_store::SkillInput {
@@ -1227,13 +1220,14 @@ mod tests {
         .unwrap();
         let (_, skills) = suggestions(&s, "proj");
         assert!(
-            names(&skills, |k| &k.name).contains(&"proj-ui-check".to_string()),
+            names(&skills, |k| &k.name).contains(&"ui-check".to_string()),
             "{:?}",
             names(&skills, |k| &k.name)
         );
-        let added = add_skill(&s, "human:owner", "proj", "proj-ui-check").unwrap();
-        assert_eq!(added.name, "proj-ui-check");
+        let added = add_skill(&s, "human:owner", "proj", "ui-check").unwrap();
+        assert_eq!(added.name, "ui-check");
         assert_eq!(added.project, "proj");
+        assert_eq!(s.skills_named("ui-check").unwrap().len(), 2);
         assert!(added.body.contains("UI check for proj"));
         let (_, skills) = suggestions(&s, "proj");
         assert!(
@@ -1447,9 +1441,9 @@ mod tests {
             conn.execute("DELETE FROM meta WHERE key = 'toolkit-suggest:proj'", [])
                 .unwrap();
         };
-        // Another project holds the `dev-setup` name, so proj's draft falls
-        // back to `proj-dev-setup`; it also holds `ui-check` and the
-        // fallback `proj-ui-check`, so that add has nowhere to go.
+        // Another project holds the `dev-setup` and `ui-check` names; a
+        // name is unique as one project sees it, so proj's drafts keep
+        // theirs and register beside the other project's.
         {
             let conn = s.conn().unwrap();
             conn.execute(
@@ -1458,7 +1452,7 @@ mod tests {
             )
             .unwrap();
         }
-        for name in ["dev-setup", "ui-check", "proj-ui-check"] {
+        for name in ["dev-setup", "ui-check"] {
             s.add_skill(
                 pulse_store::HUMAN_AGENT,
                 pulse_store::SkillInput {
@@ -1560,8 +1554,8 @@ mod tests {
             vec![
                 "added tool github (MCP-001) for proj while the owner is away; it waits for a sign-in: pulse mcp login github".to_string(),
                 "added tool playwright (MCP-002) for proj while the owner is away".into(),
-                "added skill dev-setup (SKILL-004) for proj while the owner is away".into(),
-                "could not add skill ui-check for proj while the owner is away: Invalid name proj-ui-check: SKILL-003 already uses it; pick another or update that one (pulse skill update proj-ui-check)".into(),
+                "added skill dev-setup (SKILL-003) for proj while the owner is away".into(),
+                "added skill ui-check (SKILL-004) for proj while the owner is away".into(),
             ]
         );
         assert!(
@@ -1570,11 +1564,12 @@ mod tests {
         );
         assert_eq!(s.mcp_server("", "github").unwrap().created_by, "daemon");
         assert_eq!(s.mcp_server("proj", "playwright").unwrap().auth, "none");
-        let k = s.skill("proj-dev-setup").unwrap();
+        let k = s.skill_for("proj", "dev-setup").unwrap();
         assert_eq!(
-            (k.project.as_str(), k.created_by.as_str()),
-            ("proj", "daemon")
+            (k.id.as_str(), k.project.as_str(), k.created_by.as_str()),
+            ("SKILL-003", "proj", "daemon")
         );
+        assert_eq!(s.skill_for("other", "dev-setup").unwrap().id, "SKILL-001");
         assert!(k.body.contains("npm ci"), "{}", k.body);
         assert!(
             s.mcp_server("proj", "postgres").is_err(),
@@ -1621,7 +1616,7 @@ mod tests {
                     "result".into(),
                     "skill-ui-check".into(),
                     String::new(),
-                    "dropped".into()
+                    "proceeded".into()
                 ),
             ]
         );
@@ -1646,18 +1641,21 @@ mod tests {
         );
         let body = posts[2].str("body");
         assert!(body.contains("owner.presence = away"), "{body}");
-        assert!(body.contains("Undo it: `pulse skill disable proj-dev-setup; edit it: pulse skill update proj-dev-setup`"), "{body}");
+        assert!(
+            body.contains(
+                "Undo it: `pulse skill disable SKILL-003; edit it: pulse skill update SKILL-003`"
+            ),
+            "{body}"
+        );
         assert!(
             posts[3]
                 .str("summary")
-                .starts_with("Could not add the ui-check skill to proj on its own:"),
+                .starts_with("Added an ui-check skill to proj while the owner is away:"),
             "{}",
             posts[3].str("summary")
         );
         assert!(
-            posts[3]
-                .str("body")
-                .contains("`pulse toolkit add skill proj-ui-check --project proj"),
+            posts[3].str("body").contains("(SKILL-004)"),
             "{}",
             posts[3].str("body")
         );
@@ -1671,7 +1669,7 @@ mod tests {
         );
         assert_eq!(
             names(&events, |e| e.0.get("subject").unwrap().as_str().unwrap()),
-            ["MCP-001", "MCP-002", "SKILL-004"]
+            ["MCP-001", "MCP-002", "SKILL-003", "SKILL-004"]
         );
         let detail: serde_json::Value = serde_json::from_str(&events[2].str("detail")).unwrap();
         assert_eq!(detail["name"], "dev-setup");
@@ -1689,13 +1687,9 @@ mod tests {
         );
         forget_memo();
         let lines = suggest_toolkit(&s, "proj", &plus_hours(&now, 24.0 * 31.0), "daemon");
-        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
             lines[0].starts_with("added tool context7 (MCP-003) for proj while the owner is away"),
-            "{lines:?}"
-        );
-        assert!(
-            lines[1].starts_with("could not add skill ui-check"),
             "{lines:?}"
         );
         assert_eq!(
@@ -1704,10 +1698,11 @@ mod tests {
                 "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND thread = 'skill-ui-check'",
                 &[]
             ),
-            2
+            1,
+            "an added skill is reported once and never asked about again"
         );
         // Back, the owner is asked again - about what is left: the tool that
-        // needed their secret, then the skill that would not add.
+        // needed their secret.
         set_setting(&s, "owner.presence", "present");
         forget_memo();
         let lines = suggest_toolkit(&s, "proj", &plus_hours(&now, 24.0 * 62.0), "daemon");

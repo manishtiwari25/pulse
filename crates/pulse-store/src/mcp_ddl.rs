@@ -23,7 +23,7 @@ pub const MCP_DDL: &[&str] = &[
 );"####,
     r####"CREATE TABLE IF NOT EXISTS skills (
   id TEXT PRIMARY KEY,                -- SKILL-001
-  name TEXT NOT NULL UNIQUE,          -- slug [a-z0-9][a-z0-9-]*
+  name TEXT NOT NULL,                 -- slug [a-z0-9][a-z0-9-]*; unique in a project's view (its own plus the shared ones)
   project TEXT NOT NULL DEFAULT '',   -- '' = every project
   description TEXT NOT NULL,          -- one line
   body TEXT NOT NULL,                 -- markdown
@@ -32,7 +32,8 @@ pub const MCP_DDL: &[&str] = &[
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   uses INTEGER NOT NULL DEFAULT 0,
-  origin TEXT NOT NULL DEFAULT ''     -- '' when added by hand; repo:<path> when a SKILL.md of the project keeps it
+  origin TEXT NOT NULL DEFAULT '',    -- '' when added by hand; repo:<path> when a SKILL.md of the project keeps it
+  UNIQUE(project, name)
 );"####,
 ];
 

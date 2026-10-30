@@ -944,8 +944,10 @@ comes from the front matter's `description:` when there is one, else the
 first line of text that is not a heading, cut at 200 characters; the body is
 the file's body plus a footer listing the support files beside it, which a
 run loads with `skill(name, file)`. The first folder to define a name wins
-and a second one is a problem; a name a skill added by hand already uses is
-a problem too (rename one of them). The registered skill carries
+and a second one is a problem; a name a skill added by hand already uses -
+this project's own or one shared with every project - is a problem too
+(rename one of them), while another project's skill of the same name is no
+concern: each project's view is its own. The registered skill carries
 `origin = repo:<path>`: `pulse skill list` shows `repository` in its *BY*
 column, the hub shows *Kept by the repository* and no *Edit* button, and
 `pulse skill update` or the hub's editor refuse it, because the next sync
@@ -1468,7 +1470,13 @@ projects*; `pulse skill update NAME --project P` (or `--project ''`) moves one
 later. A remote worker has no store, so its brief carries the skill bodies themselves
 (long ones cut at a fixed length) and asks it to put a new recipe in a
 `FINDING:` line for its lead. Bodies are refused when they carry something
-shaped like a secret - skills are shared with every agent. The hub's
+shaped like a secret - skills are shared with every agent (a run of `-`, `=`
+or `_` as long as a token, a Markdown rule or a table's divider, is not one).
+A name is unique as one project sees it - its own skills plus the ones shared
+with every project - so two projects may each keep a `release`, while a
+shared `release` blocks a project's own; by name, `show`, `update`, `enable`
+and `disable` look from your shell's project (`PULSE_PROJECT`) first and ask
+for the id when several projects use the name. The hub's
 **Connections** page has a *Skills* tab: the list, *Add skill* with a
 markdown editor and preview, *Read*, *Edit*, *Enable* / *Disable*; routes
 `/api/v1/skills`, `/api/v1/skills/{id}` (`GET`, `PATCH`) and
