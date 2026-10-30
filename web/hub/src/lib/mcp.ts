@@ -147,12 +147,61 @@ export function secretHint(auth: McpAuth): string {
   }
 }
 
-// One argument per line; blank lines are dropped, surrounding spaces trimmed.
+// The words of one line of a command line, split like a POSIX shell would:
+// on unquoted whitespace, with '...' and "..." holding their spaces and a
+// backslash escaping the next character outside single quotes. The quotes
+// themselves are dropped. An unclosed quote runs to the end of the line.
+export function shellWords(line: string): string[] {
+  const out: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: "'" | '"' | "" = "";
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote === "'") {
+      if (c === "'") quote = "";
+      else word += c;
+    } else if (quote === '"') {
+      if (c === '"') quote = "";
+      else if (c === "\\" && i + 1 < line.length && '"\\$`'.includes(line[i + 1])) word += line[++i];
+      else word += c;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+      inWord = true;
+    } else if (c === "\\" && i + 1 < line.length) {
+      word += line[++i];
+      inWord = true;
+    } else if (/\s/.test(c)) {
+      if (inWord) out.push(word);
+      word = "";
+      inWord = false;
+    } else {
+      word += c;
+      inWord = true;
+    }
+  }
+  if (inWord) out.push(word);
+  return out;
+}
+
+// The arguments of the form: one per line, or a line that holds several
+// separated by spaces as they would be typed in a shell (quote one that holds
+// spaces). Blank lines are dropped. Pasting `-y @azure/mcp@latest server
+// start` on one line thus gives four arguments, never one the program does
+// not know.
 export function parseArgs(text: string): string[] {
-  return text
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return text.split(/\r?\n/).flatMap(shellWords);
+}
+
+// A command pasted with its arguments (`npx -y @azure/mcp@latest server
+// start`) becomes the program alone and the arguments it carried, in front of
+// the ones in the Arguments box. Quote a program path that holds spaces.
+export function splitCommandLine(command: string, args: string[]): { command: string; args: string[] } {
+  const trimmed = command.trim();
+  if (!/\s|["']/.test(trimmed)) return { command: trimmed, args };
+  const words = shellWords(trimmed);
+  if (words.length === 0) return { command: "", args };
+  return { command: words[0], args: [...words.slice(1), ...args] };
 }
 
 export const argsText = (args: string[] | undefined | null): string => (args ?? []).join("\n");
@@ -253,12 +302,13 @@ export function validateMcpForm(f: McpForm, options: McpOptions | undefined | nu
 
 export function mcpInput(f: McpForm): McpServerInput {
   const stdio = f.transport === "stdio";
+  const program = stdio ? splitCommandLine(f.command, parseArgs(f.args)) : { command: "", args: [] };
   return {
     name: f.name.trim(),
     project: f.project,
     transport: f.transport,
-    command: stdio ? f.command.trim() : "",
-    args: stdio ? parseArgs(f.args) : [],
+    command: program.command,
+    args: program.args,
     url: stdio ? "" : f.url.trim(),
     auth: f.auth,
     auth_header: authFieldLabel(f.auth) ? f.auth_header.trim() : "",

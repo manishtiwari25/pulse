@@ -142,12 +142,12 @@ function McpFormBody({ options, server, project, initial, close }: { options: Mc
             <div className="grid content-start gap-1.5">
               <Label htmlFor="mcp-command">Command</Label>
               <Input id="mcp-command" value={f.command} onChange={(e) => set("command", e.target.value)} placeholder="npx" spellCheck={false} className="font-mono text-[13px]" />
-              <p className="text-xs text-muted-foreground">The program to start on this machine, by name (on the PATH) or full path. It runs as the runner&apos;s user.</p>
+              <p className="text-xs text-muted-foreground">The program to start on this machine, by name (on the PATH) or full path. It runs as the runner&apos;s user. A whole line such as <code>npx -y @azure/mcp@latest server start</code> works too: the first word is the program, the rest its arguments.</p>
             </div>
             <div className="grid content-start gap-1.5">
               <Label htmlFor="mcp-args">Arguments</Label>
               <Textarea id="mcp-args" value={f.args} onChange={(e) => set("args", e.target.value)} rows={3} placeholder={"-y\n@modelcontextprotocol/server-github"} spellCheck={false} className="min-h-[4.5rem] font-mono text-[13px]" />
-              <p className="text-xs text-muted-foreground">What follows the command, one per line.</p>
+              <p className="text-xs text-muted-foreground">What follows the command: one per line, or several on a line separated by spaces as in a shell. Quote an argument that holds spaces.</p>
             </div>
           </div>
         ) : (
