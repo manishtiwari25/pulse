@@ -13,9 +13,27 @@ pub fn parse_mentions(text: &str) -> Vec<String> {
         "invalid",
         "simple",
     );
-    let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
+    for mut name in mention_tokens(text) {
+        if name == "owner" {
+            name = pulse_store::HUMAN_AGENT.to_string();
+        }
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Every `@name` in `text` as a name: the `@` at a word boundary, the token
+/// cut at whitespace or a bracket, trailing punctuation dropped, lowercased,
+/// valid as a name, each once in order of first appearance. `parse_mentions`
+/// reads these as agents (`@owner` is the human); the project tags in `asks`
+/// read the same tokens as project slugs, so one spelling rule serves both.
+pub(crate) fn mention_tokens(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] != '@' || !mention_boundary(&chars, i) {
@@ -27,13 +45,10 @@ pub fn parse_mentions(text: &str) -> Vec<String> {
             j += 1;
         }
         let raw: String = chars[i + 1..j].iter().collect();
-        let mut name = raw
+        let name = raw
             .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}'])
             .to_ascii_lowercase();
-        if name == "owner" {
-            name = pulse_store::HUMAN_AGENT.to_string();
-        }
-        if valid_name(&name) && seen.insert(name.clone()) {
+        if valid_name(&name) && !out.contains(&name) {
             out.push(name);
         }
         i = j;

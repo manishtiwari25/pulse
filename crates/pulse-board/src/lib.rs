@@ -1,6 +1,7 @@
 //! PULSE: posts, agents, projects, jobs, decide, init, export, remove.
 
 pub mod agents;
+pub mod asks;
 pub mod board;
 pub mod commands;
 pub mod export;
@@ -15,6 +16,7 @@ pub mod threads;
 pub mod write_transaction;
 
 pub use agents::*;
+pub use asks::*;
 pub use board::*;
 pub use commands::*;
 pub use export::*;

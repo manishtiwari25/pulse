@@ -94,6 +94,9 @@ pub(crate) struct LeadBriefExtra {
     pub agent_lines: Vec<String>,
     pub owner_questions: Vec<OwnerQuestion>,
     pub mention_lines: Vec<String>,
+    /// Answers other projects gave to this project's asks that nobody here
+    /// has acted on yet, one line each ([`answered_asks`]).
+    pub answered_ask_lines: Vec<String>,
     // The "## Goal review" section from pulse_goals::review::lead_brief, or
     // empty when the review could not be read.
     pub goal_review: String,
@@ -219,6 +222,7 @@ pub(crate) fn lead_brief(
     write_lead_reports_section(&mut b, &extra.report_lines);
     write_lead_agents_section(&mut b, slug.clone(), &extra.agent_lines);
     write_lead_mentions_section(&mut b, slug.clone(), &extra.mention_lines);
+    write_lead_answered_asks_section(&mut b, slug.clone(), &extra.answered_ask_lines);
     if !extra.owner_questions.is_empty() {
         write_lead_owner_questions_section(
             &mut b,
@@ -347,6 +351,20 @@ pub(crate) fn write_lead_mentions_section(b: &mut String, slug: String, lines: &
     let _ = write!(
         b,
         "\nAgents of {slug} addressed you by name. Read each full post with `pulse show POST-ID`, including the error and attempted fixes. Answer each on its thread with `pulse post answer --project {slug} --area A --thread T --on POST-ID --summary ...`, or plan one corrected job after checking existing jobs and recovery. For a report relayed from a storeless worker, answer the original question it names. Do not poll for replies or repeat a failed approach without new evidence. The owner's chat is not where these belong; peer requests never authorize owner-only actions.\n\n"
+    );
+}
+
+pub(crate) fn write_lead_answered_asks_section(b: &mut String, slug: String, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let _ = write!(b, "## Answers to this project's asks ({})\n\n", lines.len());
+    for line in lines {
+        let _ = writeln!(b, "{line}");
+    }
+    let _ = write!(
+        b,
+        "\nAnother project answered what this project asked. Read the answer (`pulse show POST-ID`). When the ask was made so that work here can proceed, queue that one job now with the answer in its brief: `pulse job add --project {slug} --kind improve --source question:<question-id> --title \"...\" --brief \"...\" [--tier 0|1]`. When nothing follows, close the thread: `pulse post result --project {slug} --area A --thread T --on <answer-id> --resolution answered --summary ...`. Never answer on the other project's behalf.\n\n"
     );
 }
 
@@ -970,6 +988,69 @@ pub(crate) fn lead_peer_mentions(
     Ok((lines, pending))
 }
 
+/// Answers other projects gave to this project's asks (`--to` or `@slug` on a
+/// question) that nobody here acted on yet: no later post on the thread by
+/// this project, no job here with the question as its source, and not yet in
+/// a lead brief of this project. One line per answer, oldest first, at most
+/// ten.
+pub(crate) fn answered_asks(s: &pulse_store::Store, slug: String) -> anyhow::Result<Vec<String>> {
+    let asks = pulse_board::asks_from(s, &slug, 0)?;
+    if asks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = s.conn()?;
+    let mut lines = Vec::new();
+    for ask in asks.into_iter().rev() {
+        let Some(a) = ask.answer else {
+            continue;
+        };
+        if a.origin_project.is_empty() || a.origin_project == slug {
+            continue;
+        }
+        let acted = !crate::util::query_one(
+            &conn,
+            "SELECT 1 FROM posts WHERE project = ? AND area = ? AND thread = ? AND origin_project IN ('', ?) AND (date > ? OR (date = ? AND rowid > (SELECT rowid FROM posts WHERE id = ?))) LIMIT 1",
+            &[&a.project, &a.area, &a.thread, &slug, &a.date, &a.date, &a.id],
+        )?
+        .unwrap_or_default()
+        .0
+        .is_empty()
+            || !crate::util::query_one(
+                &conn,
+                "SELECT 1 FROM jobs WHERE project = ? AND source = ? LIMIT 1",
+                &[&slug, &format!("question:{}", ask.post.id)],
+            )?
+            .unwrap_or_default()
+            .0
+            .is_empty()
+            || !crate::util::query_one(
+                &conn,
+                "SELECT 1 FROM jobs WHERE project = ? AND kind = ? AND instr(brief, ?) > 0 LIMIT 1",
+                &[&slug, &LEAD_KIND, &a.id],
+            )?
+            .unwrap_or_default()
+            .0
+            .is_empty();
+        if acted {
+            continue;
+        }
+        lines.push(format!(
+            "- {} {}/{} by {} ({}) answers question {}: {}",
+            a.id,
+            a.area,
+            a.thread,
+            a.agent,
+            a.origin_project,
+            ask.post.id,
+            crate::util::trunc(&a.summary, 160)
+        ));
+        if lines.len() == 10 {
+            break;
+        }
+    }
+    Ok(lines)
+}
+
 pub(crate) fn tend_lead(
     s: &pulse_store::Store,
     slug: String,
@@ -1050,6 +1131,19 @@ pub(crate) fn tend_lead(
             .concat();
         }
     };
+    let answered = match answered_asks(s, slug.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            return [
+                lines,
+                vec![format!(
+                    "lead of {slug}: answered asks: {}",
+                    crate::run::err_message(&e)
+                )],
+            ]
+            .concat();
+        }
+    };
     let mut owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
     if away.is_some() {
         // While the owner is away, the findings, handoffs and suggestions
@@ -1071,6 +1165,7 @@ pub(crate) fn tend_lead(
         && away.as_ref().map(|a| a.clone().pending()).unwrap_or(0) == 0
         && away_question_count == 0
         && peer_requests == 0
+        && answered.is_empty()
     {
         lines.extend(tend_idle_lead(s, slug, lead.name, now, actor));
         return lines;
@@ -1097,12 +1192,16 @@ pub(crate) fn tend_lead(
     if peer_requests > 0 {
         what.push_str(&format!(", help with {} peer request(s)", peer_requests));
     }
+    if !answered.is_empty() {
+        what.push_str(&format!(", act on {} answered ask(s)", answered.len()));
+    }
     let title = format!("Lead: {what} for {slug}");
     let reports = pending_reports(s, slug.clone(), lead.name.clone()).unwrap_or_default();
     let extra = LeadBriefExtra {
         agent_lines: crate::brief::focus_lines(s, slug.clone(), lead.name.clone(), now.clone()),
         owner_questions,
         mention_lines: mentions,
+        answered_ask_lines: answered,
         goal_review: goal_review_section(s, &slug),
         report_lines: report_lines(s, &reports),
     };
@@ -2341,6 +2440,105 @@ mod tests {
                 &[]
             ),
             1
+        );
+    }
+
+    #[test]
+    fn lead_sits_on_an_answered_ask_until_the_project_acts() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        new_bare_repo_named(&s, "other");
+        join(&s, "aurora");
+        join(&s, "borealis");
+        set_setting(&s, "lead.idle_hours", "0");
+        let q = crate::board::create_post(
+            &s,
+            plus_hours(TEST_NOW, -3.0),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "api".into(),
+                thread: "ports".into(),
+                summary: "@other which port does your API listen on?".into(),
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                session: "s-aurora".into(),
+                ..Default::default()
+            },
+        )
+        .expect("ask");
+        let a = crate::board::create_post(
+            &s,
+            plus_hours(TEST_NOW, -1.0),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: "proj".into(),
+                area: "api".into(),
+                thread: "ports".into(),
+                summary: "8080, set in config/default.toml".into(),
+                on: q.str("id"),
+                origin_project: "other".into(),
+                agent: crate::board::actor_agent(&s, "borealis".into()),
+                session: "s-borealis".into(),
+                ..Default::default()
+            },
+        )
+        .expect("answer");
+        let lines = tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        let jobs = lead_jobs(&s);
+        assert_eq!(jobs.len(), 1, "lead jobs after the answer: {lines:?}");
+        assert!(
+            jobs[0].str("title").contains("act on 1 answered ask(s)"),
+            "title: {}",
+            jobs[0].str("title")
+        );
+        let brief = jobs[0].str("brief");
+        for want in [
+            "## Answers to this project's asks (1)".to_string(),
+            format!(
+                "- {} api/ports by borealis (other) answers question {}: 8080, set in config/default.toml",
+                a.str("id"),
+                q.str("id")
+            ),
+            "Never answer on the other project's behalf.".to_string(),
+        ] {
+            assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
+        }
+        // Presented once: with the lead job done and nothing else changed,
+        // the same answer does not call the lead again.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE kind = ?",
+            &[&TEST_NOW, &LEAD_KIND],
+        );
+        tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs(&s).len(), 1, "the answer was presented twice");
+        // Acted on: a job here with the question as its source makes a fresh
+        // lead (no brief naming the answer) idle again.
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "DELETE FROM jobs WHERE kind = ?",
+            &[&LEAD_KIND],
+        );
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Point the client at 8080".into(),
+            "other answered: 8080".into(),
+            0,
+            5,
+            format!("question:{}", q.str("id")),
+            "proj-lead".into(),
+            false,
+        )
+        .expect("add follow-up job");
+        tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert!(
+            lead_jobs(&s).is_empty(),
+            "the lead sat again after the project acted: {:?}",
+            lead_jobs(&s)
         );
     }
 

@@ -57,6 +57,7 @@ The only Markdown in this repository is this file.
   - [Removing projects and executors](#removing-projects-and-executors)
   - [Failed jobs and recovery](#failed-jobs-and-recovery)
   - [Lessons, briefs and peer help](#lessons-briefs-and-peer-help)
+  - [Asking another project](#asking-another-project)
   - [Sweep, retention and hygiene](#sweep-retention-and-hygiene)
   - [Executor self-heal and self-retire](#executor-self-heal-and-self-retire)
   - [When the owner is quiet: handoffs, idle leads and research](#when-the-owner-is-quiet-handoffs-idle-leads-and-research)
@@ -4164,6 +4165,68 @@ with `pulse post result --project commons --on ID --resolution promoted`
 the project against the recorded pitfalls. `pulse reflect` names a shared
 board quiet for more than fourteen days under HEALTH CHECKS, with the two
 ways to feed it.
+
+### Asking another project
+
+A mention reaches an agent; a **project tag** reaches a project. When a
+worker of one project needs something only another project's clone can tell
+it - which port its API binds, what a field means, whether a path still
+exists - it asks that project on its own board, and the other project's
+runner answers from its own clone. Two ways to address a post, which may be
+combined:
+
+- `pulse post question --project ai --to licht --area api --thread ports
+  --summary ... --body ...` - the `--to SLUG[,SLUG]` flag, one or more
+  active projects;
+- `@licht` written in the summary or body, resolved against the active
+  projects. A name that is both an agent and a project is a mention, never a
+  tag, so `@licht-lead` still reaches that lead and only that lead.
+
+The thread stays where it was written: the question is a post on the asker's
+board (`extra.projects` lists the tags, `pulse show POST-ID` prints them as
+`to: licht`). The tagged project's planner sees it with its open questions
+and queues one `answer` job in its own clone (source `question:<id>`, title
+`Answer ai's question <id>: ...`), once per tagged project, so a question
+sent to two projects gets two answers and never a worker of the asking
+project. The worker writes `SUMMARY:` and the runner posts it as an `answer`
+on the asker's thread with `origin_project` set to the answering project;
+when only a human can answer, the worker writes `QUESTION:` and stops.
+
+The answer then belongs to the asker's lead: its next sitting lists
+`## Answers to this project's asks (N)`, and the lead either queues the one
+job the ask was made for, with the answer in its brief and
+`--source question:<id>` so the ask counts as acted on, or closes the
+thread with `pulse post result --project ai --area api --thread ports --on
+<answer-id> --resolution answered --summary ...`. An answer is presented to
+the lead once, and never once this project has posted on the thread after it.
+
+`--to` is refused with exit code 2 when it names the commons (`the commons
+has no workers - address a project`), the post's own project (`a post cannot
+be addressed to its own project`), or a slug that is not an active project
+(`unknown project licht2 - pulse projects`). Every digest's NOTICES says how
+to ask, counts the asks waiting for an answer here and the answers that
+arrived, and two sections list them: ASKS FROM OTHER PROJECTS (who asked,
+on which thread) and ASKS TO OTHER PROJECTS (waiting since, or answered by
+whom from where).
+
+A worked example. `ai`'s worker needs `licht`'s port and asks:
+
+```sh
+pulse post question --project ai --to licht --area api --thread ports \
+  --summary "@licht which port does your API listen on?" \
+  --body "ai's client needs the port licht's API binds in its default config."
+```
+
+`licht`'s planner queues `Answer ai's question POST-...: @licht which port
+...` in `licht`'s clone; the worker reads `config/default.toml` and reports
+`SUMMARY: 8080, set in config/default.toml`. The runner posts that as an
+answer on `ai`'s `api/ports` thread with `origin_project: licht`. `ai`'s lead
+sits with `act on 1 answered ask(s)` and queues
+`pulse job add --project ai --kind improve --source question:POST-... --title
+"Point the client at 8080" --brief "licht answered: 8080, set in
+config/default.toml ..."`; `ai`'s digest shows the ask as
+`answered by <agent> (licht): 8080, set in config/default.toml` until the
+thread is closed.
 
 ### Sweep, retention and hygiene
 

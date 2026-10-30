@@ -1,4 +1,5 @@
 use crate::agents::*;
+use crate::asks::parse_to_flag;
 use crate::board::*;
 use crate::export::export_store;
 use crate::jobs::*;
@@ -32,7 +33,7 @@ static REGISTER: Once = Once::new();
 pub fn register_commands() {
     REGISTER.call_once(|| {
         cli_register(Command { name:"agent".into(), group:"agents".into(), summary:"join with a unique name, spawn a worker, list, beat, or prune".into(), usage:"pulse agent join --name NAME [--runner R] [--model M] [--session S] [--display D] [--kind session|worker]\n       pulse agent spawn [--runner R] [--model M]\n       pulse agent list [--all] [--json]\n       pulse agent beat [--name NAME] [--json]        (a sign of life; silent agents are dead after heartbeat.dead_after)\n       pulse agent prune [--days N] [--dry-run] [--now T]\n       (`pulse agent` manages the running workers; `pulse agents` their definitions)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_agent, flags:Some(agent_flags) });
-        cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
+        cli_register(Command { name:"post".into(), group:"agents".into(), summary:"write one immutable post".into(), usage:format!("pulse post KIND --area A --thread T --summary S [--body TEXT | --body-file F | < stdin] [--on POST] [--vote up|down]\n       [--expires T] [--resolution R] [--links L] [--files F] [--text-hash H] [--origin-project P] [--claim-hours H] [--for-owner] [--to SLUG[,SLUG]] [--project SLUG]\n       kinds: {}", KINDS.join(", ")), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_post, flags:Some(post_flags) });
         cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"pulse claim --area A --thread T --summary S [--hours H] [--project SLUG] | pulse claim sweep [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       pulse thread show AREA/THREAD --project SLUG [--bodies]\n       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
@@ -91,6 +92,11 @@ pub fn post_flags(fs: &mut FlagSet) {
         "for-owner",
         false,
         "reserve this post for the owner, not a worker job",
+    );
+    fs.string_var(
+        "to",
+        "",
+        "ask another project: its slug (several with commas); a question it answers on this thread",
     );
 }
 fn claim_flags(fs: &mut FlagSet) {
@@ -492,6 +498,10 @@ fn print_post(c: &mut Context, row: &Post) -> Result<()> {
         write_json(&mut c.out, row)?
     } else {
         writeln!(c.out, "{}", row.id)?;
+        let to = row.projects();
+        if !to.is_empty() {
+            writeln!(c.out, "to: {}", to.join(", "))?;
+        }
         if row.deduped {
             writeln!(
                 c.out,
@@ -610,6 +620,7 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             text_hash: fs.get_string("text-hash"),
             origin_project: fs.get_string("origin-project"),
             for_owner: fs.get_bool("for-owner"),
+            to: parse_to_flag(&fs.get_string("to")),
             ..Default::default()
         },
     )?;

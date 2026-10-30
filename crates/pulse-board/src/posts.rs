@@ -44,6 +44,14 @@ pub struct Post {
     pub deduped: bool,
 }
 
+impl Post {
+    /// The projects this post is addressed to (`extra.projects`): empty when
+    /// it tags none or its metadata is not JSON.
+    pub fn projects(&self) -> Vec<String> {
+        crate::asks::extra_projects(&self.extra)
+    }
+}
+
 /// Names the shell-mangling pattern found in post text, if any: an empty
 /// backtick pair (`` `` ``) left where a double-quoted `` `word` `` was
 /// substituted away, or a doubled space inside a line where the dropped
@@ -171,6 +179,9 @@ pub struct PostInput {
     pub no_agent_check: bool,
     pub runner: String,
     pub model: String,
+    /// The projects the post is addressed to by `--to`; checked before the
+    /// post is written. `@slug` tags in the text join them without a check.
+    pub to: Vec<String>,
 }
 
 pub fn normalize_area(area: &str) -> String {
@@ -307,6 +318,8 @@ pub(crate) fn create_post_conn(
             ),
         ));
     }
+    let to = crate::asks::parse_to_flag(&input.to.join(","));
+    crate::asks::check_to_projects(s, &input.project, &to)?;
     let arow = if let Some(a) = input.agent_row.clone() {
         a
     } else if !input.no_agent_check {
@@ -483,13 +496,23 @@ pub(crate) fn create_post_conn(
     if input.for_owner {
         extra.insert("for_owner".to_string(), Value::Bool(true));
     }
-    let mentions = post_mentions(s, &agent_name, &(summary.clone() + "\n" + &input.body))?;
+    let text = summary.clone() + "\n" + &input.body;
+    let mentions = post_mentions(s, &agent_name, &text)?;
     extra.insert(
         "mentions".to_string(),
         if mentions.is_empty() {
             serde_json::Value::Null
         } else {
             json!(mentions)
+        },
+    );
+    let projects = crate::asks::post_projects(s, &input.project, &to, &text)?;
+    extra.insert(
+        "projects".to_string(),
+        if projects.is_empty() {
+            serde_json::Value::Null
+        } else {
+            json!(projects)
         },
     );
     let extra_text = pulse_store::py_json(Value::Object(extra))?;
@@ -544,6 +567,18 @@ pub(crate) fn create_post_conn(
             &name,
             pulse_store::Detail::json(
                 json!({"by": arow.name, "kind": input.kind, "post": pid, "project": input.project, "thread": thread_key}),
+            )?,
+        )?;
+    }
+    for slug in &projects {
+        event_conn(
+            conn,
+            s,
+            &arow.name,
+            "ask",
+            slug,
+            pulse_store::Detail::json(
+                json!({"by": arow.name, "kind": input.kind, "post": pid, "project": input.project, "thread": thread_key, "to": slug}),
             )?,
         )?;
     }
