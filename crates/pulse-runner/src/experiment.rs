@@ -501,6 +501,23 @@ pub(crate) fn land_experiment_context(
             Err(e) => return ("error".into(), crate::run::err_message(&e)),
         }
     }
+    // A deterministic archive validation refusal already held this job once:
+    // the row text has not changed, so do not measure again on later passes.
+    let held = crate::util::must_one(
+        &s.conn().unwrap(),
+        "SELECT 1 AS x FROM events WHERE action = 'land.unmeasured' AND subject = ? AND detail LIKE ? AND detail LIKE ?",
+        &[
+            &branch,
+            &format!("%{}%", job.str("id")),
+            &"%archive validation%".to_string(),
+        ],
+    );
+    if !crate::util::is_nil(&held) {
+        return (
+            "unmeasured".into(),
+            format!("{branch} not landed: measurement unavailable (archive validation)"),
+        );
+    }
     let limits = measure_limits(s);
     if let Some(why) = crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure()) {
         return (
@@ -784,6 +801,12 @@ pub(crate) fn land_experiment_context(
         Ok(v) => v,
         Err(e) if e.to_string() == pulse_evolve::err_not_implemented().to_string() => {
             return unavailable("evolve.Archive is not implemented".into(), e);
+        }
+        Err(e)
+            if e.downcast_ref::<pulse_evolve::ArchiveValidation>()
+                .is_some() =>
+        {
+            return unavailable(format!("archive validation for {suggestion}"), e);
         }
         Err(e) => {
             return (
@@ -1361,6 +1384,107 @@ mod tests {
             !exists && why.is_empty(),
             "finalized discard retained the branch: {exists}, {why}"
         );
+    }
+
+    #[test]
+    fn archive_validation_error_holds_once_without_remeasuring() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
+        let measure_calls = calls.clone();
+        let _old_measure =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                *measure_calls.lock().unwrap() += 1;
+                let score = if r#ref == "main" { 0.8 } else { 0.7 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        // The same refusal the credential filter raises on every pass: a
+        // deterministic ArchiveValidation error, never a transient store error.
+        // The seam is process-wide, so the stub refuses only this job's branch
+        // and delegates every other row to the prior hook, held in an Arc.
+        let archive_calls = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let count_archive = archive_calls.clone();
+        let branch = job.str("branch");
+        let prior: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<pulse_evolve::ArchiveFn>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let delegate = prior.clone();
+        let old = pulse_evolve::set_archive(Box::new(move |s, row| {
+            if row.branch == branch {
+                *count_archive.lock().unwrap() += 1;
+                return Err(anyhow::Error::new(pulse_evolve::ArchiveValidation(
+                    anyhow::anyhow!("archive text must not contain credentials"),
+                )));
+            }
+            let hook = delegate.lock().unwrap().clone();
+            match hook {
+                Some(h) => h(s, row),
+                // The delegate is set before land_experiment runs; this fallback is
+                // unreachable for non-matching rows but never recurses.
+                None => unreachable!("archive delegate not installed"),
+            }
+        }));
+        *prior.lock().unwrap() = Some(std::sync::Arc::from(old));
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "unmeasured",
+            "a deterministic archive validation error must not defer for re-measurement: {state}: {note}"
+        );
+        assert_eq!(*calls.lock().unwrap(), 2, "main + variant measured once");
+        assert_eq!(*archive_calls.lock().unwrap(), 1, "archive attempted once");
+        assert!(
+            note.contains("not landed: measurement unavailable"),
+            "note: {note}"
+        );
+        let posted = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND summary LIKE '%measurement unavailable%'",
+            &[],
+        );
+        assert_eq!(posted, 1, "one result post names the refused field");
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "unmeasured", "second pass: {state}: {note}");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            2,
+            "a second lane pass does not measure again"
+        );
+        assert_eq!(
+            *archive_calls.lock().unwrap(),
+            1,
+            "no second archive attempt"
+        );
+        let posted = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND summary LIKE '%measurement unavailable%'",
+            &[],
+        );
+        assert_eq!(posted, 1, "no duplicate result post");
+        assert_eq!(ref_of(&root, "HEAD"), before, "the branch is untouched");
+        // Restore the real archive hook so the rest of the process sees it.
+        let real = prior.lock().unwrap().clone();
+        if let Some(real) = real {
+            let _ = pulse_evolve::set_archive(Box::new(move |s, row| real(s, row)));
+        }
     }
 
     /// One metric fixture at weight 2 and one request fixture at weight 1:
