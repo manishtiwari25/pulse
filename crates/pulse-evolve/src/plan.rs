@@ -445,6 +445,7 @@ pub(crate) fn plan_experiment_locked(
             created_by: opts.agent.clone(),
             branch: card.branch,
             no_dedupe: true,
+            agent: String::new(),
         })?;
         if let Some(seen) = seen.as_deref_mut() {
             seen.insert(p.id.clone(), true);

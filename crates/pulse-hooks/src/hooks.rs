@@ -54,6 +54,65 @@ pub struct DeliveryState {
     pub last_error: String,
 }
 
+/// What a `job` hook queues, kept as JSON in the hook's `target`. In the
+/// title and the brief, `{{subject}}`, `{{detail}}`, `{{action}}`,
+/// `{{project}}`, `{{actor}}` and `{{at}}` stand for the event's fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobTemplate {
+    pub kind: String,
+    pub title: String,
+    pub brief: String,
+    pub tier: i64,
+    pub priority: i64,
+    /// The custom agent the job runs as (`--run-as`); empty lets the
+    /// runner choose.
+    #[serde(default)]
+    pub agent: String,
+}
+
+impl JobTemplate {
+    pub fn parse(target: &str) -> Result<Self> {
+        serde_json::from_str(target).with_context(|| format!("job hook target {target:?}"))
+    }
+}
+
+/// Characters of an event's detail a `{{detail}}` in a job template takes.
+const DETAIL_LIMIT: usize = 4000;
+
+/// Fills a job template's text from the event: each `{{name}}` of the
+/// fields above is replaced in one pass, anything else stays as written.
+pub fn fill(template: &str, e: &Event) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let Some(len) = rest[start..].find("}}") else {
+            break;
+        };
+        let key = &rest[start + 2..start + len];
+        let value = match key.trim() {
+            "subject" => Some(e.subject.clone()),
+            "detail" => Some(if e.detail.len() > DETAIL_LIMIT {
+                e.detail[..e.detail.floor_char_boundary(DETAIL_LIMIT)].to_string()
+            } else {
+                e.detail.clone()
+            }),
+            "action" => Some(e.action.clone()),
+            "project" => Some(e.project()),
+            "actor" => Some(e.actor.clone()),
+            "at" => Some(e.at.clone()),
+            _ => None,
+        };
+        out.push_str(&rest[..start]);
+        match value {
+            Some(v) => out.push_str(&v),
+            None => out.push_str(&rest[start..start + len + 2]),
+        }
+        rest = &rest[start + len + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
     pub hook: i64,
@@ -186,10 +245,11 @@ pub fn add(
                 ));
             }
         }
+        "job" => check_job_template(s, target, project)?,
         _ => {
             return Err(cli_error(
                 2,
-                "A hook is a --script PATH or a --url URL",
+                "A hook is a --script PATH, a --url URL or a --job KIND",
                 "pass exactly one",
                 "pulse help hook",
             ));
@@ -217,6 +277,56 @@ pub fn add(
     )?;
     tx.commit()?;
     get(s, id)
+}
+
+/// A `job` hook's template must name a kind a schedule may queue, a title,
+/// a tier the runner takes, an agent that loads, and a project: not every
+/// event names one, and a job belongs to one.
+fn check_job_template(s: &Store, target: &str, project: &str) -> Result<()> {
+    let kinds = pulse_tasks::schedules::SCHEDULE_KINDS;
+    let t = JobTemplate::parse(target)?;
+    if !kinds.contains(&t.kind.as_str()) {
+        return Err(cli_error(
+            2,
+            format!("A hook cannot queue a {} job", t.kind),
+            format!("a worker runs {} from a brief alone", kinds.join(", ")),
+            "pulse hook add EVENT --job task --title T --brief B --project P",
+        ));
+    }
+    if t.title.trim().is_empty() {
+        return Err(cli_error(
+            2,
+            "A job hook needs a title",
+            "--title names the job it queues; {{subject}} and {{action}} stand for the event's",
+            "pulse hook add EVENT --job task --title 'Look at {{subject}}' --brief B --project P",
+        ));
+    }
+    if t.tier != 0 && t.tier != 1 {
+        return Err(cli_error(
+            2,
+            "The runner takes Tier 0 and Tier 1 jobs only",
+            format!("got --tier {}", t.tier),
+            "--tier 0 or --tier 1",
+        ));
+    }
+    if project.is_empty() {
+        return Err(cli_error(
+            2,
+            "A job hook needs --project",
+            "not every event names its project, and a job belongs to one",
+            "pulse hook add EVENT --job KIND --title T --brief B --project SLUG",
+        ));
+    }
+    if s.project(project)?.is_none() {
+        return Err(cli_error(
+            2,
+            format!("No project {project:?}"),
+            "the job would have nowhere to run",
+            "pulse projects",
+        ));
+    }
+    pulse_board::check_run_as(s, project, &t.agent)?;
+    Ok(())
 }
 
 pub fn get(s: &Store, id: i64) -> Result<Hook> {
@@ -340,7 +450,7 @@ pub fn fire(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> (String,
 
 fn run_fire(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> (String, Result<()>) {
     let redacted = pulse_bus::redactor(Some(s))(e.clone());
-    let res = fire_once(ctx, &s.home, h, &redacted);
+    let res = fire_once(ctx, s, h, &redacted);
     let mut status = match &res {
         Ok(v) => v.clone(),
         Err(e) => format!("error: {e}"),
@@ -429,7 +539,8 @@ fn event_by_seq(s: &Store, seq: i64) -> Result<Event> {
     )?)
 }
 
-fn fire_once(ctx: &CancellationToken, home: &str, h: &Hook, e: &Event) -> Result<String> {
+fn fire_once(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> Result<String> {
+    let home = s.home.as_str();
     let body = pulse_store::gojson::to_vec(&Payload {
         hook: h.id,
         id: e.id,
@@ -510,8 +621,90 @@ fn fire_once(ctx: &CancellationToken, home: &str, h: &Hook, e: &Event) -> Result
             }
             Ok(format!("ok {code}"))
         }
+        "job" => queue_job(s, h, e),
         _ => Err(anyhow!("unknown hook kind {:?}", h.kind)),
     }
+}
+
+/// The source of the jobs hook `id` queues: one open job per hook at a
+/// time, the board deduping on it the way it does for `schedule:SCHED-NNN`.
+pub fn job_source(id: i64) -> String {
+    format!("hook:{id}")
+}
+
+/// Queues the job a `job` hook describes, filled from the event. Once per
+/// event: a replayed event whose job this hook already queued is a
+/// delivered one, not a retry; and a hook never feeds itself or its kin -
+/// an event about a job some hook queued is skipped.
+fn queue_job(s: &Store, h: &Hook, e: &Event) -> Result<String> {
+    let t = JobTemplate::parse(&h.target)?;
+    if e.id != 0
+        && let Some(detail) = delivered(s, h.id, e.id)?
+    {
+        return Ok(format!("already delivered for event #{}: {detail}", e.id));
+    }
+    if let Some(job) = hook_job_in(s, e)? {
+        return Ok(format!("skipped: {job} is a hook's own job"));
+    }
+    let project = if h.project.is_empty() {
+        e.project()
+    } else {
+        h.project.clone()
+    };
+    let (job, queued) = pulse_board::add_job(
+        s,
+        pulse_board::JobInput {
+            project,
+            kind: t.kind,
+            title: fill(&t.title, e),
+            brief: fill(&t.brief, e),
+            tier: t.tier,
+            priority: t.priority,
+            source: job_source(h.id),
+            created_by: h.created_by.clone(),
+            agent: t.agent,
+            ..Default::default()
+        },
+    )?;
+    Ok(if queued {
+        format!("queued {}", job.id)
+    } else {
+        format!("already queued: {}", job.id)
+    })
+}
+
+/// The detail of the delivery that already went through for this hook and
+/// event, if one did.
+fn delivered(s: &Store, hook_id: i64, event_seq: i64) -> Result<Option<String>> {
+    let conn = s.conn()?;
+    Ok(conn
+        .query_row(
+            "SELECT detail FROM hook_deliveries WHERE hook_id = ? AND event_seq = ? AND status = 'ok' ORDER BY id LIMIT 1",
+            params![hook_id, event_seq],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// The job the event is about - its subject, or the `job` its detail
+/// names - when a hook queued that job.
+fn hook_job_in(s: &Store, e: &Event) -> Result<Option<String>> {
+    let named = pulse_bus::detail_field(&e.detail, "job");
+    let candidates = [e.subject.as_str(), named.as_str()];
+    let conn = s.conn()?;
+    for id in candidates.into_iter().filter(|id| !id.is_empty()) {
+        let hooked: Option<String> = conn
+            .query_row(
+                "SELECT id FROM jobs WHERE id = ? AND source LIKE 'hook:%'",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if hooked.is_some() {
+            return Ok(hooked);
+        }
+    }
+    Ok(None)
 }
 
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {
@@ -1216,5 +1409,277 @@ mod tests {
             assert!(!seen.contains(&private), "{seen}");
             assert!(seen.contains(pulse_bus::PRIVATE_VALUE), "{seen}");
         }
+    }
+
+    fn with_project(s: &Store, slug: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, added_at) VALUES (?, ?, ?, ?)",
+                params![slug, slug, format!("{}/{slug}", s.home), s.now()],
+            )
+            .unwrap();
+    }
+
+    fn job_count(s: &Store) -> i64 {
+        s.conn()
+            .unwrap()
+            .query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn template(kind: &str, title: &str, brief: &str, tier: i64) -> String {
+        serde_json::to_string(&JobTemplate {
+            kind: kind.into(),
+            title: title.into(),
+            brief: brief.into(),
+            tier,
+            priority: 0,
+            agent: String::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn job_hook_add_checks_the_template_and_the_project() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        with_project(&s, "demo");
+        let what = |r: Result<Hook>| -> String {
+            let err = r.expect_err("refused");
+            err.downcast_ref::<pulse_cli::Error>()
+                .map_or_else(|| err.to_string(), |e| e.what.clone())
+        };
+        let ok = template("task", "Look at {{subject}}", "{{detail}}", 1);
+        assert_eq!(
+            what(add(&s, "task.*", "job", &ok, "", "human")),
+            "A job hook needs --project"
+        );
+        assert_eq!(
+            what(add(&s, "task.*", "job", &ok, "nope", "human")),
+            "No project \"nope\""
+        );
+        for kind in ["lead", "ballot", "experiment", "baseline", "answer"] {
+            assert_eq!(
+                what(add(
+                    &s,
+                    "task.*",
+                    "job",
+                    &template(kind, "t", "b", 1),
+                    "demo",
+                    "human"
+                )),
+                format!("A hook cannot queue a {kind} job")
+            );
+        }
+        assert_eq!(
+            what(add(
+                &s,
+                "task.*",
+                "job",
+                &template("task", " ", "b", 1),
+                "demo",
+                "human"
+            )),
+            "A job hook needs a title"
+        );
+        assert_eq!(
+            what(add(
+                &s,
+                "task.*",
+                "job",
+                &template("task", "t", "b", 2),
+                "demo",
+                "human"
+            )),
+            "The runner takes Tier 0 and Tier 1 jobs only"
+        );
+        let agent = serde_json::to_string(&JobTemplate {
+            agent: "Not An Agent".into(),
+            ..JobTemplate::parse(&ok).unwrap()
+        })
+        .unwrap();
+        assert_eq!(
+            what(add(&s, "task.*", "job", &agent, "demo", "human")),
+            "'Not An Agent' is not an agent name"
+        );
+        assert!(add(&s, "task.*", "job", "not json", "demo", "human").is_err());
+        let h = add(&s, "task.*", "job", &ok, "demo", "lead-a").unwrap();
+        assert_eq!(h.kind, "job");
+        assert_eq!(
+            JobTemplate::parse(&h.target).unwrap().title,
+            "Look at {{subject}}"
+        );
+        assert_eq!(h.project, "demo");
+    }
+
+    #[test]
+    fn fill_substitutes_the_event_fields_once() {
+        let _serial = crate::test_helpers::serial();
+        let e = Event {
+            id: 7,
+            at: "2026-09-06T21:00:00Z".into(),
+            actor: "lead-a".into(),
+            action: "task.blocked".into(),
+            subject: "{{detail}}".into(),
+            detail: format!(r#"{{"project": "demo", "why": "{}"}}"#, "x".repeat(5000)),
+        };
+        let out = fill(
+            "{{action}} on {{subject}} by {{actor}} at {{at}} in {{project}}; {{nothing}} {{",
+            &e,
+        );
+        assert_eq!(
+            out,
+            "task.blocked on {{detail}} by lead-a at 2026-09-06T21:00:00Z in demo; {{nothing}} {{",
+            "the subject is not expanded again, unknown names stay"
+        );
+        let detail = fill("{{detail}}", &e);
+        assert_eq!(detail.len(), DETAIL_LIMIT);
+        assert!(detail.starts_with(r#"{"project": "demo""#));
+    }
+
+    #[test]
+    fn job_hook_queues_one_job_per_event_and_never_feeds_itself() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        with_project(&s, "demo");
+        let h = add(
+            &s,
+            "task.*",
+            "job",
+            &template(
+                "improve",
+                "Unblock {{subject}}",
+                "{{actor}} said at {{at}}:\n{{detail}}",
+                0,
+            ),
+            "demo",
+            "lead-a",
+        )
+        .unwrap();
+        let e1 = pulse_bus::emit_on(
+            None,
+            &s,
+            "human",
+            "task.blocked",
+            "TASK-001",
+            pulse_store::Detail::json(serde_json::json!({"project": "demo", "why": "no key"}))
+                .unwrap(),
+        )
+        .unwrap();
+        let (status, err) = fire(&CancellationToken::new(), &s, &h, &e1);
+        err.unwrap();
+        let job_id = status.strip_prefix("queued ").expect(&status).to_string();
+        let job = pulse_board::job_by_id(&s, &job_id).unwrap().unwrap();
+        assert_eq!(job.project, "demo");
+        assert_eq!(job.kind, "improve");
+        assert_eq!(job.tier, 0);
+        assert_eq!(job.title, "Unblock TASK-001");
+        assert!(
+            job.brief
+                .starts_with(&format!("human said at {}:\n{{", e1.at))
+                && job.brief.contains("no key"),
+            "{}",
+            job.brief
+        );
+        assert_eq!(job.source, job_source(h.id));
+        assert_eq!(job.created_by, "lead-a");
+
+        // The same event again: delivered already, so a success that says so.
+        let (status, err) = fire(&CancellationToken::new(), &s, &h, &e1);
+        err.unwrap();
+        assert_eq!(
+            status,
+            format!("already delivered for event #{}: queued {job_id}", e1.id)
+        );
+        // Another event while that job is open: one open job per hook.
+        let e2 = pulse_bus::emit_on(
+            None,
+            &s,
+            "human",
+            "task.blocked",
+            "TASK-002",
+            pulse_store::Detail::json(serde_json::json!({"project": "demo"})).unwrap(),
+        )
+        .unwrap();
+        let (status, err) = fire(&CancellationToken::new(), &s, &h, &e2);
+        err.unwrap();
+        assert_eq!(status, format!("already queued: {job_id}"));
+        assert_eq!(job_count(&s), 1);
+
+        // Events about a hook's own job never queue another, whatever the glob.
+        let any = add(
+            &s,
+            "*",
+            "job",
+            &template("task", "Follow up {{subject}}", "b", 1),
+            "demo",
+            "lead-a",
+        )
+        .unwrap();
+        let about_job = pulse_bus::emit_on(
+            None,
+            &s,
+            "worker-1",
+            "job.done",
+            &job_id,
+            pulse_store::Detail::json(serde_json::json!({"project": "demo"})).unwrap(),
+        )
+        .unwrap();
+        let (status, err) = fire(&CancellationToken::new(), &s, &any, &about_job);
+        err.unwrap();
+        assert_eq!(status, format!("skipped: {job_id} is a hook's own job"));
+        let about_run = pulse_bus::emit_on(
+            None,
+            &s,
+            "daemon",
+            "run.finished",
+            "run-9",
+            pulse_store::Detail::json(serde_json::json!({"project": "demo", "job": job_id}))
+                .unwrap(),
+        )
+        .unwrap();
+        let (status, err) = fire(&CancellationToken::new(), &s, &any, &about_run);
+        err.unwrap();
+        assert_eq!(status, format!("skipped: {job_id} is a hook's own job"));
+        assert_eq!(job_count(&s), 1);
+
+        // Once that job is done, the next event queues another; through the
+        // runner, the delivery row says so.
+        pulse_board::finish_job(&s, &job_id, "lead-a", "done", "ok", "", None).unwrap();
+        let e3 = pulse_bus::emit_on(
+            None,
+            &s,
+            "human",
+            "task.blocked",
+            "TASK-003",
+            pulse_store::Detail::json(serde_json::json!({"project": "demo"})).unwrap(),
+        )
+        .unwrap();
+        let r = Runner {
+            bus: Some(Arc::new(pulse_bus::new())),
+            store: s.clone(),
+            log: None,
+            handles: Default::default(),
+            active: Default::default(),
+        };
+        r.dispatch(&e3);
+        r.wait();
+        let rows = deliveries(&s, h.id, 10).unwrap();
+        assert_eq!(rows[0].status, "ok");
+        assert!(
+            rows[0].detail.starts_with("queued job-"),
+            "{}",
+            rows[0].detail
+        );
+        assert_eq!(get(&s, h.id).unwrap().last_status, rows[0].detail);
+        // The `*` hook matched that event too and queued its own first job.
+        let rows = deliveries(&s, any.id, 10).unwrap();
+        assert!(
+            rows[0].detail.starts_with("queued job-"),
+            "{}",
+            rows[0].detail
+        );
+        assert_eq!(job_count(&s), 3);
     }
 }

@@ -2,6 +2,7 @@
 //!
 //! Every module re-exports its public items here so callers write `pulse_runner::foo`.
 
+pub(crate) mod agent_specs;
 pub mod amend;
 pub mod auto_adopt;
 pub mod awake;

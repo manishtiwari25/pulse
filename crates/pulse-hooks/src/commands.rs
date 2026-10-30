@@ -43,8 +43,10 @@ pub fn register() {
         cli_register(Command {
             name: "hook".into(),
             group: "agents".into(),
-            summary: "scripts and webhooks that fire on store events: add, list, remove, enable, test".into(),
+            summary: "scripts, webhooks and jobs that fire on store events: add, list, remove, enable, test".into(),
             usage: "pulse hook add <event-glob> --script PATH | --url URL [--project P]\n\
+pulse hook add <event-glob> --job task|improve|clean|reflect --title T --brief B [--tier 0|1] [--priority N] [--run-as AGENT] --project P\n\
+    the title and the brief may say {{subject}}, {{detail}}, {{action}}, {{project}}, {{actor}}, {{at}}; one open job per hook at a time\n\
 pulse hook list [--all] [--json]\n\
 pulse hook deliveries <id> [--limit N] [--json]\n\
 pulse hook remove <id>      (disables; rows are never deleted)\n\
@@ -83,6 +85,24 @@ fn hook_flags(fs: &mut FlagSet) {
         "executable to run (env PULSE_EVENT_*, JSON on stdin, 30 s)",
     );
     fs.string_var("url", "", "URL to POST the event JSON to (10 s)");
+    fs.string_var(
+        "job",
+        "",
+        "queue a job of this kind instead: task, improve, clean or reflect (needs --title, --brief, --project)",
+    );
+    fs.string_var(
+        "title",
+        "",
+        "the title of the job a --job hook queues; {{subject}} and the other event fields are filled in",
+    );
+    fs.string_var("brief", "", "the brief of the job a --job hook queues");
+    fs.int_var("tier", 1, "0 or 1 (--job)");
+    fs.int_var("priority", 0, "priority, higher first (--job)");
+    fs.string_var(
+        "run-as",
+        "",
+        "the custom agent the job runs as, one that pulse agents list shows for the project (--job)",
+    );
     fs.bool_var("all", false, "list removed hooks too");
     fs.int_var("limit", 50, "delivery rows to show");
 }
@@ -130,6 +150,18 @@ fn actor(c: &Context) -> String {
     }
 }
 
+/// The target as the table shows it: a job hook's kind and title rather
+/// than its JSON.
+fn target_text(h: &crate::hooks::Hook) -> String {
+    if h.kind != "job" {
+        return h.target.clone();
+    }
+    match crate::hooks::JobTemplate::parse(&h.target) {
+        Ok(t) => format!("{} job: {}", t.kind, t.title),
+        Err(_) => h.target.clone(),
+    }
+}
+
 fn parse_id(arg: &str) -> Result<i64> {
     arg.parse::<i64>().map_err(|_| {
         cli_error(
@@ -174,17 +206,43 @@ fn run_hook(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 if !kind.is_empty() {
                     return Err(cli_error(
                         2,
-                        "A hook is a --script or a --url",
-                        "not both",
+                        "A hook is a --script, a --url or a --job",
+                        "not two of them",
                         "pulse help hook",
                     ));
                 }
                 kind = "webhook";
                 target = url;
             }
+            let job = fs.get_string("job");
+            if !job.is_empty() {
+                if !kind.is_empty() {
+                    return Err(cli_error(
+                        2,
+                        "A hook is a --script, a --url or a --job",
+                        "not two of them",
+                        "pulse help hook",
+                    ));
+                }
+                kind = "job";
+                target = serde_json::to_string(&crate::hooks::JobTemplate {
+                    kind: job,
+                    title: fs.get_string("title"),
+                    brief: fs.get_string("brief"),
+                    tier: i64::from(fs.get_int("tier")),
+                    priority: i64::from(fs.get_int("priority")),
+                    agent: fs.get_string("run-as"),
+                })?;
+            }
             let h = crate::hooks::add(store(c)?, &rest[0], kind, &target, &c.project, &actor(c))?;
             if c.json {
                 write_json(&mut c.out, &HookOut { hook: h })?;
+            } else if h.kind == "job" {
+                let t = crate::hooks::JobTemplate::parse(&h.target)?;
+                c.printf(format_args!(
+                    "hook {} added: {} -> a {} job in {}: {}\n",
+                    h.id, h.event, t.kind, h.project, t.title
+                ))?;
             } else {
                 c.printf(format_args!(
                     "hook {} added: {} -> {} {}\n",
@@ -216,7 +274,7 @@ fn run_hook(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                             h.event.clone(),
                             h.project.clone(),
                             h.kind.clone(),
-                            h.target.clone(),
+                            target_text(h),
                             h.fires.to_string(),
                             state.pending.to_string(),
                             h.last_fired_at.clone(),

@@ -309,6 +309,28 @@ pub(crate) fn take_job(
     held: &BTreeMap<String, String>,
     fits: &[(String, String)],
 ) -> Result<(Row, Row, String)> {
+    take_job_first(
+        s, agent, project, job_id, dry_run, now, executor, taken, held, fits, false,
+    )
+}
+
+/// [`take_job`] for a slot the daemon keeps for the work class
+/// (`work_first`, jobs.rs `LeaseOpts`): queued improve, task and experiment
+/// jobs go before the meta kinds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn take_job_first(
+    s: &pulse_store::Store,
+    agent: &str,
+    project: &str,
+    job_id: &str,
+    dry_run: bool,
+    now: &str,
+    executor: &str,
+    taken: i32,
+    held: &BTreeMap<String, String>,
+    fits: &[(String, String)],
+    work_first: bool,
+) -> Result<(Row, Row, String)> {
     if let why = runner_stopped(s)
         && !why.is_empty()
     {
@@ -469,6 +491,7 @@ pub(crate) fn take_job(
             any_proj,
             fits: fits.to_vec(),
             hold_except,
+            work_first,
             ..Default::default()
         },
     )?;
@@ -636,7 +659,6 @@ fn prepare_setup(
     ex: &dyn Executor,
     cancel: &pulse_bus::CancellationToken,
     dry_run: bool,
-    minutes: i32,
     log: &mut RunLog,
 ) -> Result<PreparedSetup> {
     let slug = project.str("slug");
@@ -666,13 +688,14 @@ fn prepare_setup(
             pins: Vec::new(),
         });
     };
-    match crate::recipe::recipe_block(&r, ex.remote()).as_str() {
+    let lack_recipe = crate::recipe::hands_lack_recipe(&s.conn()?, &ex.name());
+    match crate::recipe::recipe_block(&r, lack_recipe).as_str() {
         crate::recipe::RECIPE_UNFIT_SERVICES => return Err(crate::executor::ExecutorUnfit { msg: format!("{} lists services ({}) that no machine starts; {} waits until an owner clears the list", crate::recipe::RECIPE_PATH, r.services.iter().take(4).cloned().collect::<Vec<_>>().join(", "), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_SERVICES.to_string(), project: project.str("slug"), detail: String::new() }.into()),
-        crate::recipe::RECIPE_UNFIT_HANDS => return Err(crate::executor::ExecutorUnfit { msg: format!("{} pins tools or env that the hands on {} cannot take yet; {} jobs run on the hub until the hands are refreshed", crate::recipe::RECIPE_PATH, ex.name(), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_HANDS.to_string(), project: project.str("slug"), detail: String::new() }.into()),
+        crate::recipe::RECIPE_UNFIT_HANDS => return Err(crate::executor::ExecutorUnfit { msg: format!("{} pins tools or env that the hands on {} predate (their probe does not answer recipe=1); {} jobs run on the hub until the hands are refreshed", crate::recipe::RECIPE_PATH, ex.name(), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_HANDS.to_string(), project: project.str("slug"), detail: String::new() }.into()),
         _ => {}
     }
     let pins = r.tools.clone();
-    let setup_budget = minutes.max(crate::recipe::SETUP_MINUTES);
+    let setup_budget = crate::recipe::SETUP_MINUTES;
     if !pins.is_empty() && !dry_run {
         let cmd = crate::recipe::mise_install_command(&pins, clone);
         let (rc, mout) = ex.verify(cancel, &cmd, setup_budget);
@@ -880,8 +903,32 @@ pub(crate) fn run_job(
         stop_watch();
         return r;
     }
+    let model_class = crate::lead_roles::model_class_of_job(s, &job);
+    // The agent file the job is pinned to, else the one whose kinds and
+    // select fit the card, if any: the worker runs as it (`--agent NAME`),
+    // the clone being made from the checkout whose files are read here.
+    let chosen = crate::agent_specs::spec_for_job(s, &job, &project.str("slug"), &root);
+    if let Some(w) = &chosen.warning {
+        eprintln!("run {run_id}: {w}");
+        log.add(w.clone());
+    }
+    let agent_spec = chosen.spec;
+    if let Some(a) = &agent_spec {
+        let travels = crate::exec::agent_flag_travels(a, ex.remote());
+        log.add(format!(
+            "runs as the {} agent ({}){}",
+            a.name,
+            a.source,
+            if travels {
+                String::new()
+            } else {
+                "; a remote hand cannot read that layer, so only its model, step cap and read-only flag travel".to_string()
+            }
+        ));
+    }
     if agent != crate::util::HUMAN_AGENT {
-        let mut model = s.run_model(&job.str("kind"));
+        let mut model =
+            crate::exec::worker_model(s, &job.str("kind"), &model_class, agent_spec.as_ref());
         if !o.worker_cmd.is_empty() {
             model.clear();
         }
@@ -984,7 +1031,7 @@ pub(crate) fn run_job(
             setup_shown,
             pins,
         } = prepare_setup(
-            s, &project, &root, &base, &clone, &*ex, &cancel, o.dry_run, minutes, &mut log,
+            s, &project, &root, &base, &clone, &*ex, &cancel, o.dry_run, &mut log,
         )?;
         // A project without a verify command takes the recipe's
         // `suggested_check` here, so this run is already checked by it.
@@ -1057,23 +1104,27 @@ pub(crate) fn run_job(
             // The carried conversation already holds the brief; the worker
             // opens with what changed since and resumes its trajectory.
             Some(r) => {
-                let (cmd, custom) = crate::exec::worker_command(
+                let (cmd, custom) = crate::exec::worker_command_as(
                     s,
                     &job.str("kind"),
+                    &model_class,
                     &continuation_message(&run_id, r, &clone),
                     &clone,
                     &o.worker_cmd,
                     ex.remote(),
+                    agent_spec.as_ref(),
                 );
                 (crate::exec::with_resume(cmd, &r.session.trajectory), custom)
             }
-            None => crate::exec::worker_command(
+            None => crate::exec::worker_command_as(
                 s,
                 &job.str("kind"),
+                &model_class,
                 &brief_text,
                 &clone,
                 &o.worker_cmd,
                 ex.remote(),
+                agent_spec.as_ref(),
             ),
         };
         if let Some(r) = &resume {
@@ -1154,7 +1205,22 @@ pub(crate) fn run_job(
                 cmd = prefix;
             }
         } else {
+            // prepare_setup let a recipe with tools or env through only because
+            // these hands take them: the worker gets what the hub's gets.
+            if let Some(r) = &recipe {
+                for (k, v) in &r.env {
+                    env.insert(k.clone(), v.clone());
+                }
+            }
             env.insert("PULSE_CLI".into(), remote_pulse_cli(recipe.as_ref()));
+            if !pins.is_empty() {
+                for kv in crate::recipe::mise_env(&clone) {
+                    env.insert(kv[0].clone(), kv[1].clone());
+                }
+                let mut prefix = crate::recipe::mise_exec_argv(&pins);
+                prefix.extend(cmd);
+                cmd = prefix;
+            }
         }
         if !custom_worker && !project.str("verify_cmd").is_empty() {
             let hook_verify =
@@ -3263,6 +3329,124 @@ mod tests {
         assert_eq!(cli_on_path("", exe), "/opt/pulse/bin");
         let got = cli_on_path("/usr/bin:/bin", exe);
         assert_eq!(got, "/opt/pulse/bin:/usr/bin:/bin");
+    }
+
+    /// Records the budget each `verify` call gets; setup is its only caller
+    /// here, so the recorded minutes are the setup budgets.
+    struct BudgetExec(std::cell::RefCell<Vec<i32>>);
+    impl Executor for BudgetExec {
+        fn name(&self) -> String {
+            "local".into()
+        }
+        fn remote(&self) -> bool {
+            false
+        }
+        fn clone(&self) -> String {
+            String::new()
+        }
+        fn key_path(&self) -> String {
+            String::new()
+        }
+        fn started(&self) -> bool {
+            false
+        }
+        fn worker_dirs(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn prepare(&mut self, _: &pulse_bus::CancellationToken) -> Result<String> {
+            unreachable!()
+        }
+        fn run_worker(
+            &mut self,
+            _: &pulse_bus::CancellationToken,
+            _: &[String],
+            _: &BTreeMap<String, String>,
+            _: i32,
+        ) -> Result<crate::proc::Outcome> {
+            unreachable!()
+        }
+        fn result_text(&self) -> Option<String> {
+            None
+        }
+        fn commit_count(&self, _: &str) -> i32 {
+            0
+        }
+        fn dirty(&self) -> String {
+            String::new()
+        }
+        fn owner_paths_touched(&self, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn verify(
+            &self,
+            _: &pulse_bus::CancellationToken,
+            _: &str,
+            minutes: i32,
+        ) -> (Option<i32>, String) {
+            self.0.borrow_mut().push(minutes);
+            (Some(0), String::new())
+        }
+        fn install_pre_commit_hook(
+            &self,
+            _: &str,
+            _: Option<&crate::recipe::Recipe>,
+            _: &[String],
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn fetch_source(&self) -> String {
+            String::new()
+        }
+        fn fetch_env(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn setup_gets_ten_minutes_whatever_minutes_per_job_says() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (proj, root) = new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "120")
+            .unwrap();
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe_with(Some(&["node@22.1.0"]), Some(&["true"]), None, None, ""),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "".into(),
+        )
+        .unwrap();
+        let ex = BudgetExec(Default::default());
+        let mut log = RunLog::default();
+        let cancel = pulse_bus::CancellationToken::new();
+        let prepared = prepare_setup(
+            &s,
+            &proj,
+            &root,
+            "HEAD",
+            "/nonexistent/clone",
+            &ex,
+            &cancel,
+            false,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(prepared.pins, vec!["node@22.1.0".to_string()]);
+        // `mise install` and the recipe's setup lines each got the fixed budget.
+        assert_eq!(
+            *ex.0.borrow(),
+            vec![crate::recipe::SETUP_MINUTES, crate::recipe::SETUP_MINUTES],
+            "{}",
+            log.text()
+        );
     }
 
     #[test]

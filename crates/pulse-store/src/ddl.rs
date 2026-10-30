@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempts INTEGER NOT NULL DEFAULT 0,
     finished_at TEXT NOT NULL DEFAULT '',
     result TEXT NOT NULL DEFAULT '',
-    branch TEXT NOT NULL DEFAULT ''
+    branch TEXT NOT NULL DEFAULT '',
+    agent TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, priority, created_at);
 CREATE TABLE IF NOT EXISTS runs (
@@ -168,3 +169,13 @@ pub const PRUNABLE_EVENT_ACTIONS: &[&str] = &["harness.step"];
 /// The delete guard as the schema creates it now; `ensure_events_prunable`
 /// swaps an older store's unconditional guard for this one.
 pub const EVENTS_NO_DELETE_SQL: &str = "CREATE TRIGGER events_no_delete BEFORE DELETE ON events\nWHEN OLD.action NOT IN ('harness.step')\nBEGIN SELECT RAISE(ABORT, 'events are append-only'); END";
+
+/// Columns added after the jobs table shipped: the custom agent a job is
+/// pinned to (`pulse job add --run-as`, a schedule's or a hook's agent).
+/// `ensure_records` adds each one that is missing, so an older store gains
+/// them on first open.
+pub const JOB_COLUMNS: &[crate::Column] = &[crate::Column {
+    table: "jobs",
+    name: "agent",
+    ddl: "TEXT NOT NULL DEFAULT ''",
+}];

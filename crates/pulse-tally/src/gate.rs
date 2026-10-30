@@ -387,16 +387,57 @@ pub fn is_worker_post(s: &pulse_store::Store, agent: &str) -> bool {
         .is_some_and(|kind| kind == "worker")
 }
 
+/// Whether the card sends a worker to an owner-only path. The `File:` (or
+/// `Path:`) line names what the job would edit, so it decides: one owner-only
+/// path among its files holds the card, and a card whose files are all
+/// agent-writable is a worker's job however many owner-only records its
+/// `Signal:` cites as evidence (the ADR it read, the workflow that showed the
+/// defect). Only a card that names no concrete file is read by the paths its
+/// Signal names, since that is the one place it says where the change goes.
+/// The landing refuses owner-only paths on an agent's branch regardless, so
+/// this gate only spares the worker a job it could not land.
 pub fn owner_targeted(summary: &str, body: &str) -> bool {
-    for tok in signal_tokens(&format!("{summary}\n{body}")) {
-        let rel = rel_of_token(&tok).trim_start_matches('/').to_string();
-        for p in OWNER_PATHS {
-            if rel == *p || rel.starts_with(p) {
-                return true;
-            }
-        }
+    let files = card_file_paths(body);
+    if !files.is_empty() {
+        return files.iter().any(|rel| is_owner_path(rel));
     }
-    false
+    signal_tokens(&format!("{summary}\n{body}"))
+        .iter()
+        .any(|tok| is_owner_path(rel_of_token(tok).trim_start_matches('/')))
+}
+
+fn is_owner_path(rel: &str) -> bool {
+    OWNER_PATHS.iter().any(|p| rel == *p || rel.starts_with(p))
+}
+
+/// The repository paths a card's `File:` (or `Path:`) line names, cleaned:
+/// each comma-separated part that reads as one path (a slash or a dot, no
+/// whitespace, not absolute). A file class in words ("the three git callers")
+/// or a bare `none` is not a path, and a card naming only those has no File
+/// for the owner gate to read. Globs stay, since `.github/workflows/*.yml` is
+/// still under `.github/`.
+pub fn card_file_paths(body: &str) -> Vec<String> {
+    card_file_text(body)
+        // `**File:** x` leaves the closing stars on the value.
+        .trim_start_matches(['*', ' '])
+        .split(',')
+        .filter_map(|part| {
+            let raw = part
+                .trim()
+                .trim_matches(['`', '\'', '"', '(', ')', '[', ']'])
+                .trim_end_matches(['.', ':', ';']);
+            if raw.is_empty()
+                || raw.contains(char::is_whitespace)
+                || !(raw.contains('/') || raw.contains('.'))
+                || Path::new(raw).is_absolute()
+            {
+                return None;
+            }
+            let clean = clean_rel(raw);
+            (!clean.is_empty() && clean != "." && !clean.split('/').any(|p| p == ".."))
+                .then_some(clean)
+        })
+        .collect()
 }
 
 /// Whether the card's `File:` line names only paths that are gone from the checkout

@@ -674,10 +674,17 @@ footer naming the schedule, the run number and who set it. One open job per
 schedule: while the previous run's job is still queued or leased, the tick is
 skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
 stopped daemon missed collapse into one. Scheduled jobs are subject to
-`jobs_per_day` and the other runner caps like every job.
+`jobs_per_day` and the other runner caps like every job. `--run-as NAME`
+makes every job the schedule queues run as that custom agent (**Custom
+agents** under The harness; `pulse agents list --project P` names the ones
+that load, and `pulse job add --run-as NAME` pins a single job the same way):
+the name must load for the project when the schedule is set, and a job whose
+agent has since gone falls back to the usual choice by kind and tags, with a
+warning in the run log.
 
 ```bash
 pulse schedule add --project my-app --title "Nightly flake sweep" --every 1d --at 02:00 --kind task --brief "Run the suite three times; file each flake as a finding." --times 30
+pulse schedule add --project my-app --title "Weekly audit" --every 1w --kind task --brief "Audit the dependencies." --run-as auditor
 pulse schedule list --project my-app        # ID, status, cadence, next time, runs, who set it
 pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
 pulse schedule pause SCHED-001 --note "release week"
@@ -837,6 +844,20 @@ lead" --brief "..."` (a custom role needs its title and brief; the built-in
 ones carry theirs). One live lead per role and project; the agent is named
 `<slug>-lead-<role>`.
 
+A **`role` record** makes a role the registry knows without a rebuild:
+`pulse record new role --project my-app --title content --body-file role.md`
+(the role word is the record's slug, or a `role:` key). The body may open
+with a `---` block - `title`, `about`, `every`, and `gaps` naming the
+signals the built-in roles watch (`pulse lead roles` lists them, and the
+`{variables}` the text may use) - and the rest is the concern's section,
+rendered with the project's signals at each sitting. A record named like a
+built-in role replaces what it states and keeps the rest; a record in the
+`commons` project counts for every project, the project's own wins; a
+retired status takes it out. Only a record made in the store (not one a
+repository's file became) may widen the daemon: a `gaps` entry
+`{signal: sql, query: <read-only SQL, ?1 = the project slug>, threshold: N,
+why: "{n} ..."}`, `model_class: worker|light`, `away_seatable: true`.
+
 Each **sitting** is an ordinary lead job (`source = lead-role:<slug>:<role>:…`)
 queued by the daemon when the seat is due and run by the role lead alone -
 the project lead never takes it, and a role lead never takes the project
@@ -859,7 +880,14 @@ in use; for `triage` the open threads and questions; for `tidy` whether the
 check runs a linter; for `dx` the jobs the environment blocked. A sitting
 queues Tier 0/1 worker jobs, posts findings and suggestions, and tells the
 owner in the project's chat what it did; it never decides for an absent
-owner. Like every job it counts against `jobs_per_day`.
+owner. Like every job it counts against `jobs_per_day`. The `rsi` sitting
+carries one step that binds: when the project's archive shows fewer than
+20% improved-or-kept over its last 20 cycles, the sitting must add one
+metric fixture that reads the project's own check output (`pulse evolve
+fixture add … --metric`), check that it scores HEAD (`pulse evolve measure
+--ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`;
+that sitting runs on the worker model (`worker_model`), the other roles'
+sittings on the light one.
 
 PULSE **suggests** a seat when the project shows the gap: the loop is at
 level D with no `rsi` lead; three or more landings in a fortnight changed
@@ -899,6 +927,7 @@ declined, is never seated unasked again.
 
 ```bash
 pulse lead suggest --project my-app          # the missing roles, why, and the command that seats each
+pulse lead roles --project my-app            # every role the project can seat, built in or from a role record
 pulse lead add --project my-app --role rsi   # seat a built-in role; its first sitting is queued now
 pulse lead add --project my-app --role content --title "Content lead" --brief-file content.md --every 1w
 pulse lead list --project my-app             # ID, role, agent, cadence, next sitting, sittings so far
@@ -917,8 +946,9 @@ queued), `lead.paused`, `lead.resumed`, `lead.run`, `lead.ended`,
 `lead.seated_away` (the security seat the daemon filled while you were
 away). The hub serves
 them at `GET /api/v1/leads?project=` (the seats, the suggestions and the
-built-in roles) and `POST /api/v1/leads` (`{project, role, title?, brief?,
-every?}`), `POST /api/v1/leads/<id>/pause|resume|end|run`.
+roles, each with its `source`: `builtin` or `store`) and `POST /api/v1/leads`
+(`{project, role, title?, brief?, every?}`),
+`POST /api/v1/leads/<id>/pause|resume|end|run`.
 
 ### Suggested work: `pulse task suggest`
 
@@ -1411,7 +1441,13 @@ pulse backup --to az://myaccount/pulse-backups  # a gzip copy off this machine (
 
 Numbered kinds (ADR, PLAN, FEAT, WU) keep their numbers; the rest are
 `PREFIX-<slug>[-<project>]` (GUIDE-*, MEM-*, PROMPT-*, TPL-*, CTX-environment,
-EVO-constitution, EVO-evaluators, EVO-archive).
+EVO-constitution, EVO-evaluators, EVO-archive, and the agent-pack kinds
+ROLE-*, AGENT-*, BRIEF-*, KIND-*). `pulse migrate --records` also reads
+`.pulse/agents/*.md`: each file becomes an `agent` record holding the file
+whole, front matter included, and a file whose front matter has a `pulse:`
+block with a `role:` word also makes a `role` record (the block's other
+keys are its front matter, the file's body its text). `pulse seed export`
+bundles the pack kinds with the framework's.
 
 For a human-run quarterly prune, `pulse record show WF-prune` holds the
 script. It counts local `pulse/*` branches before deletion and saves the count
@@ -1508,10 +1544,15 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   card whose own `Signal:` resolves nothing is held as `without evidence`
   until an `opinion`, `finding`, `answer` or `vote` on its thread carries one
   that does - the idle lead's brief lists each held card with its gate so the
-  fleet supplies the evidence or closes the thread - and that
-  evidence must stay off
+  fleet supplies the evidence or closes the thread - and the card's `File:`
+  (what the job would edit) must stay off
   owner-only paths (`docs/evolution/constitution.md`, `evaluators.md`, `STOP`,
-  `docs/decisions/`, `.github/`); a card whose `File:` names only paths whose
+  `docs/decisions/`, `.github/`): one owner-only path among its files holds
+  the card as `points at owner-only paths`, while a card on agent-writable
+  files may cite an ADR or a workflow as its `Signal:` evidence (only a card
+  that names no file is read by its Signal's paths), and a card held there
+  longer than `expiry_days` is closed with `resolution: owner-only` - the
+  owner queues it by hand or lets it go; a card whose `File:` names only paths whose
   whole top-level tree is gone from the checkout (written before a port, a
   rename or a removal) is held as `names gone paths` - a card that adds a file,
   however deep, under a tree that exists is fine; then the operating-layer cap
@@ -1530,9 +1571,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong
   message, a wrong default, a broken user path, a swallowed error) and only
-  then a flaky test, broken link, stale doc or lint finding; research jobs
+  then a flaky test, broken link, stale doc or lint finding; a quiet run
+  (checks green, nothing to fix) ends `SUMMARY: done - checked <paths>` with
+  a `FINDING:` line, not `failed`; research jobs
   rotate through their focuses starting with the product as its user sees
-  it, and keep to the product focuses while the day's operating-layer cap is
+  it, weighted by what the board accepted, and keep to the product focuses while the day's operating-layer cap is
   reached. The console's Votes page, `pulse queue`
   (`not planned: <gate>`) and `pulse status` (`planner <slug>: N eligible, M
   plannable (...)`) show the same gate for the same card, so a ballot that
@@ -1557,21 +1600,22 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   share of experiments that should try an archived parent; eligible parents
   must have a saved patch and are weighted by clade metaproductivity
   `(improved descendants + 1) / (descendants + 2)` with the Beta prior keeping
-  unexplored nodes alive, times novelty `1 / (1 + children)`. A kept tie
-  (`kept (no regression)`, the usual result on pass/fail fixtures) counts as a
-  descendant but not as a productive one; only an improvement, a kept delta of
-  at least `evolve.tolerance`, earns productivity. `pulse evolve
-  lineage --project P [--json]` prints the archived tree, each row's outcome
-  (`improved`, `neutral`, `discarded`), CMP values and the current candidate
-  count.
+  unexplored nodes alive, times novelty `1 / (1 + children)`. A tie
+  (`neutral`, the usual result on pass/fail fixtures) counts as a descendant
+  but not as a productive one; only an improvement - a delta of at least
+  `evolve.tolerance`, or a tie whose card's own check rose - earns
+  productivity. `pulse evolve lineage --project P [--json]` prints the
+  archived tree, each row's outcome (`improved`, `neutral`, `discarded`), CMP
+  values and the current candidate count.
 - **Seeded records and starter fixtures** - registering a project (`pulse
   init`, `pulse onboard`, the console) seeds the loop's records and six public
   behaviour fixtures. The records: a project whose checkout commits
   `docs/evolution/constitution.md` / `evaluators.md` gets those files indexed
   as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other project
   gets a copy of the template's text marked `seeded_from` in its frontmatter,
-  with `loop: off`, no baseline and no product scope, so nothing runs until
-  you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
+  with `loop: off`, no baseline and `Product scope: allowed` (amend the line
+  to `operating-layer` to keep product cards out), so nothing runs until you
+  edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
   An existing record is never touched. You do not have to write the text
   yourself (ADR-046): while a project's constitution or evaluators is still
   the seeded copy, the daemon plans one `reflect` job (source `draft:<slug>`,
@@ -1600,8 +1644,10 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   that brings tests or settles a marker scores differently from one that
   does not - the starter set judges conduct and ties on every good change,
   so without a derived or hand-made metric no fixture would tell variants
-  apart. A derived fixture whose count reaches its scale is re-armed with a
-  larger one and a fresh date (event `evolution.fixture.rearmed`); a disabled
+  apart. In an experiment they count only inside the card's changed files
+  (the diff scope below), so one card's change moves them visibly. A derived
+  fixture whose count reaches its scale, or whose script changed, is re-armed
+  with a fresh date (event `evolution.fixture.rearmed`); a disabled
   one is never re-added. `pulse evolve seed [--project P]` seeds both for a
   project registered earlier (`pulse evolve fixture seed` for the fixtures
   alone, which also derives); `pulse evolve fixture list|disable` manages
@@ -1648,13 +1694,53 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   per-fixture scratch directory under the isolated home for work that must
   stay outside the tree. Each worker has at most one fixture clone at a time,
   and removes that clone as soon as its scorer finishes; the isolated homes
-  stay until the measurement root's final cleanup.
+  stay until the measurement root's final cleanup. An experiment's
+  measurement also exports its **diff scope**: `PULSE_MEASURE_BASE` (the base
+  commit), `PULSE_MEASURE_CHANGED` (a file listing the paths that differ
+  between the base and the measured tree, one per line) and
+  `PULSE_MEASURE_BASE_TREE` (a frozen, read-only checkout of the base, shared
+  by the fixtures). `pulse evolve score metric` then runs `CMD` on both trees
+  and takes the base's count as the scale in place of `--scale` (twice the
+  count for `--higher`, the count itself for `--lower`, never below 1), so
+  the base scores `0.5` and the variant's delta is relative to what the card
+  touched; the derived fixtures' scripts count only inside the listed files,
+  and your own `CMD` does the same by reading that list. Such a fixture
+  answers `scope: diff` after its score line, the log marks it
+  `[diff-scoped]` and the archive row records it (`diff_scoped` in the
+  measurement and in the `evolution.archived` event). A diff-scoped score is
+  per card, so the cached project baseline never serves it: those fixtures
+  are measured again on the base in the same scope inside the same cycle,
+  and the whole-tree numbers stay for the project-level report. A diff with
+  no changed file exports the base alone and the scorers see the whole tree.
+  A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
+  `package-lock.json`, `yarn.lock`) is not measured: the variant takes the
+  base's numbers and is archived `neutral` with the reason `lockfile-only`.
+- **Card check** - the card's own hypothesis, measured. A card whose
+  `Signal:` line reads `check:<command>` (or whose `Hypothesis:` names
+  `check:<command>`, backticks allowed) gets a fixture of its own for that
+  experiment, `card-check` (kind `card`, weight `1.0`, part of the card's
+  composite, recorded with the other fixtures in the archive row and as
+  `card_check` on each measurement). The command runs from the tree root
+  on the base and on the variant through `pulse evolve score check -- CMD
+  ARGS...`: its exit status scores `1` or `0`; a single integer on stdout
+  is a count that should fall, scored like a diff-scoped `--lower` metric
+  against the base's count (so `grep -c unwrap src/x.rs` on both trees
+  works, whatever its exit status). It takes a command, not a project
+  check name: the project's recipe checks live with the runner, out of the
+  measurement's reach, so `check:cargo test -p demo` must spell the command.
+  A card that names a check can win on a tie (the keep rule below), and the
+  worker brief asks every card for one.
 - **Fleet** prepares isolated worker clones for parallel experiments;
   **usage** gives best-effort local token diagnostics (never a ledger).
 
 **Readiness is not delivery.** Level D means the general evolution gates are
 open, not that a supported candidate exists or that product experiments are
-authorized. Product scope is a separate owner-controlled gate. Starter
+authorized. Product scope is a separate owner-controlled gate, open by
+default: an EVO-evaluators record with no `Product scope:` line lets product
+cards run, `Product scope: off` (or `operating-layer`) restricts the loop to
+the operating layer, and a line the loop cannot read - the seeded
+placeholder, an unknown word, two lines that disagree - restricts it too and
+`pulse evolve status` says why. Starter
 fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
@@ -1674,11 +1760,14 @@ suggestion that names no single `File:` and `Variable:` is not the owner's to
 fix: the planner queues one agent card job for it, which posts the card as a
 new suggestion on the same thread, where it earns its own votes and passes
 every gate before the loop runs it (ADR-044). Workers can post a complete card
-in one `SUGGESTION:` line with `;`-separated fields. A `SUGGESTION:` line that
+in one `SUGGESTION:` line with `;`-separated fields; the line's first prose
+segment is the card's summary, falling back to the Hypothesis, never to a
+`Class:` value standing alone (`product; File: …`). A `SUGGESTION:` line that
 only says the worker saw nothing (`none`, `nothing further`, `n/a`, `no
-suggestion`) is dropped by the runner rather than posted: an empty card on the
-ballot only spawns vote jobs, and each of those tends to end in another such
-line.
+suggestion`, `none identified`, `I did not find …`, `no defect`) is dropped by
+the runner rather than posted, even behind `File: n/a; Variable: none`: an
+empty card on the ballot only spawns vote jobs, and each of those tends to end
+in another such line.
 
 The loop may edit only the file classes the constitution's Editable scope
 table has raised to Stage 2 (Stage 4 for product code) whose paths exist in
@@ -1724,7 +1813,13 @@ instead of waiting for another project's verify command. One worker holds a
 project's landing lock and lands that project's ready branches serially; later
 passes skip a project whose worker is still running. Experiments stay on a
 second thread, the experiment lane, which measures one experiment at a time; a
-ninety-minute measurement therefore holds no plain landing. The lane reuses a
+ninety-minute measurement therefore holds no plain landing. The lane obeys the
+load governor: while the machine is saturated (the `machine saturated` hold
+below) it does not start a measurement - the log says `landing experiment
+<branch> (<project>) waits: machine saturated: …` once per hold and the
+experiment is tried again after `lane.short_retry_minutes` - and a
+measurement in progress counts as a local run under `daemon.max_jobs`, since
+its two builds are load like any other. The lane reuses a
 cached baseline when the default-branch commit, fixture hash and TTL still
 match, logging `baseline for <commit7> reused from <at> (score <x>)`; archive
 notes say `baseline: reused <at>` or `baseline: measured`. It measures the
@@ -1735,14 +1830,19 @@ that already contains the default branch, or one that conflicts with it, is
 measured as it is and landing reports the conflict); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
 and the archive notes `measured as … merged onto …` when that happened. The
-keep rule is *no regression*: a variant whose total score is not more than
-`evolve.tolerance` below the baseline is kept - an improvement as `kept`, a
-tie as `kept (no regression)` - and goes to the same landing as any branch,
-where the project's own check decides it; only a larger regression is
-`discarded` and loses its branch. Held-out fixtures are mostly pass/fail, so a
-voted change that keeps every fixture green measures as an exact tie; before
-this rule such ties were discarded and no voted experiment ever landed. A
-discard must reproduce: when a regression hinges on request fixtures alone (the
+keep rule is asymmetric: a variant whose total score falls more than
+`evolve.tolerance` below the baseline is `discarded` and loses its branch; a
+gain of at least `evolve.tolerance` is `improved`; anything in between is a
+tie, labelled `neutral`. A tie is not a win: it still goes to the same landing
+as any branch, where the project's own check decides it, but the archive,
+`pulse evolve status`, `report` and `lineage` show it apart from improvements
+and it earns no lineage credit - a tie means the card's hypothesis went
+unmeasured, so the worker brief asks every card to name a check that will move
+(`Signal: check:<command>`, the card check above). The one exception: a
+tie whose card-check score rose counts as `improved`. Held-out fixtures are
+mostly pass/fail, so a voted change that keeps every fixture green measures
+as an exact tie; before the tie lane such ties were discarded and no voted
+experiment ever landed. A discard must reproduce: when a regression hinges on request fixtures alone (the
 ones that run a harness, whose score depends on a model's answer - a metric
 fixture scores the frozen tree and is believed as measured), the lane measures
 those fixtures again on both trees before the discard stands (`--fixture` on
@@ -1757,7 +1857,12 @@ experiment the lane could not land stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
 `land.deferred` with the reason and `retry_after_min`. The daemon log says
-`retry in 20m` (or the configured value). The measurement harness the lane starts
+`retry in 20m` (or the configured value). The retries are bounded: an
+experiment still deferred for a reason of its own (a governor hold does not
+count) `lane.retry_minutes` × 72 (`EXPERIMENT_DEFERRAL_RETRIES`, a day at the
+default) after its first such deferral is given up - the job fails with a
+`land.missing` event naming the wait and the last reason, the branch stays
+for review - where one experiment was deferred for eight days. The measurement harness the lane starts
 is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt; it runs on `measure_model`
 (`worker_model` while empty). When the daemon restarts on a new
@@ -1795,7 +1900,19 @@ what the archived cycles show about it, so you know which one to replace:
 default branch` (its baseline score changed when the default branch did -
 it measures main's own commits, not the experiments), or `scored the same
 baseline commit two ways, so a difference it reports is not a signal on its
-own`; held-out fixtures appear by their archive names (`H1 (held-out)`).
+own`, or `scored as a tie by the discard dispute in 2 cycles`; held-out
+fixtures appear by their archive names (`H1 (held-out)`). Judge noise counts
+neither way: the streak is read fixture by fixture from each cycle's
+archived matrix, leaving out a fixture the discard dispute scored as a tie
+and one that scored the same baseline commit two ways inside the window, so
+such a fixture neither breaks a streak with a difference that is noise nor
+makes one with a tie that was a verdict; the question's cycle lines and the
+reason name what was left out (`request left out as judge noise`). A fixture
+that flips the same baseline commit both ways twice is retired by the
+healer below (disabled, event `evolution.fixture.retired`, one finding
+`Evolution fixture retired: it scored the same commit both ways twice`);
+`pulse evolve fixture enable NAME` brings it back and only later cycles
+count for it again.
 `pulse evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
@@ -1811,10 +1928,15 @@ set evolve.flat_cycles 0` turns the gate off; the smallest streak it accepts
 is `2`.
 
 The loop heals a flat evaluator set itself before it asks or waits
-(`evolve.heal`, default `on`). When the gate fires, the planner first derives
+(`evolve.heal`, default `on`). Whenever it plans, it first retires the judge
+noise described above (a public fixture that flipped the same baseline commit
+both ways twice since it was last enabled). When the gate fires, it derives
 the metric fixtures the project's tree affords (`derived-tests`,
 `derived-todo-markers`, above) and re-arms a derived fixture whose count
-reached its scale; a fixture dated after the window clears the gate at once,
+reached its scale - unless that fixture told no variant from its baseline in
+the whole window, which a fresh date would hide: that one stays as it is, and
+the healer's post points at the card check (`Signal: check:<command>`)
+instead; a fixture dated after the window clears the gate at once,
 and what was done is posted on `evolution/loop-gate` - as an answer on the
 open question when there is one, so your inbox folds it away, else as a
 finding (`Evolution healed: the loop derived fixtures from the tree`; event
@@ -1882,7 +2004,7 @@ record, read with `pulse record show WF-evolve`.
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
 | `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
-| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
+| `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - retires a fixture that flipped the same commit both ways twice, derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
@@ -1893,8 +2015,9 @@ record, read with `pulse record show WF-evolve`.
 | `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
 | `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
-| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm` (**Other providers** under [The harness](#the-harness)). |
-| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm`, or `custom` for any other OpenAI-compatible server (**Other providers** under [The harness](#the-harness)). |
+| `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai` and `custom`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |
+| `provider.custom.no_key`, `provider.custom.api_key_header` | `off`, empty | How the `custom` provider authenticates: `no_key` `on` calls the server without a key the way the local servers do; `api_key_header` names a header (`x-api-key`, `api-key`) the key travels in raw instead of `Authorization: Bearer`. |
 | `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
@@ -1956,6 +2079,8 @@ unanswered mentions for the running agent (`@human` addresses the owner).
 pulse watch --project my-app --action 'task.*'          # stream events
 pulse hook add 'post.*' --url https://example.test/hook  # webhook, 10 s
 pulse hook add 'job.*'  --script ./notify.sh             # env PULSE_EVENT_*, JSON on stdin, 30 s
+pulse hook add 'task.blocked' --job improve --project my-app \
+  --title 'Unblock {{subject}}' --brief '{{actor}} said: {{detail}}' --run-as auditor
 pulse hook deliveries 1 --json                           # newest attempts and retries
 ```
 
@@ -1965,6 +2090,21 @@ the third failed attempt the delivery is `failed` and PULSE emits one
 `hook.failed` event. Stopping the daemon does not kill a running hook or drop
 a queued hook event: running deliveries finish within their own timeout, and
 queued deliveries are stored for the next start.
+
+A `job` hook queues a job on the board instead of running a script: `--job`
+names the kind (`task`, `improve`, `clean` or `reflect`, the kinds a schedule
+may queue; never a lead, ballot or experiment), `--title` and `--brief` are
+the card, and in them `{{subject}}`, `{{detail}}`, `{{action}}`,
+`{{project}}`, `{{actor}}` and `{{at}}` stand for the event's fields (the
+detail is cut at 4000 characters). `--tier 0|1`, `--priority N` and
+`--run-as NAME` work as they do for `pulse job add`. A job belongs to a
+project and not every event names one, so `--project` is required. The job's
+source is `hook:<id>`, so a hook has at most one open job at a time: while it
+is queued or running, further events are delivered as `already queued`; a
+replayed event the hook already queued a job for is a delivery, not a retry;
+and an event about a job some hook queued never queues another, so a hook on
+`job.*` cannot feed itself. A `script` hook can do the same by hand: it
+receives `PULSE_HOME` and may call `pulse job add` or `pulse task suggest`.
 
 ## The harness
 
@@ -2115,17 +2255,48 @@ were read and how many rules wait.
 **Custom agents.** The helper the `subagent` tool runs can be one the
 repository or the owner described: a Markdown file with front matter under
 `.pulse/agents`, `.claude/agents` (Claude Code's `<name>.md`),
-`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, the
-first of a name winning in that order. Its `description` tells the model
-when to pick it (the tool lists them and takes `agent: NAME`), its body
-becomes the helper's standing instructions ahead of the sub-task, and its
-`tools` list - in any harness's spelling: `Read`, `view`, `shell`,
-`WebFetch`, `Task`, `mcp__github__*`; `Bash(git *)` counts as `bash` -
-narrows what the helper gets: a tool outside the list (or in
-`disallowedTools`) is neither offered to it nor run for it, the same way a
-`deny` rule works. A helper also inherits the run's permission rules and
-the path-scoped rules above. `--no-agents` leaves the agents out for one
-run; they follow `harness.subagents` otherwise.
+`.github/agents` (Copilot's `<name>.agent.md`) or `~/.pulse/agents`, or an
+`agent` record of the store (the importer makes one of each `.pulse/agents`
+file). A name belongs to its most trusted source - a store record, then
+`~/.pulse/agents`, then `.pulse/agents`, `.claude/agents`, `.github/agents`
+- and a lower twin of the same name may only narrow it: fewer `tools`, more
+denies, a smaller `max_steps`, read-only; whatever else it says is dropped
+with a warning. `pulse agents list` (and the hub) show which source won.
+Its `description` tells the model when to pick it (the tool lists them and
+takes `agent: NAME`), its body - up to 30,000 characters - becomes the
+helper's standing instructions ahead of the sub-task, and its `tools` list
+- in any harness's spelling: `Read`, `view`, `shell`, `WebFetch`, `Task`,
+`mcp__github__*`, Copilot's `github/*`, OpenCode's `mcp_github_search`;
+`Bash(git *)` counts as `bash` - narrows what the helper gets: a tool
+outside the list (or in `disallowedTools`) is neither offered to it nor
+run for it, the same way a `deny` rule works. `model`, `maxTurns` (it may
+only lower the step cap), `permissionMode: plan` and `readonly: true`
+apply too; `permissionMode: bypassPermissions` keeps the file from
+loading, and so does a `hooks:` block or an `allow: "*"` in a repository
+file. A helper also inherits the run's permission rules and the
+path-scoped rules above. Under a `pulse:` key the file speaks to PULSE
+itself: `kinds` and `select: {tags, files}` name the job cards it runs - a
+job whose kind is listed and whose `Tags:` (else `Class:`) words or
+`File:` paths match runs under that agent's model, tools, step cap and
+standing instructions, the runner handing the worker `pulse harness run
+--agent NAME` (a remote hand reads the clone's files; a store-only record
+is invisible to it); a job pinned to an agent by name (`pulse job add
+--run-as NAME`, or a schedule's or a job hook's `--run-as`) runs as it
+whatever its `kinds` say, so long as it still loads; `max_steps` and
+`max_subagents` cap the run and the
+helpers it may start; `brief`, `schedule` (`every`, 60 minutes or more),
+`quorum` and `project_scope` are read and linted for the phases that will
+consume them. `--agent NAME` runs any `pulse harness run` as that agent;
+its `model` applies only when `models.allowed` lets it (empty = any model
+the provider accepts; a comma or newline list, `claude-*` globs), else the
+run keeps the model it had and says so. `pulse agents lint [PATH…]` reads
+the files one by one - the keys, what each tool name became, the limits
+(1024 characters of description), the template, the Tier 0/1 rules, the
+twins - and exits 1 on an error; `pulse agents schema` prints the front
+matter's JSON Schema; `pulse agents list` what loads and from where
+(`pulse agent`, singular, manages the running workers). `--no-agents`
+leaves the agents out for one run; they follow `harness.subagents`
+otherwise.
 
 **MCP servers as tools.** With a store at hand, a run connects the
 project's enabled [MCP servers](#connecting-the-outside-world-pulse-mcp)
@@ -2832,7 +3003,18 @@ a GitHub personal access token with the `models:read` scope:
 which need no key - their status card says `no key needed` - though one in
 `OLLAMA_API_KEY`, `LMSTUDIO_API_KEY` or `VLLM_API_KEY` is sent when present.
 Every other base-URL variable is `<VENDOR>_BASE_URL` (`GROQ_BASE_URL`,
-`MISTRAL_BASE_URL`, …). Most of these endpoints report no context window, so
+`MISTRAL_BASE_URL`, …). Any other OpenAI-compatible server - a gateway, a
+proxy, a hosted model none of the names above covers - is the `custom`
+vendor, described by settings alone: `pulse settings set
+provider.custom.base_url https://<host>/v1` (or `PULSE_CUSTOM_BASE_URL`;
+there is no default, and a call without one fails before it is made), a key
+pasted in the Harness card, given to `pulse harness login --provider custom
+--with-token` or read from `PULSE_CUSTOM_API_KEY`; `provider.custom.no_key
+on` makes it keyless like the local servers, and
+`provider.custom.api_key_header x-api-key` sends the raw key in that header
+instead of `Authorization: Bearer`. Pick it like any vendor, `provider
+custom` in the settings or `--provider custom`, and name its models as the
+server lists them. Most of these endpoints report no context window, so
 with them context discipline stays at its first level (collapsed, never
 one-liners).
 
@@ -2892,7 +3074,14 @@ Project fairness includes lease reservations before the worker's run thread
 records its start, so dispatch can spread work across projects without waiting
 for their processes to launch. Without the owner-first key a six-project fleet
 on four workers made an urgent task wait a full round of other projects'
-improve jobs (ninety minutes, measured) before its first job leased.
+improve jobs (ninety minutes, measured) before its first job leased. Between
+the owner's work and the fairness comes the work class: the last half of the
+local slots under `daemon.max_jobs` (rounded up: two of four) take a queued
+improve, task or experiment job before a reflect, ballot or clean, and every
+slot does once such a job has waited two hours (`WORK_WAITED_HOURS`) - the
+meta kinds are many and short, and four slots cycling through them for every
+project kept an improve job queued for a day while fairness saw each project
+served; a kept slot still takes the meta kinds when no work is queued.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
 ### Services and self-update
@@ -2949,11 +3138,16 @@ the daemon then says `self-update: brain HEAD <rev> differs from the running
 free so the build starts within one run, and the experiment lane measures
 nothing new meanwhile, as when the build waits for the lane. Nor does it start
 until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
-(default 15; 0 builds at once): a fleet lands a burst of brain branches minutes
-apart, and eight release builds a day, each followed by a restart drain, were
-the price of building on every landing - the daemon says `building once it has
-stood for 15 min` once, and a further landing restarts the clock, so the burst
-builds once, from its last commit. A build that then exits three times early is put back to
+(default 60; 0 builds at once): a fleet lands a burst of brain branches minutes
+apart, and five release builds a day, each followed by a restart window that
+refuses the long kinds of run, were the price of building on every landing -
+the daemon says `building once it has stood for 60 min` once, and a further
+landing restarts the clock, so the burst builds once, from its last commit. Nor
+does it start while an improve, task or experiment job is queued that the
+restart the build ends in would refuse (its run is not expected to end before
+the runs in flight): the daemon says `building once the queued improve runs on
+<project> have started` once and lets them start first, for at most an hour.
+A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
 when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
@@ -3184,7 +3378,9 @@ the daemon never ran). The verify command runs in a
 throwaway worktree that starts bare, so the daemon first runs the project's
 setup there - the recipe's `setup:` lines from the default branch, else the
 lockfile rules (`corepack pnpm install`, `uv sync`, `npm ci`, …) that a worker
-clone gets - within `minutes_per_job` or ten minutes, whichever is longer; a
+clone gets - within ten minutes (`SETUP_MINUTES`, the budget every setup
+gets, whatever `minutes_per_job` says: a hung `pnpm install` once held a slot
+for the two hours a job may run); a
 setup that fails on the machine defers the landing with a `land.deferred` event
 naming the file and the failure, and nothing is charged to the branch. Each worker is one `pulse harness
 run` process (the daemon's own binary here; on a paired hand the shipped
@@ -3247,7 +3443,8 @@ longer pays for waits while a smaller one starts (the first hour of the
 admission held every slot behind the fleet's largest footprint: 1455 MB of room
 and nothing started, while four of five projects took under 900 MB). One run is
 always admitted while none is in flight so a small disk still measures itself,
-and slots held back this way are not counted as hands wanted. A held project
+and a slot held back this way leaves the queue as short of hands as a busy
+one (below). A held project
 shows in the idle reason as `N queued wait: N for <project> (local needs M MB of
 disk)`, and a slot no project fits says `disk headroom: R MB above
 daemon.min_free_mb F with K run(s) setting up; waits: <project> (M MB), ...`;
@@ -3265,14 +3462,29 @@ governor: up to N local run(s) at once (auto|daemon.max_jobs|--max-jobs; C
 cores, P CPUs, M MB), nothing new over load L or under F MB of memory free;
 children run at nice 10, builds at -jJ, the daemon itself at nice 5` names what
 is in force.
-Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive
-and speculative pages on macOS, `MemAvailable` on Linux) and leases nothing
-new while the load is over `daemon.max_load` (default: the number of CPUs) or
+Before leasing it also reads the one-minute load average and the memory a new run could use (free, inactive,
+speculative and purgeable pages on macOS - the caches the kernel drops on
+request, a gigabyte or two on a 16 GB laptop whose `free` reads a few hundred
+megabytes - `MemAvailable` on Linux) and leases nothing
+new while the load is over `daemon.max_load` (default: twice the number of
+CPUs - the load average counts runnable threads, and a laptop with an
+emulator or a browser build sits at its CPU count for hours while its CPUs
+are not busy; a line at the CPU count held the fleet all day) or
 the memory is under `daemon.min_free_mem_mb` (default 1024; 0 off), or while
-macOS itself reports memory pressure; the runs in flight finish, the idle line
-says `machine saturated: load 40.1 is over daemon.max_load 12` or `machine
+macOS itself reports critical memory pressure; the runs in flight finish, the idle line
+says `machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 24` or `machine
 saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024` once per
-change rather than per tick, and slots held this way are not hands wanted.
+change rather than per tick. A queue behind held slots is as short of hands
+as one behind busy slots: once an improve or task job has waited half an hour
+that way, the daemon rents a machine itself when `compute.auto_approve` is on
+and `compute.max_vms` and `compute.max_hours_per_day` allow (one open request
+at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts `hands
+wanted` to the owner once, saying why no machine was rented.
+The kernel's memory warning (the level under critical, which a 16 GB laptop
+reports for hours with a browser open) is not a hold: while it stands the
+daemon starts half as many local runs at once (`daemon.max_jobs` halved,
+never under one), and the experiment lane's measurements in progress count
+as runs under the cap, since their builds are load like any other.
 A load hold alone (not memory, not a restart window) keeps one local slot
 open as the express lane: it leases only the owner's work - lead runs,
 answers, `task:` jobs - while the load stays under twice `daemon.max_load`
@@ -3317,7 +3529,9 @@ the laptop hot for most of a day, so the daemon also exports
 `CARGO_BUILD_JOBS=<daemon.build_jobs>` (default 0: half the physical cores) to
 everything it spawns - a worker's `cargo test`, the pre-commit verification
 that inherits the worker's environment, the landing verification, the
-self-update build's `-j` - whenever the environment does not set it already,
+self-update build's `-j`, the experiment lane's measurements (each fixture's
+share of the cores, `evolve.measure_parallel`, never over this cap) - whenever
+the environment does not set it already,
 so an owner's own export or a recipe's `env:` wins and a `-j` on a command
 line still overrides it. Other toolchains read their own variables
 (`GOMAXPROCS`, `MAKEFLAGS`); a recipe sets those where a project needs them. The daemon itself
@@ -3332,7 +3546,21 @@ failed setup marked unfit here, instead of waiting a day for the marks to
 expire. While queued work waits behind an unfit mark, the maintenance pass
 also re-probes after `daemon.unfit_reprobe_minutes` (default 60; 0 off), then
 doubles the wait for that executor/project/tool up to one day; a passing daemon
-probe clears only that project's mark. A setup that fails twice the same way marks the project unfit for that
+probe clears only that project's mark. A mark about a tool (`lacks node@22`,
+`lacks bundle`, `lacks mise`) is cleared only once the tool answers - the probe
+runs `mise where PIN` or `TOOL --version` on the machine first (on remote hands
+through their `tool` verb; older hands are cleared as before), since a probe
+that looked only at git and disk sent the jobs back into the same failing
+setup every hour; while the tool is still missing the mark stays, the re-probe
+wait doubles as after a failed probe, and the mark expires a day after the
+setup failed, so the setup gets one real try a day. A pin the recipe no longer
+lists is cleared whether or not it is installed. Remote hands take a recipe's
+`tools:` and `env:` the way the hub does - the worker runs under `mise exec
+PIN… --` with the recipe's env set, after the `setup:` lines ran there - once
+their probe answers `recipe=1` (hands shipped since this landed do; `pulse
+pair` refreshes older ones, then `pulse executor probe NAME`); until then such
+a project runs on the hub only, as before, which kept five of eight projects off
+the hands. A setup that fails twice the same way marks the project unfit for that
 executor; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle
@@ -4198,13 +4426,19 @@ lanes are open (fleet idle)` when the lanes are full). A queued job is work
 waiting for a slot, however few leases the load governor lets out: the fleet
 is not idle over it, and research keeps the plain cadence rather than
 lengthening the queue it would be feeding. The research job is a `reflect` job whose
-brief points a worker at one focus in turn (the product as its user sees it,
+brief points a worker at one focus (the product as its user sees it,
 the code that changes most, the next step toward the project's goal, the
-project's checks, the loop's report, the docs against the code, the
-dependencies, the board, the lessons the code could enforce) and requires one
+project's checks, the loop's report, the docs against the code, the board,
+the lessons the code could enforce) and requires one
 to three experiment cards with evidence, votes on the listed cards below
 quorum and findings for the rest - at most `lead.research_per_day` (default
-12) per project per day. The goal focus is the fleet's own source of new
+12) per project per day. The focuses take turns, but a focus whose cards
+the board accepted more often in the last 30 days (reached quorum with more
+up than down votes) comes around more often, down to one turn per cycle
+for the rest, so a focus the board keeps voting down stops taking the same
+share of runs as the one whose cards land and climbs back as the window
+forgets its rejections. The report focus leaves `FINDING:` lines only, no
+cards: its cards were guesses about the loop. The goal focus is the fleet's own source of new
 work: it reads `pulse goal`, holds it against what the product does today
 (the README's promises, roadmap or TODO lists, empty states, steps the user
 does by hand, the last ten landed commits) and cards the smallest slice a
@@ -4214,19 +4448,28 @@ operating-layer improve jobs have already reached
 `plan.operating_layer_per_day`, the rotation keeps to the product focuses
 (product, code, goal, docs): cards from the others would join a pile the cap
 holds until tomorrow while the slots stand idle for want of a product card. While fewer than
-half the local worker slots hold a lease and no decided work is queued (a
-queued reflect, ballot, lead or answer does not count) the fleet is idle, and research comes
+half the local worker slots hold a lease and no job is queued (a queued
+reflect, ballot or lead job wants a slot like any other, so the ballot the
+idle fleet just planned ends its idleness until a worker takes it) the fleet is idle, and research comes
 `lead.idle_factor` (default 3, `1` keeps the plain cadences) times
 sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
-that applies. A `needs votes` card
+that applies. A shallow last research run (fewer than 5 steps and no card)
+forfeits the shortcut: the next research comes at the plain cadence and the
+planner line says `(fleet idle, last run shallow)`. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
 first; while the fleet is idle that wait and gap are also divided by
 `lead.idle_factor` (never below 10 minutes), so a card reaches quorum within
 the hour instead of one ballot round per hour, and the planner line reads
-`ballot in 20m (fleet idle)`. Research, ballot and reflect jobs do not count as the project moving
+`ballot in 20m (fleet idle)`. The ballot brief's rule is to vote down a card
+whose Hypothesis names no check or user-visible behaviour that will move;
+a card that only adds or fixes a test, lint or format is a down vote only
+while the project's product scope is on (the EVO-evaluators record's
+`Product scope:` line) - with it off the operating layer is the only lane, so
+such a card is in scope when its Hypothesis names the check, count or flake it
+moves. Research, ballot and reflect jobs do not count as the project moving
 for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
 report` counts what research left behind (cards, votes, findings, answers) on
 its own row.

@@ -133,6 +133,7 @@ pub(crate) fn self_update_fixture() -> (
             measuring: false,
             local_inflight: 0,
             governor: None,
+            refused_queued: String::new(),
         },
         SelfUpdateFixtureGuards {
             _env: guards,

@@ -55,6 +55,11 @@ pub(crate) struct LeaseOpts {
     /// Projects whose landing kinds wait behind one source (a red default
     /// branch and its fix job): `(project, source)` pairs.
     pub hold_except: Vec<(String, String)>,
+    /// The slot is one the daemon keeps for the work class: a queued
+    /// improve, task or experiment job goes before the meta kinds whatever
+    /// project waited longest, and the meta kinds get the slot only when no
+    /// work is there to take it.
+    pub work_first: bool,
 }
 
 pub(crate) fn queue_onboarding_job(
@@ -113,6 +118,28 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
 /// these share a project's work lanes. Research, ballots, answers and leads
 /// read and post; they keep the plain `parallel_per_project` limit.
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
+
+/// [`WORK_KINDS`] as a SQL list for `kind IN (...)`.
+pub(crate) fn work_kinds_sql() -> String {
+    WORK_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The work class as a SQL list: [`WORK_KINDS`] and the lane's experiments,
+/// the jobs that change the product; the rest (reflect, ballot, lead,
+/// answer, clean...) is the meta work around them.
+pub(crate) fn work_class_sql() -> String {
+    format!("{},'experiment'", work_kinds_sql())
+}
+
+/// Hours a work-class job waits before every lease puts the work class
+/// ahead of the meta kinds, whatever the slot: reflects and ballots are many
+/// and short, and four slots cycling through them kept an improve job
+/// queued for a day while the project fairness saw every project served.
+pub(crate) const WORK_WAITED_HOURS: i32 = 2;
 
 /// The jobs the owner is waiting on, as a clause over `j`: the lead's own
 /// runs, answers, the jobs a lead planned for an owner task
@@ -345,11 +372,7 @@ pub(crate) fn lease_job(
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many work jobs as fit the
         // commit cap (project_lanes); its research, ballots and answers keep the plain limit.
-        let work_kinds = WORK_KINDS
-            .iter()
-            .map(|k| format!("'{k}'"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let work_kinds = work_kinds_sql();
         for (slug, lanes) in &narrowed {
             sql.push_str(&format!(
                 " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
@@ -439,12 +462,26 @@ pub(crate) fn lease_job(
         ));
         vals.push(Box::new(agent.clone()));
         // The work this agent holds first - its clone and conversation carry
-        // on only under it; then the owner's work; then the project that
-        // waited longest (fairness between projects); then priority and age.
+        // on only under it; then the owner's work; then the work class, on a
+        // slot kept for it or once a work job has waited WORK_WAITED_HOURS;
+        // then the project that waited longest (fairness between projects);
+        // then priority and age.
+        let work_class = work_class_sql();
+        let work_waited = if o.work_first {
+            "1".to_string()
+        } else {
+            "j.created_at <= ?".to_string()
+        };
         sql.push_str(&format!(
-            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
         ));
         vals.push(Box::new(agent.clone()));
+        if !o.work_first {
+            vals.push(Box::new(crate::util::plus_minutes(
+                &now,
+                -(WORK_WAITED_HOURS * 60),
+            )));
+        }
         let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| &**v).collect();
         let r = one_dyn(q, &sql, &refs);
         if r.0.is_empty() {
@@ -1019,6 +1056,69 @@ mod tests {
             crate::jobs::job_row(&s.conn().unwrap(), fleet_2).str("status"),
             "queued"
         );
+    }
+
+    #[test]
+    fn lease_puts_the_work_class_first_on_a_kept_slot_or_once_it_has_waited_two_hours() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        for name in ["aurora", "borealis", "cinder", "dusk"] {
+            join(&s, name);
+        }
+        // `proj` ran most recently: project fairness sends the next worker
+        // to `other`, whose reflect also carries the higher priority.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES ('run-old', 'job-old', 'aurora', 'proj', '2026-09-01T00:00:00Z', '2026-09-01T00:10:00Z', 'done')",
+                [],
+            )
+            .unwrap();
+        let reflect = queue(&s, "other", "reflect", "reflect:other:1", 40);
+        let improve = queue(&s, "proj", "improve", "lead-idle:proj:1", 1);
+        let lease = |agent: &str, now: &str, work_first: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                now.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    work_first,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // A plain slot keeps the fairness: the reflect goes first.
+        let first = lease("aurora", crate::test_helpers::TEST_NOW, false);
+        assert_eq!(first.str("id"), reflect, "{first:?}");
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+            &[&reflect],
+        );
+        // A slot kept for the work class takes the improve job over it.
+        let kept = lease("borealis", crate::test_helpers::TEST_NOW, true);
+        assert_eq!(kept.str("id"), improve, "{kept:?}");
+        // With no work queued the kept slot serves the meta kinds.
+        let meta = lease("cinder", crate::test_helpers::TEST_NOW, true);
+        assert_eq!(meta.str("id"), reflect, "{meta:?}");
+        for id in [&improve, &reflect] {
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[id],
+            );
+        }
+        // Two hours on, a plain slot puts the waiting improve job first too.
+        let later =
+            crate::util::plus_minutes(crate::test_helpers::TEST_NOW, super::WORK_WAITED_HOURS * 60);
+        let waited = lease("dusk", &later, false);
+        assert_eq!(waited.str("id"), improve, "{waited:?}");
     }
 
     fn fake_probe_ssh(
@@ -3172,10 +3272,26 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let bin = crate::test_helpers::build_pulse();
         let _stage = crate::test_helpers_staged_pulse::stage_local_pulse(&bin);
         let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
+        // The recipe's env reaches the worker on the hands, as it does here.
+        crate::env::env_set(
+            &s,
+            proj,
+            crate::test_helpers::recipe_with(
+                None,
+                None,
+                None,
+                Some(&[("HANDS_GREETING", "from-the-recipe")]),
+                "",
+            ),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "env".into(),
+        )
+        .unwrap();
         let workroot = tempfile::tempdir().unwrap();
         let workdir = workroot.path().join("srv");
         let hands_home = tempfile::tempdir().unwrap();
@@ -3248,6 +3364,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "probe left the executor {}",
             crate::executor::executor_row(&s, "hands").str("status")
         );
+        assert!(
+            crate::recipe::hands_take_recipe(&s.conn().unwrap(), "hands"),
+            "these hands answer recipe=1: {note:?}"
+        );
         let job = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -3270,7 +3390,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW,
             crate::run::RunOpts {
                 executor: "hands".into(),
-                worker_cmd: "sh -c 'echo SUMMARY: hi from hands'".into(),
+                worker_cmd: "sh -c 'echo SUMMARY: hi from hands $HANDS_GREETING'".into(),
                 ..Default::default()
             },
         )
@@ -3279,7 +3399,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             run.str("status") == "done"
                 && run.str("executor") == "hands"
-                && run.str("summary").contains("hi from hands"),
+                && run.str("summary").contains("hi from hands from-the-recipe"),
             "run {run:?}"
         );
         assert_eq!(
@@ -3491,6 +3611,72 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             note.contains("harness login missing"),
             "probe note: {note:?}"
         );
+    }
+    #[test]
+    fn probe_executor_learns_whether_the_hands_take_a_recipe() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "pulse@hands",
+            "/srv/pulse",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let conn = s.conn().unwrap();
+        let base = "hands=ok user=pulse workdir=/srv/pulse git=2.40 harness=yes pulse=1.2.3 remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1 steps=1";
+        // (what the hands answer, whether the hub then sends them recipes)
+        for (reply, takes) in [
+            (
+                format!(
+                    "{base} recipe=1
+"
+                ),
+                true,
+            ),
+            (
+                format!(
+                    "{base}
+"
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "{base} recipe=1
+"
+                ),
+                true,
+            ),
+            // A probe that got no answer leaves the last one standing.
+            (
+                "hands=missing
+"
+                .to_string(),
+                true,
+            ),
+        ] {
+            let old = crate::executor::run_ssh_hook();
+            crate::executor::set_run_ssh(fake_probe_ssh);
+            *PROBE_REPLY.write().unwrap() = reply.clone();
+            let (_ok, note) = crate::executor::probe_executor(
+                &s,
+                "hands",
+                crate::util::HUMAN_AGENT,
+                crate::test_helpers::TEST_NOW,
+            )
+            .unwrap();
+            crate::executor::restore_run_ssh(old);
+            assert_eq!(
+                crate::recipe::hands_take_recipe(&conn, "hands"),
+                takes,
+                "{reply:?}: {note:?}"
+            );
+        }
     }
     #[test]
     fn probe_executor_min_free_mb() {

@@ -7,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const BUNDLE_JSON: &str = include_str!("../seed/bundle.json");
+/// The kinds `pulse seed export` bundles and `pulse seed apply` seeds: the
+/// framework's own records, and the agent-pack kinds (a role, an agent, a
+/// brief, a kind) a pack ships through the same bundle.
 pub const FRAMEWORK_KINDS: &[&str] = &[
     "instruction",
     "guide",
@@ -15,6 +18,10 @@ pub const FRAMEWORK_KINDS: &[&str] = &[
     "prompt",
     "template",
     "architecture",
+    "role",
+    "agent",
+    "brief",
+    "kind",
 ];
 /// The bundle's path inside the PULSE checkout; the crate embeds it from
 /// here, so `pulse seed export` refreshes this file.
@@ -503,9 +510,19 @@ mod tests {
                 r.id
             );
         }
-        for kind in FRAMEWORK_KINDS {
+        // The pack kinds (role, agent, brief, kind) ship empty until a pack
+        // lands; the framework's own kinds are always there.
+        for kind in [
+            "instruction",
+            "guide",
+            "skill",
+            "workflow",
+            "prompt",
+            "template",
+            "architecture",
+        ] {
             assert!(
-                kinds.get(*kind).copied().unwrap_or(0) > 0,
+                kinds.get(kind).copied().unwrap_or(0) > 0,
                 "no {kind} record in the bundle"
             );
         }
@@ -717,5 +734,54 @@ mod tests {
         );
         assert!(retired_status("Deprecated"));
         assert!(!retired_status("Accepted"));
+    }
+
+    #[test]
+    fn pack_kinds_travel_in_the_bundle() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        let brain_dir = tempfile::tempdir().unwrap();
+        add_project(&s, "brain", brain_dir.path(), true);
+        let role_body = "---\ntitle: Content lead\nevery: 1w\n---\n## Your concern: content\n";
+        for (id, kind, slug, body) in [
+            ("ROLE-content", "role", "content", role_body),
+            (
+                "AGENT-reviewer",
+                "agent",
+                "reviewer",
+                "---\nname: reviewer\ndescription: reviews\n---\nRead the diff.\n",
+            ),
+            ("BRIEF-weekly", "brief", "weekly", "Once a week.\n"),
+            ("KIND-bench", "kind", "bench", "A benchmark job.\n"),
+            ("ARCH-overview", "architecture", "overview", "# Overview\n"),
+        ] {
+            let rec = pulse_store::Record {
+                id: id.into(),
+                project: "brain".into(),
+                kind: kind.into(),
+                slug: slug.into(),
+                title: slug.into(),
+                origin: "store".into(),
+                ..pulse_store::Record::default()
+            };
+            s.put_record(rec, Frontmatter::new(), body, "tester", "")
+                .unwrap();
+        }
+        let (b, skipped) = build_bundle(&s).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(
+            b.records.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec![
+                "ARCH-overview",
+                "ROLE-content",
+                "AGENT-reviewer",
+                "BRIEF-weekly",
+                "KIND-bench"
+            ],
+            "pack kinds follow the framework's, in FRAMEWORK_KINDS order"
+        );
+        let back = decode_bundle(&encode_bundle(&b).unwrap()).unwrap();
+        assert_eq!(back, b);
+        assert_eq!(back.records[1].body, role_body);
     }
 }

@@ -21,13 +21,33 @@ pub(crate) fn set_measure_parallel(n: usize) {
     MEASURE_PARALLEL.store(n.max(1), Ordering::SeqCst);
 }
 
+/// The daemon's cap on one build's jobs (`daemon.build_jobs`), 0 for none.
+/// This crate has no store, so the runner hands the cap over before a
+/// measurement; without it a measurement built on every core while the
+/// daemon's own runs were held to half of them.
+static BUILD_JOBS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_build_jobs(n: usize) {
+    BUILD_JOBS.store(n, Ordering::SeqCst);
+}
+
+pub fn build_jobs() -> usize {
+    BUILD_JOBS.load(Ordering::SeqCst)
+}
+
 /// Build jobs one fixture may use: the cores split between the fixtures
-/// measured in parallel, never below one.
+/// measured in parallel, under the daemon's cap when one is set, never
+/// below one. An owner's own `CARGO_BUILD_JOBS` wins over both
+/// (`isolated_env` leaves it alone).
 pub(crate) fn fixture_build_jobs() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    (cores / MEASURE_PARALLEL.load(Ordering::SeqCst).max(1)).max(1)
+    let split = (cores / MEASURE_PARALLEL.load(Ordering::SeqCst).max(1)).max(1);
+    match build_jobs() {
+        0 => split,
+        cap => split.min(cap),
+    }
 }
 
 pub(crate) fn command_words(text: &str) -> Result<Vec<String>> {
@@ -624,6 +644,15 @@ mod tests {
         assert_eq!(fixture_build_jobs(), 1, "never below one job");
         set_measure_parallel(0);
         assert_eq!(fixture_build_jobs(), cores, "0 reads as sequential");
+        // The daemon's cap bounds the split; it never raises it.
+        set_build_jobs(1);
+        assert_eq!(fixture_build_jobs(), 1);
+        set_measure_parallel(2);
+        assert_eq!(fixture_build_jobs(), 1);
+        set_build_jobs(cores * 4);
+        assert_eq!(fixture_build_jobs(), (cores / 2).max(1));
+        set_build_jobs(0);
+        set_measure_parallel(1);
         let home = crate::test_helpers::temp_path();
         prepare_measurement_caches(&home.display().to_string()).unwrap();
         let env = isolated_env(&home.display().to_string());

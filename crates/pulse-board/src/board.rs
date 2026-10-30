@@ -28,6 +28,9 @@ pub const RESOLUTIONS: &[&str] = &[
     "declined",
     "dropped",
     "proceeded",
+    // The planner's close for a voted card whose File is an owner-only path:
+    // no worker can take it, the owner queues it by hand or lets it go.
+    "owner-only",
 ];
 pub const USEFUL_KINDS: &[&str] = &[
     "finding",
