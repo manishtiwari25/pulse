@@ -6,6 +6,7 @@ pub mod compute;
 pub mod delivery;
 pub mod hands;
 pub mod leads;
+pub mod manifest;
 pub mod messages;
 pub mod reports;
 pub mod schedules;

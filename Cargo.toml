@@ -57,6 +57,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 regex = "1.13"
 tabwriter = "1.4"
 indexmap = { version = "2.14", features = ["serde"] }
+# the repository's own PULSE file (.pulse/pulse.yaml): pure Rust, no panics on bad input
+serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }
 # ids, hashing, encoding
 uuid = { version = "1.26", features = ["v4"] }
 sha2 = "0.11"

@@ -235,6 +235,7 @@ pub fn add_skill(
             project: slug.into(),
             description: k.description.into(),
             body: (k.body)(&shape),
+            origin: String::new(),
         },
     )
 }
@@ -1198,6 +1199,7 @@ mod tests {
                 project: String::new(),
                 description: "How we build images".into(),
                 body: "# Docker\n".into(),
+                origin: String::new(),
             },
         )
         .unwrap();
@@ -1219,6 +1221,7 @@ mod tests {
                 project: pulse_store::COMMONS_SLUG.into(),
                 description: "theirs".into(),
                 body: "# theirs\n".into(),
+                origin: String::new(),
             },
         )
         .unwrap();
@@ -1463,6 +1466,7 @@ mod tests {
                     project: "other".into(),
                     description: format!("Other's {name}"),
                     body: "# Other\n".into(),
+                    origin: String::new(),
                 },
             )
             .unwrap();

@@ -39,7 +39,7 @@ pub const SOURCE_PREFIX: &str = "schedule:";
 /// the thread is the schedule id.
 pub const BOARD_AREA: &str = "schedule";
 const TIME_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
-const MINUTES_PER_DAY: i64 = 24 * 60;
+pub(crate) const MINUTES_PER_DAY: i64 = 24 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Schedule {
@@ -80,9 +80,19 @@ pub struct Schedule {
     /// The custom agent every job it queues runs as; empty lets the runner
     /// choose by the card.
     pub agent: String,
+    /// The skill every job it queues follows (a name of the project's
+    /// `pulse skill` registry); empty for none.
+    pub skill: String,
+    /// Empty when set by hand or by an agent; `repo:<path>#<name>` when the
+    /// project's own PULSE file keeps it (`crate::manifest`).
+    pub origin: String,
 }
 
 impl Schedule {
+    /// Whether a file of the project's repository keeps this schedule.
+    pub fn from_repo(&self) -> bool {
+        self.origin.starts_with(pulse_store::REPO_ORIGIN)
+    }
     /// The cadence as written: `6h`, `1d`, `90m`.
     pub fn every(&self) -> String {
         format_every(i64::from(self.every_minutes))
@@ -132,6 +142,12 @@ pub struct ScheduleInput {
     /// The custom agent the jobs run as (`--run-as`); checked against the
     /// project's agent files. Empty lets the runner choose.
     pub agent: String,
+    /// The skill the jobs follow (`--skill`); a name the project's skill
+    /// registry holds. Empty for none.
+    pub skill: String,
+    /// `repo:<path>#<name>` when the project's PULSE file keeps the
+    /// schedule; empty otherwise.
+    pub origin: String,
 }
 
 /// What one due schedule did on a daemon tick.
@@ -145,7 +161,7 @@ pub struct Fired {
     pub ended: bool,
 }
 
-const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at, script, job_kind, state, state_since, last_rc, last_output, fails, agent";
+const COLS: &str = "id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, last_at, last_job, runs, max_runs, note, created_by, created_at, updated_at, script, job_kind, state, state_since, last_rc, last_output, fails, agent, skill, origin";
 
 fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     Ok(Schedule {
@@ -176,6 +192,8 @@ fn scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         last_output: row.get(24)?,
         fails: row.get(25)?,
         agent: row.get(26)?,
+        skill: row.get(27)?,
+        origin: row.get(28)?,
     })
 }
 
@@ -229,7 +247,7 @@ pub fn format_every(minutes: i64) -> String {
     }
 }
 
-fn parse_at(text: &str) -> Result<Option<NaiveTime>> {
+pub(crate) fn parse_at(text: &str) -> Result<Option<NaiveTime>> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
@@ -383,6 +401,264 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
 /// the script of a check or watch could not be looked for on the default
 /// branch because the repo was out of reach.
 pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Schedule, String)> {
+    let v = validate(s, &input)?;
+    let cap = setting_int(s, "schedule.max_per_project", 10);
+    let now = s.now();
+    let tx = s.begin()?;
+    if cap > 0 {
+        let held: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM schedules WHERE project = ? AND status IN ('active', 'paused')",
+            [&input.project],
+            |r| r.get(0),
+        )?;
+        if held >= cap {
+            return Err(self::input(
+                2,
+                format!("{} already holds {held} schedules", input.project),
+                "the setting schedule.max_per_project caps them",
+                format!(
+                    "end one first: pulse schedule list --project {}",
+                    input.project
+                ),
+            ));
+        }
+    }
+    let id = next_id(&tx, "schedules", "SCHED-")?;
+    let next_at = first_due(&now, v.every, v.at)?;
+    tx.execute(
+        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at, script, job_kind, agent, skill, origin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            id,
+            input.project,
+            v.title,
+            v.kind,
+            v.brief,
+            input.tier,
+            input.priority,
+            v.every,
+            v.at_text(),
+            next_at,
+            input.times,
+            input.author,
+            now,
+            now,
+            v.script,
+            v.job_kind,
+            v.agent,
+            v.skill,
+            v.origin
+        ],
+    )?;
+    tx.event(
+        &input.author,
+        "schedule.added",
+        &id,
+        pulse_store::Detail::json(json!({
+            "project": input.project,
+            "title": v.title,
+            "kind": v.kind,
+            "script": v.script,
+            "job_kind": v.job_kind,
+            "agent": v.agent,
+            "skill": v.skill,
+            "origin": v.origin,
+            "every": format_every(v.every),
+            "next_at": next_at,
+            "times": input.times,
+        }))?,
+    )?;
+    tx.commit()?;
+    Ok((get(s, &id)?, v.warning))
+}
+
+/// The fields of a schedule that `update` may change, in the order
+/// `schedule.updated` lists them.
+pub const UPDATABLE: &[&str] = &[
+    "title", "kind", "brief", "tier", "priority", "every", "at", "times", "script", "job_kind",
+    "agent", "skill",
+];
+
+/// Changes a schedule's definition in place, keeping its id, project,
+/// author, origin, status and history: every other field of `input`
+/// replaces the row's after the checks `add` makes. The cadence starts over
+/// from now only when `every` or `at` changed; a change of kind forgets the
+/// script state. Returns the schedule, the names of the fields that changed
+/// (`UPDATABLE` order; empty when nothing did, and then nothing is written)
+/// and the same warning `add_checked` gives.
+pub fn update(
+    s: &pulse_store::Store,
+    id: &str,
+    input: &ScheduleInput,
+    author: &str,
+) -> Result<(Schedule, Vec<String>, String)> {
+    update_as(s, id, input, author, true)
+}
+
+/// `update` for the project's PULSE file (`crate::manifest`): the file owns
+/// the row, so the daemon that applies it needs no ownership.
+pub(crate) fn update_from_file(
+    s: &pulse_store::Store,
+    id: &str,
+    input: &ScheduleInput,
+    author: &str,
+) -> Result<(Schedule, Vec<String>, String)> {
+    update_as(s, id, input, author, false)
+}
+
+fn update_as(
+    s: &pulse_store::Store,
+    id: &str,
+    input: &ScheduleInput,
+    author: &str,
+    check_owner: bool,
+) -> Result<(Schedule, Vec<String>, String)> {
+    let sched = get(s, id)?;
+    if check_owner {
+        owned_by(&sched, author)?;
+    } else if author.is_empty() {
+        return Err(self::input(
+            2,
+            "An author is needed",
+            "changes to a schedule record who made them",
+            "pass --agent NAME or set PULSE_AGENT",
+        ));
+    }
+    if sched.status == "ended" {
+        return Err(self::input(
+            2,
+            format!("Schedule {id} has ended"),
+            "an ended schedule stays in the list for its history and never changes",
+            "pulse schedule add ... for a new one",
+        ));
+    }
+    if !input.project.is_empty() && input.project != sched.project {
+        return Err(self::input(
+            2,
+            format!("Schedule {id} belongs to {}", sched.project),
+            "a schedule keeps its project",
+            "end it and add one for the other project",
+        ));
+    }
+    let own = ScheduleInput {
+        project: sched.project.clone(),
+        author: author.to_string(),
+        origin: sched.origin.clone(),
+        ..input.clone()
+    };
+    let v = validate(s, &own)?;
+    let mut changed = Vec::new();
+    let differs: [(&str, bool); 12] = [
+        ("title", v.title != sched.title),
+        ("kind", v.kind != sched.kind),
+        ("brief", v.brief != sched.brief),
+        ("tier", own.tier != sched.tier),
+        ("priority", own.priority != sched.priority),
+        ("every", v.every != i64::from(sched.every_minutes)),
+        ("at", v.at_text() != sched.at_time),
+        ("times", own.times != sched.max_runs),
+        ("script", v.script != sched.script),
+        ("job_kind", v.job_kind != sched.job_kind),
+        ("agent", v.agent != sched.agent),
+        ("skill", v.skill != sched.skill),
+    ];
+    for (name, differ) in differs {
+        if differ {
+            changed.push(name.to_string());
+        }
+    }
+    if changed.is_empty() {
+        return Ok((sched, changed, v.warning));
+    }
+    let now = s.now();
+    let cadence = changed.iter().any(|c| c == "every" || c == "at");
+    let next_at = if cadence {
+        first_due(&now, v.every, v.at)?
+    } else {
+        sched.next_at.clone()
+    };
+    let tx = s.begin()?;
+    tx.execute(
+        "UPDATE schedules SET title = ?, kind = ?, brief = ?, tier = ?, priority = ?, every_minutes = ?, at_time = ?, max_runs = ?, script = ?, job_kind = ?, agent = ?, skill = ?, next_at = ?, updated_at = ? WHERE id = ?",
+        params![
+            v.title,
+            v.kind,
+            v.brief,
+            own.tier,
+            own.priority,
+            v.every,
+            v.at_text(),
+            own.times,
+            v.script,
+            v.job_kind,
+            v.agent,
+            v.skill,
+            next_at,
+            now,
+            id
+        ],
+    )?;
+    if changed.iter().any(|c| c == "kind") {
+        tx.execute(
+            "UPDATE schedules SET state = '', state_since = '', last_rc = NULL, last_output = '', fails = 0 WHERE id = ?",
+            [id],
+        )?;
+    }
+    tx.event(
+        author,
+        "schedule.updated",
+        id,
+        pulse_store::Detail::json(json!({
+            "project": sched.project,
+            "changed": changed,
+            "title": v.title,
+            "kind": v.kind,
+            "every": format_every(v.every),
+            "next_at": next_at,
+            "origin": sched.origin,
+        }))?,
+    )?;
+    tx.commit()?;
+    Ok((get(s, id)?, changed, v.warning))
+}
+
+/// A schedule input after every check `add` and `update` make, with the
+/// fields in the form the row keeps.
+struct Validated {
+    title: String,
+    kind: String,
+    brief: String,
+    script: String,
+    job_kind: String,
+    agent: String,
+    skill: String,
+    origin: String,
+    every: i64,
+    at: Option<NaiveTime>,
+    /// Non-empty when the script could not be looked for on the default
+    /// branch (the repo was out of reach).
+    warning: String,
+}
+
+impl Validated {
+    fn at_text(&self) -> String {
+        self.at
+            .map(|t| t.format("%H:%M").to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// The checks every schedule passes before it is written, as an error for
+/// the first that fails; `pulse manifest check --project P` runs them on a
+/// file's entries without writing anything.
+pub fn check(s: &pulse_store::Store, input: &ScheduleInput) -> Result<String> {
+    validate(s, input).map(|v| v.warning)
+}
+
+/// The checks every schedule passes before it is written, whether added or
+/// updated: the cap on schedules per project is the one check `add` alone
+/// makes.
+fn validate(s: &pulse_store::Store, input: &ScheduleInput) -> Result<Validated> {
     let title = clean(&input.title);
     if title.is_empty() {
         return Err(self::input(
@@ -418,6 +694,7 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
             "--kind task",
         ));
     }
+    let skill = input.skill.trim().to_string();
     let mut warning = String::new();
     let (script, job_kind) = if script_kind {
         let script = validate_script_path(&input.script)?;
@@ -452,12 +729,12 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
                 "--kind check --job-kind improve, or drop --job-kind",
             ));
         }
-        if input.brief.trim().is_empty() {
+        if input.brief.trim().is_empty() && skill.is_empty() {
             return Err(self::input(
                 2,
                 "A schedule needs a brief",
                 "the worker that takes each job has nothing else to go on",
-                "--brief 'what to do, how to know it is done' or --brief-file F",
+                "--brief 'what to do, how to know it is done', --brief-file F, or --skill NAME to run a skill",
             ));
         }
         (String::new(), kind.clone())
@@ -491,6 +768,9 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
     }
     check_project(s, &input.project)?;
     let agent = pulse_board::check_run_as(s, &input.project, &input.agent)?;
+    if !skill.is_empty() {
+        check_skill(s, &input.project, &skill)?;
+    }
     if script_kind {
         let Some(project) = s.project(&input.project)? else {
             return Err(self::input(
@@ -553,70 +833,48 @@ pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Sche
             "--every 1d --at 09:00",
         ));
     }
-    let cap = setting_int(s, "schedule.max_per_project", 10);
-    let now = s.now();
-    let tx = s.begin()?;
-    if cap > 0 {
-        let held: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM schedules WHERE project = ? AND status IN ('active', 'paused')",
-            [&input.project],
-            |r| r.get(0),
-        )?;
-        if held >= cap {
-            return Err(self::input(
-                2,
-                format!("{} already holds {held} schedules", input.project),
-                "the setting schedule.max_per_project caps them",
-                format!(
-                    "end one first: pulse schedule list --project {}",
-                    input.project
-                ),
-            ));
-        }
+    Ok(Validated {
+        title,
+        kind,
+        brief: input.brief.clone(),
+        script,
+        job_kind,
+        agent,
+        skill,
+        origin: input.origin.trim().to_string(),
+        every,
+        at,
+        warning,
+    })
+}
+
+/// A schedule's `--skill` names an enabled skill of the project's registry
+/// (its own or a global one), so the worker can load it.
+fn check_skill(s: &pulse_store::Store, project: &str, skill: &str) -> Result<()> {
+    let known = s.skills_for(project)?;
+    if known.iter().any(|k| k.name == skill) {
+        return Ok(());
     }
-    let id = next_id(&tx, "schedules", "SCHED-")?;
-    let next_at = first_due(&now, every, at)?;
-    tx.execute(
-        "INSERT INTO schedules (id, project, title, kind, brief, tier, priority, every_minutes, at_time, status, next_at, max_runs, created_by, created_at, updated_at, script, job_kind, agent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            id,
-            input.project,
-            title,
-            kind,
-            input.brief,
-            input.tier,
-            input.priority,
-            every,
-            at.map(|t| t.format("%H:%M").to_string()).unwrap_or_default(),
-            next_at,
-            input.times,
-            input.author,
-            now,
-            now,
-            script,
-            job_kind,
-            agent
-        ],
-    )?;
-    tx.event(
-        &input.author,
-        "schedule.added",
-        &id,
-        pulse_store::Detail::json(json!({
-            "project": input.project,
-            "title": title,
-            "kind": kind,
-            "script": script,
-            "job_kind": job_kind,
-            "agent": agent,
-            "every": format_every(every),
-            "next_at": next_at,
-            "times": input.times,
-        }))?,
-    )?;
-    tx.commit()?;
-    Ok((get(s, &id)?, warning))
+    let hint = if let Some(k) = s.skill_named(skill)? {
+        if k.status != "enabled" {
+            format!("it is disabled: pulse skill enable {}", k.id)
+        } else {
+            format!(
+                "it belongs to {}: pulse skill update {} --project '' shares it",
+                k.project, k.id
+            )
+        }
+    } else {
+        format!(
+            "pulse skill list --project {project} shows them; pulse skill add, or a SKILL.md in the repo's .pulse/skills folder, adds one"
+        )
+    };
+    Err(self::input(
+        2,
+        format!("No enabled skill {skill:?} for {project}"),
+        "a scheduled job loads the skill by name from the pulse skill registry",
+        hint,
+    ))
 }
 
 pub fn get(s: &pulse_store::Store, id: &str) -> Result<Schedule> {
@@ -714,6 +972,37 @@ fn set_status(
 ) -> Result<Schedule> {
     let sched = get(s, id)?;
     owned_by(&sched, author)?;
+    set_status_of(s, sched, status, note, author, action)
+}
+
+/// `pause`, `resume` or `end` for the project's PULSE file: the file owns
+/// the row, so the daemon that applies it needs no ownership.
+pub(crate) fn set_status_from_file(
+    s: &pulse_store::Store,
+    id: &str,
+    status: &str,
+    note: &str,
+    author: &str,
+) -> Result<Schedule> {
+    let sched = get(s, id)?;
+    let action = match status {
+        "paused" => "schedule.paused",
+        "active" => "schedule.resumed",
+        _ => "schedule.ended",
+    };
+    set_status_of(s, sched, status, note, author, action)
+}
+
+fn set_status_of(
+    s: &pulse_store::Store,
+    sched: Schedule,
+    status: &str,
+    note: &str,
+    author: &str,
+    action: &str,
+) -> Result<Schedule> {
+    let id = sched.id.clone();
+    let id = id.as_str();
     if sched.status == "ended" {
         return Err(input(
             2,
@@ -791,6 +1080,23 @@ pub fn run_now(s: &pulse_store::Store, id: &str, author: &str) -> Result<Schedul
 /// from, so the worker knows the job recurs and how to change it.
 pub fn job_brief(sched: &Schedule, run: i32) -> String {
     let mut brief = sched.brief.trim_end().to_string();
+    if !sched.skill.is_empty() {
+        let line = format!(
+            "Load the skill `{}` first (the skill tool, or `pulse skill show {}`) and follow it{}",
+            sched.skill,
+            sched.skill,
+            if brief.is_empty() {
+                "; it is the whole brief."
+            } else {
+                " for the work below."
+            }
+        );
+        brief = if brief.is_empty() {
+            line
+        } else {
+            format!("{line}\n\n{brief}")
+        };
+    }
     brief.push_str(&format!(
         "\n\n---\nThis job is run {run} of schedule {} (every {}), set by {}. Do the work above and finish as usual; the schedule queues the next run by itself. `pulse schedule show {}` has its history; only {} or the owner pause or end it.",
         sched.id,

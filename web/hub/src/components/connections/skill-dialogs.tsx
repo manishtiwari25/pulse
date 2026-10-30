@@ -14,7 +14,7 @@ import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
 import { Notice } from "@/components/pulse/panel";
 import { Mono, StatusBadge, When } from "@/components/pulse/who";
-import { writes, type ProjectsPayload, type Skill } from "@/lib/api";
+import { skillRepoPath, writes, type ProjectsPayload, type Skill } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { EMPTY_SKILL_FORM, formFromSkill, scopeLabel, scopeTitle, skillFormReady, skillInput, skillPatch, validateSkillForm, type SkillForm } from "@/lib/mcp";
 import { invalidate, useApi } from "@/lib/use-api";
@@ -180,7 +180,7 @@ export function SkillViewDialog({ skill, onOpenChange, onEdit }: { skill: Skill 
               <span>{scopeTitle(skill.project)}</span>
               <span>{skill.uses ? "Read " + (skill.uses === 1 ? "once" : skill.uses + " times") : "Not read yet"}</span>
               <span>
-                {"Added by " + (skill.created_by === "human" || skill.created_by === "owner" ? "you" : skill.created_by) + ", updated "}
+                {(skillRepoPath(skill) ? "Kept by the repository" : "Added by " + (skill.created_by === "human" || skill.created_by === "owner" ? "you" : skill.created_by)) + ", updated "}
                 <When d={skill.updated_at} />
               </span>
               <span className="text-xs">{skill.id}</span>
@@ -190,6 +190,13 @@ export function SkillViewDialog({ skill, onOpenChange, onEdit }: { skill: Skill 
             </div>
             <p className="text-xs text-muted-foreground">
               Agents read it with <Mono>pulse skill show {skill.name}</Mono>; each read is counted.
+              {skillRepoPath(skill) ? (
+                <>
+                  {" The text lives in "}
+                  <Mono>{skillRepoPath(skill)}</Mono>
+                  {" on the project's default branch: edit it there and commit; Pulse loads the new text by itself. Turning it off here lasts until the next commit that changes the project's skill folders or PULSE file; to drop it, delete the folder."}
+                </>
+              ) : null}
             </p>
             <DialogFooter>
               {onEdit ? (

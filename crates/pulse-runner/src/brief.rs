@@ -1760,6 +1760,7 @@ mod tests {
                 project: "proj".into(),
                 description: "Finding a flaky test".into(),
                 body: "Run the suite three times.".into(),
+                origin: String::new(),
             },
         )
         .unwrap();

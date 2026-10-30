@@ -992,6 +992,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     project: scope(fs),
                     description: fs.get_string("description"),
                     body,
+                    origin: String::new(),
                 },
             )?;
             if c.json {
@@ -1034,7 +1035,11 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                         },
                         k.status.clone(),
                         k.uses.to_string(),
-                        k.created_by.clone(),
+                        if k.from_repo() {
+                            "repository".to_string()
+                        } else {
+                            k.created_by.clone()
+                        },
                         k.description.chars().take(80).collect(),
                     ]
                 })
@@ -1077,6 +1082,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     .is_set("description")
                     .then(|| fs.get_string("description")),
                 body: (!body.is_empty()).then_some(body),
+                origin: None,
             };
             if patch == SkillPatch::default() {
                 return Err(pulse_cli::errorf(

@@ -1010,6 +1010,7 @@ pub fn additive_columns() -> Vec<Column> {
         .chain(SCHEDULE_COLUMNS.iter())
         .chain(MESSAGE_COLUMNS.iter())
         .chain(crate::chat_ddl::CHAT_COLUMNS.iter())
+        .chain(crate::mcp_ddl::SKILL_COLUMNS.iter())
         .copied()
         .collect()
 }

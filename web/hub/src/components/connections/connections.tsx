@@ -14,7 +14,7 @@ import { Mono, StatusBadge, When } from "@/components/pulse/who";
 import { ConnectDialog, McpServerDialog, SignInDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, SkillViewDialog, refreshSkills } from "@/components/connections/skill-dialogs";
 import { ToolkitGallery } from "@/components/project/toolkit";
-import { query, writes, type McpOptions, type McpServer, type McpServersPayload, type ProjectsPayload, type Skill, type SkillsPayload, type ToolkitPayload, type ToolkitProject } from "@/lib/api";
+import { query, skillRepoPath, writes, type McpOptions, type McpServer, type McpServersPayload, type ProjectsPayload, type Skill, type SkillsPayload, type ToolkitPayload, type ToolkitProject } from "@/lib/api";
 import { num, plural } from "@/lib/format";
 import { DEFAULT_OPTIONS, TRANSPORT_SHORT, authLabel, checkReason, endpoint, lastCheck, scopeLabel, scopeTitle, sortScoped, toolNames } from "@/lib/mcp";
 import { useApi } from "@/lib/use-api";
@@ -257,10 +257,14 @@ export function ConnectionsPageClient() {
       <SkillViewDialog
         skill={viewSkill}
         onOpenChange={(o) => (o ? null : setViewSkill(null))}
-        onEdit={(k) => {
-          setViewSkill(null);
-          setEditSkill(k);
-        }}
+        onEdit={
+          viewSkill && skillRepoPath(viewSkill)
+            ? undefined
+            : (k) => {
+                setViewSkill(null);
+                setEditSkill(k);
+              }
+        }
       />
     </Tabs>
   );
@@ -441,6 +445,7 @@ function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void
     }
   };
   const by = k.created_by === "human" || k.created_by === "owner" ? "you" : k.created_by;
+  const repoPath = skillRepoPath(k);
   return (
     <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className="gap-3">
       <CardHead icon={BookOpenIcon} name={k.name} id={k.id} status={k.status} off={!on} />
@@ -448,7 +453,7 @@ function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void
       <ItemCardMeta>
         <span>{scopeTitle(k.project)}</span>
         <span>{k.uses ? "Read " + (k.uses === 1 ? "once" : num(k.uses) + " times") : "Not read yet"}</span>
-        {by ? <span>{"Added by " + by}</span> : null}
+        {repoPath ? <span className="anywhere">{"Kept by the repository: " + repoPath}</span> : by ? <span>{"Added by " + by}</span> : null}
         <span>
           {"Updated "}
           <When d={k.updated_at} />
@@ -459,9 +464,11 @@ function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void
           <BookOpenIcon /> Read
         </Button>
         <span className="ml-auto flex flex-wrap gap-1">
-          <Button size="sm" variant="ghost" onClick={() => onEdit(k)} aria-label={"Edit " + k.name}>
-            <PencilIcon /> Edit
-          </Button>
+          {repoPath ? null : (
+            <Button size="sm" variant="ghost" onClick={() => onEdit(k)} aria-label={"Edit " + k.name}>
+              <PencilIcon /> Edit
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy} aria-label={(on ? "Turn off " : "Turn on ") + k.name}>
             {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
           </Button>

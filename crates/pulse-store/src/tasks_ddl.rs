@@ -86,7 +86,9 @@ pub const TASKS_DDL: &[&str] = &[
   last_rc INTEGER,                    -- exit code of the last script run, NULL until one ran
   last_output TEXT NOT NULL DEFAULT '', -- redacted tail of the last script run
   fails INTEGER NOT NULL DEFAULT 0,   -- consecutive non-zero exits
-  agent TEXT NOT NULL DEFAULT ''      -- the custom agent its jobs run as; '' lets the runner choose
+  agent TEXT NOT NULL DEFAULT '',     -- the custom agent its jobs run as; '' lets the runner choose
+  skill TEXT NOT NULL DEFAULT '',     -- the skill every job it queues follows; '' for none
+  origin TEXT NOT NULL DEFAULT ''     -- '' when set by hand; repo:<path>#<name> when the project's .pulse/pulse.yaml keeps it
 );"####,
     r####"CREATE INDEX IF NOT EXISTS schedules_project_status ON schedules (project, status, next_at);"####,
     r####"CREATE TRIGGER IF NOT EXISTS schedules_no_delete BEFORE DELETE ON schedules BEGIN SELECT RAISE(ABORT, 'schedules are never deleted: end instead'); END;"####,
@@ -132,7 +134,8 @@ pub const TASKS_DDL: &[&str] = &[
 ];
 
 /// Columns added after the schedules table shipped: the script kinds
-/// (`check`, `watch`) and the agent the jobs run as. `ensure_records` adds
+/// (`check`, `watch`), the agent the jobs run as, the skill they follow and
+/// the repository file that keeps the schedule. `ensure_records` adds
 /// each one that is missing, so an older store gains them on first open.
 pub const SCHEDULE_COLUMNS: &[Column] = &[
     Column {
@@ -173,6 +176,16 @@ pub const SCHEDULE_COLUMNS: &[Column] = &[
     Column {
         table: r####"schedules"####,
         name: r####"agent"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"skill"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"schedules"####,
+        name: r####"origin"####,
         ddl: r####"TEXT NOT NULL DEFAULT ''"####,
     },
 ];

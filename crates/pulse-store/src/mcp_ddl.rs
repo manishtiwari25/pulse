@@ -31,6 +31,15 @@ pub const MCP_DDL: &[&str] = &[
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  uses INTEGER NOT NULL DEFAULT 0
+  uses INTEGER NOT NULL DEFAULT 0,
+  origin TEXT NOT NULL DEFAULT ''     -- '' when added by hand; repo:<path> when a SKILL.md of the project keeps it
 );"####,
 ];
+
+/// Columns added after the skills table shipped. `ensure_records` adds each
+/// one that is missing, so an older store gains them on first open.
+pub const SKILL_COLUMNS: &[crate::Column] = &[crate::Column {
+    table: r####"skills"####,
+    name: r####"origin"####,
+    ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+}];
