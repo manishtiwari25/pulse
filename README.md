@@ -1122,7 +1122,14 @@ transport and an auth:
 - `stdio` runs a command on this machine (`--command npx --arg -y --arg
   @modelcontextprotocol/server-github`) and talks over its stdin/stdout;
   `--env K=V` sets its environment, and a value may itself be a credential
-  reference, resolved when the command starts.
+  reference, resolved when the command starts. Each argument is one `--arg`;
+  the hub's Arguments box takes one per line or a line split as a shell
+  would, and a whole line pasted as the command (`npx -y @azure/mcp@latest
+  server start`) is split into the program and its arguments. A stdio
+  server that was handed its command line as one argument fails to connect
+  with the split named (`pulse mcp update NAME --command npx --arg=-y ...`),
+  since the program sees one argument it does not know - `npx` runs no
+  package at all then.
 - `http` is Streamable HTTP: requests are POSTed to the url, the session id
   the server hands back is kept for the conversation, and the reply may be
   JSON or an event stream.

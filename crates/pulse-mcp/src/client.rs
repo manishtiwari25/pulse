@@ -274,7 +274,9 @@ impl Client {
     ) -> Result<Client> {
         let secrets = wire.secrets.clone();
         let transport: Box<dyn Transport> = match server.transport.as_str() {
-            "stdio" => Box::new(StdioTransport::spawn(server, &wire)?),
+            "stdio" => {
+                Box::new(StdioTransport::spawn(server, &wire).map_err(|e| split_hint(server, e))?)
+            }
             "http" => Box::new(HttpTransport::new(&server.url, &wire)?),
             "sse" => Box::new(SseTransport::open(&server.url, &wire, connect_timeout)?),
             other => bail!("unknown transport {other:?}"),
@@ -296,7 +298,8 @@ impl Client {
                 }),
                 connect_timeout,
             )
-            .map_err(|e| client.annotate(e))?;
+            .map_err(|e| client.annotate(e))
+            .map_err(|e| split_hint(server, e))?;
         let info = result.get("serverInfo").cloned().unwrap_or(Value::Null);
         client.server = ServerInfo {
             name: info
@@ -580,6 +583,42 @@ pub fn check_note(server: &ServerInfo, tools: &[ToolInfo]) -> String {
 }
 
 // ----- stdio ----------------------------------------------------------------
+
+/// A stdio server whose command or an argument holds spaces was most likely
+/// given its command line as one piece - the hub's Arguments box takes one
+/// per line and the CLI one `--arg` each - and the program then saw a single
+/// argument it does not know (`npx` ran no package at all and opened a shell
+/// on the JSON-RPC stream). When a stdio connect fails that way, the error
+/// names the split as the `pulse mcp update` that fixes it.
+fn split_hint(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
+    if server.transport != "stdio" {
+        return e;
+    }
+    let holds_spaces = |s: &&str| s.trim().contains(char::is_whitespace);
+    let Some(piece) = std::iter::once(server.command.as_str())
+        .chain(server.args.iter().map(String::as_str))
+        .find(holds_spaces)
+    else {
+        return e;
+    };
+    let pieces: Vec<&str> = std::iter::once(server.command.as_str())
+        .chain(server.args.iter().map(String::as_str))
+        .flat_map(str::split_whitespace)
+        .collect();
+    let Some((program, rest)) = pieces.split_first() else {
+        return e;
+    };
+    let args = rest
+        .iter()
+        .map(|a| format!("--arg={a}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    anyhow!(
+        "{e}; {piece:?} was given as one piece, so {program} saw one argument where it expected {} - each argument is one --arg (one line in the hub): pulse mcp update {} --command {program} {args}",
+        rest.len(),
+        server.name
+    )
+}
 
 struct StdioTransport {
     child: Child,
@@ -1150,6 +1189,66 @@ impl Transport for SseTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stdio_command_line_given_as_one_argument_gets_the_split_named() {
+        let server = McpServer {
+            name: "azure-mcp".into(),
+            transport: "stdio".into(),
+            command: "npx".into(),
+            args: vec!["-y @azure/mcp@latest server start".into()],
+            ..Default::default()
+        };
+        let hinted = split_hint(&server, anyhow!("npx did not answer initialize within 90s"));
+        let text = hinted.to_string();
+        assert!(
+            text.starts_with("npx did not answer initialize within 90s; "),
+            "{text}"
+        );
+        assert!(
+            text.contains("\"-y @azure/mcp@latest server start\" was given as one piece"),
+            "{text}"
+        );
+        assert!(
+            text.contains("saw one argument where it expected 4"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("pulse mcp update azure-mcp --command npx --arg=-y --arg=@azure/mcp@latest --arg=server --arg=start"),
+            "{text}"
+        );
+        // The whole line pasted as the command splits the same way.
+        let whole = McpServer {
+            command: "npx -y @azure/mcp@latest server start".into(),
+            args: vec![],
+            ..server.clone()
+        };
+        let text = split_hint(&whole, anyhow!("spawn")).to_string();
+        assert!(
+            text.ends_with(
+                "--command npx --arg=-y --arg=@azure/mcp@latest --arg=server --arg=start"
+            ),
+            "{text}"
+        );
+        // Properly split arguments and other transports pass through untouched.
+        let fine = McpServer {
+            args: vec![
+                "-y".into(),
+                "@azure/mcp@latest".into(),
+                "server".into(),
+                "start".into(),
+            ],
+            ..server.clone()
+        };
+        assert_eq!(split_hint(&fine, anyhow!("boom")).to_string(), "boom");
+        let http = McpServer {
+            transport: "http".into(),
+            command: String::new(),
+            args: vec!["a b".into()],
+            ..server
+        };
+        assert_eq!(split_hint(&http, anyhow!("boom")).to_string(), "boom");
+    }
 
     #[test]
     fn sse_events_are_parsed_across_chunks_and_line_endings() {
