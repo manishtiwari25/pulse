@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_OPTIONS, authFieldLabel, authsFor, endpoint, envObject, envRows, formFromServer, lastCheck, mcpFormReady, mcpInput, mcpPatch, parseArgs, skillFormReady, skillPatch, sortScoped, toolNames, validateMcpForm, validateSkillForm } from "./mcp.ts";
+import { DEFAULT_OPTIONS, authFieldLabel, authsFor, endpoint, envObject, envRows, formFromServer, lastCheck, mcpFormReady, mcpInput, mcpPatch, parseArgs, shellWords, skillFormReady, skillPatch, sortScoped, toolNames, validateMcpForm, validateSkillForm } from "./mcp.ts";
 
 const server = {
   id: "MCP-001",
@@ -78,6 +78,17 @@ test("the input drops what the transport and auth do not use", () => {
   assert.equal(open.auth_header, "");
   assert.deepEqual(open.env, { GITHUB_HOST: "https://github.com" });
   assert.deepEqual(parseArgs(" stdio \n\n--read-only\n"), ["stdio", "--read-only"]);
+  // A command line pasted on one line is split as a shell would, so npx is
+  // never handed "-y @azure/mcp@latest server start" as one argument.
+  assert.deepEqual(parseArgs("-y @azure/mcp@latest server start"), ["-y", "@azure/mcp@latest", "server", "start"]);
+  assert.deepEqual(parseArgs("-e 'console.log(1 + 1)'\n--name \"two words\" plain\\ space"), ["-e", "console.log(1 + 1)", "--name", "two words", "plain space"]);
+  assert.deepEqual(shellWords('--json "{\\"a\\": 1}" \'\''), ["--json", '{"a": 1}', ""]);
+  const pasted = mcpInput(form({ command: " npx -y @azure/mcp@latest ", args: "server start" }));
+  assert.equal(pasted.command, "npx");
+  assert.deepEqual(pasted.args, ["-y", "@azure/mcp@latest", "server", "start"]);
+  const spaced = mcpInput(form({ command: '"/Applications/My Tools/bin/mcp"', args: "" }));
+  assert.equal(spaced.command, "/Applications/My Tools/bin/mcp");
+  assert.deepEqual(spaced.args, []);
   assert.deepEqual(envObject([{ key: " A ", value: "1" }, { key: "", value: "x" }, { key: "A", value: "2" }]), { A: "2" });
   assert.deepEqual(envRows({ B: "2", A: "1" }), [{ key: "B", value: "2" }, { key: "A", value: "1" }]);
 });
