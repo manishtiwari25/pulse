@@ -939,6 +939,117 @@ pub(crate) fn sync_upstream(
 /// push url git has no password for moves to its ssh form when that answers
 /// to the daemon's key (`push_url_over_ssh`). Returns the log lines and the
 /// hold note, empty when nothing is owed or the push went through.
+/// The tracking ref ahead of the local default branch: a fetch-and-check
+/// pass is owed even with nothing to push, so a merge made on the forge
+/// reaches the brain within one landing pass instead of waiting for a local
+/// landing.
+fn upstream_ahead_of_default(root: &str, def: &str, s: &pulse_store::Store) -> bool {
+    let upstream = if crate::landing_pr::pr_mode(s) {
+        "origin/pr"
+    } else {
+        "origin/main"
+    };
+    crate::util::git_timeout(
+        root,
+        Duration::from_secs(30),
+        &[
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{def}..{upstream}"),
+        ],
+    )
+    .stdout
+    .trim()
+    .parse::<i32>()
+    .unwrap_or(0)
+        > 0
+}
+
+fn fast_forward_failed_note(why: &str, upstream: &str) -> String {
+    format!("fast-forward to {upstream} failed: {why}")
+}
+
+/// A remote merge (e.g. a human merged on the forge) reached the tracking
+/// ref while the local default branch stayed put; move it with the merge's
+/// own commits so the brain sees them this pass instead of waiting for a
+/// local landing. Only a clean checkout of the default branch is touched: a
+/// dirty or detached checkout keeps its HEAD and `sync_upstream` handles the
+/// remote commits as on any other pass.
+#[allow(clippy::too_many_arguments)]
+fn fast_forward_default(
+    s: &pulse_store::Store,
+    root: &str,
+    slug: &str,
+    def: &str,
+    name: &str,
+    up_ref: &str,
+    actor: &str,
+    now: &str,
+    behind: i32,
+) -> Option<String> {
+    let (on_default, clean) = {
+        let head = crate::util::git_timeout(
+            root,
+            Duration::from_secs(10),
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+        );
+        let status = crate::util::git_timeout(
+            root,
+            Duration::from_secs(60),
+            &["status", "--porcelain", "--untracked-files=no"],
+        );
+        (
+            head.ok() && head.stdout.trim() == def,
+            status.ok() && status.stdout.trim().is_empty(),
+        )
+    };
+    if !on_default || !clean {
+        return None;
+    }
+    let from = crate::util::git_timeout(root, Duration::from_secs(10), &["rev-parse", def])
+        .stdout
+        .trim()
+        .to_string();
+    let to = crate::util::git_timeout(root, Duration::from_secs(10), &["rev-parse", up_ref])
+        .stdout
+        .trim()
+        .to_string();
+    let ff = crate::util::git_timeout(
+        root,
+        Duration::from_secs(120),
+        &["merge", "--ff-only", up_ref],
+    );
+    if !ff.ok() {
+        let why = crate::run::squeeze(&format!("{} {}", ff.stderr, ff.stdout), 160);
+        let why = pulse_cred::redact(&why, &[]);
+        if let Ok(conn) = s.conn() {
+            crate::util::event_at(
+                &conn,
+                now,
+                actor,
+                "land.fast-forward",
+                slug,
+                serde_json::json!({"project": slug, "branch": def, "upstream": name, "behind": behind, "ok": false, "why": why.clone()}),
+            );
+        }
+        return Some(fast_forward_failed_note(&why, name));
+    }
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.fast-forward",
+            slug,
+            serde_json::json!({"project": slug, "branch": def, "upstream": name, "behind": behind, "ok": true, "from": crate::recipe::short(&from, 12), "to": crate::recipe::short(&to, 12)}),
+        );
+    }
+    Some(format!(
+        "landing fast-forwarded {slug}: {def} -> {name} ({behind} {})",
+        crate::util::plural(behind, "commit"),
+    ))
+}
+
 pub(crate) fn push_landed(
     s: &pulse_store::Store,
     project: crate::util::Row,
@@ -959,7 +1070,11 @@ pub(crate) fn push_landed(
         let d = project.str("default_branch");
         if d.is_empty() { "main".to_string() } else { d }
     };
-    if !landed_now && !asked && !push_owed(s, slug.clone()) {
+    if !landed_now
+        && !asked
+        && !push_owed(s, slug.clone())
+        && !upstream_ahead_of_default(&root, &def, s)
+    {
         return (Vec::new(), String::new());
     }
     let via_pr = asked || crate::landing_pr::pr_mode(s);
@@ -1008,6 +1123,50 @@ pub(crate) fn push_landed(
     };
     let mut n = ahead(&upstream);
     if n == 0 {
+        // The local default branch has nothing the upstream lacks, so there
+        // is nothing to push - but the remote can still carry a merge the
+        // brain has not seen. Fetch (sync_upstream's own way) and, when the
+        // branch is now behind, fast-forward it to the upstream: the merge's
+        // own commits move the brain's HEAD, so nothing can conflict.
+        let fetched = fetch_upstream(&PushTarget {
+            root: root.clone(),
+            slug: slug.clone(),
+            def: def.clone(),
+            remote: remote.clone(),
+            remote_ref: remote_ref.clone(),
+            remote_branch: remote_branch.clone(),
+            upstream: upstream.clone(),
+            url: push_url(&root, &remote),
+            env: push_env(root.clone()),
+        });
+        let ff_ok = fetched.ok();
+        if ff_ok {
+            let behind_out = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(30),
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("refs/heads/{def}..{upstream}"),
+                ],
+            );
+            let behind = behind_out.stdout.trim().parse::<i32>().unwrap_or(0);
+            if behind > 0
+                && let Some(result) = fast_forward_default(
+                    s,
+                    &root,
+                    &slug,
+                    &def,
+                    &format!("{remote}/{remote_branch}"),
+                    &upstream,
+                    &actor,
+                    &now,
+                    behind,
+                )
+            {
+                return (vec![result], String::new());
+            }
+        }
         if asked && let Ok(conn) = s.conn() {
             let why = format!("{def} has nothing {remote}/{remote_branch} lacks");
             crate::util::event_at(
@@ -1644,6 +1803,125 @@ mod tests {
             lines.is_empty() && cur.is_empty(),
             "quiet tick said {lines:?} {cur:?}"
         );
+    }
+
+    #[test]
+    fn push_landed_fast_forwards_the_default_branch_to_a_human_merge() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+
+        // A human merges on the forge: main gains a commit the brain lacks.
+        let other = other_clone(&bare);
+        commit_file(&other, "merged.txt", "merged on the forge\n", "human merge");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let remote_head = bare_ref(&bare, "refs/heads/main");
+        let before = ref_of(&repo, "refs/heads/main");
+        assert_ne!(remote_head, before);
+
+        // ahead == 0, but push_landed still fetches and fast-forwards the
+        // default branch so the merge reaches the brain in this pass. The
+        // tracking ref is fetched first so the pass is owed without a push.
+        run(&repo, &["git", "fetch", "-q", "origin", "main"]);
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert!(cur.is_empty(), "a fast-forward cannot hold: {cur:?}");
+        assert_eq!(lines.len(), 1, "lines {lines:?}");
+        assert_eq!(
+            lines[0],
+            "landing fast-forwarded proj: main -> origin/main (1 commit)"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), remote_head);
+        assert_eq!(
+            ref_of(&repo, "refs/remotes/origin/main"),
+            remote_head,
+            "the tracking ref fetched"
+        );
+        assert!(Path::new(&repo).join("merged.txt").is_file());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.fast-forward' AND json_extract(detail, '$.ok') = 1",
+                &[]
+            ),
+            1
+        );
+
+        // Next pass is quiet: nothing new upstream, nothing to fast-forward.
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert!(
+            lines.is_empty() && cur.is_empty(),
+            "quiet tick said {lines:?} {cur:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.fast-forward'",
+                &[]
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn push_landed_never_fast_forwards_a_dirty_checkout() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+
+        let other = other_clone(&bare);
+        commit_file(&other, "merged.txt", "merged on the forge\n", "human merge");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let remote_head = bare_ref(&bare, "refs/heads/main");
+        let before = ref_of(&repo, "refs/heads/main");
+
+        // The owner's checkout has uncommitted work: keep its HEAD exactly
+        // where it was; sync_upstream handles the remote commits instead.
+        std::fs::write(Path::new(&repo).join("wip.txt"), "work in progress\n").unwrap();
+        run(&repo, &["git", "add", "wip.txt"]);
+        run(&repo, &["git", "fetch", "-q", "origin", "main"]);
+
+        let (lines, _cur) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            ref_of(&repo, "refs/heads/main"),
+            before,
+            "a dirty checkout's HEAD never moves"
+        );
+        assert_ne!(remote_head, ref_of(&repo, "refs/heads/main"));
+        assert!(
+            lines.iter().all(|l| !l.contains("fast-forwarded")),
+            "no fast-forward line: {lines:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.fast-forward'",
+                &[]
+            ),
+            0
+        );
+        assert!(Path::new(&repo).join("wip.txt").is_file(), "wip kept");
     }
 
     #[test]
