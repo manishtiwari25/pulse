@@ -3269,3 +3269,88 @@ fn activity_clip_cuts_on_character_boundaries() {
     assert_eq!(clip("short  \n", 50), ("short".to_string(), false));
     assert_eq!(clip("", 0), (String::new(), false));
 }
+
+/// The Phase B invariant: every job kind the table in `pulse_store::kinds`
+/// names is a real job kind the tree exercises, and the store and board list
+/// exactly the same kinds. A job kind enters the codebase through the table
+/// and the board's `JOB_KINDS` validator, so the table cannot drift from the
+/// kinds a job can carry; this guards the other direction, that the table
+/// names no kind the daemon never runs.
+#[test]
+fn every_kind_in_the_kinds_table_is_exercised_in_the_tree() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root holds crates/");
+    let mut files = Vec::new();
+    collect_rs(&crates.join("crates"), &mut files);
+    assert!(
+        files.len() > 50,
+        "expected the crate sources under {crates:?}"
+    );
+
+    let mut corpus = String::new();
+    for file in &files {
+        corpus.push_str(&std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
+        corpus.push('\n');
+    }
+
+    // The board lists exactly the kinds the store table names.
+    let mut board = pulse_board::JOB_KINDS.to_vec();
+    board.sort_unstable();
+    let mut store = pulse_store::JOB_KINDS.to_vec();
+    store.sort_unstable();
+    assert_eq!(
+        board, store,
+        "pulse_board::JOB_KINDS and pulse_store::JOB_KINDS must name the same job kinds"
+    );
+
+    // Every name the kind-class lists carry is a kind the table names: a
+    // list entry is always a job-kind literal, so this direction is exact.
+    for list in [
+        pulse_store::IMPLEMENTATION_JOB_KINDS,
+        pulse_store::READ_ONLY_JOB_KINDS,
+    ] {
+        for name in list {
+            assert!(
+                pulse_store::is_kind(name),
+                "kind-class list names {name:?} but the kinds table does not"
+            );
+        }
+    }
+
+    // Every kind the table names is exercised somewhere in the tree, so the
+    // table names no kind the daemon never runs. (The reverse - that no
+    // stray job-kind literal sits outside the table - is not scanned here:
+    // a job `kind:` field shares its shape with the kind of a post, thread,
+    // suggestion or claim, so a source scan cannot tell them apart.)
+    for spec in pulse_store::KIND_SPECS {
+        let needle = format!("\"{}\"", spec.name);
+        assert!(
+            corpus.contains(&needle),
+            "the kinds table names {:?} but no source uses it; drop the row or wire the kind",
+            spec.name
+        );
+    }
+}
+
+fn collect_rs(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(_) => return,
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            if name != "target"
+                && name != "node_modules"
+                && !name.to_string_lossy().starts_with('.')
+            {
+                collect_rs(&path, out);
+            }
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
