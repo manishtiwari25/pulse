@@ -423,6 +423,44 @@ mod tests {
     }
 
     #[test]
+    fn archive_keeps_a_row_whose_suggestion_id_outgrows_the_token_length() {
+        // The post id carries the agent's name: `copilot-fable-1012-hub-2`
+        // makes it 41 characters, which the credential shape once refused as
+        // "archive text must not contain credentials" - and the lane then
+        // re-measured the finished experiment every retry, never archiving.
+        let _serial = crate::test_helpers::serial();
+        let s = test_store();
+        test_project(&s, "demo");
+        let scores = |total: f64| {
+            Some(Scores {
+                project: "demo".into(),
+                total,
+                ..Default::default()
+            })
+        };
+        let row = ArchiveRow {
+            project: "demo".into(),
+            suggestion_post: "20261012T092238Z-copilot-fable-1012-hub-2".into(),
+            hypothesis: "Signal: 20261012T092238Z-copilot-fable-1012-hub-2".into(),
+            branch: "evolve/20261012T092238Z-copilot-fable-1012-hub-2".into(),
+            baseline: scores(0.2),
+            variant: scores(0.4),
+            tolerance: 0.02,
+            kept: true,
+            run_id: "run-20261029T091718Z-f2e5da".into(),
+            ..Default::default()
+        };
+        assert_eq!(crate::api::archive_row(&s, row.clone()).unwrap(), "B-001");
+        let mut leaked = row;
+        leaked.note = "token AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh= set".into();
+        let err = crate::api::archive_row(&s, leaked).unwrap_err();
+        assert!(
+            err.to_string().contains("must not contain credentials"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn archive_concurrent_ids_and_shadow_refusal() {
         let _serial = crate::test_helpers::serial();
         let s = test_store();

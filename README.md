@@ -1566,7 +1566,11 @@ write stops pruning; only branches merged into `main` are candidates for `-d`.
   job; the planning status names it once and moves to the next candidate)
   until a corrected card lands on its thread; a long repository path in a
   field (`src/web-app/lib/use-context-intake`) is a path, not a credential,
-  wherever it sits in the sentence. Votes
+  wherever it sits in the sentence, and so is a store id - a post, job or
+  run id is a UTC stamp followed by the agent's name
+  (`20261012T092238Z-copilot-fable-1012-hub-2`), and a long agent name
+  carries it past the token length without making it a secret; the
+  experiment archive applies the same shape to the row it writes. Votes
   carry no evidence for the card they vote on: a gated card is replaced by a
   corrected one, not voted through. The
   reflect brief asks for one provable Tier 0 *product* defect first (a wrong

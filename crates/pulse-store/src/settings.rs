@@ -436,6 +436,14 @@ pub fn secret_shaped(value: &str) -> bool {
     });
     static SEGMENTS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.@-]+(/[A-Za-z0-9_.@-]+)+/?$").unwrap());
+    // A store id - a post (`20261012T092238Z-copilot-fable-1012-hub-2`), a
+    // job (`job-20261029T090659Z-06fae0`), a run, a session - is a UTC stamp
+    // followed by the agent's name, and the name alone can carry it past the
+    // token length. No credential begins with a timestamp, so the stamp
+    // marks the word as an id wherever the text quotes one.
+    static STORE_ID: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:[a-z]+-)?[0-9]{8}T[0-9]{6}Z(?:-[A-Za-z0-9_.-]+)+$").unwrap()
+    });
     // A shell assignment (`CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/a/long/path}`)
     // is judged by its value: the name is vocabulary, the value may be a
     // path, a `$VAR` or a token. A name as long as a token is no name - a
@@ -447,6 +455,7 @@ pub fn secret_shaped(value: &str) -> bool {
     }
     let path_like = |word: &str| {
         PATH_OR_URL.is_match(word)
+            || STORE_ID.is_match(word)
             || (SEGMENTS.is_match(word)
                 && (word.matches('/').count() >= 2 || word.contains(['-', '_', '.'])))
     };
@@ -871,6 +880,31 @@ mod tests {
             "API_TOKEN='AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh'",
             "-----BEGIN RSA PRIVATE KEY-----",
             "https://user:pass@example.test/",
+        ] {
+            assert!(secret_shaped(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn secret_shape_spares_store_ids_however_long_the_agent_name() {
+        // A post id is the stamp plus the agent's name; an agent called
+        // `copilot-fable-1012-hub-2` carries it to 41 characters, past the
+        // token length, and the experiment archive refused the row for it
+        // (the lane re-measured that experiment 32 times for nothing).
+        for text in [
+            "20261012T092238Z-copilot-fable-1012-hub-2",
+            "Signal: 20261012T092238Z-copilot-fable-1012-hub-2 (the card)",
+            "job-20261029T090659Z-06fae0-amistio-template-lead-docs",
+            "run-20261030T010059Z-ce363e-fable-fleet-1006-b-3",
+            "`20261030T042815Z-fable-cli-1029-rsi-2`, then 20261030T042831Z-amistio-template-lead-docs.",
+        ] {
+            assert!(!secret_shaped(text), "{text}");
+        }
+        // A stamp does not launder what follows it when that is no id.
+        for text in [
+            "20261012T092238Z-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh=",
+            "20261012T092238Z AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh",
+            "2026101T092238Z-copilot-fable-1012-hub-2-and-a-longer-tail",
         ] {
             assert!(secret_shaped(text), "{text}");
         }
