@@ -217,6 +217,10 @@ pub(crate) fn measurement_argv(
     if !model.is_empty() {
         argv.extend(["--model".to_string(), model]);
     }
+    let reasoning = s.measure_reasoning();
+    if !reasoning.is_empty() && reasoning != "default" {
+        argv.extend(["--reasoning".to_string(), reasoning]);
+    }
     Ok(argv)
 }
 /// The isolated home carries the runner's provider logins and nothing else, so

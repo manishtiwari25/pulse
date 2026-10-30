@@ -81,13 +81,17 @@ pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"]
 /// read-only (no edit or write tool, commands that would change the clone
 /// refused, a change that slips through put back).
 pub const READ_ONLY_JOB_KINDS: &[&str] = &["answer", "ballot"];
-pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> =
-    LazyLock::new(|| map! {"light_model"=>"","measure_model"=>"","ask.model"=>"",});
+pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
+    || map! {"light_model"=>"","measure_model"=>"","ask.model"=>"","worker_reasoning"=>"","light_reasoning"=>"","measure_reasoning"=>"",},
+);
 pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
         "measure_model"=>("text",None,[],None,"the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes"),
         "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model"),
+        "worker_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort of the runs that change code - task, improve and experiment jobs - and of a worker-class agent; empty means harness.reasoning; default sends nothing and leaves the model's own setting"),
+        "light_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing"),
+        "measure_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort the self-improvement loop measures fixtures with; empty means worker_reasoning, then harness.reasoning; default sends nothing. Like measure_model it is part of the evaluator: a change re-measures every baseline"),
     }
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
@@ -639,9 +643,14 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
             if rule.choices.iter().any(|c| c == &lower) {
                 Ok(lower)
             } else {
+                let choices: Vec<&str> = rule
+                    .choices
+                    .iter()
+                    .map(|c| if c.is_empty() { "empty" } else { c.as_str() })
+                    .collect();
                 Err(input_err(format!(
                     "{name} takes one of {}, not {}",
-                    rule.choices.join(", "),
+                    choices.join(", "),
                     py_repr(text)
                 )))
             }
@@ -743,6 +752,53 @@ impl Store {
             self.setting("worker_model", "").trim().to_string()
         } else {
             measure
+        }
+    }
+
+    /// The reasoning effort for a run of `kind`: `worker_reasoning` for the
+    /// kinds that change code, `light_reasoning` for the rest, and
+    /// `harness.reasoning` while the role's own is empty. `default` (or
+    /// empty) means the run sends nothing and the model decides.
+    pub fn run_reasoning(&self, kind: &str) -> String {
+        let role = if IMPLEMENTATION_JOB_KINDS.contains(&kind) {
+            "worker_reasoning"
+        } else {
+            "light_reasoning"
+        };
+        self.reasoning_or_default(role)
+    }
+
+    /// [`Store::run_reasoning`] for a run whose role asks for a model class
+    /// of its own (`worker`, `light`), in the shape of
+    /// [`Store::run_model_class`].
+    pub fn run_reasoning_class(&self, kind: &str, class: &str) -> String {
+        match class.trim() {
+            "worker" => self.reasoning_or_default("worker_reasoning"),
+            "light" => self.reasoning_or_default("light_reasoning"),
+            _ => self.run_reasoning(kind),
+        }
+    }
+
+    /// The reasoning effort the loop measures fixtures with:
+    /// `measure_reasoning`, then `worker_reasoning`, then
+    /// `harness.reasoning`.
+    pub fn measure_reasoning(&self) -> String {
+        let measure = self.setting("measure_reasoning", "").trim().to_string();
+        if measure.is_empty() {
+            self.reasoning_or_default("worker_reasoning")
+        } else {
+            measure
+        }
+    }
+
+    fn reasoning_or_default(&self, role: &str) -> String {
+        let own = self.setting(role, "").trim().to_string();
+        if own.is_empty() {
+            self.setting("harness.reasoning", "default")
+                .trim()
+                .to_string()
+        } else {
+            own
         }
     }
     pub fn provider_settings(&self) -> BTreeMap<String, String> {
@@ -1380,8 +1436,14 @@ mod go_settings_tests {
         s.set_setting("human", "light_model", "").unwrap();
         assert_eq!(s.run_model("lead"), "claude-fable-5.1");
         assert_eq!(
-            &extra_setting_names()[..3],
-            ["ask.model", "light_model", "measure_model"]
+            &extra_setting_names()[..5],
+            [
+                "ask.model",
+                "light_model",
+                "light_reasoning",
+                "measure_model",
+                "measure_reasoning"
+            ]
         );
         assert!(
             MODEL_RULES["light_model"]
@@ -1434,6 +1496,47 @@ mod go_settings_tests {
                 .description
                 .contains("measure_model")
         );
+    }
+
+    #[test]
+    fn reasoning_effort_settings_fall_back_by_role() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-10-30T10:00:00Z");
+        // Nothing set: every role follows harness.reasoning.
+        assert_eq!(s.run_reasoning("task"), "default");
+        assert_eq!(s.run_reasoning("lead"), "default");
+        assert_eq!(s.measure_reasoning(), "default");
+        s.set_setting("human", "harness.reasoning", "medium")
+            .unwrap();
+        assert_eq!(s.run_reasoning("task"), "medium");
+        assert_eq!(s.run_reasoning_class("answer", "worker"), "medium");
+        assert_eq!(s.measure_reasoning(), "medium");
+        s.set_setting("human", "worker_reasoning", " High ")
+            .unwrap();
+        for kind in ["task", "improve", "experiment"] {
+            assert_eq!(s.run_reasoning(kind), "high");
+        }
+        assert_eq!(s.run_reasoning("lead"), "medium");
+        assert_eq!(s.run_reasoning_class("lead", "worker"), "high");
+        assert_eq!(s.run_reasoning_class("task", "light"), "medium");
+        assert_eq!(
+            s.measure_reasoning(),
+            "high",
+            "measuring follows the worker"
+        );
+        s.set_setting("human", "light_reasoning", "low").unwrap();
+        assert_eq!(s.run_reasoning("lead"), "low");
+        s.set_setting("human", "measure_reasoning", "xhigh")
+            .unwrap();
+        assert_eq!(s.measure_reasoning(), "xhigh");
+        s.set_setting("human", "worker_reasoning", "").unwrap();
+        assert_eq!(s.run_reasoning("task"), "medium");
+        let err = s
+            .set_setting("human", "worker_reasoning", "extreme")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty, default, minimal"), "{err}");
     }
 
     #[test]

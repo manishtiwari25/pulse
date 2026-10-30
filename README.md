@@ -326,13 +326,31 @@ activity fold under **Details for this machine**.
   without asking, as the daemon's own jobs do; switch it off for a
   conversation you want to watch step by step, and flipping it on while an
   approval waits grants it. Messages typed while a turn runs wait in line
-  and go next; **Stop** ends the turn now. The controls sit in one place,
+  and go next - shown as *Queued* under the transcript until the agent
+  picks them up, and written into it only then, so a message sent while
+  the agent answers never appears between your earlier message and its
+  reply; **Stop** ends the turn now, and a message still in line stays in
+  the transcript with a note that it never reached the agent. The
+  controls sit in one place,
   under the message box the way the Copilot app keeps them: the **Model**
   picker (also on the start form) chooses the model from the
   ones the harness lists (the provider's default when you leave it) and
   changing it mid-conversation takes effect on the next turn, which starts
-  a fresh session with the transcript carried over; **Auto** and **Stop**
-  sit beside it. The conversation list and the **Changes**, **Artifacts**
+  a fresh session with the transcript carried over; the **Effort** picker
+  beside it (also on the start form) asks the model for a reasoning effort
+  - `minimal` to `xhigh`, *Model default* to send nothing - and leaves the
+  `harness.reasoning` setting in charge when you leave it, with the same
+  next-turn restart; **Auto** and **Stop**
+  sit beside them. A conversation has an end: the agent calls its `finish`
+  tool with a one-line summary when the request is done (the brief tells
+  it to, and to give its closing reply after), or you press **Finish**
+  (which stops a running turn), and the conversation is marked *Finished*
+  with the summary as its note; your next message reopens it, so nothing
+  is lost. The list groups conversations by state - **Working** (running
+  or waiting on you), **Open** (idle between turns), **Finished** (the
+  latest eight, *Show all* for the rest) and **Archived** when shown - so
+  the ones that need you stay on top. The conversation list and the
+  **Changes**, **Artifacts**
   and **Project** panel share the left column, the transcript the right,
   so nothing competes with the reply for width; on a desktop the open
   conversation fits the window - the transcript scrolls inside its card,
@@ -391,8 +409,9 @@ activity fold under **Details for this machine**.
   download. Each conversation is one harness session at a time (the
   **Harness** page shows it too, with cost); when a session ends (a limit,
   a provider error) the conversation says so and the next message starts a
-  new session with the whole transcript carried over. **Archive** closes a
-  conversation and leaves its branch and folder where they are; `pulse
+  new session with the whole transcript carried over. **Archive** puts a
+  conversation away for good (no message reopens it) and leaves its branch
+  and folder where they are; `pulse
   remove project <slug> --forget` drops its rows with the project's.
   Everything is yours to script:
   `pulse chat list [--all]` and `pulse chat show <id>` print what the page
@@ -403,7 +422,8 @@ activity fold under **Details for this machine**.
   or webp) that the model sees with the message when its provider takes
   images and the hub shows back as thumbnails, `/upload?name=` with the
   raw bytes, `/attachments/<name>`, `/image/<message>/<n>`, `/model`,
-  `/answer`, `/approve`, `/cancel`, `/auto`, `/attach`, `/title`,
+  `/reasoning`, `/answer`, `/approve`, `/cancel`, `/close`, `/auto`,
+  `/attach`, `/title`,
   `/archive`, `/diff`, `/artifacts/<name>`) serves other tools. The agents
   run inside the hub process: restarting the hub ends their turns, and the
   conversation picks up from its transcript on the next message. A
@@ -460,7 +480,9 @@ activity fold under **Details for this machine**.
   routine: `pulse settings set worker_model claude-fable-5.1` and
   `pulse settings set light_model claude-sonnet-5`; `measure_model` for the
   loop's fixture measurements, `worker_model` while empty, so the evaluator
-  can be pinned while the worker changes), the compute
+  can be pinned while the worker changes; and the reasoning effort each of
+  those asks for - `worker_reasoning`, `light_reasoning`,
+  `measure_reasoning` - `harness.reasoning` while empty), the compute
   provider and its target (Azure resource group / location / VM size, AWS
   region / instance type, GCP project / zone / machine type, Multipass size),
   the self-improvement loop's gates, the harness (which harness runs the
@@ -2056,6 +2078,9 @@ record, read with `pulse record show WF-evolve`.
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also the loop's measurements while `measure_model` is empty, and every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `measure_model` | empty (= `worker_model`) | Model the self-improvement loop measures fixtures with: every baseline, experiment and landing re-measure. It is part of the evaluator, so a change re-measures every baseline; while it is pinned, a `worker_model` change keeps them. Empty measures with the model the workers use, so the tree is tuned for the agent that ships it. |
+| `worker_reasoning` | empty (= `harness.reasoning`) | Reasoning effort (`default`, `minimal`, `low`, `medium`, `high`, `xhigh`) of the runs that change code and of a worker-class agent; `default` sends nothing. Jobs get it as `--reasoning`. |
+| `light_reasoning` | empty (= `harness.reasoning`) | Reasoning effort of the light runs and of a light-class agent, so the cheap model can also think less. |
+| `measure_reasoning` | empty (= `worker_reasoning`) | Reasoning effort the loop measures fixtures with. Like `measure_model` it is part of the evaluator: a non-default value enters the baseline key, so a change re-measures every baseline. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
 | `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`pulse schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
 | `schedule.scripts_per_tick` | `2` scripts (minimum `1`) | Check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated. |
@@ -2496,6 +2521,11 @@ OpenAI-compatible providers and to Copilot for the models that take it;
 `default` sends nothing and leaves the model's own setting. A model that
 does not take the field rejects the call, so set it per project with the
 model in mind (the gemini and anthropic providers ignore it this wave).
+`worker_reasoning`, `light_reasoning` and `measure_reasoning` (Settings →
+Harness **Models**) set it per role the way the model settings do - the
+runs that change code, the light runs, the loop's measurements - and fall
+back to `harness.reasoning` while empty; a conversation's **Effort** picker
+sets it for that conversation alone.
 Independently of any setting, the anthropic provider marks the system
 prompt and the last block of the last message as cache breakpoints
 (`cache_control: ephemeral`), so a long run's steady prefix - the prompt,
@@ -2934,6 +2964,8 @@ redacted of token shapes.
 Harness, or `pulse settings set`) choose among the models the provider lists
 for the signed-in account; empty means the provider's default chat model. The console shows
 each model's vendor, tool-call support, premium multiplier and context window.
+Beside each sits its reasoning effort (`worker_reasoning`, `light_reasoning`,
+`measure_reasoning`), `harness.reasoning` while empty.
 
 **Only harness.** The built-in harness is the only way PULSE runs workers,
 leads and measurements; nothing besides the `pulse` binary is installed on a

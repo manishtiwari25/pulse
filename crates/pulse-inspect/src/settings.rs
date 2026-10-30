@@ -31,6 +31,12 @@ Runner and evolution caps (built-in defaults):
     Model the self-improvement loop measures fixtures with: every baseline,
     experiment and landing re-measure. Part of the evaluator: a change
     re-measures every baseline; pinned, it keeps them when worker_model changes.
+  worker_reasoning  default empty (the same as harness.reasoning)
+    Reasoning effort of the runs that change code: task, improve and
+    experiment jobs. light_reasoning (default empty, the same as
+    harness.reasoning) is the effort of the light runs, and measure_reasoning
+    (default empty, the same as worker_reasoning) the effort the loop measures
+    fixtures with; like measure_model, a change re-measures every baseline.
   evolve.limits   default {}
     Optional loop budget: cycles=N,hours=H. none does not remove runner caps.
 

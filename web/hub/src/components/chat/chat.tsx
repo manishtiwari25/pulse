@@ -12,6 +12,7 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -79,9 +80,29 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   if (status === "waiting") return { word: "Asked you", tone: "wait", pip: "waiting", dot: "bg-warn" };
   if (status === "running") return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
   if (status === "archived") return { word: "Archived", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
+  if (status === "closed") return { word: "Finished", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (status === "ended") return { word: "Session ended", tone: "neutral", pip: "curious", dot: "bg-muted-foreground/60" };
   return { word: c.turns ? "Idle" : "New", tone: "ok", pip: "happy", dot: "bg-ok" };
 }
+
+// The list's sections: a conversation is working while its agent runs or
+// waits on you, open while it is idle between turns, finished once the
+// agent or the owner closed it (a message reopens it), and archived when
+// it was put away.
+type ListGroup = "working" | "open" | "finished" | "archived";
+
+function groupOf(c: Conversation): ListGroup {
+  const status = c.live?.status || c.status;
+  if (status === "running" || status === "waiting") return "working";
+  if (status === "closed") return "finished";
+  if (status === "archived") return "archived";
+  return "open";
+}
+
+const GROUP_TITLES: Record<ListGroup, string> = { working: "Working", open: "Open", finished: "Finished", archived: "Archived" };
+const GROUP_ORDER: ListGroup[] = ["working", "open", "finished", "archived"];
+// Finished conversations pile up: the list shows the latest few and unfolds on request.
+const FINISHED_SHOWN = 8;
 
 const TONE_TEXT: Record<Tone, string> = {
   run: "text-primary",
@@ -409,6 +430,55 @@ function ModelPicker({ value, onChange, models, disabled, compact, label }: { va
   );
 }
 
+// ----- the effort -----------------------------------------------------------
+
+const SETTING_EFFORT = "__setting__";
+
+// The reasoning efforts a conversation can ask of its model, in the order
+// the providers rank them; "" leaves the harness setting in charge.
+const EFFORTS: { id: string; name: string; words: string }[] = [
+  { id: "default", name: "Model default", words: "Sends nothing; the model thinks as much as it does on its own." },
+  { id: "minimal", name: "Minimal", words: "The quickest answers; for small, clear asks." },
+  { id: "low", name: "Low", words: "Little thinking; fast and cheap." },
+  { id: "medium", name: "Medium", words: "A balance of speed and care." },
+  { id: "high", name: "High", words: "Longer thinking for hard, many-step work." },
+  { id: "xhigh", name: "Extra high", words: "The most thinking the model offers; slow and dear." },
+];
+
+function effortName(id: string): string {
+  return EFFORTS.find((e) => e.id === id)?.name || id;
+}
+
+function EffortPicker({ value, onChange, disabled, compact, label }: { value: string; onChange: (effort: string) => void; disabled?: boolean; compact?: boolean; label: string }) {
+  const current = value ? effortName(value) : "Settings effort";
+  return (
+    <Select value={value || SETTING_EFFORT} onValueChange={(v) => onChange(v === SETTING_EFFORT ? "" : v)} disabled={disabled}>
+      <SelectTrigger size={compact ? "sm" : "default"} className={cn(compact ? "h-7 min-w-0 max-w-44 gap-1 rounded-full border-border/70 bg-background/60 px-2.5 text-xs" : "w-52")} aria-label={label} title={label}>
+        <BrainIcon className={cn("shrink-0 text-primary", compact ? "size-3" : "size-3.5")} aria-hidden />
+        <SelectValue placeholder="Effort" className="min-w-0 flex-1">
+          <span className="truncate">{current}</span>
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent position="popper" align={compact ? "end" : "start"} className="max-h-80 w-72">
+        <SelectItem value={SETTING_EFFORT}>
+          <span className="grid">
+            <span>Settings effort</span>
+            <span className="text-[11px] text-muted-foreground">The reasoning effort from Settings; changes with it.</span>
+          </span>
+        </SelectItem>
+        {EFFORTS.map((e) => (
+          <SelectItem key={e.id} value={e.id}>
+            <span className="grid">
+              <span>{e.name}</span>
+              {!compact ? <span className="text-[11px] text-muted-foreground">{e.words}</span> : null}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 // ----- attachments ----------------------------------------------------------
 
 // Files picked for the next message, before they are uploaded.
@@ -638,6 +708,8 @@ function Split({ list, main, panel, listOnMobile, fill }: { list: ReactNode; mai
 
 function ConversationList({ rows, loading, current, onOpen, showArchived, onToggleArchived }: { rows: Conversation[]; loading: boolean; current: string; onOpen: (id: string) => void; showArchived: boolean; onToggleArchived: () => void }) {
   const now = useNow(15000);
+  const [allFinished, setAllFinished] = useState(false);
+  const groups = GROUP_ORDER.map((g) => ({ g, rows: rows.filter((c) => groupOf(c) === g) })).filter((x) => x.rows.length);
   return (
     <div className="grid min-w-0 gap-2">
       <div className="flex items-center justify-between px-1">
@@ -653,41 +725,61 @@ function ConversationList({ rows, loading, current, onOpen, showArchived, onTogg
           No conversations yet.
         </EmptyState>
       ) : (
-        <ul className="grid min-w-0 gap-1.5" role="list">
-          {rows.map((c, i) => {
-            const m = moodOf(c);
-            const live = (c.live?.status || c.status) === "running";
-            const active = c.id === current;
-            return (
-              <li key={c.id} className="enter min-w-0" style={{ animationDelay: Math.min(i, 8) * 30 + "ms" }}>
-                <button
-                  type="button"
-                  onClick={() => onOpen(c.id)}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "lift grid w-full min-w-0 gap-1 rounded-xl border bg-card px-3 py-2.5 text-left transition-colors",
-                    active ? "border-primary/50 bg-primary/[0.06] shadow-card" : "hover:bg-muted/40",
-                    m.tone === "wait" && !active && "border-warn/50",
-                  )}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
-                    <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{c.title || "Untitled"}</span>
-                    {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
-                  </span>
-                  <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
-                    <span aria-hidden>·</span>
-                    <span className="truncate">{c.project || "no project yet"}</span>
-                    <span className="ml-auto shrink-0 tnum">{relShort(c.last_at || c.created_at, now)}</span>
-                  </span>
+        groups.map(({ g, rows: all }) => {
+          const folded = g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
+          const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
+          return (
+            <section key={g} className="grid min-w-0 gap-1.5" aria-label={GROUP_TITLES[g]}>
+              <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+                {GROUP_TITLES[g]}
+                <span className="tnum font-normal">{all.length}</span>
+              </h3>
+              <ul className="grid min-w-0 gap-1.5" role="list">
+                {shown.map((c, i) => (
+                  <ConversationItem key={c.id} c={c} index={i} active={c.id === current} now={now} onOpen={onOpen} />
+                ))}
+              </ul>
+              {folded ? (
+                <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinished(true)}>
+                  Show all {all.length} finished
                 </button>
-              </li>
-            );
-          })}
-        </ul>
+              ) : null}
+            </section>
+          );
+        })
       )}
     </div>
+  );
+}
+
+function ConversationItem({ c, index, active, now, onOpen }: { c: Conversation; index: number; active: boolean; now: number; onOpen: (id: string) => void }) {
+  const m = moodOf(c);
+  const live = (c.live?.status || c.status) === "running";
+  return (
+    <li className="enter min-w-0" style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}>
+      <button
+        type="button"
+        onClick={() => onOpen(c.id)}
+        aria-current={active ? "page" : undefined}
+        className={cn(
+          "lift grid w-full min-w-0 gap-1 rounded-xl border bg-card px-3 py-2.5 text-left transition-colors",
+          active ? "border-primary/50 bg-primary/[0.06] shadow-card" : "hover:bg-muted/40",
+          m.tone === "wait" && !active && "border-warn/50",
+        )}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{c.title || "Untitled"}</span>
+          {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
+          <span aria-hidden>·</span>
+          <span className="truncate">{c.status === "closed" && c.note ? c.note : c.project || "no project yet"}</span>
+          <span className="ml-auto shrink-0 tnum">{relShort(c.last_at || c.created_at, now)}</span>
+        </span>
+      </button>
+    </li>
   );
 }
 
@@ -714,6 +806,7 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
   const [text, setText] = useState("");
   const [project, setProject] = useState(LET_AGENT_DECIDE);
   const [model, setModel] = useState("");
+  const [reasoning, setReasoning] = useState("");
   const [auto, setAuto] = useState(true);
   const [busy, setBusy] = useState(false);
   const list = (projects?.projects ?? []).filter((p) => p.status !== "inactive");
@@ -724,7 +817,7 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
     if (!t || busy) return;
     setBusy(true);
     try {
-      const r = await writes.chatCreate({ text: t, project: project === LET_AGENT_DECIDE ? "" : project, auto_approve: auto, model });
+      const r = await writes.chatCreate({ text: t, project: project === LET_AGENT_DECIDE ? "" : project, auto_approve: auto, model, reasoning });
       invalidate("chat");
       onCreated(r.conversation);
     } catch (e) {
@@ -791,6 +884,10 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
               <label className="grid gap-1 text-xs font-medium text-muted-foreground">
                 Model
                 <ModelPicker value={model} onChange={setModel} models={models.data?.models ?? []} label="Model for this conversation" />
+              </label>
+              <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                Effort
+                <EffortPicker value={reasoning} onChange={setReasoning} label="Reasoning effort for this conversation" />
               </label>
               <label className="flex items-center gap-2 text-sm text-foreground">
                 <Switch checked={auto} onCheckedChange={setAuto} aria-label="Approve tool calls automatically" />
@@ -988,6 +1085,10 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
   const running = live.status === "running";
   const waiting = live.status === "waiting" && !!live.pending;
   const archived = c.status === "archived";
+  // Finished by the agent or the owner; the composer stays open since a
+  // message reopens it.
+  const closed = live.status === "closed";
+  const closedBy = closed ? [...d.messages].reverse().find((m) => m.role === "note" && typeof m.extra.closed === "string")?.extra.closed : undefined;
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
@@ -1067,6 +1168,11 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
     void act("model", () => writes.chatModel(c.id, model), model ? "Switched to " + (models.data?.models.find((m) => m.id === model)?.name || model) + ". It takes effect on the next turn." : "Back to the provider's default model on the next turn.");
   };
 
+  const changeReasoning = (reasoning: string) => {
+    if (reasoning === (c.reasoning || "")) return;
+    void act("reasoning", () => writes.chatReasoning(c.id, reasoning), reasoning ? effortName(reasoning) + " effort from the next turn." : "Back to the Settings effort on the next turn.");
+  };
+
   const modelName = c.model ? models.data?.models.find((m) => m.id === c.model)?.name || c.model : "";
   const changeCount = d.changes ? d.changes.commits + d.changes.dirty.length : 0;
 
@@ -1075,6 +1181,7 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
   const tools = (
     <>
       <ModelPicker value={c.model || ""} onChange={changeModel} models={models.data?.models ?? []} disabled={archived || busy === "model"} compact label={modelName ? "Model: " + modelName + " - change it for the next turn" : "Model: provider default - pick one for the next turn"} />
+      <EffortPicker value={c.reasoning || ""} onChange={changeReasoning} disabled={archived || busy === "reasoning"} compact label={c.reasoning ? "Effort: " + effortName(c.reasoning) + " - change it for the next turn" : "Effort: the Settings effort - pick one for the next turn"} />
       <label className="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-background/60 px-2.5 text-xs text-muted-foreground" title={live.auto_approve ? "Tools run without asking" : "Risky tools wait for your yes"}>
         <Switch size="sm" checked={live.auto_approve} disabled={archived || !!busy} onCheckedChange={(on) => void act("auto", () => writes.chatAuto(c.id, on), on ? "Tools now run without asking." : "The agent will ask before risky tools.")} aria-label="Approve tools automatically" />
         Auto
@@ -1143,6 +1250,12 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
               ) : null}
             </p>
           </div>
+          {!archived && !closed ? (
+            <Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 rounded-full" onClick={() => void act("close", () => writes.chatClose(c.id), running || waiting ? "Finished; the turn was stopped. Write again to reopen it." : "Finished. Write again to reopen it.")} disabled={!!busy} title="Finish this conversation; a message reopens it">
+              <CircleCheckIcon />
+              <span className="sr-only sm:not-sr-only">Finish</span>
+            </Button>
+          ) : null}
           {!archived ? (
             <Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 rounded-full" onClick={() => void act("archive", () => writes.chatArchive(c.id), "Archived. The branch stays until you land or delete it.")} disabled={!!busy} title="Archive this conversation">
               <ArchiveIcon />
@@ -1153,6 +1266,11 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
       </header>
       {error ? <Notice tone="warn">{"Live updates paused: " + error}</Notice> : null}
       {archived ? <Notice tone="info">This conversation is archived. Its branch and files stay where they were; start a new conversation to carry on.</Notice> : null}
+      {closed && !archived ? (
+        <Notice tone="info">
+          {closedBy === "owner" ? "You finished this conversation." : "The agent finished this conversation" + (c.note ? ": " + c.note : ".")} Write below to reopen it, or archive it to put it away.
+        </Notice>
+      ) : null}
 
       {shownArtifact ? (
         <ArtifactViewer id={c.id} artifact={shownArtifact} onClose={() => setView(null)} />
@@ -1194,7 +1312,7 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
         </div>
       )}
 
-      <Composer conversation={c} live={live} disabled={archived} tools={tools} onSent={(r) => apply(r)} />
+      <Composer conversation={c} live={live} disabled={archived} closed={closed} tools={tools} onSent={(r) => apply(r)} />
     </section>
   );
 
@@ -1525,7 +1643,7 @@ function PendingCard({ id, pending, busy, act }: { id: string; pending: ChatPend
 // Composer: the text on top, the tools underneath - attach, the model, the
 // auto switch and Stop on the left, send on the right - as the Copilot app
 // lays it out.
-function Composer({ conversation, live, disabled, tools, onSent }: { conversation: Conversation; live: ConversationLive; disabled: boolean; tools?: ReactNode; onSent: (r: { conversation: Conversation }) => void }) {
+function Composer({ conversation, live, disabled, closed = false, tools, onSent }: { conversation: Conversation; live: ConversationLive; disabled: boolean; closed?: boolean; tools?: ReactNode; onSent: (r: { conversation: Conversation }) => void }) {
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<Picked[]>([]);
   const [busy, setBusy] = useState("");
@@ -1621,7 +1739,7 @@ function Composer({ conversation, live, disabled, tools, onSent }: { conversatio
             e.preventDefault();
             addFiles(files);
           }}
-          placeholder={disabled ? "This conversation is archived." : running ? "Type the next thing; it goes after this turn." : picked.length ? "Say what to do with the files, or just send them." : "Tell the agent what to do next…"}
+          placeholder={disabled ? "This conversation is archived." : running ? "Type the next thing; it goes after this turn." : closed ? "Write to reopen this conversation…" : picked.length ? "Say what to do with the files, or just send them." : "Tell the agent what to do next…"}
           disabled={disabled}
           rows={1}
           className="min-h-10 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-[15px] shadow-none focus-visible:ring-0 dark:bg-transparent"

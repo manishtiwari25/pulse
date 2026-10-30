@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Disclosure, ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
-import { SettingKey } from "@/components/settings/setting-row";
+import { EMPTY_CHOICE, SettingKey } from "@/components/settings/setting-row";
 import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the tool switches and
 // the transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.task_max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "measure_model", "ask.model"];
+export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.task_max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "measure_model", "ask.model", "worker_reasoning", "light_reasoning", "measure_reasoning"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -437,28 +437,29 @@ function OnOffSwitch({ s, onSave }: { s: Setting; onSave: (name: string, value: 
   );
 }
 
-function ChoiceSelect({ s, onSave, labels }: { s: Setting; onSave: (name: string, value: string) => void; labels?: Record<string, string> }) {
+function ChoiceSelect({ s, onSave, labels, note }: { s: Setting; onSave: (name: string, value: string) => void; labels?: Record<string, string>; note?: string }) {
   const choices = s.choices ?? [];
   const value = choices.includes(s.value) ? s.value : s.default;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid min-w-0 content-start gap-1.5">
       <Label id={"choice-" + s.name}>{settingLabel(s.name)}</Label>
+      {note ? <p className="text-[13px] leading-snug text-muted-foreground">{note}</p> : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <Select value={value} onValueChange={(v) => onSave(s.name, v)}>
-          <SelectTrigger className="w-56 max-w-full" aria-labelledby={"choice-" + s.name}>
+        <Select value={value || EMPTY_CHOICE} onValueChange={(v) => onSave(s.name, v === EMPTY_CHOICE ? "" : v)}>
+          <SelectTrigger className={note ? "w-full" : "w-56 max-w-full"} aria-labelledby={"choice-" + s.name}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {choices.map((c) => (
-              <SelectItem key={c} value={c}>
-                {labels?.[c] ?? c}
+              <SelectItem key={c || EMPTY_CHOICE} value={c || EMPTY_CHOICE}>
+                {labels?.[c] ?? (c || "Empty")}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <KeyName name={s.name} />
+        {note ? null : <KeyName name={s.name} />}
       </div>
-      <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp(s.name, s.description)}</p>
+      {note ? null : <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp(s.name, s.description)}</p>}
     </div>
   );
 }
@@ -477,6 +478,10 @@ const REASONING_LABELS: Record<string, string> = {
   high: "High",
   xhigh: "Extra high",
 };
+
+// The per-role efforts add "" for the harness setting above them.
+const ROLE_REASONING_LABELS: Record<string, string> = { "": "Same as the reasoning effort setting", ...REASONING_LABELS };
+const MEASURE_REASONING_LABELS: Record<string, string> = { ...ROLE_REASONING_LABELS, "": "Same as the main effort" };
 
 function LimitInput({ s }: { s: Setting }) {
   const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });
@@ -673,6 +678,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const allowTools = setting(rows, "harness.allow_tools");
   const denyTools = setting(rows, "harness.deny_tools");
   const reasoning = setting(rows, "harness.reasoning");
+  const efforts = (["worker_reasoning", "light_reasoning", "measure_reasoning"] as const).map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const words = signInWords(d?.provider);
   const now = useNow();
   const login = d?.provider.login;
@@ -789,6 +795,19 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
               <ModelSelect name="measure_model" label="Measuring model" note="For measuring baselines, experiments and merges; a cheap, steady model keeps the loop honest and affordable." current={d.models.measure ?? ""} models={currentModels} disabled={false} />
               <ModelSelect name="ask.model" label="Ask model" note="For your questions in Ask; a fast model keeps answers quick." current={d.models.ask ?? ""} models={currentModels} disabled={false} />
             </div>
+            {efforts.length ? (
+              <div className="mt-5 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+                {efforts.map((s) => (
+                  <ChoiceSelect
+                    key={s.name}
+                    s={s}
+                    onSave={saveChoice}
+                    labels={s.name === "measure_reasoning" ? MEASURE_REASONING_LABELS : ROLE_REASONING_LABELS}
+                    note={s.name === "worker_reasoning" ? "How hard the main model thinks on the coding work." : s.name === "light_reasoning" ? "How hard the light model thinks on the smaller jobs." : "How hard the measuring model thinks; a change measures every baseline again."}
+                  />
+                ))}
+              </div>
+            ) : null}
           </Block>
 
           <Block title="Limits per run" note="A run stops when it reaches any of these. Each one saves when you leave the field.">

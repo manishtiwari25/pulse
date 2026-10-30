@@ -148,6 +148,10 @@ impl Handler {
         if !ok {
             return;
         }
+        let (reasoning, ok) = addition_string(w, &payload, "reasoning", false);
+        if !ok {
+            return;
+        }
         let Some(auto) = payload_bool(w, &payload, "auto_approve", true) else {
             return;
         };
@@ -156,6 +160,7 @@ impl Handler {
             &title,
             &project,
             &model,
+            &reasoning,
             auto,
             &text,
             pulse_store::HUMAN_AGENT,
@@ -337,6 +342,7 @@ impl Handler {
             }
             "cancel" => chats.cancel(id),
             "archive" => chats.archive(id),
+            "close" => chats.close(id),
             "auto" => {
                 let Some(on) = payload_bool(w, &payload, "on", true) else {
                     return;
@@ -375,6 +381,13 @@ impl Handler {
                     return;
                 }
                 chats.set_model(id, &model)
+            }
+            "reasoning" => {
+                let (reasoning, ok) = addition_string(w, &payload, "reasoning", false);
+                if !ok {
+                    return;
+                }
+                chats.set_reasoning(id, &reasoning)
             }
             _ => {
                 addition_not_found(w);
@@ -1228,6 +1241,76 @@ mod tests {
         );
         assert_eq!(code, 200, "{raw}");
         assert_eq!(body["conversation"]["model"], "fake-2");
+        // So does the reasoning effort; a word outside the list is refused.
+        let (code, _, _) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/reasoning"),
+            json!({"reasoning": "extreme"}),
+        );
+        assert_eq!(code, 400);
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/reasoning"),
+            json!({"reasoning": "high"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(body["conversation"]["reasoning"], "high");
+        let (code, _, _) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/archive"),
+            Value::Null,
+        );
+        assert_eq!(code, 200);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// The owner finishes a conversation from the hub: it reads closed with
+    /// the owner's line in the transcript, stays in the open list, and the
+    /// next message reopens it. The first message may name the effort.
+    #[test]
+    fn close_finishes_a_conversation_and_a_message_reopens_it() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(&ts, json!([{"content": "ok"}, {"content": "again"}]));
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "hi", "reasoning": "low"}),
+        );
+        assert_eq!(code, 201, "{raw}");
+        assert_eq!(body["conversation"]["reasoning"], "low");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+        let (code, body, raw) = call(&h, "POST", &format!("/api/v1/chat/{id}/close"), Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(body["conversation"]["status"], "closed");
+        assert_eq!(body["conversation"]["live"]["status"], "closed");
+        let shown = wait_status(&h, &id, &["closed"]);
+        let msgs = shown["messages"].as_array().unwrap();
+        let last = msgs.last().unwrap();
+        assert_eq!(last["role"], "note");
+        assert_eq!(last["extra"]["closed"], "owner");
+        let (code, body, _) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200);
+        assert_eq!(body["conversations"].as_array().unwrap().len(), 1);
+        // Closing again changes nothing; a message reopens.
+        let (code, _, _) = call(&h, "POST", &format!("/api/v1/chat/{id}/close"), Value::Null);
+        assert_eq!(code, 200);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/message"),
+            json!({"text": "one more"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        assert_eq!(shown["conversation"]["status"], "idle");
+        let msgs = shown["messages"].as_array().unwrap();
+        assert_eq!(msgs.last().unwrap()["content"], "again");
         let (code, _, _) = call(
             &h,
             "POST",

@@ -354,6 +354,7 @@ impl Store {
             return Ok(());
         }
         self.widen_record_kinds()?;
+        self.widen_chat_statuses()?;
         let tx = self.begin()?;
         for (table, marker) in SUPERSEDED_SHAPES {
             if !table_present(&tx, table)? || has_column(&tx, table, marker)? {
@@ -495,6 +496,13 @@ impl Store {
             table_present(&conn, table).unwrap_or(false)
                 && !table_sql_has(&conn, table, needle).unwrap_or(true)
         }) {
+            return false;
+        }
+        // `Store::widen_chat_statuses` rebuilds this one (a table with
+        // children), not the rename-aside path above.
+        if table_present(&conn, "conversations").unwrap_or(false)
+            && !table_sql_has(&conn, "conversations", "'closed'").unwrap_or(true)
+        {
             return false;
         }
         if retired_settings_present(&conn).unwrap_or(true) {
@@ -1001,6 +1009,7 @@ pub fn additive_columns() -> Vec<Column> {
         .chain(crate::evolve_ddl::EVOLVE_COLUMNS.iter())
         .chain(SCHEDULE_COLUMNS.iter())
         .chain(MESSAGE_COLUMNS.iter())
+        .chain(crate::chat_ddl::CHAT_COLUMNS.iter())
         .copied()
         .collect()
 }

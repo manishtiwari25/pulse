@@ -684,6 +684,9 @@ pub struct Agent {
     /// calls that change things and answers the `question` tool. None in
     /// a job.
     ui: Option<Arc<Mutex<dyn Ui>>>,
+    /// Whether the `finish` tool is offered: the [`Ui`] has a conversation
+    /// to close (the hub's), not just a keyboard.
+    finish_tool: bool,
     /// Where the text of a reply goes as it streams in, when the provider
     /// streams; the Assistant step still carries the whole text.
     stream: Option<Box<dyn StreamSink>>,
@@ -756,6 +759,12 @@ pub trait Ui: Send {
     /// The user's answer to the model's question, None when nobody can
     /// answer (stdin closed).
     fn ask(&mut self, question: &str, choices: &[String]) -> Option<String>;
+    /// The model says the request is complete (`finish` tool): the
+    /// conversation closes once this turn's reply is in. False where there
+    /// is nothing to close (a terminal chat), which the model is told.
+    fn finish(&mut self, _summary: &str) -> bool {
+        false
+    }
 }
 
 /// A call the model wants to make that changes the checkout or leaves the
@@ -787,6 +796,9 @@ pub enum Approval {
 
 /// The name of the tool an interactive session offers for asking the user.
 pub const QUESTION_TOOL: &str = "question";
+/// The name of the tool a hub conversation offers for closing itself once
+/// the request is done ([`Ui::finish`]).
+pub const FINISH_TOOL: &str = "finish";
 
 /// The status an interactive session ends with.
 pub const EXIT_ENDED: &str = "ended";
@@ -802,6 +814,20 @@ pub fn question_tool() -> Tool {
                 "choices": {"type": "array", "items": {"type": "string"}, "description": "short answers to pick from, if any"}
             },
             "required": ["question"]
+        }),
+    }
+}
+
+pub fn finish_tool() -> Tool {
+    Tool {
+        name: FINISH_TOOL.into(),
+        description: "Mark this conversation finished: the owner's request is complete, verified, and nothing waits on them. Call it once, then give your closing reply. Not for ending a turn, not when you are blocked or asked a question - only when the whole request is done. The owner can reopen the conversation by writing again.".into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "what was done and where it landed, one or two sentences"}
+            },
+            "required": ["summary"]
         }),
     }
 }
@@ -1078,6 +1104,7 @@ pub fn new_shared(
         permissions: Rules::new(),
         current_subjects: Vec::new(),
         ui: None,
+        finish_tool: false,
         stream: None,
         state: LoopState::default(),
         ended: false,
@@ -1288,6 +1315,11 @@ impl Agent {
         self.ui = Some(ui);
     }
 
+    /// Offers the `finish` tool: the [`Ui`] closes a conversation on it.
+    pub fn offer_finish(&mut self, on: bool) {
+        self.finish_tool = on;
+    }
+
     /// Sends the text of each reply to `f` as it streams in from a
     /// provider that streams; the Assistant step still carries it whole.
     /// When the stream breaks part way the reply is asked for again (up
@@ -1460,6 +1492,10 @@ impl Agent {
         self.ui.is_some() && self.cfg.depth == 0
     }
 
+    fn offers_finish(&self) -> bool {
+        self.finish_tool && self.offers_question()
+    }
+
     /// Whether `bash` takes `background: true` and `process` is offered:
     /// the environment must be able to keep a process running, and a
     /// read-only run runs its commands to completion only (a change a
@@ -1496,6 +1532,9 @@ impl Agent {
         }
         if self.offers_question() {
             out.push(question_tool());
+        }
+        if self.offers_finish() {
+            out.push(finish_tool());
         }
         out.extend(self.mcp.advertised());
         out.retain(|t| !self.permissions.withdraws(&t.name));
@@ -1535,6 +1574,9 @@ impl Agent {
         }
         if self.offers_question() {
             out.push(QUESTION_TOOL.to_string());
+        }
+        if self.offers_finish() {
+            out.push(FINISH_TOOL.to_string());
         }
         if self.mcp.deferred() {
             out.push(MCP_SEARCH_TOOL.to_string());
@@ -2541,6 +2583,7 @@ impl Agent {
             }
             SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
             QUESTION_TOOL if self.offers_question() => self.run_question_tool(&call.arguments),
+            FINISH_TOOL if self.offers_finish() => self.run_finish_tool(&call.arguments),
             MCP_SEARCH_TOOL if self.mcp.deferred() => {
                 let query = serde_json::from_str::<Value>(&call.arguments)
                     .ok()
@@ -2630,6 +2673,53 @@ impl Agent {
             },
         };
         self.emit_observation(&format!("{QUESTION_TOOL} tool"), &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// The `finish` tool: the conversation closes after this turn
+    /// ([`Ui::finish`]); the model gives its closing reply next.
+    fn run_finish_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let summary = args
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if summary.is_empty() {
+            return self.tool_error(
+                "finish: arguments must be a JSON object with a string summary".to_string(),
+            );
+        }
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: format!("finish: {summary}"),
+            command: FINISH_TOOL.to_string(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let closed = self.ui.as_ref().is_some_and(|ui| {
+            ui.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish(&summary)
+        });
+        let obs = if closed {
+            Observation {
+                output: "The conversation is marked finished; it closes after this turn. Give your closing reply now: what was done and where it landed. The owner can reopen it by writing again.".to_string(),
+                duration: start.elapsed(),
+                ..Observation::default()
+            }
+        } else {
+            Observation {
+                output: "There is no conversation to finish here. Just give your closing reply."
+                    .to_string(),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            }
+        };
+        self.emit_observation(&format!("{FINISH_TOOL} tool"), &obs);
         ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
     }
 
@@ -10845,9 +10935,17 @@ mod tests {
         answers: Vec<Option<String>>,
         seen: Vec<ApprovalRequest>,
         asked: Vec<(String, Vec<String>)>,
+        /// Summaries the agent finished with; `finishes` false refuses them.
+        finished: Vec<String>,
+        finishes: bool,
     }
 
     impl Ui for Arc<Mutex<ScriptUi>> {
+        fn finish(&mut self, summary: &str) -> bool {
+            let mut ui = self.lock().unwrap();
+            ui.finished.push(summary.to_string());
+            ui.finishes
+        }
         fn approve(&mut self, req: &ApprovalRequest) -> Approval {
             let mut ui = self.lock().unwrap();
             ui.seen.push(req.clone());
@@ -12229,6 +12327,86 @@ mod tests {
                 .iter()
                 .any(|t| t.name == QUESTION_TOOL),
             "the question tool is offered when a ui is set"
+        );
+    }
+
+    /// The finish tool is offered only to a session whose ui takes a
+    /// finish (a hub conversation); it hands the summary to the ui and
+    /// tells the model to give its closing reply.
+    #[test]
+    fn chat_finish_tool_is_offered_on_request_and_hands_the_summary_to_the_ui() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("f1", "finish", json!({"summary": ""}))])),
+            resp(calls(&[(
+                "f2",
+                "finish",
+                json!({"summary": "The login works again."}),
+            )])),
+            resp(msg("All done.")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi {
+            finishes: true,
+            ..ScriptUi::default()
+        }));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), Some(ui.clone()), steps.clone());
+        assert!(
+            !h.tool_names().iter().any(|n| n == FINISH_TOOL),
+            "a plain chat session does not offer finish"
+        );
+        h.offer_finish(true);
+        assert!(h.tool_names().iter().any(|n| n == FINISH_TOOL));
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "fix the login").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "All done."),
+            "{turn:?}"
+        );
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["f1"].contains("string summary"),
+            "{}",
+            replies["f1"]
+        );
+        assert!(
+            replies["f2"].contains("marked finished"),
+            "{}",
+            replies["f2"]
+        );
+        assert_eq!(
+            ui.lock().unwrap().finished,
+            vec!["The login works again.".to_string()]
+        );
+        assert!(
+            steps
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.kind == StepKind::Note
+                    && s.content == "finish: The login works again."
+                    && s.command == FINISH_TOOL),
+        );
+        assert!(
+            p.requests()[0].tools.iter().any(|t| t.name == FINISH_TOOL),
+            "the finish tool went to the model"
+        );
+        // A ui with nothing to finish says so, and the turn goes on.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("f3", "finish", json!({"summary": "done"}))])),
+            resp(msg("ok")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi::default()));
+        let mut h = chat_agent(dir.path(), p, Some(ui), Arc::new(Mutex::new(Vec::new())));
+        h.offer_finish(true);
+        let turn = h.turn(&CancelToken::new(), "x").unwrap();
+        assert!(matches!(&turn, Turn::Reply(t) if t == "ok"), "{turn:?}");
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["f3"].contains("no conversation to finish"),
+            "{}",
+            replies["f3"]
         );
     }
 

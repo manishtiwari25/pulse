@@ -6,7 +6,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const CHAT_STATUSES: &[&str] = &["idle", "running", "waiting", "ended", "archived"];
+pub const CHAT_STATUSES: &[&str] = &["idle", "running", "waiting", "ended", "closed", "archived"];
 pub const CHAT_ROLES: &[&str] = &[
     "user",
     "assistant",
@@ -27,6 +27,9 @@ pub struct Conversation {
     pub session_id: String,
     pub provider: String,
     pub model: String,
+    /// The reasoning effort the agent runs with; empty for the provider's
+    /// default.
+    pub reasoning: String,
     pub auto_approve: bool,
     pub created_by: String,
     pub created_at: String,
@@ -47,7 +50,7 @@ pub struct ConversationMessage {
     pub extra: Value,
 }
 
-const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note";
+const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning";
 const MESSAGE_COLS: &str = "conversation_id, n, at, role, content, extra";
 
 fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
@@ -70,6 +73,7 @@ fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
         turns: r.get(14)?,
         cost: r.get(15)?,
         note: r.get(16)?,
+        reasoning: r.get(17)?,
     })
 }
 
@@ -86,6 +90,72 @@ fn scan_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationMessage> 
 }
 
 impl Store {
+    /// Rebuilds a `conversations` table from before the `closed` status,
+    /// whose CHECK would refuse it. `conversation_messages` references the
+    /// table, so it cannot be moved aside by name like `WIDENED_CHECKS`
+    /// does (the rename would follow into the children's constraint): the
+    /// current shape is built beside it, the rows copied over by column
+    /// name, the old table dropped and the new one renamed into place, with
+    /// foreign keys off for the span so the messages stay where they are.
+    pub(crate) fn widen_chat_statuses(&self) -> Result<()> {
+        use crate::store::{table_columns, table_present, table_sql_has};
+        let conn = self.conn()?;
+        if !table_present(&conn, "conversations")?
+            || table_sql_has(&conn, "conversations", "'closed'")?
+        {
+            return Ok(());
+        }
+        let create = crate::chat_ddl::CHAT_DDL[0].replacen(
+            "CREATE TABLE IF NOT EXISTS conversations (",
+            "CREATE TABLE conversations_widened (",
+            1,
+        );
+        conn.pragma_update(None, "foreign_keys", 0)?;
+        let rebuilt = (|| -> Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE; DROP TABLE IF EXISTS conversations_widened;")?;
+            let work = (|| -> Result<i64> {
+                conn.execute_batch(&create)?;
+                let old = table_columns(&conn, "conversations")?;
+                let shared = table_columns(&conn, "conversations_widened")?
+                    .into_iter()
+                    .filter(|c| old.contains(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let rows = conn.execute(
+                    &format!(
+                        "INSERT INTO conversations_widened ({shared}) SELECT {shared} FROM conversations"
+                    ),
+                    [],
+                )?;
+                conn.execute_batch(
+                    "DROP TABLE conversations; ALTER TABLE conversations_widened RENAME TO conversations;",
+                )?;
+                for stmt in crate::chat_ddl::CHAT_DDL {
+                    conn.execute(stmt, [])?;
+                }
+                crate::store::event_insert(
+                    &conn,
+                    &self.now(),
+                    "pulse",
+                    "schema.widened",
+                    "conversations",
+                    &format!("rows={rows}"),
+                )?;
+                Ok(rows as i64)
+            })();
+            match work {
+                Ok(_) => Ok(conn.execute_batch("COMMIT")?),
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })();
+        let restored = conn.pragma_update(None, "foreign_keys", 1);
+        rebuilt?;
+        Ok(restored?)
+    }
+
     /// Records a new conversation; `c.id` is the caller's, the clock stamps
     /// fill in.
     pub fn chat_create(&self, c: &Conversation) -> Result<Conversation> {
@@ -102,7 +172,7 @@ impl Store {
         let now = self.now();
         let tx = self.begin()?;
         tx.execute(
-            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
             params![
                 c.id,
                 c.title,
@@ -120,7 +190,8 @@ impl Store {
                 c.last_at,
                 c.turns,
                 c.cost,
-                c.note
+                c.note,
+                c.reasoning
             ],
         )?;
         tx.commit()?;
@@ -209,6 +280,12 @@ impl Store {
     /// onto it with the conversation carried over).
     pub fn chat_set_model(&self, id: &str, model: &str) -> Result<()> {
         self.chat_update(id, "model = ?1", params![model.trim()])
+    }
+
+    /// The reasoning effort the next turn runs with (empty: the provider's
+    /// default); the runtime restarts its session like for a model change.
+    pub fn chat_set_reasoning(&self, id: &str, reasoning: &str) -> Result<()> {
+        self.chat_update(id, "reasoning = ?1", params![reasoning.trim()])
     }
 
     /// Adds a finished turn's cost and count.
@@ -426,5 +503,120 @@ mod tests {
         assert!(s.chat_set_title("chat-zzz", "t").is_err());
         s.chat_delete("chat-a").expect("delete");
         assert!(s.chat_get("chat-a").expect("get").is_none());
+    }
+
+    #[test]
+    fn closed_and_reasoning_round_trip() {
+        let (s, _home) = new_store();
+        s.chat_create(&chat("chat-c")).expect("c");
+        s.chat_set_status("chat-c", "closed", "done: the login works")
+            .expect("closed");
+        s.chat_set_reasoning("chat-c", " high ").expect("reasoning");
+        let got = s.chat_get("chat-c").expect("get").expect("row");
+        assert_eq!(got.status, "closed");
+        assert_eq!(got.reasoning, "high");
+        // Closed conversations stay in the open list; archived leave it.
+        assert_eq!(s.chat_list(false, 10).expect("list").len(), 1);
+        let made = s
+            .chat_create(&Conversation {
+                reasoning: "low".into(),
+                ..chat("chat-d")
+            })
+            .expect("d");
+        assert_eq!(made.reasoning, "low");
+    }
+
+    /// A store from before the `closed` status (and the `reasoning`
+    /// column) is rebuilt on open: the conversations and their messages
+    /// survive, `closed` is accepted, and it is not rebuilt again.
+    #[test]
+    fn an_older_conversations_table_is_widened_for_closed() {
+        let _serial = crate::test_helpers::serial();
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            Store::open(Options {
+                home: dir.path().display().to_string(),
+                create: true,
+                now: "2026-10-30T10:00:00Z".into(),
+                ..Options::default()
+            })
+            .unwrap()
+        };
+        let s = open();
+        s.chat_create(&chat("chat-old")).expect("create");
+        s.chat_add_message("chat-old", "user", "hello", &Value::Null)
+            .expect("message");
+        s.chat_add_message("chat-old", "assistant", "hi", &Value::Null)
+            .expect("message");
+        // Give the table the shape a store made before `closed` has: no
+        // `closed` in the CHECK, no `reasoning` column.
+        let narrow = crate::chat_ddl::CHAT_DDL[0]
+            .replace("'closed',", "")
+            .replace(
+                "  reasoning TEXT NOT NULL DEFAULT '',  -- effort the agent runs with; '' = the provider's default\n",
+                "",
+            )
+            .replacen(
+                "CREATE TABLE IF NOT EXISTS conversations (",
+                "CREATE TABLE conversations_old (",
+                1,
+            );
+        assert!(!narrow.contains("reasoning"), "{narrow}");
+        {
+            let conn = s.conn().unwrap();
+            conn.pragma_update(None, "foreign_keys", 0).unwrap();
+            let cols = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note";
+            conn.execute_batch(&format!(
+                "BEGIN; {narrow}; INSERT INTO conversations_old ({cols}) SELECT {cols} FROM conversations; \
+                 DROP TABLE conversations; ALTER TABLE conversations_old RENAME TO conversations; \
+                 UPDATE meta SET value = '6' WHERE key = 'records_version'; COMMIT;"
+            ))
+            .unwrap();
+            conn.pragma_update(None, "foreign_keys", 1).unwrap();
+            assert!(!crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
+            assert!(!crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
+        }
+        s.close().unwrap();
+        let s = open();
+        {
+            let conn = s.conn().unwrap();
+            assert!(crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
+            assert!(crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
+            assert!(!crate::store::table_present(&conn, "conversations_widened").unwrap());
+            let fk: i64 = conn
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(fk, 0, "the messages still point at their conversation");
+            let widened: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'conversations' AND detail = 'rows=1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(widened, 1);
+        }
+        let got = s.chat_get("chat-old").expect("get").expect("row");
+        assert_eq!(got.title, "fix the login");
+        assert_eq!(got.reasoning, "");
+        assert_eq!(s.chat_messages("chat-old", 0).expect("messages").len(), 2);
+        s.chat_set_status("chat-old", "closed", "done")
+            .expect("closed");
+        assert!(s.additive_complete());
+        s.close().unwrap();
+        let s = open();
+        let again: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'conversations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, 1, "a widened table is not rebuilt again");
     }
 }

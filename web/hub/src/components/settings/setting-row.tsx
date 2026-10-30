@@ -14,6 +14,10 @@ import { writes, type Runner, type Setting } from "@/lib/api";
 import { settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 
+// Radix refuses an empty item value: a choice setting that takes "" (the
+// per-role reasoning efforts) shows and saves it through this stand-in.
+export const EMPTY_CHOICE = "__empty__";
+
 // What a value should look like, shown while the owner types.
 export function hint(s: Setting): string {
   if (s.secret) return "Private: saved on this machine, never shown here, to agents or in the activity log.";
@@ -149,14 +153,14 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
           ) : (
             <>
               {isChoice ? (
-                <Select value={draft} onValueChange={setDraft} disabled={!canEdit}>
+                <Select value={draft || EMPTY_CHOICE} onValueChange={(v) => setDraft(v === EMPTY_CHOICE ? "" : v)} disabled={!canEdit}>
                   <SelectTrigger aria-label={named} className="h-9 w-64 max-w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {(s.choices || []).map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {labels?.choices?.[c] ?? c}
+                      <SelectItem key={c || EMPTY_CHOICE} value={c || EMPTY_CHOICE}>
+                        {show(c)}
                       </SelectItem>
                     ))}
                   </SelectContent>
