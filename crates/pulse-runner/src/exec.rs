@@ -158,6 +158,41 @@ pub(crate) struct LocalExec {
     /// The base of the held run whose clone this run carries on in.
     #[serde(default)]
     pub(crate) resume_base: Option<String>,
+    /// The recipe's `CARGO_TARGET_DIR`, resolved once when the executor is
+    /// built so the hook check and the run-end verify can freshen this
+    /// clone's tracked sources when the target dir is shared with another
+    /// tree (`freshen_sources_for_check`).
+    #[serde(default)]
+    pub(crate) recipe_cargo_target_dir: Option<String>,
+}
+
+/// True when the recipe's `CARGO_TARGET_DIR` points outside the clone: that
+/// target dir may hold artifacts built from another tree's checkout, and
+/// Cargo would serve them as fresh for this clone's check because its
+/// freshness key is path-insensitive (mtime + fingerprint, not the source's
+/// canonical path). A relative value lands inside the clone and can only
+/// hold this tree's work, so no freshening is needed there.
+pub(crate) fn cargo_target_dir_is_outside_clone(target_dir: &str, clone_dir: &str) -> bool {
+    if target_dir.trim().is_empty() {
+        return false;
+    }
+    let target = Path::new(target_dir);
+    if !target.is_absolute() {
+        return false;
+    }
+    !target.starts_with(Path::new(clone_dir))
+}
+
+/// The one command `freshen_sources_for_check` runs before a check: bump the
+/// mtime of every tracked source Cargo could reuse a stale artifact for, so a
+/// check in this clone never runs another tree's binary from a shared
+/// `CARGO_TARGET_DIR`. Registry dependencies are untouched, so the cost is
+/// one workspace rebuild per check, not a cold target dir.
+pub(crate) fn freshen_sources_cmd(clone_dir: &str) -> String {
+    format!(
+        "cd {} && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 touch",
+        crate::util::shell_quote(clone_dir)
+    )
 }
 pub(crate) fn new_local_exec(
     r: Row,
@@ -170,6 +205,7 @@ pub(crate) fn new_local_exec(
 ) -> LocalExec {
     let job_id = job.str("id");
     let root = project.str("path");
+    let recipe_cargo_target_dir = recipe_cargo_target_dir(s, &project.str("slug"), &root);
     LocalExec {
         row: r,
         s: Some(s.clone()),
@@ -178,6 +214,7 @@ pub(crate) fn new_local_exec(
         project,
         agent: agent.into(),
         log: log.clone(),
+        recipe_cargo_target_dir,
         root,
         clone_dir: std::path::Path::new(home)
             .join("work")
@@ -192,9 +229,61 @@ pub(crate) fn new_local_exec(
         ..Default::default()
     }
 }
+/// Reads the recipe's `CARGO_TARGET_DIR` the same way the run does, so the
+/// executor alone decides whether its checks share a target dir with another
+/// tree. The value the hook check and the run-end verify use is the same one
+/// the recipe exports to the worker and the check itself; a malformed or
+/// absent recipe simply disables the freshening.
+fn recipe_cargo_target_dir(s: &pulse_store::Store, slug: &str, root: &str) -> Option<String> {
+    let (recipe, _, _) = crate::recipe::read_recipe(s, slug, root, "HEAD");
+    recipe?.env.get("CARGO_TARGET_DIR").cloned()
+}
 impl LocalExec {
     pub(crate) fn name(&self) -> String {
         self.row.str("name")
+    }
+    /// Bumps the mtime of this clone's tracked sources when the recipe's
+    /// `CARGO_TARGET_DIR` is shared with another tree, so the check that
+    /// follows rebuilds the workspace crates from this clone and never
+    /// serves another tree's artifact as fresh. Runs immediately before the
+    /// pre-commit hook's check and the run-end verify; a no-op when the
+    /// recipe's target dir lives inside the clone (it can only hold this
+    /// tree's work) or the recipe names none. A failed touch never blocks
+    /// the check: the run log records it and the check runs as it is.
+    fn freshen_sources_for_check(&self) {
+        let Some(target_dir) = self.recipe_cargo_target_dir.as_deref() else {
+            return;
+        };
+        if !cargo_target_dir_is_outside_clone(target_dir, &self.clone_dir) {
+            return;
+        }
+        let cmd = freshen_sources_cmd(&self.clone_dir);
+        let out = crate::proc::run_group(
+            &pulse_bus::CancellationToken::new(),
+            &["/bin/sh".into(), "-c".into(), cmd],
+            "",
+            &crate::proc::environ(),
+            &[],
+            Duration::from_secs(120),
+        );
+        match out {
+            Ok(out) if out.exit_code == 0 => {
+                self.log.add("$ touch the clone's tracked sources (the recipe's CARGO_TARGET_DIR is shared with another tree)".to_string());
+            }
+            Ok(out) => {
+                self.log.add(format!(
+                    "touch of the clone's tracked sources failed (exit {}); the check runs as it is\n{}{}",
+                    out.exit_code,
+                    tail_str(&out.stdout, 2000),
+                    tail_str(&out.stderr, 2000)
+                ));
+            }
+            Err(e) => {
+                self.log.add(format!(
+                    "touch of the clone's tracked sources failed ({e}); the check runs as it is"
+                ));
+            }
+        }
     }
     pub(crate) fn branch_to_clone(&self) -> String {
         let d = self.project.str("default_branch");
@@ -412,6 +501,7 @@ impl Executor for LocalExec {
             &crate::proc::environ(),
             &BTreeMap::from([("TMPDIR".to_string(), tmp)]),
         );
+        self.freshen_sources_for_check();
         let run = self.beat_during("verify", || {
             crate::proc::run_group(
                 cancel,
@@ -447,6 +537,10 @@ impl Executor for LocalExec {
         if verify_cmd.is_empty() {
             return Ok(());
         }
+        // Freshen before installing the hook: the installed hook runs the
+        // recipe's check, which must rebuild this clone's crates when its
+        // target dir is shared with another tree.
+        self.freshen_sources_for_check();
         crate::keys::write_pre_commit_hook(
             &self.clone_dir,
             &crate::keys::pre_commit_hook_script(
@@ -1278,6 +1372,44 @@ mod tests {
         env.iter()
             .find_map(|kv| kv.strip_prefix(&format!("{key}=")).map(ToOwned::to_owned))
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn cargo_target_dir_is_outside_clone_gating() {
+        let clone = "/tmp/fleet/a";
+        // Shared lane outside the clone: freshen.
+        assert!(cargo_target_dir_is_outside_clone(
+            "/Users/work/.pulse/cache/cargo-target-land/amistio-template",
+            clone
+        ));
+        // Inside the clone (it can only hold this tree's work): no-op.
+        assert!(!cargo_target_dir_is_outside_clone(
+            "/tmp/fleet/a/target",
+            clone
+        ));
+        assert!(!cargo_target_dir_is_outside_clone(clone, clone));
+        // Relative values land inside the clone when the check runs there.
+        assert!(!cargo_target_dir_is_outside_clone("target", clone));
+        assert!(!cargo_target_dir_is_outside_clone("../target", clone));
+        // Unset or blank: no-op.
+        assert!(!cargo_target_dir_is_outside_clone("", clone));
+        assert!(!cargo_target_dir_is_outside_clone("   ", clone));
+        // A sibling whose name shares a prefix is not inside the clone.
+        assert!(cargo_target_dir_is_outside_clone("/tmp/fleet/abc", clone));
+    }
+
+    #[test]
+    fn freshen_sources_cmd_touches_only_tracked_sources() {
+        let cmd = freshen_sources_cmd("/tmp/fleet/a");
+        assert_eq!(
+            cmd,
+            "cd /tmp/fleet/a && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 touch"
+        );
+        let quoted = freshen_sources_cmd("/tmp/fleet/with space");
+        assert!(
+            quoted.starts_with("cd '/tmp/fleet/with space' && git ls-files -z"),
+            "{quoted}"
+        );
     }
 
     #[test]
