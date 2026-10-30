@@ -638,6 +638,110 @@ pub(crate) fn replay_onto_squashed_upstream(
     }))
 }
 
+/// Directory prefix of the hub's generated static export.
+pub(crate) const HUB_OUT_PREFIX: &str = "web/hub/out/";
+
+/// Rebuild the hub's static export from the merged `web/hub/src` after an
+/// upstream sync merge conflicted only under the generated export: take the
+/// upstream copy of `web/hub/{src,out,package-lock.json}`, rebuild in a
+/// temporary index and working tree so a failure leaves the merge conflict
+/// intact for the usual hold, and commit. Returns false when the conflict
+/// reaches outside the export or any step failed.
+pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> bool {
+    // The sync branch is `pulse/sync/<remote>/<upstream-branch>`; the
+    // upstream ref it merged is `<remote>/<upstream-branch>`.
+    let upstream_ref = branch
+        .strip_prefix("pulse/sync/")
+        .map(str::to_string)
+        .unwrap_or_default();
+    let unmerged = crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(30),
+        &["diff", "--name-only", "--diff-filter=U", "-z"],
+    );
+    if !unmerged.ok()
+        || unmerged
+            .stdout
+            .split('\0')
+            .any(|p| !p.is_empty() && !p.starts_with(HUB_OUT_PREFIX))
+    {
+        return false;
+    }
+    let upstream = crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(30),
+        &["rev-parse", "--verify", &upstream_ref],
+    );
+    if !upstream.ok() {
+        return false;
+    }
+    let upstream = upstream.stdout.trim().to_string();
+    // Incidental bare-index fixup from the merge path; best effort only.
+    let _ = crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(60),
+        &["checkout", &upstream, "--", ".husky/_/.gitignore"],
+    );
+    // Rebuild the export in place: the landing worktree's disk already holds
+    // the merged web/hub/src (only generated out/ paths conflicted, so src
+    // merged clean), which is exactly the tree the stamp gate names. Build
+    // over it with npm, then stage the result and finish the merge commit.
+    // Any failure backs out to the usual hold.
+    let hub = std::path::Path::new(worktree).join("web/hub");
+    let npm = |args: &[&str]| {
+        std::process::Command::new("npm")
+            .args(args)
+            .current_dir(&hub)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_QUARANTINE_PATH")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|st| st.success())
+    };
+    if !npm(&["ci", "--no-audit", "--no-fund"]) || !npm(&["run", "build"]) {
+        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
+        return false;
+    }
+    if !crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(120),
+        &["add", "-A", "--", "web/hub"],
+    )
+    .ok()
+    {
+        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
+        return false;
+    }
+    let msg = format!("Land {branch}: rebuild web/hub/out from the merged src");
+    let committed = std::process::Command::new("git")
+        .args([
+            "-C",
+            worktree,
+            "-c",
+            "user.name=pulse",
+            "-c",
+            "user.email=pulse@pulse.local",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-m",
+            &msg,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|st| st.success());
+    if !committed {
+        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
+        return false;
+    }
+    true
+}
+
 /// The remote moved under the local default branch. Merge `<remote>/<branch>`
 /// into it through the landing path - a throwaway worktree, the project's
 /// check on the merged result, a fast-forward of the checkout - so the push
@@ -1100,6 +1204,167 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
+    /// A repo with one committed `web/hub` skeleton and a bare `origin/main`
+    /// ref (a plain local branch), so the resolver can rev-parse the upstream
+    /// it derives from the `pulse/sync/<remote>/<branch>` name.
+    /// Build a repo whose `origin/main` and local `main` diverged, changing
+    /// only the generated `web/hub/out/index.html`, so a real merge of
+    /// origin/main conflicts out/-only. Returns the sync branch name.
+    fn seed_hub_sync_worktree(root: &str) -> String {
+        std::fs::create_dir_all(Path::new(root).join("web/hub/src")).expect("dirs");
+        std::fs::create_dir_all(Path::new(root).join("web/hub/out")).expect("dirs");
+        commit_file(root, "web/hub/src/app.css", "merged src\n", "seed src");
+        commit_file(root, "web/hub/out/index.html", "base out\n", "seed out");
+        // A buildable hub skeleton: the resolver runs `npm ci && npm run build`.
+        commit_file(
+            root,
+            "web/hub/package.json",
+            "{\"name\":\"t\",\"version\":\"0.0.0\",\"scripts\":{\"build\":\"node -e \\\"require('fs').writeFileSync('out/index.html','rebuilt')\\\"\"}}\n",
+            "seed pkg",
+        );
+        commit_file(
+            root,
+            "web/hub/package-lock.json",
+            "{\"name\":\"t\",\"version\":\"0.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"t\",\"version\":\"0.0.0\"}}}\n",
+            "seed lock",
+        );
+        // Upstream moves only the generated bundle. Build it on a side
+        // branch, then point the origin/main ref at it.
+        run(root, &["git", "branch", "-q", "upbuild", "HEAD"]);
+        commit_file(root, "web/hub/out/index.html", "local out\n", "local out");
+        run(root, &["git", "checkout", "-q", "upbuild"]);
+        commit_file(
+            root,
+            "web/hub/out/index.html",
+            "upstream out\n",
+            "upstream out",
+        );
+        let up = run(root, &["git", "rev-parse", "HEAD"]);
+        let up = up.trim();
+        run(root, &["git", "update-ref", "refs/remotes/origin/main", up]);
+        run(root, &["git", "checkout", "-q", "main"]);
+        run(root, &["git", "branch", "-qD", "upbuild"]);
+        "pulse/sync/origin/main".to_string()
+    }
+
+    #[test]
+    fn hub_out_only_sync_conflict_is_resolved_by_the_rebuilt_bundle() {
+        let home = tempfile::tempdir().expect("home");
+        let root = home.path().join("wt");
+        std::fs::create_dir_all(&root).expect("root");
+        run(
+            root.to_str().unwrap(),
+            &["git", "init", "-q", "-b", "main", "."],
+        );
+        let root_s = root.display().to_string();
+        let branch = seed_hub_sync_worktree(&root_s);
+        // The merge conflicts out/-only by construction; allow the non-zero.
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                &root_s,
+                "merge",
+                "--no-ff",
+                "--no-commit",
+                "origin/main",
+            ])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("merge");
+        assert!(!status.success(), "fixture merge should conflict");
+        let unmerged = run(&root_s, &["git", "diff", "--name-only", "--diff-filter=U"]);
+        assert!(
+            !unmerged.is_empty() && unmerged.lines().all(|p| p.starts_with(HUB_OUT_PREFIX)),
+            "fixture conflict should sit under web/hub/out only: {unmerged:?}"
+        );
+        let before = run(&root_s, &["git", "rev-parse", "HEAD"]);
+        assert!(
+            resolve_hub_out_sync_conflict(&root_s, &branch),
+            "out/-only conflict should resolve"
+        );
+        let head = run(&root_s, &["git", "log", "-1", "--format=%s", "HEAD"]);
+        assert!(
+            head.contains("rebuild web/hub/out"),
+            "resolution commit, got {head:?}"
+        );
+        let new_head = run(&root_s, &["git", "rev-parse", "HEAD"]);
+        assert_ne!(new_head, before, "a resolution commit was added");
+        let src = run(&root_s, &["git", "show", "HEAD:web/hub/src/app.css"]);
+        assert!(src.contains("merged src"), "merged src kept: {src:?}");
+        // The rebuilt bundle carries the build's output, not either side's copy.
+        let out = run(&root_s, &["git", "show", "HEAD:web/hub/out/index.html"]);
+        assert!(out.contains("rebuilt"), "bundle rebuilt from src: {out:?}");
+    }
+
+    #[test]
+    fn sync_conflict_outside_the_hub_export_still_holds() {
+        let home = tempfile::tempdir().expect("home");
+        let root = home.path().join("wt");
+        std::fs::create_dir_all(&root).expect("root");
+        run(
+            root.to_str().unwrap(),
+            &["git", "init", "-q", "-b", "main", "."],
+        );
+        let root_s = root.display().to_string();
+        let branch = seed_hub_sync_worktree(&root_s);
+        // A conflicted path outside web/hub/out alongside the out/ one: refuse
+        // to resolve, leave HEAD and the merge state untouched for the hold.
+        let base = run(&root_s, &["git", "merge-base", "HEAD", "origin/main"]);
+        let _ = base;
+        commit_file(&root_s, "src/main.rs", "fn main() {}\n", "local code");
+        let before = run(&root_s, &["git", "rev-parse", "HEAD"]);
+        // Force an unmerged entry outside web/hub/out.
+        let mut info = String::new();
+        for (stage, text) in [(1, "base\n"), (2, "ours\n"), (3, "theirs\n")] {
+            let oid = run_input(&root_s, text);
+            info.push_str(&format!("100644 {oid} {stage}\tsrc/main.rs\n"));
+        }
+        feed_git(&root_s, &["update-index", "--index-info"], &info);
+        assert!(
+            !resolve_hub_out_sync_conflict(&root_s, &branch),
+            "a conflict outside web/hub/out must still hold"
+        );
+        assert_eq!(run(&root_s, &["git", "rev-parse", "HEAD"]), before);
+    }
+
+    fn run_input(root: &str, text: &str) -> String {
+        let mut child = std::process::Command::new("git")
+            .args(["-C", root, "hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("hash-object");
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(text.as_bytes())
+            .expect("write");
+        let out = child.wait_with_output().expect("wait");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn feed_git(root: &str, args: &[&str], input: &str) {
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git");
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(input.as_bytes())
+            .expect("write");
+        assert!(child.wait().expect("wait").success());
+    }
+
     #[test]
     fn landing_holds_survive_reload() {
         let s = new_store();
@@ -1204,6 +1469,7 @@ mod tests {
     }
 
     fn commit_file(repo: &str, name: &str, text: &str, msg: &str) {
+        std::fs::create_dir_all(Path::new(repo).join(name).parent().unwrap()).ok();
         std::fs::write(Path::new(repo).join(name), text).expect("write");
         run(repo, &["git", "add", "-A"]);
         run(repo, &["git", "commit", "-q", "-m", msg]);
