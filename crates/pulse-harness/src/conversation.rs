@@ -75,6 +75,20 @@ const CARRY_ON_PROMPT: &str = "PULSE is back after its update. Carry on with the
 /// "continue" would not do.
 const UNSENT_LINE: &str =
     "PULSE stopped to restart before this message reached the agent. Send it again.";
+/// The same where the owner stopped the turn the message waited behind.
+const UNSENT_STOPPED_LINE: &str = "You stopped the turn before this message reached the agent. Send it again if you still want it.";
+/// The same where the conversation was finished or archived first.
+const UNSENT_CLOSED_LINE: &str =
+    "The conversation was closed before this message reached the agent. Send it again to carry on.";
+/// The same where the agent could not start.
+const UNSENT_NO_AGENT_LINE: &str = "The agent could not start, so this message never reached it. Send it again once the cause above is fixed.";
+/// The row note of a conversation the owner finished.
+const CLOSED_BY_OWNER_NOTE: &str = "closed by you";
+/// What the transcript says where the owner finished the conversation.
+const CLOSED_BY_OWNER_LINE: &str = "You finished this conversation. Write again to reopen it.";
+/// What the transcript says where the agent finished the conversation;
+/// its summary follows.
+const FINISHED_BY_AGENT_LINE: &str = "The agent finished this conversation:";
 /// The message the conversation sends itself once when a transport
 /// provider_error cut the last turn.
 const RESUME_AFTER_PROVIDER_ERROR: &str =
@@ -144,7 +158,7 @@ impl Pending {
 /// The conversation as the hub shows it between polls.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Live {
-    /// `idle`, `running`, `waiting`, `ended`.
+    /// `idle`, `running`, `waiting`, `ended`, `closed`.
     pub status: String,
     pub note: String,
     /// The reply streamed so far in the running turn.
@@ -270,6 +284,9 @@ enum Status {
     Running,
     Waiting,
     Ended,
+    /// Finished: the agent said the request is done, or the owner closed
+    /// it. A new message reopens it.
+    Closed,
 }
 
 impl Status {
@@ -279,6 +296,41 @@ impl Status {
             Status::Running => "running",
             Status::Waiting => "waiting",
             Status::Ended => "ended",
+            Status::Closed => "closed",
+        }
+    }
+}
+
+/// Who finished the conversation, and their words for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Finished {
+    /// The agent's `finish` tool, with its summary.
+    Agent(String),
+    /// The owner, from the hub or `pulse chat close`.
+    Owner,
+}
+
+impl Finished {
+    /// The row note while the conversation stands finished.
+    fn note(&self) -> String {
+        match self {
+            Finished::Agent(summary) => one_line(summary),
+            Finished::Owner => CLOSED_BY_OWNER_NOTE.to_string(),
+        }
+    }
+
+    /// The transcript line that marks the end.
+    fn line(&self) -> String {
+        match self {
+            Finished::Agent(summary) => format!("{FINISHED_BY_AGENT_LINE} {summary}"),
+            Finished::Owner => CLOSED_BY_OWNER_LINE.to_string(),
+        }
+    }
+
+    fn by(&self) -> &'static str {
+        match self {
+            Finished::Agent(_) => "agent",
+            Finished::Owner => "owner",
         }
     }
 }
@@ -295,6 +347,13 @@ struct LiveState {
     pending: Option<Pending>,
     answer: Option<(u64, Answer)>,
     queued: VecDeque<Queued>,
+    /// Messages dropped from the queue (a stop, a close, a shutdown) that
+    /// the worker still has to write to the transcript, after the note of
+    /// the turn they waited behind.
+    unsent: Vec<(Queued, Unsent)>,
+    /// A finish asked for during the turn (the agent's tool, the owner's
+    /// close): the turn ends closed.
+    finish: Option<Finished>,
     cancel: Option<CancelToken>,
     auto: bool,
     version: u64,
@@ -325,6 +384,8 @@ impl Shared {
                 pending: None,
                 answer: None,
                 queued: VecDeque::new(),
+                unsent: Vec::new(),
+                finish: None,
                 cancel: None,
                 auto,
                 version: 1,
@@ -356,7 +417,7 @@ impl Shared {
         let st = self.lock();
         // A worker holding a message that has not reached the agent yet
         // counts as running: the owner just sent it.
-        let status = if st.worker && st.status == Status::Idle {
+        let status = if st.worker && matches!(st.status, Status::Idle | Status::Closed) {
             Status::Running
         } else {
             st.status
@@ -366,7 +427,7 @@ impl Shared {
             note: st.note.clone(),
             stream: st.stream.clone(),
             pending: st.pending.clone(),
-            queued: st.queued.iter().map(|q| q.text.clone()).collect(),
+            queued: st.queued.iter().map(Queued::shown).collect(),
             turn_from: st.turn_from,
             turn_started_at: st.turn_started_at.clone(),
             auto_approve: st.auto,
@@ -461,6 +522,15 @@ impl WebUi {
 }
 
 impl Ui for WebUi {
+    fn finish(&mut self, summary: &str) -> bool {
+        let mut st = self.shared.lock();
+        if st.finish.is_none() {
+            st.finish = Some(Finished::Agent(summary.to_string()));
+        }
+        self.shared.bump(&mut st);
+        true
+    }
+
     fn approve(&mut self, req: &ApprovalRequest) -> Approval {
         if self.shared.lock().auto {
             return Approval::Allow;
@@ -554,16 +624,27 @@ struct Started {
     /// The model the session resolved to; a row that names another one
     /// restarts the session on the next turn.
     model: String,
+    /// The reasoning effort the session runs on (empty: the provider's
+    /// default), compared like the model.
+    reasoning: String,
     last_cost: f64,
     ended: bool,
 }
 
-/// One message waiting for the agent: its text as the model sees it and
-/// the images the owner attached inline (`Message.images`).
+/// One message waiting for the agent: its text as the model sees it, the
+/// images the owner attached inline (`Message.images`) and, for a message
+/// the owner typed, its transcript row. The row is written when the agent
+/// takes the message up, not when it was typed: a message sent during a
+/// turn then lands after that turn's reply, the order the agent read them
+/// in, instead of above a reply it never saw. Until then the hub shows it
+/// as queued.
 #[derive(Clone, Debug, Default)]
 struct Queued {
     text: String,
     images: Vec<ImageContent>,
+    /// The owner's words and the row's extra (attachments, images); None
+    /// for the runtime's own prompts, which leave no row.
+    row: Option<(String, Value)>,
 }
 
 impl From<String> for Queued {
@@ -571,6 +652,7 @@ impl From<String> for Queued {
         Queued {
             text,
             images: Vec::new(),
+            row: None,
         }
     }
 }
@@ -578,6 +660,42 @@ impl From<String> for Queued {
 impl From<&str> for Queued {
     fn from(text: &str) -> Self {
         text.to_string().into()
+    }
+}
+
+impl Queued {
+    /// The words the hub lists while the message waits: the owner's own,
+    /// or the prompt itself for the runtime's.
+    fn shown(&self) -> String {
+        match &self.row {
+            Some((shown, _)) => shown.clone(),
+            None => self.text.clone(),
+        }
+    }
+}
+
+/// Why a queued message never reached the agent; the transcript says so
+/// under it, since "continue" would not bring it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unsent {
+    /// The hub went down (restart, shutdown).
+    Shutdown,
+    /// The owner stopped the turn it waited behind.
+    Stopped,
+    /// The conversation was finished or put away first.
+    Closed,
+    /// The agent could not start.
+    NoAgent,
+}
+
+impl Unsent {
+    fn line(self) -> &'static str {
+        match self {
+            Unsent::Shutdown => UNSENT_LINE,
+            Unsent::Stopped => UNSENT_STOPPED_LINE,
+            Unsent::Closed => UNSENT_CLOSED_LINE,
+            Unsent::NoAgent => UNSENT_NO_AGENT_LINE,
+        }
     }
 }
 
@@ -612,16 +730,26 @@ impl Runtime {
         self.shared.snapshot()
     }
 
-    /// Queues a message and makes sure a worker is running it.
+    /// Queues a message and makes sure a worker is running it. The owner's
+    /// row goes to the transcript now when nothing runs ahead of it (the
+    /// turn starts on it at once); behind a running turn it waits with the
+    /// message ([`Queued::row`]).
     fn enqueue(self: &Arc<Self>, message: impl Into<Queued>) {
-        let spawn = {
+        let mut message = message.into();
+        let (spawn, row) = {
             let mut st = self.shared.lock();
-            st.queued.push_back(message.into());
             let spawn = !st.worker;
+            let row = if spawn { message.row.take() } else { None };
+            st.queued.push_back(message);
             st.worker = true;
             self.shared.bump(&mut st);
-            spawn
+            (spawn, row)
         };
+        if let Some((shown, extra)) = row {
+            let _ = self
+                .store
+                .chat_add_message(&self.id, "user", &shown, &extra);
+        }
         if spawn {
             let me = self.clone();
             thread::Builder::new()
@@ -633,14 +761,36 @@ impl Runtime {
 
     fn work(self: Arc<Self>) {
         loop {
+            // Taking the next message and standing down are one step under
+            // the lock: a message that arrives between them would find a
+            // worker that is no longer looking and wait for the next one.
             let next = {
                 let mut st = self.shared.lock();
                 if st.closed {
-                    st.queued.clear();
+                    let why = if st.shutdown {
+                        Unsent::Shutdown
+                    } else {
+                        Unsent::Closed
+                    };
+                    let dropped: Vec<Queued> = st.queued.drain(..).collect();
+                    st.unsent.extend(dropped.into_iter().map(|q| (q, why)));
                 }
                 let next = st.queued.pop_front();
-                if next.is_some() {
-                    self.shared.bump(&mut st);
+                let mut finished = None;
+                if next.is_none() && !st.closed {
+                    // A finish that found no turn to end (the owner closed
+                    // between two) lands here.
+                    finished = st.finish.take();
+                    if let Some(f) = &finished {
+                        st.status = Status::Closed;
+                        st.note = f.note();
+                    }
+                    st.worker = false;
+                }
+                self.shared.bump(&mut st);
+                drop(st);
+                if let Some(f) = finished {
+                    self.record_finished(&f);
                 }
                 next
             };
@@ -649,17 +799,11 @@ impl Runtime {
                 None => break,
             }
         }
+        self.write_unsent();
         // A close that came while this worker was active left ending the
         // session to it, so the session ends after the last turn, never
         // under one.
-        let close_here = {
-            let mut st = self.shared.lock();
-            if !st.closed {
-                st.worker = false;
-                self.shared.bump(&mut st);
-            }
-            st.closed
-        };
+        let close_here = self.shared.lock().closed;
         if close_here {
             self.end_session();
             let mut st = self.shared.lock();
@@ -671,7 +815,6 @@ impl Runtime {
     /// Runs one turn: starts or restarts the agent when the workspace
     /// changed, sends the message, records what came back.
     fn turn(self: &Arc<Self>, message: Queued) {
-        let Queued { text, images } = message;
         let row = match self.store.chat_get(&self.id) {
             Ok(Some(r)) if r.status != "archived" => r,
             _ => {
@@ -680,22 +823,31 @@ impl Runtime {
             }
         };
         {
-            let st = self.shared.lock();
+            let mut st = self.shared.lock();
             if st.closed {
                 // Put away or going down before the turn began: no session
-                // starts for a message that cannot run. On the way down,
-                // the transcript says the message never arrived.
-                if st.shutdown {
-                    drop(st);
-                    let _ = self.store.chat_add_message(
-                        &self.id,
-                        "note",
-                        UNSENT_LINE,
-                        &json!({"restart": true, "unsent": true}),
-                    );
-                }
+                // starts for a message that cannot run; the transcript says
+                // the message never arrived.
+                let why = if st.shutdown {
+                    Unsent::Shutdown
+                } else {
+                    Unsent::Closed
+                };
+                st.unsent.push((message, why));
+                drop(st);
+                self.write_unsent();
                 return;
             }
+        }
+        let Queued {
+            text,
+            images,
+            row: owner_row,
+        } = message;
+        // The owner's message enters the transcript as the agent takes it
+        // up: after the reply of the turn it waited behind.
+        if let Some((shown, extra)) = &owner_row {
+            let _ = self.store.chat_add_message(&self.id, "user", shown, extra);
         }
         let row_note = row.note.clone();
         let (agent, session_id, ran_in, first) = match self.ensure_started(&row) {
@@ -708,11 +860,16 @@ impl Runtime {
                 let _ = self
                     .store
                     .chat_set_status(&self.id, "ended", &one_line(&why));
-                let mut st = self.shared.lock();
-                st.status = Status::Ended;
-                st.note = one_line(&why);
-                st.queued.clear();
-                self.shared.bump(&mut st);
+                {
+                    let mut st = self.shared.lock();
+                    st.status = Status::Ended;
+                    st.note = one_line(&why);
+                    let dropped: Vec<Queued> = st.queued.drain(..).collect();
+                    st.unsent
+                        .extend(dropped.into_iter().map(|q| (q, Unsent::NoAgent)));
+                    self.shared.bump(&mut st);
+                }
+                self.write_unsent();
                 return;
             }
         };
@@ -737,9 +894,10 @@ impl Runtime {
             st.turn_from = st.last_step;
             st.turn_started_at = now();
             st.session_id = session_id.clone();
-            if st.closed {
-                // Closed while the message was on its way to the agent:
-                // the turn stops at its first step instead of running on.
+            if st.closed || st.finish.is_some() {
+                // Closed or finished while the message was on its way to
+                // the agent: the turn stops at its first step instead of
+                // running on.
                 cancel.cancel();
             }
             self.shared.bump(&mut st);
@@ -779,9 +937,13 @@ impl Runtime {
                 let resume = !cancel.is_cancelled()
                     && resume_after_provider_error(&self.store, &why, &error);
                 let line = if cancel.is_cancelled() {
-                    if self.shared.lock().shutdown {
+                    let st = self.shared.lock();
+                    if st.shutdown {
+                        drop(st);
                         note = RESTART_NOTE.to_string();
                         STOPPED_TO_RESTART_LINE.to_string()
+                    } else if matches!(st.finish, Some(Finished::Owner)) {
+                        "The turn stopped here: you finished the conversation.".to_string()
                     } else {
                         "You stopped this turn.".to_string()
                     }
@@ -861,13 +1023,24 @@ impl Runtime {
         // away.
         let row_now = self.store.chat_get(&self.id).ok().flatten();
         let archived = row_now.as_ref().is_some_and(|r| r.status == "archived");
+        let finishing = !ended && self.shared.lock().finish.is_some();
         let moved = row_now
             .as_ref()
-            .filter(|r| !archived && !r.cwd.is_empty() && r.cwd != ran_in);
-        {
+            .filter(|r| !archived && !finishing && !r.cwd.is_empty() && r.cwd != ran_in);
+        let finished = {
             let mut st = self.shared.lock();
             st.cancel = None;
             st.stream.clear();
+            // A finish during the turn (the agent's tool, the owner's
+            // close) ends it closed, unless the session itself ended.
+            let finished = st.finish.take().filter(|_| !ended);
+            if let Some(f) = &finished {
+                status = Status::Closed;
+                note = f.note();
+                // The conversation's own prompts (a resume) stop here; a
+                // message the owner sent meanwhile runs next and reopens it.
+                st.queued.retain(|q| q.row.is_some());
+            }
             st.status = status;
             st.note = note.clone();
             if let Some(r) = &moved {
@@ -880,6 +1053,15 @@ impl Runtime {
                 );
             }
             self.shared.bump(&mut st);
+            finished
+        };
+        if let Some(f) = &finished {
+            let _ = self.store.chat_add_message(
+                &self.id,
+                "note",
+                &f.line(),
+                &json!({"closed": f.by(), "session": session_id}),
+            );
         }
         if let Some(r) = &moved {
             let _ = self.store.chat_add_message(
@@ -892,6 +1074,9 @@ impl Runtime {
         if !archived {
             let _ = self.store.chat_set_status(&self.id, status.word(), &note);
         }
+        // What was dropped behind this turn (a stop, a close) follows its
+        // note, so the transcript reads in the order things happened.
+        self.write_unsent();
     }
 
     /// The agent for the row's current workspace: the one running, or a
@@ -911,6 +1096,7 @@ impl Runtime {
             && !s.ended
             && s.cwd == row.cwd
             && same_model(s)
+            && s.reasoning == row.reasoning
         {
             return Ok((s.agent.clone(), s.session_id.clone(), s.cwd.clone(), false));
         }
@@ -962,6 +1148,9 @@ impl Runtime {
         } else if !row.model.is_empty() {
             fs.set("model", &row.model)?;
         }
+        if !row.reasoning.is_empty() {
+            fs.set("reasoning", &row.reasoning)?;
+        }
         let mut env = vec![
             format!("{CONVERSATION_ENV}={}", row.id),
             format!(
@@ -1007,6 +1196,7 @@ impl Runtime {
                 store: self.store.clone(),
                 id: row.id.clone(),
             })));
+            a.offer_finish(true);
             let shared = self.shared.clone();
             a.set_stream(Box::new(LiveStream { shared }));
         }
@@ -1032,6 +1222,7 @@ impl Runtime {
             session_id: session_id.clone(),
             cwd: row.cwd.clone(),
             model,
+            reasoning: row.reasoning.clone(),
             last_cost: 0.0,
             ended: false,
         });
@@ -1125,14 +1316,75 @@ impl Runtime {
         self.shared.bump(&mut st);
     }
 
-    /// Stops the running turn and drops what was queued behind it.
+    /// Stops the running turn and drops what was queued behind it; the
+    /// dropped messages reach the transcript after the stopped turn's note.
     fn cancel(&self) {
         let mut st = self.shared.lock();
-        st.queued.clear();
+        Self::drop_queue(&mut st, Unsent::Stopped);
         if let Some(c) = &st.cancel {
             c.cancel();
         }
         self.shared.bump(&mut st);
+    }
+
+    /// Moves what waits in the queue to the unsent list, for the worker to
+    /// write out ([`Runtime::write_unsent`]).
+    fn drop_queue(st: &mut LiveState, why: Unsent) {
+        let dropped: Vec<Queued> = st.queued.drain(..).collect();
+        st.unsent.extend(dropped.into_iter().map(|q| (q, why)));
+    }
+
+    /// Writes the messages that never reached the agent: the owner's words
+    /// as their own row, then the note that says why and what to do.
+    fn write_unsent(&self) {
+        let unsent = std::mem::take(&mut self.shared.lock().unsent);
+        for (message, why) in unsent {
+            if let Some((shown, extra)) = &message.row {
+                let _ = self.store.chat_add_message(&self.id, "user", shown, extra);
+            }
+            let extra = if why == Unsent::Shutdown {
+                json!({"restart": true, "unsent": true})
+            } else {
+                json!({"unsent": true})
+            };
+            let _ = self
+                .store
+                .chat_add_message(&self.id, "note", why.line(), &extra);
+        }
+    }
+
+    /// The owner finishes the conversation. With a worker active the turn
+    /// in flight stops and ends closed (recording it); otherwise the
+    /// runtime stands closed at once and the caller records it. The session
+    /// stays open either way: a new message reopens the conversation where
+    /// it was.
+    fn finish_by_owner(&self) -> bool {
+        let mut st = self.shared.lock();
+        Self::drop_queue(&mut st, Unsent::Closed);
+        if st.worker {
+            if st.finish.is_none() {
+                st.finish = Some(Finished::Owner);
+            }
+            if let Some(c) = &st.cancel {
+                c.cancel();
+            }
+            self.shared.bump(&mut st);
+            false
+        } else {
+            st.status = Status::Closed;
+            st.note = Finished::Owner.note();
+            self.shared.bump(&mut st);
+            true
+        }
+    }
+
+    /// Writes a finish to the store: its transcript line, then the row.
+    fn record_finished(&self, f: &Finished) {
+        let _ =
+            self.store
+                .chat_add_message(&self.id, "note", &f.line(), &json!({"closed": f.by()}));
+        let _ = self.store.chat_set_status(&self.id, "closed", &f.note());
+        self.write_unsent();
     }
 
     /// Ends the agent's session; the worker, if any, winds down after the
@@ -1148,7 +1400,12 @@ impl Runtime {
             let mut st = self.shared.lock();
             st.closed = true;
             st.shutdown |= shutdown;
-            st.queued.clear();
+            let why = if st.shutdown {
+                Unsent::Shutdown
+            } else {
+                Unsent::Closed
+            };
+            Self::drop_queue(&mut st, why);
             if let Some(c) = &st.cancel {
                 c.cancel();
             }
@@ -1263,16 +1520,18 @@ impl Manager {
         text: &str,
         by: &str,
     ) -> Result<Row> {
-        self.create_with(title, project, "", auto_approve, text, by)
+        self.create_with(title, project, "", "", auto_approve, text, by)
     }
 
-    /// [`Manager::create`] on a chosen model (empty: the provider's
-    /// default).
+    /// [`Manager::create`] on a chosen model and reasoning effort (empty:
+    /// the provider's defaults).
+    #[allow(clippy::too_many_arguments)]
     pub fn create_with(
         &self,
         title: &str,
         project: &str,
         model: &str,
+        reasoning: &str,
         auto_approve: bool,
         text: &str,
         by: &str,
@@ -1282,6 +1541,7 @@ impl Manager {
             bail!("the first message is empty");
         }
         let model = model_id(model)?;
+        let reasoning = reasoning_effort(reasoning)?;
         if !project.is_empty() {
             let p = self
                 .store
@@ -1301,6 +1561,7 @@ impl Manager {
             title,
             project: project.to_string(),
             model,
+            reasoning,
             status: "idle".into(),
             auto_approve,
             created_by: by.to_string(),
@@ -1362,9 +1623,12 @@ impl Manager {
         } else {
             json!({"attachments": files})
         };
-        self.store.chat_add_message(id, "user", &text, &extra)?;
         let rt = self.runtime(&row);
-        rt.enqueue(message_with_attachments(&text, &files));
+        rt.enqueue(Queued {
+            text: message_with_attachments(&text, &files),
+            images: Vec::new(),
+            row: Some((text, extra)),
+        });
         Ok(())
     }
 
@@ -1444,11 +1708,11 @@ impl Manager {
             (true, false) => json!({"images": stored}),
             (false, false) => json!({"attachments": files, "images": stored}),
         };
-        self.store.chat_add_message(id, "user", &text, &extra)?;
         let rt = self.runtime(&row);
         rt.enqueue(Queued {
             text: message_with_attachments(&text, &files),
             images: shown,
+            row: Some((text, extra)),
         });
         Ok(())
     }
@@ -1537,6 +1801,20 @@ impl Manager {
         self.store.chat_set_model(id, &model)
     }
 
+    /// The reasoning effort the conversation's next turn runs with
+    /// (`minimal` to `xhigh`; empty or `default` for the provider's own).
+    /// Like [`Manager::set_model`], a turn in flight finishes as it
+    /// started; the session then restarts with the conversation carried
+    /// over.
+    pub fn set_reasoning(&self, id: &str, reasoning: &str) -> Result<()> {
+        let reasoning = reasoning_effort(reasoning)?;
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        self.store.chat_set_reasoning(id, &reasoning)
+    }
+
     /// The owner's answer to the question the agent asked.
     pub fn answer(&self, id: &str, text: &str) -> Result<()> {
         let text = text.trim();
@@ -1604,6 +1882,35 @@ impl Manager {
             let _ = rt.close();
         }
         self.store.chat_set_status(id, "archived", "")
+    }
+
+    /// Finishes the conversation from the owner's side: a running turn
+    /// stops, what waited behind it is noted as unsent, and the row stands
+    /// closed until a new message reopens it. The session and the branch
+    /// stay as they are.
+    pub fn close(&self, id: &str) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        if row.status == "closed" {
+            return Ok(());
+        }
+        let record_now = match self.running(id) {
+            Some(rt) => rt.finish_by_owner(),
+            None => true,
+        };
+        if record_now {
+            self.store.chat_add_message(
+                id,
+                "note",
+                &Finished::Owner.line(),
+                &json!({"closed": "owner"}),
+            )?;
+            self.store
+                .chat_set_status(id, "closed", &Finished::Owner.note())?;
+        }
+        Ok(())
     }
 
     /// Moves the conversation into a project's worktree. A running turn
@@ -2066,6 +2373,23 @@ fn model_id(model: &str) -> Result<String> {
     Ok(model.to_string())
 }
 
+/// A reasoning effort the owner may pick for a conversation: one of
+/// [`pulse_provider::REASONING_EFFORTS`], or empty (`default` reads as
+/// empty) for the provider's own default.
+fn reasoning_effort(effort: &str) -> Result<String> {
+    let effort = effort.trim();
+    if effort.is_empty() || effort == "default" {
+        return Ok(String::new());
+    }
+    if !pulse_provider::REASONING_EFFORTS.contains(&effort) {
+        bail!(
+            "Invalid reasoning: {effort:?} is not an effort (one of {}, or default)",
+            pulse_provider::REASONING_EFFORTS.join(", ")
+        );
+    }
+    Ok(effort.to_string())
+}
+
 /// The message the agent gets: the owner's words, then where the files
 /// they attached are.
 fn message_with_attachments(text: &str, files: &[Attachment]) -> String {
@@ -2282,7 +2606,8 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
     b.push_str(&format!(
         "You are working with the owner of PULSE in a conversation from the hub (conversation {}). \
          Keep going until the request is done; use the question tool only for a decision that is the owner's. \
-         Report progress in short plain words, and say what you did when you finish.\n",
+         Report progress in short plain words, and say what you did when you finish. \
+         When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the conversation is marked finished, and the owner's next message reopens it.\n",
         row.id
     ));
     b.push_str(&format!(
@@ -2550,12 +2875,12 @@ mod tests {
         let m =
             Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
         assert!(
-            m.create_with("", "", "bad model!", true, "hi", "owner")
+            m.create_with("", "", "bad model!", "", true, "hi", "owner")
                 .is_err(),
             "a model id has no spaces or punctuation beyond . _ - : /"
         );
         let row = m
-            .create_with("", "", "fake-1", true, "say hello please", "owner")
+            .create_with("", "", "fake-1", "", true, "say hello please", "owner")
             .expect("create");
         assert_eq!(row.model, "fake-1");
         let row = wait_idle(&m, &row.id);
@@ -2641,7 +2966,7 @@ mod tests {
         let m =
             Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
         let row = m
-            .create_with("", "", "fake", true, "watch out", "owner")
+            .create_with("", "", "fake", "", true, "watch out", "owner")
             .expect("create");
         let row = wait_idle(&m, &row.id);
         let png = b"\x89PNG fake bytes".to_vec();
@@ -3502,6 +3827,299 @@ mod tests {
         let last = s.chat_messages(&crashed.id, 0).unwrap().pop().unwrap();
         assert_eq!(last.content, CUT_RUNNING_LINE);
         assert!(next.running(&crashed.id).is_none(), "left to the owner");
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    fn wait_status(m: &Manager, id: &str, want: &[&str]) -> Row {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            if want.contains(&live.status.as_str())
+                && (live.status != "idle" || live.queued.is_empty())
+            {
+                return row;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the conversation never reached {want:?}");
+    }
+
+    fn transcript(s: &Store, id: &str) -> Vec<(String, String)> {
+        s.chat_messages(id, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.role, m.content))
+            .collect()
+    }
+
+    /// A message typed while a turn runs waits behind it, shown as queued,
+    /// and lands in the transcript after that turn's reply - never between
+    /// the owner's earlier message and the answer to it.
+    #[test]
+    fn a_message_sent_during_a_turn_lands_after_that_turns_reply() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        m.send(&id, "three").expect("send");
+        let live = m.live(&m.row(&id).unwrap());
+        assert_eq!(live.queued, vec!["three".to_string()]);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+            ],
+            "the queued message is not in the transcript yet"
+        );
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+                ("user".to_string(), "three".to_string()),
+                ("assistant".to_string(), "Third.".to_string()),
+            ]
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Stop drops what waited behind the turn: the owner's words stay in
+    /// the transcript after the stop note, with a note that they never
+    /// reached the agent.
+    #[test]
+    fn stop_notes_the_messages_that_waited_behind_the_turn() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(300));
+        m.send(&id, "three").expect("send");
+        m.cancel(&id).expect("cancel");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle");
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let tail: Vec<(&str, &str)> = msgs[3..]
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("note", "You stopped this turn."),
+                ("user", "three"),
+                ("note", UNSENT_STOPPED_LINE),
+            ],
+            "{msgs:#?}"
+        );
+        assert_eq!(msgs.last().unwrap().extra["unsent"], true);
+        assert!(m.live(&row).queued.is_empty());
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// The agent's finish tool closes the conversation after its closing
+    /// reply; the owner's next message reopens it.
+    #[test]
+    fn the_finish_tool_closes_the_conversation_and_a_message_reopens_it() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "finish", "args": {"summary": "The login works again."}},
+                {"content": "All done."},
+                {"content": "Reopened."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "fix the login", "owner")
+            .expect("create");
+        let id = row.id.clone();
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, "The login works again.");
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "note"], "{msgs:#?}");
+        assert_eq!(msgs[1].content, "All done.");
+        assert_eq!(
+            msgs[2].content,
+            format!("{FINISHED_BY_AGENT_LINE} The login works again.")
+        );
+        assert_eq!(msgs[2].extra["closed"], "agent");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.content == "finish: The login works again."),
+            "{steps:#?}"
+        );
+        // Closed is not archived: a message runs and reopens it.
+        m.send(&id, "one more").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle");
+        assert_eq!(row.note, "");
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.content, "Reopened.");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// The owner closes: an idle conversation at once, a working one by
+    /// stopping its turn; what waited behind is noted as unsent. The effort
+    /// the owner picks restarts the session like a model change and reaches
+    /// the agent.
+    #[test]
+    fn the_owner_closes_idle_and_working_conversations_and_picks_the_effort() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert!(
+            m.create_with("", "", "", "extreme", true, "hi", "owner")
+                .is_err(),
+            "an effort outside the list is refused"
+        );
+        let row = m
+            .create_with("", "", "", "default", true, "one", "owner")
+            .expect("create");
+        let id = row.id.clone();
+        assert_eq!(row.reasoning, "", "default reads as the provider's own");
+        wait_idle(&m, &id);
+        // Idle: closed at once, with the owner's line.
+        m.close(&id).expect("close");
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, CLOSED_BY_OWNER_NOTE);
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.role, "note");
+        assert_eq!(last.content, CLOSED_BY_OWNER_LINE);
+        assert_eq!(last.extra["closed"], "owner");
+        let before = s.chat_messages(&id, 0).unwrap().len();
+        m.close(&id).expect("close again");
+        assert_eq!(
+            s.chat_messages(&id, 0).unwrap().len(),
+            before,
+            "closing twice adds nothing"
+        );
+        // A new effort restarts the session on the next turn and the agent
+        // runs with it; the message reopens the conversation. Every session
+        // plays the script from its start, so the reply comes at once.
+        let first_session = row.session_id.clone();
+        assert!(m.set_reasoning(&id, "extreme").is_err());
+        m.set_reasoning(&id, "high").expect("reasoning");
+        assert_eq!(m.row(&id).unwrap().reasoning, "high");
+        m.send(&id, "two").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle", "reopened");
+        assert_eq!(row.note, "");
+        assert_ne!(row.session_id, first_session, "the session restarted");
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            let started = guard.as_ref().unwrap();
+            assert_eq!(started.reasoning, "high");
+            let env = started.agent.lock().unwrap().environment();
+            assert!(
+                env.iter().any(|l| l.contains("; reasoning high")),
+                "{env:#?}"
+            );
+        }
+        assert_eq!(
+            transcript(&s, &id)[before..],
+            [
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+            ]
+        );
+        // Working: the owner's close stops the turn; the message behind it
+        // is noted as unsent, and the conversation stands closed.
+        m.send(&id, "three").expect("send");
+        for _ in 0..400 {
+            if s.chat_get(&id).unwrap().unwrap().status == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        thread::sleep(Duration::from_millis(300));
+        m.send(&id, "four").expect("send");
+        m.close(&id).expect("close");
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.note, CLOSED_BY_OWNER_NOTE);
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let tail: Vec<(&str, &str)> = msgs[before + 2..]
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("user", "three"),
+                (
+                    "note",
+                    "The turn stopped here: you finished the conversation."
+                ),
+                ("note", CLOSED_BY_OWNER_LINE),
+                ("user", "four"),
+                ("note", UNSENT_CLOSED_LINE),
+            ],
+            "{msgs:#?}"
+        );
+        assert!(m.live(&row).queued.is_empty());
+        m.archive(&id).expect("archive");
+        assert!(
+            m.close(&id).is_err(),
+            "an archived conversation is not closed"
+        );
+        thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 }

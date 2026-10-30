@@ -41,5 +41,6 @@ pub const RECORDS_DDL: &[&str] = &[
 /// Bumped when a statement above changes shape; `Store::widen_record_kinds`
 /// rebuilds an older `records` table whose `kind` CHECK lacks the agent-pack
 /// kinds (role, agent, brief, kind), which the list must keep in step with
-/// `RECORD_KINDS`.
-pub const RECORDS_VERSION: &str = "6";
+/// `RECORD_KINDS`. 7: `Store::widen_chat_statuses` rebuilds a
+/// `conversations` table whose status CHECK lacks `closed`.
+pub const RECORDS_VERSION: &str = "7";

@@ -10,6 +10,7 @@
       "session_id": "run-20261018-chat-d4e5f6-1",
       "provider": "copilot",
       "model": "",
+      "reasoning": "",
       "auto_approve": true,
       "created_by": "owner",
       "created_at": "2026-10-18T10:10:00Z",
@@ -50,6 +51,7 @@
       "session_id": "run-20261018-chat-a1b2c3-2",
       "provider": "copilot",
       "model": "claude-sonnet-4.5",
+      "reasoning": "",
       "auto_approve": true,
       "created_by": "owner",
       "created_at": "2026-10-18T09:15:00Z",
@@ -69,6 +71,38 @@
         "auto_approve": true,
         "version": 7,
         "session_id": "run-20261018-chat-a1b2c3-2"
+      }
+    },
+    {
+      "id": "chat-20261017T143000-f7a8b9",
+      "title": "Fix the flaky login test",
+      "project": "demo-app",
+      "cwd": "/home/owner/.pulse/work/chat/chat-20261017T143000-f7a8b9/tree",
+      "branch": "pulse/chat-f7a8b9",
+      "status": "closed",
+      "session_id": "run-20261017-chat-f7a8b9-1",
+      "provider": "copilot",
+      "model": "",
+      "reasoning": "high",
+      "auto_approve": true,
+      "created_by": "owner",
+      "created_at": "2026-10-17T14:30:00Z",
+      "updated_at": "2026-10-17T15:02:10Z",
+      "last_at": "2026-10-17T15:02:10Z",
+      "turns": 2,
+      "cost": 0.8,
+      "note": "The login test waits for the session cookie now; green on three runs.",
+      "live": {
+        "status": "closed",
+        "note": "The login test waits for the session cookie now; green on three runs.",
+        "stream": "",
+        "pending": null,
+        "queued": [],
+        "turn_from": 0,
+        "turn_started_at": "",
+        "auto_approve": true,
+        "version": 5,
+        "session_id": "run-20261017-chat-f7a8b9-1"
       }
     }
   ]

@@ -131,6 +131,12 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
     // empty measure_model changes no hash and a pinned one survives a
     // worker_model change.
     push_kv(&mut canonical, "setting.worker_model", &s.measure_model())?;
+    // The measurement effort joins the key only once it says something: a
+    // store that never set it keeps every hash it has.
+    let reasoning = s.measure_reasoning();
+    if !reasoning.is_empty() && reasoning != "default" {
+        push_kv(&mut canonical, "setting.measure_reasoning", &reasoning)?;
+    }
     for key in BASELINE_CACHE_SETTINGS {
         push_kv(
             &mut canonical,

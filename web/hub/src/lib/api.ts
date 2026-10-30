@@ -1344,7 +1344,7 @@ export interface HarnessStep {
 // working in its own worktree of a project (or deciding the project first).
 // `live` is what the hub holds in memory: the running turn's streamed text,
 // what the agent waits for, and messages queued behind the turn.
-export type ConversationStatus = "idle" | "running" | "waiting" | "ended" | "archived";
+export type ConversationStatus = "idle" | "running" | "waiting" | "ended" | "closed" | "archived";
 export type ConversationRole = "user" | "assistant" | "question" | "answer" | "approval" | "note";
 
 export interface ChatPendingQuestion {
@@ -1387,6 +1387,8 @@ export interface Conversation {
   session_id: string;
   provider: string;
   model: string;
+  // A reasoning effort from `REASONING_EFFORTS`; empty for the harness setting.
+  reasoning: string;
   auto_approve: boolean;
   created_by: string;
   created_at: string;
@@ -1479,6 +1481,8 @@ export interface ChatCreateInput {
   auto_approve?: boolean;
   // A model id from `harness/models`; empty for the provider's default.
   model?: string;
+  // A reasoning effort; empty for the harness setting.
+  reasoning?: string;
 }
 
 export function chatArtifactHref(id: string, name: string): string {
@@ -2649,9 +2653,11 @@ export const writes = {
   chatCreate: (input: ChatCreateInput) => post<{ conversation: Conversation }>("chat", input),
   chatSend: (id: string, text: string, attachments: string[] = []) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/message", attachments.length ? { text, attachments } : { text }),
   chatModel: (id: string, model: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/model", { model }),
+  chatReasoning: (id: string, reasoning: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/reasoning", { reasoning }),
   chatAnswer: (id: string, text: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/answer", { text }),
   chatApprove: (id: string, decision: "allow" | "always" | "deny", reason = "") => post<{ conversation: Conversation }>("chat/" + enc(id) + "/approve", reason ? { decision, reason } : { decision }),
   chatCancel: (id: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/cancel", {}),
+  chatClose: (id: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/close", {}),
   chatArchive: (id: string) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/archive", {}),
   chatAuto: (id: string, on: boolean) => post<{ conversation: Conversation }>("chat/" + enc(id) + "/auto", { on }),
   chatAttach: (id: string, project: string) => post<{ conversation: Conversation; attached: { cwd: string; branch: string; base: string; created: boolean } }>("chat/" + enc(id) + "/attach", { project }),

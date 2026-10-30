@@ -1735,6 +1735,26 @@ printf 1
             "measure_model drives the measurement, not worker_model: {pinned:?}"
         );
         assert!(!pinned.contains(&"fable".to_string()));
+        assert!(!pinned.contains(&"--reasoning".to_string()));
+        s.set_setting("human", "harness.reasoning", "high").unwrap();
+        let effort = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert!(
+            effort.windows(2).any(|w| w == ["--reasoning", "high"]),
+            "the measurement asks the effort the workers get: {effort:?}"
+        );
+        s.set_setting("human", "measure_reasoning", "low").unwrap();
+        let effort = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert!(
+            effort.windows(2).any(|w| w == ["--reasoning", "low"]),
+            "measure_reasoning drives the measurement: {effort:?}"
+        );
+        s.set_setting("human", "measure_reasoning", "default")
+            .unwrap();
+        let effort = crate::process::measurement_argv(&s, "/bin/pulse", request).unwrap();
+        assert!(!effort.contains(&"--reasoning".to_string()), "{effort:?}");
+        s.set_setting("human", "measure_reasoning", "").unwrap();
+        s.set_setting("human", "harness.reasoning", "default")
+            .unwrap();
         s.set_setting("human", "measure_model", "").unwrap();
         assert!(
             crate::process::measurement_argv(&s, "", request).is_err(),

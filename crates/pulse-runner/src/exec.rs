@@ -1242,7 +1242,7 @@ pub(crate) fn worker_command_as(
     if compact_at != "70" {
         cmd.extend(["--compact-at".into(), compact_at]);
     }
-    let reasoning = s.setting("harness.reasoning", "default");
+    let reasoning = s.run_reasoning_class(kind, model_class);
     if !reasoning.is_empty() && reasoning != "default" {
         cmd.extend(["--reasoning".into(), reasoning]);
     }
@@ -2251,6 +2251,23 @@ mod tests {
             cmd.windows(2).any(|w| w == ["--reasoning", "high"]),
             "{cmd:?}"
         );
+        // A role's own effort wins over harness.reasoning for its kinds.
+        set_setting(&s, "light_reasoning", "low");
+        let (light, _) = worker_command(&s, "lead", "brief text", "/tmp/clone", "", true);
+        assert!(
+            light.windows(2).any(|w| w == ["--reasoning", "low"]),
+            "{light:?}"
+        );
+        let (task, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
+        assert!(
+            task.windows(2).any(|w| w == ["--reasoning", "high"]),
+            "{task:?}"
+        );
+        set_setting(&s, "worker_reasoning", "default");
+        let (task, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
+        assert!(!task.contains(&"--reasoning".to_string()), "{task:?}");
+        set_setting(&s, "worker_reasoning", "");
+        set_setting(&s, "light_reasoning", "");
         for flag in [
             "--no-skills",
             "--no-hooks",

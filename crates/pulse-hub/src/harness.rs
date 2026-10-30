@@ -911,6 +911,9 @@ impl Handler {
                 "light_model",
                 "measure_model",
                 "ask.model",
+                "worker_reasoning",
+                "light_reasoning",
+                "measure_reasoning",
             ]
             .into_iter()
             .map(str::to_string),
