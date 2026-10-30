@@ -1,4 +1,4 @@
 :HL["/_next/static/chunks/0h6ovmo2_mlar.css","style"]
 :HL["/fonts/atkinson-next-latin.woff2","font",{"crossOrigin":"anonymous","type":"font/woff2"}]
 1:[["children",{"s":"__PAGE__","h":128}]]
-0:{"b":"fTlaYra6YyrqUP6Yh3Kgc","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
+0:{"b":"1uJ1l_JhRFturzGcog9jT","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
