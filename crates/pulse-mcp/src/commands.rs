@@ -105,7 +105,7 @@ struct SkillsOut<'a> {
 pub fn register() {
     REGISTER.call_once(|| {
         pulse_cli::register(Command { name:"mcp".into(), group:"agents".into(), summary:"MCP servers agents can call: add, list, show, update, enable, disable, login, logout, connect, tools, call, resources, read".into(), usage:"pulse mcp add --name N --transport stdio|http|sse (--command CMD [--arg A]... | --url U) [--auth none|bearer|basic|header|query|env|oauth] [--auth-header NAME] [--secret REF] [--env K=V]... [--project P] [--note TEXT]\npulse mcp list [--project P] [--json]\npulse mcp show N|MCP-NNN [--json]\npulse mcp update N|MCP-NNN [--name N] [--transport T] [--command CMD] [--arg A]... [--url U] [--auth A] [--auth-header NAME] [--secret REF] [--env K=V]... [--note TEXT] [--project P]\npulse mcp enable|disable N|MCP-NNN\npulse mcp login N [--client-id ID [--client-secret REF]] [--flow code|device] [--scope S] [--redirect-port N] [--no-browser] [--json]   (auth oauth: sign in once, in a browser or with a code)\npulse mcp logout N [--json]               (auth oauth: revoke and forget the tokens)\npulse mcp connect N [--json]              (initialize + tools/list; records the check)\npulse mcp tools N [--json]\npulse mcp call N TOOL [--args JSON | stdin] [--json]   (exit 1 when the tool reports an error)\npulse mcp resources N [--json]\npulse mcp read N URI [--json]\n\nThe secret is a pulse_cred reference, never the value: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. For basic auth it resolves to user:password. Env values may be references too.\n\nauth oauth (http, sse) takes no secret: pulse mcp login N finds the server's authorization server, registers PULSE as a client when the server allows it, signs in through your browser (OAuth 2.1, PKCE) and keeps the tokens in ~/.pulse/secrets/mcp-oauth/, refreshing them itself. A provider that registers no clients (GitHub) signs in through a public client PULSE carries - the GitHub CLI's app, the one github-models uses - with the device flow: PULSE shows a code to type on github.com, where the page asks you to authorize GitHub CLI; nothing to register. --client-id and --client-secret are for a client you registered with the provider by hand instead; --redirect-port fixes the loopback port such a client was registered with. When the provider offers the device flow (RFC 8628) your client needs no secret and no port (--flow device, the default for such a client). The hub's Connections page runs the same sign-in from the browser.\n\nA server is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it. A project's own server replaces a shared one with the same name.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_mcp, flags:Some(mcp_flags) });
-        pulse_cli::register(Command { name:"skill".into(), group:"agents".into(), summary:"skills shared between agents - a setup, a debugging recipe, a check: add, list, show, update, enable, disable".into(), usage:"pulse skill add --name N --description D (--file F | --body TEXT | stdin) [--project P]\npulse skill list [--project P] [--json]\npulse skill show N|SKILL-NNN [--json]      (prints the body)\npulse skill update N|SKILL-NNN [--name N] [--description D] [--file F | --body TEXT | stdin] [--project P]\npulse skill enable|disable N|SKILL-NNN\n\nA skill is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_skill, flags:Some(skill_flags) });
+        pulse_cli::register(Command { name:"skill".into(), group:"agents".into(), summary:"skills shared between agents - a setup, a debugging recipe, a check: add, list, show, update, enable, disable".into(), usage:"pulse skill add --name N --description D (--file F | --body TEXT | stdin) [--project P]\npulse skill list [--project P] [--json]\npulse skill show N|SKILL-NNN [--json]      (prints the body)\npulse skill update N|SKILL-NNN [--name N] [--description D] [--file F | --body TEXT | stdin] [--project P]\npulse skill enable|disable N|SKILL-NNN\n\nA skill is for every project unless --project P names the one project that may use it; the project of your shell (PULSE_PROJECT) does not narrow it. A name is unique as one project sees it (its own skills plus the shared ones), so two projects may each keep a `release`; by name, show and update look from your shell's project first and ask for the id when several projects use it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_skill, flags:Some(skill_flags) });
     });
 }
 
@@ -1063,7 +1063,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         "show" => {
             need("skill", rest, 1, "a skill name or id")?;
             let s = store(c)?;
-            let k = s.skill(&rest[0])?;
+            let k = s.skill_for(&c.project, &rest[0])?;
             s.bump_skill_uses(&k.id)?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &SkillOut { skill: &k });
@@ -1073,7 +1073,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         "update" => {
             need("skill", rest, 1, "a skill name or id")?;
             let s = store(c)?;
-            let k = s.skill(&rest[0])?;
+            let k = s.skill_for(&c.project, &rest[0])?;
             let body = read_body(&fs.get_string("body"), &fs.get_string("file"))?;
             let patch = SkillPatch {
                 name: fs.is_set("name").then(|| fs.get_string("name")),
@@ -1102,7 +1102,7 @@ pub fn run_skill(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         "enable" | "disable" => {
             need("skill", rest, 1, "a skill name or id")?;
             let s = store(c)?;
-            let k = s.skill(&rest[0])?;
+            let k = s.skill_for(&c.project, &rest[0])?;
             let status = if sub == "enable" {
                 "enabled"
             } else {

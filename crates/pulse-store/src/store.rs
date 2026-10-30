@@ -976,8 +976,14 @@ pub const SUPERSEDED_SHAPES: &[(&str, &str)] = &[("mcp_servers", "auth")];
 /// place, so `ensure_records` moves such a table aside, lets the additive DDL
 /// create the current shape (its triggers too), copies the rows over by
 /// column name and drops the old table. `mcp_servers`: `auth` gained
-/// `oauth`; `hooks`: `kind` gained `job`.
-pub const WIDENED_CHECKS: &[(&str, &str)] = &[("mcp_servers", "'oauth'"), ("hooks", "'job'")];
+/// `oauth`; `hooks`: `kind` gained `job`; `skills`: `name` is unique per
+/// project, not machine-wide, so two repositories may each keep a skill of
+/// the same name.
+pub const WIDENED_CHECKS: &[(&str, &str)] = &[
+    ("mcp_servers", "'oauth'"),
+    ("hooks", "'job'"),
+    ("skills", "UNIQUE(project, name)"),
+];
 
 fn retired_settings_present(conn: &Connection) -> rusqlite::Result<bool> {
     let marks = vec!["?"; crate::settings::RETIRED_SETTINGS.len()].join(", ");
@@ -2347,6 +2353,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1, "the widening ran again on a current shape");
+    }
+
+    /// A store from when a skill's name was unique machine-wide is rebuilt
+    /// on open: the rows survive and a second project may keep a skill of
+    /// the same name.
+    #[test]
+    fn machine_wide_skill_names_are_widened_to_per_project_on_open() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_env("PULSE_JOB", "");
+        let home = tempfile::tempdir().unwrap();
+        let db = Connection::open(home.path().join(STORE_NAME)).unwrap();
+        configure_conn(&db, false).unwrap();
+        init_schema(&db, "2026-10-30T00:00:00Z").unwrap();
+        let current = MCP_DDL
+            .iter()
+            .find(|d| d.contains("EXISTS skills"))
+            .unwrap();
+        let narrow = current
+            .replace("name TEXT NOT NULL,", "name TEXT NOT NULL UNIQUE,")
+            .replace("DEFAULT '',    -- '' when", "DEFAULT ''     -- '' when")
+            .replace("  UNIQUE(project, name)\n", "");
+        assert!(!narrow.contains("UNIQUE(project, name)"), "{narrow}");
+        assert!(narrow.contains("NOT NULL UNIQUE"), "{narrow}");
+        let insert = "INSERT INTO skills (id, name, project, description, body, created_by, created_at, updated_at, origin) VALUES (?, 'office-hours', ?, 'd', 'b', 'daemon', '2026-10-30T00:00:00Z', '2026-10-30T00:00:00Z', 'repo:.github/skills/office-hours/SKILL.md')";
+        db.execute_batch(&narrow).unwrap();
+        db.execute(insert, ["SKILL-001", "amistio"]).unwrap();
+        assert!(db.execute(insert, ["SKILL-002", "kp-and-fsp"]).is_err());
+        drop(db);
+        let s = open_temp(Options {
+            home: home.path().display().to_string(),
+            ..Options::default()
+        });
+        let conn = s.conn().unwrap();
+        assert!(table_sql_has(&conn, "skills", "UNIQUE(project, name)").unwrap());
+        assert!(!table_present(&conn, "skills_widening").unwrap());
+        let (project, origin): (String, String) = conn
+            .query_row(
+                "SELECT project, origin FROM skills WHERE id = 'SKILL-001'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (project.as_str(), origin.as_str()),
+            ("amistio", "repo:.github/skills/office-hours/SKILL.md")
+        );
+        conn.execute(insert, ["SKILL-002", "kp-and-fsp"]).unwrap();
+        assert!(
+            conn.execute(insert, ["SKILL-003", "kp-and-fsp"]).is_err(),
+            "one name per project still holds"
+        );
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'schema.widened' AND subject = 'skills' AND detail = 'rows=1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(s.additive_complete());
     }
 
     /// A store from before hooks could queue jobs has its `kind` CHECK

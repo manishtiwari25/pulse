@@ -3986,6 +3986,82 @@ fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reporte
 }
 
 #[test]
+fn two_projects_each_keep_a_repository_skill_of_the_same_name() {
+    // Repositories copy skill folders from each other: the first live sync
+    // met `office-hours` in two of them and refused the second.
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let demo = script_repo(s);
+    let other = Path::new(&s.home).join("other-repo");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.display().to_string();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "user.name", "t"],
+    ] {
+        let mut full = vec!["-C", other.as_str()];
+        full.extend_from_slice(&args);
+        pulse_testutil::git(&full).unwrap();
+    }
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO projects (slug, name, path, default_branch, added_at) VALUES ('other', 'Other', ?, 'main', ?)",
+            params![other, s.now()],
+        )
+        .unwrap();
+    commit_files(
+        &demo,
+        &[(".pulse/skills/release/SKILL.md", SKILL_RELEASE)],
+        "v1",
+    );
+    commit_files(
+        &other,
+        &[(
+            ".github/skills/release/SKILL.md",
+            "---\nname: release\ndescription: The other project's release\n---\n# Other\n",
+        )],
+        "v1",
+    );
+    let a = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    let b = manifest::sync(s, "other", "daemon", false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (a.skills.added, b.skills.added),
+        (1, 1),
+        "{:?} {:?}",
+        a.problems,
+        b.problems
+    );
+    assert!(a.problems.is_empty() && b.problems.is_empty());
+    let mine = s.skill_for("demo", "release").unwrap();
+    let theirs = s.skill_for("other", "release").unwrap();
+    assert_ne!(mine.id, theirs.id);
+    assert!(mine.body.contains("1. Tag."));
+    assert_eq!(theirs.body.trim(), "# Other");
+    assert_eq!(
+        s.skills_for("demo")
+            .unwrap()
+            .iter()
+            .filter(|k| k.name == "release")
+            .count(),
+        1
+    );
+    // A second sync of either keeps its own and leaves the other alone.
+    let again = manifest::sync(s, "other", "daemon", true).unwrap().unwrap();
+    assert_eq!(
+        (again.skills.kept, again.skills.added),
+        (1, 0),
+        "{}",
+        again.line()
+    );
+    assert_eq!(s.skill_for("demo", "release").unwrap(), mine);
+}
+
+#[test]
 fn manifest_sync_skips_a_project_without_a_checkout() {
     let _serial = crate::test_helpers::serial();
     let t = new_store();

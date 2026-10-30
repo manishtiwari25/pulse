@@ -855,7 +855,7 @@ fn check_skill(s: &pulse_store::Store, project: &str, skill: &str) -> Result<()>
     if known.iter().any(|k| k.name == skill) {
         return Ok(());
     }
-    let hint = if let Some(k) = s.skill_named(skill)? {
+    let hint = if let Some(k) = s.skill_in(project, skill)?.or(s.skill_named(skill)?) {
         if k.status != "enabled" {
             format!("it is disabled: pulse skill enable {}", k.id)
         } else {

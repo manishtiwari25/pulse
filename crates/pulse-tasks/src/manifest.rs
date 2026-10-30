@@ -926,7 +926,7 @@ fn sync_skills(
             }
             continue;
         }
-        if let Some(other) = s.skill_named(&k.name)? {
+        if let Some(other) = s.skill_in(slug, &k.name)? {
             problems.push(format!(
                 "skill {}: {} already uses the name {} ({}); rename one of them",
                 k.path,

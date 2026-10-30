@@ -138,6 +138,25 @@ fn validate(s: &Store, k: &Skill) -> Result<()> {
     Ok(())
 }
 
+/// The id of another skill that would share `name` with one in `project`:
+/// a skill shared with every project collides with any row of that name, a
+/// project's own with the shared one and its own. `except` is the row being
+/// changed.
+fn name_taken(
+    conn: &rusqlite::Connection,
+    name: &str,
+    project: &str,
+    except: &str,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM skills WHERE name = ?1 AND id <> ?3 AND (?2 = '' OR project IN ('', ?2)) ORDER BY project <> '', project LIMIT 1",
+            params![name, project, except],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 impl Store {
     pub fn add_skill(&self, actor: &str, input: SkillInput) -> Result<Skill> {
         let now = self.now();
@@ -156,15 +175,15 @@ impl Store {
         };
         validate(self, &k)?;
         let tx = self.begin()?;
-        let taken: Option<String> = tx
-            .query_row("SELECT id FROM skills WHERE name = ?", [&k.name], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if let Some(id) = taken {
+        if let Some(id) = name_taken(&tx, &k.name, &k.project, "")? {
             return Err(input_err(format!(
-                "Invalid name {}: {id} already uses it; pick another or update that one (pulse skill update {})",
-                k.name, k.name
+                "Invalid name {}: {id} already uses it{}; pick another or update that one (pulse skill update {id})",
+                k.name,
+                if k.project.is_empty() {
+                    String::new()
+                } else {
+                    format!(" where {} looks", k.project)
+                }
             )));
         }
         let id = next_id(&tx, "skills", "SKILL-")?;
@@ -261,17 +280,15 @@ impl Store {
         }
         k.updated_at = self.now();
         let tx = self.begin()?;
-        let taken: Option<String> = tx
-            .query_row(
-                "SELECT id FROM skills WHERE name = ? AND id <> ?",
-                params![k.name, k.id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(other) = taken {
+        if let Some(other) = name_taken(&tx, &k.name, &k.project, &k.id)? {
             return Err(input_err(format!(
-                "Invalid name {}: {other} already uses it; pick another",
-                k.name
+                "Invalid name {}: {other} already uses it{}; pick another",
+                k.name,
+                if k.project.is_empty() {
+                    String::new()
+                } else {
+                    format!(" where {} looks", k.project)
+                }
             )));
         }
         tx.execute(
@@ -341,24 +358,76 @@ impl Store {
         .ok_or_else(|| input_err(format!("No skill {id}")))
     }
 
-    /// Finds a skill by id or name (names are unique across projects).
+    /// Finds a skill by id or name. A name is unique in a project's view,
+    /// not machine-wide: two projects may each keep a `release`. Without a
+    /// project to look from, a name several projects use is an error that
+    /// lists their ids.
     pub fn skill(&self, key: &str) -> Result<Skill> {
+        self.skill_for("", key)
+    }
+
+    /// Finds a skill by id, or by name as `project` sees it: its own skill
+    /// of that name first, then the one shared with every project, then -
+    /// when `project` is empty or has none - the only other project's.
+    pub fn skill_for(&self, project: &str, key: &str) -> Result<Skill> {
         let key = key.trim();
         if key.starts_with("SKILL-") {
             return self.skill_by_id(key);
         }
-        self.skill_named(key)?
-            .ok_or_else(|| input_err(format!("No skill named {key}; see pulse skill list")))
+        let project = project.trim();
+        let rows = self.skills_named(key)?;
+        if let Some(k) = rows
+            .iter()
+            .find(|k| !project.is_empty() && k.project == project)
+            .or_else(|| rows.iter().find(|k| k.project.is_empty()))
+        {
+            return Ok(k.clone());
+        }
+        match rows.len() {
+            0 => Err(input_err(format!(
+                "No skill named {key}; see pulse skill list"
+            ))),
+            1 => Ok(rows.into_iter().next().expect("one row")),
+            _ => Err(input_err(format!(
+                "{key} names {}; pass the id, or PULSE_PROJECT=slug to look from one project",
+                rows.iter()
+                    .map(|k| format!("{} ({})", k.id, k.project))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
     }
 
-    /// The skill of that name, whatever its project or status; `None` when
-    /// no row has it.
+    /// Every skill of that name, whatever its project or status: the one
+    /// shared with every project first, then by project.
+    pub fn skills_named(&self, name: &str) -> Result<Vec<Skill>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLS} FROM skills WHERE name = ? ORDER BY project <> '', project"
+        ))?;
+        let rows = stmt
+            .query_map([name.trim()], scan)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// The first skill of that name, whatever its project or status;
+    /// `None` when no row has it. For hints: `skill_in` answers for a
+    /// project, `skill_for` resolves a key.
     pub fn skill_named(&self, name: &str) -> Result<Option<Skill>> {
+        Ok(self.skills_named(name)?.into_iter().next())
+    }
+
+    /// The skill of that name as `project` sees it - its own or the shared
+    /// one, enabled or not; `None` when neither has it.
+    pub fn skill_in(&self, project: &str, name: &str) -> Result<Option<Skill>> {
         let conn = self.conn()?;
         Ok(conn
             .query_row(
-                &format!("SELECT {COLS} FROM skills WHERE name = ?"),
-                [name.trim()],
+                &format!(
+                    "SELECT {COLS} FROM skills WHERE name = ?1 AND project IN ('', ?2) ORDER BY project = '' LIMIT 1"
+                ),
+                [name.trim(), project.trim()],
                 scan,
             )
             .optional()?)
@@ -481,6 +550,98 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("SKILL-001 already uses it"), "{err}");
+    }
+
+    #[test]
+    fn two_projects_may_each_keep_a_skill_of_one_name() {
+        // Repositories copy skill folders from each other, so the first live
+        // sync met `office-hours` in two of them; a name is unique as one
+        // project sees it, not across the machine.
+        let (_h, s) = new_store();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, added_at) VALUES ('other', 'Other', '/tmp/other', ?)",
+                [s.now()],
+            )
+            .unwrap();
+        let demo = s.add_skill("human", input("office-hours", "demo")).unwrap();
+        let other = s
+            .add_skill("human", input("office-hours", "other"))
+            .unwrap();
+        assert_ne!(demo.id, other.id);
+        // The same project twice, or a shared one over them, still collides.
+        let err = s
+            .add_skill("human", input("office-hours", "demo"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("SKILL-001 already uses it where demo looks"),
+            "{err}"
+        );
+        let err = s
+            .add_skill("human", input("office-hours", ""))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SKILL-001 already uses it;"), "{err}");
+        // A shared skill blocks a project's own of that name, and a rename
+        // onto it.
+        s.add_skill("human", input("release", "")).unwrap();
+        let err = s
+            .add_skill("human", input("release", "other"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("SKILL-003 already uses it where other looks"),
+            "{err}"
+        );
+        let err = s
+            .update_skill(
+                "human",
+                &other.id,
+                SkillPatch {
+                    name: Some("release".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SKILL-003 already uses it"), "{err}");
+        // By name: each project finds its own; without a project the name
+        // is ambiguous and the error lists the ids; a shared name resolves.
+        assert_eq!(s.skill_for("demo", "office-hours").unwrap(), demo);
+        assert_eq!(s.skill_for("other", "office-hours").unwrap(), other);
+        assert_eq!(s.skill_for("third", "release").unwrap().id, "SKILL-003");
+        let err = s.skill("office-hours").unwrap_err().to_string();
+        assert!(
+            err.contains("office-hours names SKILL-001 (demo), SKILL-002 (other); pass the id"),
+            "{err}"
+        );
+        assert_eq!(
+            s.skill_for("third", "office-hours")
+                .unwrap_err()
+                .to_string(),
+            err
+        );
+        assert_eq!(
+            s.skill_in("demo", "office-hours").unwrap(),
+            Some(demo.clone())
+        );
+        assert_eq!(s.skill_in("third", "office-hours").unwrap(), None);
+        assert_eq!(
+            s.skill_in("third", "release").unwrap().map(|k| k.id),
+            Some("SKILL-003".into())
+        );
+        assert_eq!(s.skills_named("office-hours").unwrap().len(), 2);
+        // The worker's view of each project carries exactly one.
+        assert_eq!(
+            s.skills_for("demo")
+                .unwrap()
+                .iter()
+                .filter(|k| k.name == "office-hours")
+                .count(),
+            1
+        );
     }
 
     #[test]

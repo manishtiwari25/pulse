@@ -488,7 +488,9 @@ pub fn secret_shaped(value: &str) -> bool {
             .captures(word)
             .and_then(|c| c.get(2))
             .map_or(word, |v| v.as_str().trim_matches(['"', '\'']));
-        LONG.is_match(word) && !path_like(word)
+        // A Markdown rule or a table's divider is a run of `-`, `=` or `_`
+        // as long as a token; no credential is made of punctuation alone.
+        LONG.is_match(word) && word.chars().any(|c| c.is_ascii_alphanumeric()) && !path_like(word)
     })
 }
 fn py_repr(s: &str) -> String {
@@ -940,6 +942,27 @@ mod tests {
         ] {
             assert!(secret_shaped(text), "{text}");
         }
+    }
+
+    #[test]
+    fn secret_shape_spares_rules_made_of_punctuation() {
+        // A SKILL.md with a horizontal rule or a wide table divider held
+        // three of kp-and-fsp's repository skills as "a credential".
+        for text in [
+            &"-".repeat(70),
+            &format!("## Steps\n\n{}\n\nThen run it.", "-".repeat(175)),
+            &format!("|{}|{}|", "-".repeat(44), "-".repeat(12)),
+            &"=".repeat(60),
+            &"_".repeat(48),
+        ] {
+            assert!(!secret_shaped(text), "{text}");
+        }
+        // One letter among the punctuation is still judged as a token.
+        assert!(secret_shaped(&format!(
+            "{}a{}",
+            "-".repeat(30),
+            "-".repeat(30)
+        )));
     }
 
     #[test]

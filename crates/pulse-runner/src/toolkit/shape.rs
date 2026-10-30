@@ -30,11 +30,9 @@ pub struct Shape {
     /// on or off: the owner decided about these.
     pub tools: BTreeSet<String>,
     /// Skills already reachable: the registry's (own or shared, on or off)
-    /// and the clone's skill folders.
+    /// and the clone's skill folders. A name is unique in this view only,
+    /// so another project's skill never blocks a draft.
     pub skills: BTreeSet<String>,
-    /// Every registered skill name, any project: names are unique across
-    /// the registry, so a draft avoids one another project holds.
-    pub skill_names_taken: BTreeSet<String>,
     /// Whether a compose file names a postgres image.
     pub compose_postgres: bool,
 }
@@ -236,12 +234,6 @@ pub fn read(s: &pulse_store::Store, slug: &str) -> Shape {
         .collect();
     shape.skills = s
         .skills(slug)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|k| k.name)
-        .collect();
-    shape.skill_names_taken = s
-        .skills("")
         .unwrap_or_default()
         .into_iter()
         .map(|k| k.name)
