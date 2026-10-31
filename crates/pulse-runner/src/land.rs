@@ -79,6 +79,12 @@ pub(crate) struct LandOpts {
     /// recipe changes, an empty diff) do not apply; the check still does.
     #[serde(default)]
     pub sync: bool,
+    /// The upstream tip a sync landing merges. A merged result that fails the
+    /// project's check the way this tip itself fails it carries the forge's
+    /// own red in instead of holding: the forge is red already, and only a
+    /// checkout that holds its head lets the pipeline fix start (pipeline.rs).
+    #[serde(default)]
+    pub upstream: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1500,6 +1506,7 @@ pub(crate) fn land_branch_with_registry(
                 return Ok(("stopped".into(), why));
             }
             let mut ok = false;
+            let mut upstream_red = false;
             let mut tail_text = String::new();
             let answered = rc.is_some();
             let merged_did_not_run = rc
@@ -1618,6 +1625,60 @@ pub(crate) fn land_branch_with_registry(
                     }
                     return Ok(("deferred".into(), note));
                 }
+                // A sync whose merged result fails only the way the upstream tip
+                // itself fails carries the forge's red in: the forge is red
+                // already, so holding protects nothing, and the checkout has to
+                // hold the forge's head before a pipeline fix can start from it.
+                if o.sync && !o.upstream.is_empty() && o.upstream != before {
+                    let (up_red, up_tail) = base_verify_red(
+                        s,
+                        &cancel,
+                        &worktree,
+                        &o.upstream,
+                        &vc_run,
+                        base_budget,
+                        &slug,
+                        &branch,
+                        &actor,
+                        &now,
+                        &def,
+                    );
+                    if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
+                        && !why.is_empty()
+                    {
+                        return Ok(("stopped".into(), why));
+                    }
+                    if up_red == Some(true) {
+                        let up_failures = verify_failures(&up_tail);
+                        let added: Vec<String> = verify_failures(&tail_text)
+                            .into_iter()
+                            .filter(|f| !up_failures.contains(f))
+                            .collect();
+                        let up_short = crate::recipe::short(&o.upstream, 12);
+                        if added.is_empty() {
+                            ok = true;
+                            upstream_red = true;
+                            verify_note = format!(
+                                "{verify_note} on the merged result and on the upstream {up_short} alike, so the sync carries the forge's red in for the pipeline fix"
+                            );
+                            if let Ok(conn) = s.conn() {
+                                crate::util::event_at(
+                                    &conn,
+                                    &now,
+                                    &actor,
+                                    "land.upstream-red",
+                                    &branch,
+                                    serde_json::json!({"project": slug, "upstream": o.upstream, "failures": up_failures, "tail": crate::executor::tail(&up_tail, 1500)}),
+                                );
+                            }
+                        } else {
+                            verify_note.push_str(&format!(
+                                "; the merge fails more than the upstream {up_short} does ({})",
+                                added.join(", ")
+                            ));
+                        }
+                    }
+                }
             }
             if !ok {
                 let patch =
@@ -1668,7 +1729,8 @@ pub(crate) fn land_branch_with_registry(
             } else {
                 merged_tree.clone()
             };
-            if !tree.is_empty() {
+            // A red result carried in for the upstream's sake is no green memo.
+            if !tree.is_empty() && !upstream_red {
                 let _ = crate::verify_memo::write(
                     &home, &slug, &tree, &vc_run, "landing", &actor, &worktree,
                 );

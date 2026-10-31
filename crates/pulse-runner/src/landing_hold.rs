@@ -871,9 +871,9 @@ pub(crate) fn sync_upstream(
         crate::recipe::short(&up_sha, 7),
         crate::util::trunc(&subject, 120)
     );
-    let (state, note) = match crate::land::land_branch(
+    let (mut state, mut note) = match crate::land::land_branch(
         s,
-        project,
+        project.clone(),
         branch.clone(),
         actor.clone(),
         now.clone(),
@@ -881,6 +881,7 @@ pub(crate) fn sync_upstream(
             verify: true,
             title,
             sync: true,
+            upstream: up_sha.clone(),
             ..Default::default()
         },
     ) {
@@ -889,21 +890,96 @@ pub(crate) fn sync_upstream(
     };
     // A sync never leaves a branch behind, whatever happened to it.
     crate::util::git_timeout(&t.root, Duration::from_secs(30), &["branch", "-D", &branch]);
+    // The plain merge conflicted: the default branch's own commits are
+    // re-applied onto the upstream and the result lands as one merge commit
+    // (resync.rs), so the forge's truth reaches the checkout.
+    let mut resync: Option<crate::resync::Resync> = None;
+    if state == "conflict" {
+        match crate::resync::resync_onto_upstream(&s.home, t, &up_sha, &def_sha, &actor) {
+            Ok(Some(r)) => {
+                let title = format!(
+                    "sync {}/{}: {behind} {} with {}'s own {} {} re-applied ({})",
+                    t.remote,
+                    t.remote_branch,
+                    crate::util::plural(behind, "commit"),
+                    t.def,
+                    r.picked.len(),
+                    crate::util::plural(r.picked.len() as i32, "commit"),
+                    r.tally()
+                );
+                let landed = crate::land::land_branch(
+                    s,
+                    project.clone(),
+                    r.branch.clone(),
+                    actor.clone(),
+                    now.clone(),
+                    crate::land::LandOpts {
+                        verify: true,
+                        title,
+                        sync: true,
+                        upstream: up_sha.clone(),
+                        ..Default::default()
+                    },
+                );
+                crate::util::git_timeout(
+                    &t.root,
+                    Duration::from_secs(30),
+                    &["branch", "-D", &r.branch],
+                );
+                (state, note) = match landed {
+                    Ok(v) => v,
+                    Err(e) => ("failed".to_string(), e.to_string()),
+                };
+                resync = Some(r);
+            }
+            Ok(None) => {}
+            Err(why) => {
+                note = format!(
+                    "{note}; re-applying {}'s own commits onto {}/{} failed too: {why}",
+                    t.def, t.remote, t.remote_branch
+                );
+            }
+        }
+    }
     if state == "landed" || state == "merged" {
+        let resync = resync.map(|r| crate::resync::after_landing(s, t, &r, &actor, &now));
         if let Ok(conn) = s.conn() {
             crate::util::exec1(&conn, "DELETE FROM meta WHERE key = ?", &[&key]);
-            crate::util::event_at(
-                &conn,
-                &now,
-                &actor,
-                "land.synced",
-                &slug,
-                serde_json::json!({"project": slug, "remote": t.remote, "branch": t.remote_branch, "commits": behind, "upstream": up_sha, "base": def_sha, "note": note}),
-            );
+            let mut detail = serde_json::json!({"project": slug, "remote": t.remote, "branch": t.remote_branch, "commits": behind, "upstream": up_sha, "base": def_sha, "note": note});
+            if let Some(r) = &resync {
+                detail["resync"] = r.detail();
+            }
+            crate::util::event_at(&conn, &now, &actor, "land.synced", &slug, detail);
         }
+        let reapplied = resync
+            .map(|r| {
+                let jobs = r
+                    .with("conflicted")
+                    .iter()
+                    .filter(|p| !p.job.is_empty())
+                    .map(|p| p.job.clone())
+                    .collect::<Vec<_>>();
+                format!(
+                    "; {}'s own {} {} re-applied: {}{}",
+                    t.def,
+                    r.picked.len(),
+                    crate::util::plural(r.picked.len() as i32, "commit"),
+                    r.tally(),
+                    if jobs.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " for {} {}",
+                            crate::util::plural(jobs.len() as i32, "job"),
+                            jobs.join(", ")
+                        )
+                    }
+                )
+            })
+            .unwrap_or_default();
         return (
             Some(format!(
-                "landing synced {slug}: {}/{} merged into {} ({behind} {}; {note})",
+                "landing synced {slug}: {}/{} merged into {} ({behind} {}{reapplied}; {note})",
                 t.remote,
                 t.remote_branch,
                 t.def,
@@ -1924,14 +2000,19 @@ mod tests {
         assert!(Path::new(&repo).join("wip.txt").is_file(), "wip kept");
     }
 
+    /// A merge of the upstream that conflicts for real no longer holds the
+    /// push until a human pulls: the default branch's own commits are
+    /// re-applied onto the upstream, the one that clashes is set aside with
+    /// its patch and a job, and the merge of both sides lands and pushes.
     #[test]
-    fn landing_sync_conflict_holds_once_until_a_side_moves() {
+    fn landing_sync_conflict_resyncs_onto_the_upstream_and_sets_the_clash_aside() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let s = new_store();
         let (proj, repo, bare) = push_fixture(&s);
         set_setting(&s, "landing.push", "main");
         commit_file(&repo, "README.md", "# proj\nlocal\n", "local readme");
+        let local_readme = ref_of(&repo, "refs/heads/main");
         let other = other_clone(&bare);
         commit_file(&other, "README.md", "# proj\nremote\n", "remote readme");
         run(&other, &["git", "push", "-q", "origin", "main"]);
@@ -1945,90 +2026,121 @@ mod tests {
             TEST_NOW.into(),
             BTreeMap::new(),
         );
-        assert_eq!(lines.len(), 2, "lines {lines:?}");
-        assert!(lines[0].starts_with("landing landed"), "lines {lines:?}");
-        let note = &cur["proj"];
-        assert!(
-            note.starts_with("2 commits landed but not pushed; origin/main has 1 commit main does not; merging them conflict: pulse/sync/origin/main conflicts with main; branch removed; patch at "),
-            "note {note:?}"
-        );
-        assert!(
-            note.contains(&format!(
-                "pulse tries again when either side moves; by hand: git -C {repo} pull --no-rebase origin main"
-            )),
-            "note {note:?}"
-        );
-        assert_eq!(lines[1], format!("landing held proj: {note}"));
-        assert_eq!(bare_ref(&bare, "refs/heads/main"), remote_head);
-        assert!(
-            run(&repo, &["git", "branch", "--list", "pulse/sync/*"])
-                .trim()
-                .is_empty(),
-            "the sync branch stayed"
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict'",
-                &[]
-            ),
-            1
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM meta WHERE key = 'push-sync:proj'",
-                &[]
-            ),
-            1
-        );
-
-        // The same pair of shas is not merged again: no second conflict, no new event.
-        let (lines, cur2) = tend_landings(
-            &s,
-            vec![proj.clone()],
-            "daemon".into(),
-            TEST_NOW.into(),
-            cur.clone(),
-        );
-        assert!(
-            lines.is_empty() && cur2["proj"] == cur["proj"],
-            "repeat tick said {lines:?}, note {:?} -> {:?}",
-            cur.get("proj"),
-            cur2.get("proj")
-        );
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict'",
-                &[]
-            ),
-            1
-        );
-
-        // The remote side moves (its change reverted): the merge is clean now.
-        run(&other, &["git", "revert", "--no-edit", "HEAD"]);
-        run(&other, &["git", "push", "-q", "origin", "main"]);
-        let (lines, cur3) = tend_landings(&s, vec![proj], "daemon".into(), TEST_NOW.into(), cur2);
         assert_eq!(lines.len(), 3, "lines {lines:?}");
+        assert!(lines[0].starts_with("landing landed"), "lines {lines:?}");
+        let short = crate::recipe::short(&local_readme, 12);
+        let job = must_one(
+            &s,
+            "SELECT id, title, brief, status, source FROM jobs WHERE source = ?",
+            &[&format!("resync:proj:{short}")],
+        );
+        assert!(!job.0.is_empty(), "no job re-applies the set-aside commit");
         assert!(
-            lines[0].starts_with("landing synced proj: origin/main merged into main (2 commits; "),
+            lines[1].starts_with(&format!(
+                "landing synced proj: origin/main merged into main (1 commit; main's own 2 commits re-applied: 1 carried, 1 set aside for job {}; pulse/resync/origin/main landed on main as ",
+                job.str("id")
+            )),
             "lines {lines:?}"
         );
         assert!(
-            lines[1].starts_with("landing pushed proj: main -> origin/main ("),
+            lines[2].starts_with("landing pushed proj: main -> origin/main ("),
             "lines {lines:?}"
         );
-        assert_eq!(lines[2], "landing resumed proj");
-        assert!(cur3.is_empty(), "notes after recovery: {cur3:?}");
-        assert_eq!(
-            bare_ref(&bare, "refs/heads/main"),
-            ref_of(&repo, "refs/heads/main")
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        // The merge commit: both sides as parents, the upstream's README, the
+        // carried work, and a message that says where each commit went.
+        let local = ref_of(&repo, "refs/heads/main");
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), local);
+        let parents = run(&repo, &["git", "log", "-1", "--format=%P", "main"]);
+        assert!(
+            parents.trim().split(' ').nth(1) == Some(remote_head.as_str()),
+            "parents {parents:?}"
         );
         assert_eq!(
             std::fs::read_to_string(Path::new(&repo).join("README.md")).expect("readme"),
-            "# proj\nlocal\n"
+            "# proj\nremote\n"
         );
+        assert!(Path::new(&repo).join("pulse_worker_1.txt").is_file());
+        let message = run(&repo, &["git", "log", "-1", "--format=%B", "main"]);
+        assert!(
+            message.starts_with(
+                "Sync origin/main into main: main's own 2 commits re-applied (1 carried, 1 set aside)\n"
+            ),
+            "message {message:?}"
+        );
+        assert!(
+            message.contains(&format!(
+                "Set aside, re-applied by a job:\n- {short} (local readme) (conflicts: README.md; patch at {}/patches/proj/resync-{short}.patch)",
+                s.home
+            )),
+            "message {message:?}"
+        );
+        assert!(
+            message.contains("Pulse-Landed-By: daemon"),
+            "message {message:?}"
+        );
+        let patch = std::fs::read_to_string(
+            Path::new(&s.home)
+                .join("patches/proj")
+                .join(format!("resync-{short}.patch")),
+        )
+        .expect("patch");
+        assert!(
+            patch.contains("local readme") && patch.contains("+local"),
+            "{patch}"
+        );
+        assert!(
+            run(&repo, &["git", "branch", "--list", "pulse/*"])
+                .trim()
+                .is_empty(),
+            "a pulse branch stayed"
+        );
+        assert!(
+            run(&repo, &["git", "worktree", "list"]).lines().count() == 1,
+            "a worktree stayed: {}",
+            run(&repo, &["git", "worktree", "list"])
+        );
+        // The job knows what to do and where the commit still is.
+        assert_eq!(job.str("status"), "queued");
+        assert_eq!(
+            job.str("title"),
+            format!("Re-apply {short} onto the synced main: local readme")
+        );
+        let brief = job.str("brief");
+        assert!(
+            brief.contains(&format!("`git show {short}`"))
+                && brief.contains("clashed on README.md"),
+            "{brief}"
+        );
+        for (action, want) in [
+            ("land.conflict", 1),
+            ("land.synced", 1),
+            ("land.pushed", 1),
+            ("land.held", 0),
+        ] {
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                    &[&action]
+                ),
+                want,
+                "{action}"
+            );
+        }
+        let synced = must_one(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.synced'",
+            &[],
+        );
+        let d: serde_json::Value = serde_json::from_str(&synced.str("detail")).unwrap();
+        assert_eq!(d["resync"]["commits"], 2, "{d}");
+        assert_eq!(d["resync"]["carried"], 1, "{d}");
+        assert_eq!(d["resync"]["conflicted"], 1, "{d}");
+        assert_eq!(d["resync"]["picked"][0]["sha"], local_readme, "{d}");
+        assert_eq!(d["resync"]["picked"][0]["fate"], "conflicted", "{d}");
+        assert_eq!(d["resync"]["picked"][0]["job"], job.str("id"), "{d}");
+        assert_eq!(d["resync"]["picked"][1]["fate"], "carried", "{d}");
         assert_eq!(
             count(
                 &s,
@@ -2037,7 +2149,305 @@ mod tests {
             ),
             0
         );
+        let finding = must_one(
+            &s,
+            "SELECT summary, body FROM posts WHERE kind = 'finding' AND area = 'landing'",
+            &[],
+        );
+        assert!(
+            finding.str("summary").starts_with(&format!(
+                "sync of origin/main into proj's main: 1 of main's own 2 commits set aside for a job ({short})"
+            )),
+            "{}",
+            finding.str("summary")
+        );
+        assert!(
+            finding
+                .str("body")
+                .contains(&format!("job {} re-applies it", job.str("id"))),
+            "{}",
+            finding.str("body")
+        );
         assert!(!push_owed(&s, "proj".into()));
+
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert!(
+            lines.is_empty() && cur.is_empty(),
+            "quiet tick said {lines:?} {cur:?}"
+        );
+    }
+
+    /// What the re-apply does with each kind of commit: one the upstream
+    /// lacks is carried; one the upstream already holds is dropped; one that
+    /// only changed a file the upstream removed is dropped with it; one that
+    /// changed such a file and more keeps the rest.
+    #[test]
+    fn landing_resync_carries_drops_and_trims_the_default_branchs_own_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        commit_file(&repo, "docs/log.md", "v1\n", "log v1");
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        commit_file(&repo, "a.txt", "a\n", "add a");
+        commit_file(&repo, "docs/log.md", "v2\n", "log v2");
+        commit_file(&repo, "same.txt", "same\n", "add same");
+        std::fs::write(Path::new(&repo).join("docs/log.md"), "v3\n").expect("write");
+        commit_file(&repo, "d.txt", "d\n", "log v3 and d");
+        let other = other_clone(&bare);
+        run(&other, &["git", "rm", "-q", "docs/log.md"]);
+        run(&other, &["git", "commit", "-q", "-m", "remove the log"]);
+        commit_file(&other, "same.txt", "same\n", "add same upstream");
+        commit_file(&other, "other.txt", "other\n", "other");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 3, "lines {lines:?}");
+        assert!(
+            lines[1].starts_with(
+                "landing synced proj: origin/main merged into main (3 commits; main's own 5 commits re-applied: 3 carried, 2 already upstream; pulse/resync/origin/main landed on main as "
+            ),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        for f in [
+            "a.txt",
+            "d.txt",
+            "same.txt",
+            "other.txt",
+            "pulse_worker_1.txt",
+        ] {
+            assert!(Path::new(&repo).join(f).is_file(), "{f} missing");
+        }
+        assert!(!Path::new(&repo).join("docs/log.md").exists());
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/main"),
+            ref_of(&repo, "refs/heads/main")
+        );
+        let synced = must_one(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.synced'",
+            &[],
+        );
+        let d: serde_json::Value = serde_json::from_str(&synced.str("detail")).unwrap();
+        let fates: Vec<(String, String, Vec<String>)> = d["resync"]["picked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["subject"].as_str().unwrap().to_string(),
+                    p["fate"].as_str().unwrap().to_string(),
+                    p["files"]
+                        .as_array()
+                        .map(|a| a.iter().map(|f| f.as_str().unwrap().to_string()).collect())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            fates,
+            vec![
+                ("add a".to_string(), "carried".to_string(), vec![]),
+                (
+                    "log v2".to_string(),
+                    "dropped".to_string(),
+                    vec!["docs/log.md".to_string()]
+                ),
+                ("add same".to_string(), "dropped".to_string(), vec![]),
+                (
+                    "log v3 and d".to_string(),
+                    "carried".to_string(),
+                    vec!["docs/log.md".to_string()]
+                ),
+                (
+                    "work on pulse/worker/1".to_string(),
+                    "carried".to_string(),
+                    vec![]
+                ),
+            ]
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source LIKE 'resync:%'",
+                &[]
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'landing'",
+                &[]
+            ),
+            0
+        );
+        let message = run(&repo, &["git", "log", "-1", "--format=%B", "main"]);
+        assert!(
+            message.contains("(dropped: docs/log.md, which origin/main removed)")
+                && message.contains("Already in origin/main, dropped:"),
+            "message {message:?}"
+        );
+    }
+
+    /// The check that guards a sync. Red when a `red-*.txt` file sits in the
+    /// tree, naming it; red for a second reason when `on.txt` is there too.
+    fn red_check(repo: &str) {
+        commit_file(
+            repo,
+            "check.sh",
+            "rc=0\nfor f in red-*.txt; do [ -f \"$f\" ] && { echo \"FAIL $f\"; rc=1; }; done\n[ -f red-a.txt ] && [ -f on.txt ] && { echo \"FAIL combo\"; rc=1; }\nexit $rc\n",
+            "check",
+        );
+        run(repo, &["git", "push", "-q", "origin", "main"]);
+    }
+
+    /// The forge's head fails the project's check by itself. The sync's
+    /// merged result fails the same way, so it lands all the same: holding it
+    /// would only keep the checkout from holding the commit a fix must start
+    /// from.
+    #[test]
+    fn landing_sync_carries_the_upstreams_own_red_in() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        red_check(&repo);
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'sh check.sh' WHERE slug = 'proj'",
+            &[],
+        );
+        let proj = crate::board::project_by_slug(&s.conn().unwrap(), proj.str("slug"));
+        let other = other_clone(&bare);
+        commit_file(&other, "red-a.txt", "red\n", "breaks the check");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let remote_head = bare_ref(&bare, "refs/heads/main");
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 3, "lines {lines:?}");
+        assert!(
+            lines[1].starts_with("landing synced proj: origin/main merged into main (1 commit; ")
+                && lines[1].contains(&format!(
+                    "verify exit 1 on the merged result and on the upstream {} alike, so the sync carries the forge's red in for the pipeline fix",
+                    crate::recipe::short(&remote_head, 12)
+                )),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/main"),
+            ref_of(&repo, "refs/heads/main")
+        );
+        assert!(Path::new(&repo).join("red-a.txt").is_file());
+        let red = must_one(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.upstream-red'",
+            &[],
+        );
+        let d: serde_json::Value = serde_json::from_str(&red.str("detail")).unwrap();
+        assert_eq!(d["upstream"], remote_head, "{d}");
+        assert_eq!(d["failures"], serde_json::json!(["FAIL red-a.txt"]), "{d}");
+        for action in ["land.failed-verify", "land.base-red", "land.held"] {
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                    &[&action]
+                ),
+                0,
+                "{action}"
+            );
+        }
+        // No green memo was written for the red merged tree.
+        let merged_tree = run(&repo, &["git", "rev-parse", "main^{tree}"])
+            .trim()
+            .to_string();
+        assert!(
+            !crate::verify_memo::path(&s.home, "proj", &merged_tree).exists(),
+            "a verify memo was written for the red merge"
+        );
+    }
+
+    /// A merged result that fails for more than the upstream's own reason is
+    /// the merge's fault: the sync holds as before.
+    #[test]
+    fn landing_sync_still_holds_when_the_merge_fails_more_than_the_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        red_check(&repo);
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'sh check.sh' WHERE slug = 'proj'",
+            &[],
+        );
+        let proj = crate::board::project_by_slug(&s.conn().unwrap(), proj.str("slug"));
+        commit_file(&repo, "on.txt", "on\n", "local on");
+        let other = other_clone(&bare);
+        commit_file(&other, "red-a.txt", "red\n", "breaks the check");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let remote_head = bare_ref(&bare, "refs/heads/main");
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 2, "lines {lines:?}");
+        let note = &cur["proj"];
+        assert!(
+            note.contains(
+                "merging them failed-verify: verify exit 1; the merge fails more than the upstream "
+            ) && note.contains(" does (FAIL combo) on the merged main; branch removed; patch at "),
+            "note {note:?}"
+        );
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), remote_head);
+        assert!(!Path::new(&repo).join("red-a.txt").exists());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM meta WHERE key = 'push-sync:proj'",
+                &[]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.upstream-red'",
+                &[]
+            ),
+            0
+        );
     }
 
     /// The owner squashed the remote by hand to one root commit holding what
