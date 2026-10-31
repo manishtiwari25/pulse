@@ -21,7 +21,8 @@
 //! which the hub serves beside the conversation.
 use crate::commands::{PrepareOpts, Prepared, add_agent_flags, prepare_agent_with};
 use crate::harness::{
-    Agent, Approval, ApprovalRequest, EXIT_ENDED, Sink, Step, StreamSink, Trajectory, Turn, Ui,
+    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, Sink, Step, StreamSink,
+    Trajectory, Turn, Ui,
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use pulse_cli::{Context, FlagSet};
@@ -33,7 +34,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -484,9 +485,32 @@ struct WebUi {
     shared: Arc<Shared>,
     store: Store,
     id: String,
+    /// The manager, for the sub-conversations this agent starts and reads.
+    manager: Weak<ManagerInner>,
 }
 
 impl WebUi {
+    fn manager(&self) -> Option<Manager> {
+        self.manager.upgrade().map(Manager::from_inner)
+    }
+
+    /// Tells the conversation that started this one (if any) that its
+    /// agent asks a question, so it can answer or leave it to the owner.
+    fn report_question(&self, question: &str, choices: &[String]) {
+        let Some(m) = self.manager() else { return };
+        let Ok(Some(row)) = self.store.chat_get(&self.id) else {
+            return;
+        };
+        if row.parent.is_empty() {
+            return;
+        }
+        let mut text = question.to_string();
+        if !choices.is_empty() {
+            text.push_str("\nChoices: ");
+            text.push_str(&choices.join(" | "));
+        }
+        m.deliver_report(&row, REPORT_ASKS, &text);
+    }
     fn park(&self, pending: Pending, note: String) -> Option<Answer> {
         let id = pending.id();
         {
@@ -582,6 +606,7 @@ impl Ui for WebUi {
             question: question.to_string(),
             choices: choices.to_vec(),
         };
+        self.report_question(question, choices);
         match self.park(
             pending,
             format!("waiting for your answer: {}", one_line(question)),
@@ -589,6 +614,28 @@ impl Ui for WebUi {
             Some(Answer::Text(t)) => Some(t),
             Some(Answer::Approval(_)) | None => None,
         }
+    }
+
+    fn chat(&mut self, req: &ChatRequest) -> Option<ChatReply> {
+        let m = self.manager()?;
+        Some(match req {
+            ChatRequest::Start { title, text } => m
+                .create_child(&self.id, title, text)
+                .map(|row| {
+                    format!(
+                        "Started sub-conversation {} ({:?}). It works in your workspace and every reply it makes reaches you as a message from it; the owner sees it on its own page too. Carry on with your own work meanwhile, or end your turn and wait for it.",
+                        row.id, row.title
+                    )
+                })
+                .map_err(|e| e.to_string()),
+            ChatRequest::Send { id, text } => m
+                .send_from_parent(id, &self.id, text)
+                .map(|()| format!("Sent to {id}; its reply reaches you as a message from it."))
+                .map_err(|e| e.to_string()),
+            ChatRequest::Read { id } => m
+                .read_children(&self.id, id)
+                .map_err(|e| e.to_string()),
+        })
     }
 }
 
@@ -645,6 +692,10 @@ struct Queued {
     /// The owner's words and the row's extra (attachments, images); None
     /// for the runtime's own prompts, which leave no row.
     row: Option<(String, Value)>,
+    /// A report from a sub-conversation rather than the owner's words: the
+    /// row is a note (the page shows who it is from), not a message of
+    /// the owner's.
+    report: bool,
 }
 
 impl From<String> for Queued {
@@ -653,6 +704,7 @@ impl From<String> for Queued {
             text,
             images: Vec::new(),
             row: None,
+            report: false,
         }
     }
 }
@@ -671,6 +723,11 @@ impl Queued {
             Some((shown, _)) => shown.clone(),
             None => self.text.clone(),
         }
+    }
+
+    /// The transcript role of the message's row.
+    fn role(&self) -> &'static str {
+        if self.report { "note" } else { "user" }
     }
 }
 
@@ -709,10 +766,20 @@ pub struct Runtime {
     model: String,
     shared: Arc<Shared>,
     started: Mutex<Option<Started>>,
+    /// The manager this runtime belongs to, for the sub-conversations its
+    /// agent starts and the reports it sends up to its parent.
+    manager: Weak<ManagerInner>,
 }
 
 impl Runtime {
-    fn new(home: &str, store: Store, provider: &str, model: &str, row: &Row) -> Arc<Self> {
+    fn new(
+        home: &str,
+        store: Store,
+        provider: &str,
+        model: &str,
+        row: &Row,
+        manager: Weak<ManagerInner>,
+    ) -> Arc<Self> {
         let shared = Arc::new(Shared::new(row.auto_approve));
         shared.lock().session_id = row.session_id.clone();
         Arc::new(Self {
@@ -723,7 +790,13 @@ impl Runtime {
             model: model.to_string(),
             shared,
             started: Mutex::new(None),
+            manager,
         })
+    }
+
+    /// The manager, while the hub holds it.
+    fn manager(&self) -> Option<Manager> {
+        self.manager.upgrade().map(Manager::from_inner)
     }
 
     pub fn live(&self) -> Live {
@@ -736,6 +809,7 @@ impl Runtime {
     /// message ([`Queued::row`]).
     fn enqueue(self: &Arc<Self>, message: impl Into<Queued>) {
         let mut message = message.into();
+        let role = message.role();
         let (spawn, row) = {
             let mut st = self.shared.lock();
             let spawn = !st.worker;
@@ -746,9 +820,7 @@ impl Runtime {
             (spawn, row)
         };
         if let Some((shown, extra)) = row {
-            let _ = self
-                .store
-                .chat_add_message(&self.id, "user", &shown, &extra);
+            let _ = self.store.chat_add_message(&self.id, role, &shown, &extra);
         }
         if spawn {
             let me = self.clone();
@@ -839,15 +911,19 @@ impl Runtime {
                 return;
             }
         }
+        let row_role = message.role();
         let Queued {
             text,
             images,
             row: owner_row,
+            ..
         } = message;
         // The owner's message enters the transcript as the agent takes it
         // up: after the reply of the turn it waited behind.
         if let Some((shown, extra)) = &owner_row {
-            let _ = self.store.chat_add_message(&self.id, "user", shown, extra);
+            let _ = self
+                .store
+                .chat_add_message(&self.id, row_role, shown, extra);
         }
         let row_note = row.note.clone();
         let (agent, session_id, ran_in, first) = match self.ensure_started(&row) {
@@ -922,16 +998,20 @@ impl Runtime {
         let mut ended = false;
         let mut status = Status::Idle;
         let mut note = String::new();
+        // What the conversation that started this one hears of the turn.
+        let mut report: Option<(&str, String)> = None;
         match outcome {
             Ok(Turn::Reply(reply)) => {
                 let _ = self
                     .store
                     .chat_add_message(&self.id, "assistant", &reply, &extra);
+                report = Some((REPORT_REPLIED, reply));
             }
             Ok(Turn::Blocked(reason)) => {
                 let _ = self
                     .store
                     .chat_add_message(&self.id, "note", &reason, &extra);
+                report = Some((REPORT_BLOCKED, reason));
             }
             Ok(Turn::Stopped { status: why, error }) => {
                 let resume = !cancel.is_cancelled()
@@ -945,16 +1025,22 @@ impl Runtime {
                     } else if matches!(st.finish, Some(Finished::Owner)) {
                         "The turn stopped here: you finished the conversation.".to_string()
                     } else {
+                        drop(st);
+                        report = Some((REPORT_STOPPED, "The owner stopped its turn.".to_string()));
                         "You stopped this turn.".to_string()
                     }
                 } else if error.is_empty() {
-                    format!("The turn stopped: {why}.")
+                    let line = format!("The turn stopped: {why}.");
+                    report = Some((REPORT_STOPPED, line.clone()));
+                    line
                 } else if resume {
                     format!(
                         "The turn stopped: {why}: {error} (resuming once; if it fails again the conversation waits for your message)"
                     )
                 } else {
-                    format!("The turn stopped: {why}: {error}")
+                    let line = format!("The turn stopped: {why}: {error}");
+                    report = Some((REPORT_STOPPED, line.clone()));
+                    line
                 };
                 if resume {
                     // A transport provider_error (a failed send or a broken reply body,
@@ -985,6 +1071,7 @@ impl Runtime {
                     )
                 };
                 let _ = self.store.chat_add_message(&self.id, "note", &line, &extra);
+                report = Some((REPORT_ENDED, line));
             }
             Err(e) => {
                 let line = format!("The turn failed: {e:#}");
@@ -994,6 +1081,7 @@ impl Runtime {
                     status = Status::Ended;
                     note = "session ended".to_string();
                 }
+                report = Some((REPORT_STOPPED, line));
             }
         }
         // Costs, the trajectory on disk, and the session's end when it came.
@@ -1062,6 +1150,19 @@ impl Runtime {
                 &f.line(),
                 &json!({"closed": f.by(), "session": session_id}),
             );
+            // The finish is the report: the summary, with the closing
+            // reply when the agent made one.
+            let closing = report
+                .take()
+                .filter(|(kind, _)| *kind == REPORT_REPLIED)
+                .map(|(_, text)| text)
+                .unwrap_or_default();
+            let text = match f {
+                Finished::Agent(summary) if closing.trim().is_empty() => summary.clone(),
+                Finished::Agent(summary) => format!("{summary}\n\n{closing}"),
+                Finished::Owner => "The owner finished it.".to_string(),
+            };
+            report = Some((REPORT_FINISHED, text));
         }
         if let Some(r) = &moved {
             let _ = self.store.chat_add_message(
@@ -1077,6 +1178,15 @@ impl Runtime {
         // What was dropped behind this turn (a stop, a close) follows its
         // note, so the transcript reads in the order things happened.
         self.write_unsent();
+        // A sub-conversation's turn ends with its report to the
+        // conversation that started it.
+        if let Some((kind, text)) = report
+            && !archived
+            && let Some(row) = row_now.as_ref().filter(|r| !r.parent.is_empty())
+            && let Some(m) = self.manager()
+        {
+            m.deliver_report(row, kind, &text);
+        }
     }
 
     /// The agent for the row's current workspace: the one running, or a
@@ -1195,8 +1305,10 @@ impl Runtime {
                 shared: self.shared.clone(),
                 store: self.store.clone(),
                 id: row.id.clone(),
+                manager: self.manager.clone(),
             })));
             a.offer_finish(true);
+            a.offer_chat(true);
             let shared = self.shared.clone();
             a.set_stream(Box::new(LiveStream { shared }));
         }
@@ -1340,7 +1452,9 @@ impl Runtime {
         let unsent = std::mem::take(&mut self.shared.lock().unsent);
         for (message, why) in unsent {
             if let Some((shown, extra)) = &message.row {
-                let _ = self.store.chat_add_message(&self.id, "user", shown, extra);
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, message.role(), shown, extra);
             }
             let extra = if why == Unsent::Shutdown {
                 json!({"restart": true, "unsent": true})
@@ -1385,6 +1499,25 @@ impl Runtime {
                 .chat_add_message(&self.id, "note", &f.line(), &json!({"closed": f.by()}));
         let _ = self.store.chat_set_status(&self.id, "closed", &f.note());
         self.write_unsent();
+        let text = match f {
+            Finished::Agent(summary) => summary.clone(),
+            Finished::Owner => "The owner finished it.".to_string(),
+        };
+        self.report_up(REPORT_FINISHED, &text);
+    }
+
+    /// Hands a report to the conversation that started this one, when
+    /// there is one and the hub still holds the manager.
+    fn report_up(&self, kind: &str, text: &str) {
+        let Ok(Some(row)) = self.store.chat_get(&self.id) else {
+            return;
+        };
+        if row.parent.is_empty() || row.status == "archived" {
+            return;
+        }
+        if let Some(m) = self.manager() {
+            m.deliver_report(&row, kind, text);
+        }
     }
 
     /// Ends the agent's session; the worker, if any, winds down after the
@@ -1451,8 +1584,14 @@ impl Runtime {
 }
 
 /// The hub's handle on every conversation: rows in the store, runtimes in
-/// memory while the hub runs.
+/// memory while the hub runs. A thin handle on [`ManagerInner`], which the
+/// runtimes hold weakly so a conversation's agent can start and steer its
+/// sub-conversations through the same manager.
 pub struct Manager {
+    inner: Arc<ManagerInner>,
+}
+
+pub struct ManagerInner {
     home: String,
     store: Store,
     provider: String,
@@ -1460,21 +1599,73 @@ pub struct Manager {
     runtimes: Mutex<BTreeMap<String, Arc<Runtime>>>,
 }
 
+impl std::ops::Deref for Manager {
+    type Target = ManagerInner;
+
+    fn deref(&self) -> &ManagerInner {
+        &self.inner
+    }
+}
+
+/// How many levels of sub-conversations a conversation may stand under
+/// and still start one: a top-level conversation's children may have
+/// children of their own, and those may not.
+pub const CHILD_DEPTH_LIMIT: usize = 2;
+/// How many sub-conversations one conversation may have open (not
+/// archived) at a time.
+pub const CHILDREN_LIMIT: usize = 8;
+/// How many of a sub-conversation's last messages its parent's agent reads
+/// at a time, and how much of each.
+const READ_MESSAGES: usize = 6;
+const READ_MESSAGE_CHARS: usize = 2_000;
+
+/// The kinds of report a sub-conversation sends its parent.
+pub const REPORT_FINISHED: &str = "finished";
+pub const REPORT_REPLIED: &str = "replied";
+pub const REPORT_ASKS: &str = "asks";
+pub const REPORT_BLOCKED: &str = "blocked";
+pub const REPORT_STOPPED: &str = "stopped";
+pub const REPORT_ENDED: &str = "ended";
+
+/// The words the parent's agent reads for a report's kind.
+fn report_phrase(kind: &str) -> &'static str {
+    match kind {
+        REPORT_FINISHED => "it finished and closed",
+        REPORT_REPLIED => "it replied and waits for its next message",
+        REPORT_ASKS => {
+            "it asks a question and waits for the answer (the owner can answer it on its page; you can with the chat tool, action send)"
+        }
+        REPORT_BLOCKED => "it is blocked",
+        REPORT_STOPPED => "its turn stopped",
+        REPORT_ENDED => "its agent ended the turn without a reply",
+        _ => "it reports",
+    }
+}
+
 impl Manager {
     pub fn new(home: &str, store: Store) -> Self {
         Self {
-            home: home.to_string(),
-            store,
-            provider: String::new(),
-            model: String::new(),
-            runtimes: Mutex::new(BTreeMap::new()),
+            inner: Arc::new(ManagerInner {
+                home: home.to_string(),
+                store,
+                provider: String::new(),
+                model: String::new(),
+                runtimes: Mutex::new(BTreeMap::new()),
+            }),
         }
     }
 
-    /// Pins the provider and model every conversation uses (tests).
+    fn from_inner(inner: Arc<ManagerInner>) -> Self {
+        Self { inner }
+    }
+
+    /// Pins the provider and model every conversation uses (tests). Call
+    /// it before the first conversation runs.
     pub fn with_provider(mut self, provider: &str, model: &str) -> Self {
-        self.provider = provider.to_string();
-        self.model = model.to_string();
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("with_provider is called before any conversation runs");
+        inner.provider = provider.to_string();
+        inner.model = model.to_string();
         self
     }
 
@@ -1492,6 +1683,7 @@ impl Manager {
                     &self.provider,
                     &self.model,
                     row,
+                    Arc::downgrade(&self.inner),
                 )
             })
             .clone()
@@ -1571,6 +1763,200 @@ impl Manager {
         self.row(&row.id)
     }
 
+    /// Starts a sub-conversation of `parent`: its agent's brief is `text`,
+    /// and it works in the parent's workspace on the parent's model,
+    /// effort and approval setting, reporting each reply back to the
+    /// parent ([`Manager::deliver_report`]). Refused past
+    /// [`CHILD_DEPTH_LIMIT`] levels or [`CHILDREN_LIMIT`] open children,
+    /// and for an archived parent.
+    pub fn create_child(&self, parent: &str, title: &str, text: &str) -> Result<Row> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the sub-conversation's brief is empty");
+        }
+        let p = self.row(parent)?;
+        if p.status == "archived" {
+            bail!("conversation {parent} is archived");
+        }
+        let depth = self.store.chat_depth(parent)?;
+        if depth >= CHILD_DEPTH_LIMIT {
+            bail!(
+                "this conversation already stands {depth} levels down; sub-conversations go {CHILD_DEPTH_LIMIT} levels deep at most - do this part here, or with the subagent tool"
+            );
+        }
+        let open = self.store.chat_children(parent, false)?.len();
+        if open >= CHILDREN_LIMIT {
+            bail!(
+                "this conversation already has {open} sub-conversations open; finish or archive one before starting another"
+            );
+        }
+        let title = if title.trim().is_empty() {
+            title_from(text)
+        } else {
+            title.trim().to_string()
+        };
+        let row = self.store.chat_create(&Row {
+            id: new_conversation_id(),
+            title,
+            project: p.project.clone(),
+            cwd: p.cwd.clone(),
+            branch: p.branch.clone(),
+            model: p.model.clone(),
+            reasoning: p.reasoning.clone(),
+            status: "idle".into(),
+            auto_approve: p.auto_approve,
+            created_by: p.id.clone(),
+            parent: p.id.clone(),
+            ..Row::default()
+        })?;
+        let _ = self.store.chat_add_message(
+            parent,
+            "note",
+            &format!("Started sub-conversation: {}", row.title),
+            &json!({"child": row.id, "title": row.title}),
+        );
+        self.send(&row.id, text)?;
+        self.row(&row.id)
+    }
+
+    /// A message from the conversation that started `id` (the parent's
+    /// agent steering it): recorded as a note from the parent, and the
+    /// agent reads it marked as the parent's. A question the
+    /// sub-conversation waits on takes the text as its answer.
+    pub fn send_from_parent(&self, id: &str, parent: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the message is empty");
+        }
+        let row = self.row(id)?;
+        if row.parent != parent {
+            bail!("conversation {id} is not a sub-conversation of this one");
+        }
+        if row.status == "archived" {
+            bail!("sub-conversation {id} is archived");
+        }
+        if let Some(rt) = self.running(id)
+            && matches!(rt.live().pending, Some(Pending::Question { .. }))
+        {
+            return self.answer(id, text);
+        }
+        let rt = self.runtime(&row);
+        rt.enqueue(Queued {
+            text: format!("Message from the conversation that started you ({parent}):\n{text}"),
+            images: Vec::new(),
+            row: Some((text.to_string(), json!({"from": parent}))),
+            report: true,
+        });
+        Ok(())
+    }
+
+    /// Hands a sub-conversation's report to its parent: a note in the
+    /// parent's transcript that says who it is from, and a turn there on
+    /// it, the way the owner's message would run (after the turn in
+    /// flight, reopening a finished parent). Nothing reaches an archived
+    /// parent.
+    pub fn deliver_report(&self, child: &Row, kind: &str, text: &str) {
+        if child.parent.is_empty() {
+            return;
+        }
+        let Ok(Some(parent)) = self.store.chat_get(&child.parent) else {
+            return;
+        };
+        if parent.status == "archived" {
+            return;
+        }
+        let text = text.trim();
+        let prompt = format!(
+            "Report from sub-conversation {:?} ({}) - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
+            child.title,
+            child.id,
+            report_phrase(kind),
+            text,
+            child.id,
+            child.id
+        );
+        self.runtime(&parent).enqueue(Queued {
+            text: prompt,
+            images: Vec::new(),
+            row: Some((
+                text.to_string(),
+                json!({"report": {"child": child.id, "title": child.title, "kind": kind}}),
+            )),
+            report: true,
+        });
+    }
+
+    /// What a conversation's agent reads of its sub-conversations: all of
+    /// them in a line each (`id` empty), or one with its state and its
+    /// last replies.
+    pub fn read_children(&self, parent: &str, id: &str) -> Result<String> {
+        if id.is_empty() {
+            let children = self.store.chat_children(parent, false)?;
+            if children.is_empty() {
+                return Ok("No sub-conversations yet.".to_string());
+            }
+            let lines: Vec<String> = children
+                .iter()
+                .map(|c| {
+                    let live = self.live(c);
+                    format!(
+                        "{}  {:<8} {}{}",
+                        c.id,
+                        live.status,
+                        c.title,
+                        if live.note.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" - {}", live.note)
+                        }
+                    )
+                })
+                .collect();
+            return Ok(lines.join("\n"));
+        }
+        let row = self.row(id)?;
+        if row.parent != parent {
+            bail!("conversation {id} is not a sub-conversation of this one");
+        }
+        let live = self.live(&row);
+        let mut out = format!(
+            "{}  {}\nstatus {}{}  turns {}\n",
+            row.id,
+            row.title,
+            live.status,
+            if live.note.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", live.note)
+            },
+            row.turns
+        );
+        let messages = self.store.chat_messages(id, 0)?;
+        let shown: Vec<&pulse_store::ConversationMessage> =
+            messages.iter().filter(|m| m.role != "approval").collect();
+        let skipped = shown.len().saturating_sub(READ_MESSAGES);
+        if skipped > 0 {
+            out.push_str(&format!("({skipped} earlier messages not shown)\n"));
+        }
+        for m in &shown[skipped..] {
+            let who = match m.role.as_str() {
+                "user" if m.n == 1 => "brief",
+                "user" => "owner",
+                "assistant" => "agent",
+                "note" if m.extra.get("from").is_some() => "you",
+                other => other,
+            };
+            let content: String = m.content.chars().take(READ_MESSAGE_CHARS).collect();
+            let cut = if content.len() < m.content.len() {
+                "..."
+            } else {
+                ""
+            };
+            out.push_str(&format!("\n[{who}] {}{cut}\n", content.trim_end()));
+        }
+        Ok(out.trim_end().to_string())
+    }
+
     /// Records the owner's message and runs a turn on it (after the one
     /// running, when there is one).
     pub fn send(&self, id: &str, text: &str) -> Result<()> {
@@ -1628,6 +2014,7 @@ impl Manager {
             text: message_with_attachments(&text, &files),
             images: Vec::new(),
             row: Some((text, extra)),
+            report: false,
         });
         Ok(())
     }
@@ -1713,6 +2100,7 @@ impl Manager {
             text: message_with_attachments(&text, &files),
             images: shown,
             row: Some((text, extra)),
+            report: false,
         });
         Ok(())
     }
@@ -1909,6 +2297,7 @@ impl Manager {
             )?;
             self.store
                 .chat_set_status(id, "closed", &Finished::Owner.note())?;
+            self.deliver_report(&row, REPORT_FINISHED, "The owner finished it.");
         }
         Ok(())
     }
@@ -2603,13 +2992,23 @@ fn list_artifacts(dir: &Path) -> Vec<Artifact> {
 /// The brief the agent reads with the first message of each session.
 pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
     let mut b = String::new();
-    b.push_str(&format!(
-        "You are working with the owner of PULSE in a conversation from the hub (conversation {}). \
-         Keep going until the request is done; use the question tool only for a decision that is the owner's. \
-         Report progress in short plain words, and say what you did when you finish. \
-         When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the conversation is marked finished, and the owner's next message reopens it.\n",
-        row.id
-    ));
+    if row.parent.is_empty() {
+        b.push_str(&format!(
+            "You are working with the owner of PULSE in a conversation from the hub (conversation {}). \
+             Keep going until the request is done; use the question tool only for a decision that is the owner's. \
+             Report progress in short plain words, and say what you did when you finish. \
+             When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the conversation is marked finished, and the owner's next message reopens it.\n",
+            row.id
+        ));
+    } else {
+        b.push_str(&format!(
+            "You are working in sub-conversation {} of conversation {}: the agent of that conversation started you for one part of its work, and the owner of PULSE can read and write here too. \
+             Your brief follows below. Every reply you make is delivered to the conversation that started you, so reply when there is something to report and keep replies to the point; a message marked as from that conversation is its agent steering you. \
+             Use the question tool only for a decision that is the owner's. \
+             When the part is done, call the finish tool with a one-line summary, then give your closing reply: that summary and reply are your report.\n",
+            row.id, row.parent
+        ));
+    }
     b.push_str(&format!(
         "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in ${ARTIFACTS_ENV} ({}); the hub shows that folder beside this conversation.\n",
         artifacts.display()
@@ -2621,6 +3020,29 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
          `pulse guide` explains how PULSE works, `pulse lead list` names the standing leads and their roles, `pulse status` shows the fleet, `pulse board --project SLUG` reads one project's board. \
          Ask the owner only for what none of these can tell.\n",
     );
+    b.push_str(
+        "A part of the work that can run on its own for a while (a review, a check, a second thing to build) can go to a sub-conversation: the chat tool with action start, a title and a full brief, starts one in your workspace, with its own page in the hub. \
+         Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. \
+         Reply or end your turn while it works - you are not blocked on it. A sub-conversation is for work the owner may want to watch or steer; a quick helper is the subagent tool.\n",
+    );
+    if !row.parent.is_empty() {
+        b.push_str(&format!(
+            "Workspace: you work in {}, the same folder{} as the conversation that started you, on its branch{}: commit on that branch and leave landing to it. \
+             Do not run `pulse chat attach`; this sub-conversation stays where its parent is.\n",
+            row.cwd,
+            if row.project.is_empty() {
+                String::new()
+            } else {
+                format!(" (project {})", row.project)
+            },
+            if row.branch.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", row.branch)
+            }
+        ));
+        return b.trim_end().to_string();
+    }
     if !row.project.is_empty() {
         let p = projects.iter().find(|p| p.slug == row.project);
         let (name, base, path) = p
@@ -3741,6 +4163,7 @@ mod tests {
             "fake",
             "fake-1",
             &row,
+            Weak::new(),
         );
         {
             let mut st = late.shared.lock();
@@ -4002,6 +4425,195 @@ mod tests {
         assert_eq!(row.note, "");
         let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
         assert_eq!(last.content, "Reopened.");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Waits until `id`'s transcript has a note whose extra matches `want`.
+    fn wait_note(
+        s: &Store,
+        id: &str,
+        want: impl Fn(&Value) -> bool,
+    ) -> pulse_store::ConversationMessage {
+        wait_note_after(s, id, 0, want)
+    }
+
+    /// The same for a note after message `after`.
+    fn wait_note_after(
+        s: &Store,
+        id: &str,
+        after: i64,
+        want: impl Fn(&Value) -> bool,
+    ) -> pulse_store::ConversationMessage {
+        for _ in 0..400 {
+            if let Some(m) = s
+                .chat_messages(id, after)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.role == "note" && want(&m.extra))
+            {
+                return m;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "conversation {id} never got the note: {:#?}",
+            s.chat_messages(id, 0).unwrap()
+        );
+    }
+
+    /// The chat tool starts a sub-conversation in the parent's workspace,
+    /// the sub-conversation's finish comes back to the parent as a report
+    /// (a note from it that runs a turn there, reopening the finished
+    /// parent), and the third level down is refused. Every session replays
+    /// the one script, so the parent's `chat start` cascades: parent,
+    /// child, grandchild - whose own start is the refused one.
+    #[test]
+    fn a_sub_conversation_reports_to_its_parent_and_stops_two_levels_down() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "chat", "args": {"action": "start", "title": "Docs check", "text": "Check that the docs match the code."}},
+                {"tool": "finish", "args": {"summary": "Started the docs check."}},
+                {"content": "Done here."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m
+            .create("", "", true, "ship the feature", "owner")
+            .expect("create");
+        let pid = parent.id.clone();
+        let parent = wait_status(&m, &pid, &["closed", "idle"]);
+        assert!(!parent.cwd.is_empty(), "the parent works in scratch space");
+
+        // The child: the parent's row, inherited.
+        let started = wait_note(&s, &pid, |x| x.get("child").is_some());
+        let cid = started.extra["child"].as_str().unwrap().to_string();
+        assert_eq!(started.content, "Started sub-conversation: Docs check");
+        let child = m.row(&cid).expect("child row");
+        assert_eq!(child.parent, pid);
+        assert_eq!(child.created_by, pid);
+        assert_eq!(child.title, "Docs check");
+        assert_eq!(
+            child.cwd, parent.cwd,
+            "a sub-conversation shares its parent's workspace"
+        );
+        assert!(child.auto_approve);
+        assert_eq!(s.chat_depth(&cid).unwrap(), 1);
+        let children = s.chat_children(&pid, false).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, cid);
+        let brief = s.chat_messages(&cid, 0).unwrap().remove(0);
+        assert_eq!(brief.role, "user");
+        assert_eq!(brief.content, "Check that the docs match the code.");
+
+        // The child's finish reaches the parent as a report, and the
+        // parent (finished by then) runs a turn on it.
+        let report = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
+        assert_eq!(report.extra["report"]["child"], cid);
+        assert_eq!(report.extra["report"]["title"], "Docs check");
+        assert!(
+            report.content.starts_with("Started the docs check."),
+            "{}",
+            report.content
+        );
+        assert!(report.content.contains("Done here."), "{}", report.content);
+        let parent = wait_status(&m, &pid, &["idle"]);
+        assert_eq!(
+            parent.status, "idle",
+            "the report reopened the finished parent"
+        );
+        let msgs = s.chat_messages(&pid, 0).unwrap();
+        let after = msgs.iter().position(|x| x.n == report.n).unwrap();
+        assert!(
+            msgs[after + 1..].iter().any(|x| x.role == "assistant"),
+            "the parent's agent took the report up: {msgs:#?}"
+        );
+
+        // The grandchild: started by the child (one level down is fine),
+        // refused its own start (two levels down).
+        let g_started = wait_note(&s, &cid, |x| x.get("child").is_some());
+        let gid = g_started.extra["child"].as_str().unwrap().to_string();
+        let grandchild = wait_status(&m, &gid, &["closed", "idle"]);
+        assert_eq!(grandchild.parent, cid);
+        assert_eq!(s.chat_depth(&gid).unwrap(), 2);
+        assert!(s.chat_children(&gid, false).unwrap().is_empty());
+        let steps = s.harness_steps(&grandchild.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.content.contains("levels deep at most")),
+            "{steps:#?}"
+        );
+        // The grandchild's finish reaches the child.
+        wait_note(&s, &cid, |x| x["report"]["child"] == gid);
+
+        // The parent's agent steers the child: a note from the parent in
+        // the child's transcript, a turn there, and its reply back.
+        wait_idle(&m, &cid);
+        wait_idle(&m, &pid);
+        let before = s.chat_messages(&pid, 0).unwrap().last().unwrap().n;
+        assert!(m.send_from_parent(&cid, "someone-else", "x").is_err());
+        m.send_from_parent(&cid, &pid, "Also check the README.")
+            .expect("send from parent");
+        let steer = wait_note(&s, &cid, |x| x["from"] == pid);
+        assert_eq!(steer.content, "Also check the README.");
+        wait_idle(&m, &cid);
+        wait_note_after(&s, &pid, before, |x| {
+            x["report"]["kind"] == REPORT_REPLIED && x["report"]["child"] == cid
+        });
+        let listing = m.read_children(&pid, "").unwrap();
+        assert!(
+            listing.contains(&cid) && listing.contains("Docs check"),
+            "{listing}"
+        );
+        let one = m.read_children(&pid, &cid).unwrap();
+        assert!(one.contains("[you] Also check the README."), "{one}");
+        assert!(m.read_children(&pid, &gid).is_err(), "not this one's child");
+        wait_idle(&m, &pid);
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// A sub-conversation is refused for an archived parent, and one the
+    /// owner closes reports that to its parent.
+    #[test]
+    fn sub_conversations_need_a_live_parent_and_report_the_owners_close() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "Ok."}, {"content": "Ok."}]));
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m.create("", "", true, "plan", "owner").expect("create");
+        let pid = parent.id.clone();
+        wait_idle(&m, &pid);
+        assert!(m.create_child(&pid, "", "  ").is_err(), "an empty brief");
+        let child = m
+            .create_child(&pid, "", "Review the plan for gaps.")
+            .expect("child");
+        assert_eq!(child.title, "Review the plan for gaps.");
+        assert_eq!(child.parent, pid);
+        wait_idle(&m, &child.id);
+        wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_REPLIED);
+        wait_idle(&m, &pid);
+        m.close(&child.id).expect("close");
+        let closed = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
+        assert_eq!(closed.content, "The owner finished it.");
+        wait_idle(&m, &pid);
+        m.archive(&pid).expect("archive");
+        assert!(
+            m.create_child(&pid, "", "another").is_err(),
+            "archived parent"
+        );
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

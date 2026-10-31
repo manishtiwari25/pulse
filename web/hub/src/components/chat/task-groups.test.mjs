@@ -45,3 +45,45 @@ test("the task's title is the brief's first real line, cut at a word when long",
   assert.ok(!title.includes("word\u2026") || title.endsWith("word\u2026"));
   assert.equal(taskTitleOf("a".repeat(200)), "a".repeat(120) + "\u2026");
 });
+
+import { familyGroup, families, groupOf, reportVerb } from "./task-groups.ts";
+
+const conv = (id, over = {}) => ({ id, status: "idle", parent: "", created_at: "2026-10-18T10:00:00Z", ...over });
+
+test("sub-conversations stand under their parent, orphans on their own", () => {
+  const rows = [
+    conv("c-3", { parent: "c-1", created_at: "2026-10-18T12:00:00Z" }),
+    conv("c-1"),
+    conv("c-2", { parent: "c-1", created_at: "2026-10-18T11:00:00Z" }),
+    conv("c-4", { parent: "c-gone" }),
+    conv("c-5", { parent: "c-5" }),
+  ];
+  const fams = families(rows);
+  assert.deepEqual(
+    fams.map((f) => [f.c.id, f.children.map((c) => c.id)]),
+    [
+      ["c-1", ["c-2", "c-3"]],
+      ["c-4", []],
+      ["c-5", []],
+    ],
+  );
+});
+
+test("a family sits in its most pressing member's section", () => {
+  assert.equal(groupOf(conv("a", { status: "closed" })), "finished");
+  assert.equal(groupOf(conv("a", { status: "closed", live: { status: "running" } })), "working");
+  assert.equal(groupOf(conv("a", { status: "archived" })), "archived");
+  assert.equal(groupOf(conv("a", { status: "ended" })), "open");
+  const [fam] = families([conv("p", { status: "closed" }), conv("k", { parent: "p", status: "waiting" })]);
+  assert.equal(familyGroup(fam), "working");
+  const [quiet] = families([conv("p", { status: "closed" }), conv("k", { parent: "p", status: "archived" })]);
+  assert.equal(familyGroup(quiet), "finished");
+  const [alone] = families([conv("p", { status: "archived" })]);
+  assert.equal(familyGroup(alone), "archived");
+});
+
+test("a report note says what the sub-conversation did", () => {
+  assert.equal(reportVerb("finished"), "finished");
+  assert.equal(reportVerb("asks"), "asks you");
+  assert.equal(reportVerb("odd"), "reports");
+});

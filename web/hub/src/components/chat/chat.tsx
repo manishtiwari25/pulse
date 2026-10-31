@@ -21,6 +21,7 @@ import {
   CircleDashedIcon,
   CircleIcon,
   CircleStopIcon,
+  CornerDownRightIcon,
   CpuIcon,
   FolderGitIcon,
   GitBranchIcon,
@@ -53,11 +54,11 @@ import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonRows } from "@/comp
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
 import { TaskSheet } from "@/components/tasks/task-sheet";
 import type { ChatArtifact, ChatAttachment, ChatChanges, ChatListResponse, ChatPending, ChatShowResponse, ChatTask, Conversation, ConversationLive, ConversationMessage, HarnessModel, HarnessModelsResponse, HarnessSessionResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
-import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatUpload, enc, errorText, isChatImage, query, writes } from "@/lib/api";
+import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatReport, chatUpload, enc, errorText, isChatImage, query, writes } from "@/lib/api";
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import { hrefs } from "@/lib/nav";
-import { sessionWords, taskFinished, taskMood, taskTitleOf, type Mood, type Tone } from "@/components/chat/task-groups";
+import { GROUP_ORDER, familyGroup, families, reportVerb, sessionWords, taskFinished, taskMood, taskTitleOf, type ListGroup, type Mood, type Tone } from "@/components/chat/task-groups";
 import { ACTION_KINDS, beatsOf, brief, countWords, groupNotes, streamTail } from "@/lib/transcript";
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
@@ -79,22 +80,10 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   return { word: c.turns ? "Idle" : "New", tone: "ok", pip: "happy", dot: "bg-ok" };
 }
 
-// The list's sections: a conversation is working while its agent runs or
-// waits on you, open while it is idle between turns, finished once the
-// agent or the owner closed it (a message reopens it), and archived when
-// it was put away.
-type ListGroup = "working" | "open" | "finished" | "archived";
-
-function groupOf(c: Conversation): ListGroup {
-  const status = c.live?.status || c.status;
-  if (status === "running" || status === "waiting") return "working";
-  if (status === "closed") return "finished";
-  if (status === "archived") return "archived";
-  return "open";
-}
-
+// The list's sections (task-groups.ts): working, open, finished, archived.
+// A conversation with sub-conversations is listed as one family, in the
+// section of its most pressing member.
 const GROUP_TITLES: Record<ListGroup, string> = { working: "Working", open: "Open", finished: "Finished", archived: "Archived" };
-const GROUP_ORDER: ListGroup[] = ["working", "open", "finished", "archived"];
 // Finished conversations pile up: the list shows the latest few and unfolds on request.
 const FINISHED_SHOWN = 8;
 // Finished tasks too: the list keeps the latest few groups open.
@@ -720,7 +709,8 @@ function ConversationList({ rows, tasks, loading, current, currentTask, onOpen, 
   const now = useNow(15000);
   const [allFinished, setAllFinished] = useState(false);
   const [allFinishedTasks, setAllFinishedTasks] = useState(false);
-  const groups = GROUP_ORDER.map((g) => ({ g, rows: rows.filter((c) => groupOf(c) === g) })).filter((x) => x.rows.length);
+  const fams = useMemo(() => families(rows), [rows]);
+  const groups = GROUP_ORDER.map((g) => ({ g, rows: fams.filter((f) => familyGroup(f) === g) })).filter((x) => x.rows.length);
   // Tasks first: a task is many conversations at once, so the list shows the
   // ones still moving, then the latest finished few.
   const movingTasks = tasks.filter((t) => !taskFinished(t));
@@ -777,8 +767,8 @@ function ConversationList({ rows, tasks, loading, current, currentTask, onOpen, 
                   <span className="tnum font-normal">{all.length}</span>
                 </h3>
                 <ul className="grid min-w-0 gap-1.5" role="list">
-                  {shown.map((c, i) => (
-                    <ConversationItem key={c.id} c={c} index={i} active={c.id === current} now={now} onOpen={onOpen} />
+                  {shown.map((f, i) => (
+                    <ConversationItem key={f.c.id} c={f.c} subs={f.children} index={i} active={f.c.id === current} current={current} now={now} onOpen={onOpen} />
                   ))}
                 </ul>
                 {folded ? (
@@ -871,33 +861,51 @@ function TaskItem({ t, index, active, now, onOpen, folded }: { t: ChatTask; inde
   );
 }
 
-function ConversationItem({ c, index, active, now, onOpen }: { c: Conversation; index: number; active: boolean; now: number; onOpen: (id: string) => void }) {
+// A conversation in the list, with its sub-conversations (the ones its
+// agent started, or the owner from its page) as lines under it, each
+// opening on its own: the family reads like a task and its steps.
+function ConversationItem({ c, subs = [], index, active, current = "", now, onOpen }: { c: Conversation; subs?: Conversation[]; index: number; active: boolean; current?: string; now: number; onOpen: (id: string) => void }) {
   const m = moodOf(c);
   const live = (c.live?.status || c.status) === "running";
+  const childActive = subs.some((k) => k.id === current);
+  const framed = active || childActive;
   return (
     <li className="enter min-w-0" style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}>
-      <button
-        type="button"
-        onClick={() => onOpen(c.id)}
-        aria-current={active ? "page" : undefined}
-        className={cn(
-          "lift grid w-full min-w-0 gap-1 rounded-xl border bg-card px-3 py-2.5 text-left transition-colors",
-          active ? "border-primary/50 bg-primary/[0.06] shadow-card" : "hover:bg-muted/40",
-          m.tone === "wait" && !active && "border-warn/50",
-        )}
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
-          <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{c.title || "Untitled"}</span>
-          {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
-          <span aria-hidden>·</span>
-          <span className="truncate">{c.status === "closed" && c.note ? c.note : c.project || "no project yet"}</span>
-          <span className="ml-auto shrink-0 tnum">{relShort(c.last_at || c.created_at, now)}</span>
-        </span>
-      </button>
+      <div className={cn("grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors", framed ? "border-primary/50 shadow-card" : "", m.tone === "wait" && !framed && "border-warn/50")}>
+        <button type="button" onClick={() => onOpen(c.id)} aria-current={active ? "page" : undefined} className={cn("lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors", active ? "bg-primary/[0.06]" : "hover:bg-muted/40")}>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{c.title || "Untitled"}</span>
+            {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
+            <span aria-hidden>·</span>
+            <span className="truncate">{c.status === "closed" && c.note ? c.note : c.project || "no project yet"}</span>
+            <span className="ml-auto shrink-0 tnum">{relShort(c.last_at || c.created_at, now)}</span>
+          </span>
+        </button>
+        {subs.length ? (
+          <ul className="grid min-w-0 gap-px border-t bg-muted/20 py-1" role="list" aria-label={`Sub-conversations of ${c.title || c.id}`}>
+            {subs.map((k) => {
+              const km = moodOf(k);
+              const kActive = k.id === current;
+              return (
+                <li key={k.id} className="min-w-0">
+                  <button type="button" onClick={() => onOpen(k.id)} aria-current={kActive ? "page" : undefined} className={cn("flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50", kActive && "bg-primary/[0.08]")} title={`${k.title || k.id}: open the sub-conversation`}>
+                    <span className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl" aria-hidden />
+                    <span className={cn("live-dot size-1.5 shrink-0 rounded-full", km.dot)} data-live={(k.live?.status || k.status) === "running"} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate text-foreground">{k.title || "Untitled"}</span>
+                    {km.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
+                    <span className={cn("shrink-0 font-medium", TONE_TEXT[km.tone])}>{km.word}</span>
+                    <span className="shrink-0 tnum text-muted-foreground">{relShort(k.last_at || k.created_at, now)}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+      </div>
     </li>
   );
 }
@@ -1109,6 +1117,10 @@ interface Loaded {
   steps: Record<string, HarnessStep[]>;
   artifacts: ChatArtifact[];
   changes: ChatChanges | null;
+  // The conversation this one is a sub-conversation of, by title (empty
+  // for a top-level one), and its own sub-conversations.
+  parentTitle: string;
+  children: Conversation[];
 }
 
 function ConversationView({ id, seed, projects, list, onBack, onGone }: { id: string; seed?: Conversation; projects?: ProjectsPayload; list: ReactNode; onBack: () => void; onGone: () => void }) {
@@ -1140,7 +1152,7 @@ function ConversationView({ id, seed, projects, list, onBack, onGone }: { id: st
       const messages = mergeMessages(prev?.messages ?? [], r.messages);
       const steps = { ...(prev?.steps ?? {}) };
       if (r.session_id) steps[r.session_id] = mergeSteps(steps[r.session_id] ?? [], r.steps);
-      const next: Loaded = { conversation: r.conversation, live: r.live, sessionId: r.session_id, messages, steps, artifacts: r.artifacts, changes: r.changes };
+      const next: Loaded = { conversation: r.conversation, live: r.live, sessionId: r.session_id, messages, steps, artifacts: r.artifacts, changes: r.changes, parentTitle: r.parent_title ?? "", children: r.children ?? [] };
       dRef.current = next;
       setD(next);
       setError("");
@@ -1413,6 +1425,18 @@ function ConversationBody({ d, projects, list, onBack, apply, pull, loadSession,
               ) : (
                 <span>no project yet</span>
               )}
+              {c.parent ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="inline-flex min-w-0 items-center gap-1">
+                    <CornerDownRightIcon className="size-3 shrink-0" aria-hidden />
+                    part of{" "}
+                    <Link href={hrefs.conversations(c.parent)} className="truncate underline-offset-4 hover:text-foreground hover:underline" title="Open the conversation this one is part of">
+                      {d.parentTitle || c.parent}
+                    </Link>
+                  </span>
+                </>
+              ) : null}
               {c.turns ? (
                 <>
                   <span aria-hidden>·</span>
@@ -1587,6 +1611,65 @@ function MessageRow({ m, status, d, loadSession }: { m: ConversationMessage; sta
           <span className="font-medium text-foreground">{ok ? (decision === "always" ? "Allowed, always" : "Allowed") : "Denied"}</span> <code className="rounded bg-muted px-1 font-mono text-[11px]">{String(m.extra?.tool ?? "")}</code> {m.content}
           {m.extra?.reason ? <span> - {String(m.extra.reason)}</span> : null}
         </span>
+      </li>
+    );
+  }
+  // A report from a sub-conversation: its words, in a bubble on the left
+  // that names it and opens it, since its agent speaks here through the
+  // parent's.
+  const report = chatReport(m);
+  if (report) {
+    const title = report.title || d.children.find((k) => k.id === report.child)?.title || "";
+    return (
+      <li className="enter group/msg grid min-w-0 gap-3">
+        <TurnSteps m={m} d={d} loadSession={loadSession} />
+        <div className="grid min-w-0 max-w-[85%] gap-1 rounded-2xl rounded-tl-md border border-border/70 bg-muted/40 px-4 py-2.5 text-[15px] leading-relaxed">
+          <Link href={hrefs.conversations(report.child)} className="inline-flex min-w-0 items-center gap-1 text-xs font-semibold text-primary underline-offset-4 hover:underline" title="Open the sub-conversation">
+            <CornerDownRightIcon className="size-3 shrink-0" aria-hidden />
+            <span className="min-w-0 truncate">{title || "Sub-conversation"}</span>
+            <span className="shrink-0 font-medium text-muted-foreground">· {reportVerb(report.kind)}</span>
+          </Link>
+          <Markdown source={m.content} className="[&_pre]:whitespace-pre-wrap" />
+        </div>
+        {when}
+      </li>
+    );
+  }
+  // A message from the conversation that started this one (its agent
+  // steering this sub-conversation): on the right like the owner's, named.
+  const from = typeof m.extra?.from === "string" ? m.extra.from : "";
+  if (from) {
+    return (
+      <li className="enter group/msg grid min-w-0 justify-items-end gap-1">
+        <div className="grid min-w-0 max-w-[85%] gap-1 rounded-2xl rounded-br-md border border-border/70 bg-muted/60 px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+          <Link href={hrefs.conversations(from)} className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" title="Open the conversation this one is part of">
+            <CornerDownRightIcon className="size-3 shrink-0 -scale-x-100" aria-hidden />
+            From {d.parentTitle || "the conversation this one is part of"}
+          </Link>
+          <div className="whitespace-pre-wrap anywhere">{m.content}</div>
+        </div>
+        {when}
+      </li>
+    );
+  }
+  // The start of a sub-conversation: one line that opens it.
+  const child = typeof m.extra?.child === "string" ? m.extra.child : "";
+  if (child) {
+    const k = d.children.find((x) => x.id === child);
+    const km = k ? moodOf(k) : null;
+    return (
+      <li className="enter grid min-w-0 gap-3">
+        <TurnSteps m={m} d={d} loadSession={loadSession} />
+        <div className="flex min-w-0 items-start gap-2.5 px-1.5 text-[13px] leading-relaxed text-muted-foreground">
+          <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
+          <span className="min-w-0 anywhere">
+            Started sub-conversation{" "}
+            <Link href={hrefs.conversations(child)} className="font-medium text-primary underline-offset-4 hover:underline">
+              {String(m.extra?.title ?? "") || k?.title || child}
+            </Link>
+            {km ? <span className={cn("ml-2 font-medium", TONE_TEXT[km.tone])}>{km.word}</span> : null}
+          </span>
+        </div>
       </li>
     );
   }
@@ -1964,6 +2047,91 @@ function Composer({ conversation, live, disabled, closed = false, tools, onSent 
 
 // ----- side panel: project, changes, artifacts ------------------------------
 
+// The conversation's sub-conversations: the ones its agent started with the
+// chat tool, or the owner here. Each opens on its own page; a new one takes
+// the brief typed here and works in this conversation's workspace,
+// reporting back into this transcript.
+function SubConversations({ d, busy, setBusy, pull }: { d: Loaded; busy: string; setBusy: (s: string) => void; pull: () => Promise<void> }) {
+  const c = d.conversation;
+  const router = useRouter();
+  const now = useNow(15000);
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
+  const archived = c.status === "archived";
+  const kids = d.children;
+  if (!kids.length && archived) return null;
+
+  const start = async () => {
+    const brief = text.trim();
+    if (!brief || busy) return;
+    setBusy("sub");
+    try {
+      const r = await writes.chatCreate({ text: brief, title: title.trim(), parent: c.id });
+      toast.success("Started " + (r.conversation.title || "the sub-conversation") + ". Its replies come back here.");
+      setText("");
+      setTitle("");
+      setOpen(false);
+      invalidate("chat");
+      void pull();
+      router.replace(hrefs.conversations(r.conversation.id), { scroll: false });
+    } catch (e) {
+      fail(e, "Could not start a sub-conversation");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="grid min-w-0 gap-1.5" aria-label="Sub-conversations">
+      <h3 className="flex items-center gap-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+        <CornerDownRightIcon className="size-3" aria-hidden />
+        Sub-conversations
+        {kids.length ? <span className="tnum font-normal">{kids.length}</span> : null}
+        {!archived ? (
+          <button type="button" className="ml-auto font-normal normal-case tracking-normal underline-offset-4 hover:text-foreground hover:underline" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+            {open ? "Cancel" : "Start one"}
+          </button>
+        ) : null}
+      </h3>
+      {kids.length ? (
+        <ul className="grid min-w-0 gap-px rounded-lg border bg-muted/20 py-1" role="list">
+          {kids.map((k) => {
+            const km = moodOf(k);
+            return (
+              <li key={k.id} className="min-w-0">
+                <Link href={hrefs.conversations(k.id)} className="flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted/50" title={k.note || k.title}>
+                  <span className={cn("live-dot size-1.5 shrink-0 rounded-full", km.dot)} data-live={(k.live?.status || k.status) === "running"} aria-hidden />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{k.title || "Untitled"}</span>
+                  <span className={cn("shrink-0 font-medium", TONE_TEXT[km.tone])}>{km.word}</span>
+                  <span className="shrink-0 tnum text-muted-foreground">{relShort(k.last_at || k.created_at, now)}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      ) : !open && c.status !== "closed" ? (
+        <p className="px-1 text-[12px] leading-relaxed text-muted-foreground">None yet. The agent starts one for a part of the work it wants watched on its own page; you can start one here too. Its replies come back into this conversation.</p>
+      ) : null}
+      {open ? (
+        <form
+          className="grid min-w-0 gap-1.5 px-0.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void start();
+          }}
+        >
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (optional)" aria-label="Sub-conversation title" maxLength={120} className="h-8" />
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What should it do? It works in this conversation's workspace and reports back here." aria-label="Sub-conversation brief" rows={3} className="min-h-16 text-[13px]" />
+          <Button type="submit" size="sm" disabled={!text.trim() || !!busy} className="justify-self-end">
+            {busy === "sub" ? <LoaderCircleIcon className="animate-spin" /> : <MessageSquarePlusIcon />} Start
+          </Button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
 function SidePanel({ d, projects, apply, pull, busy, setBusy, changeCount, diff, view, onView }: { d: Loaded; projects?: ProjectsPayload; apply: (r: { conversation: Conversation }) => void; pull: () => Promise<void>; busy: string; setBusy: (s: string) => void; changeCount: number; diff: ChatDiff; view: ChatView | null; onView: (v: ChatView | null) => void }) {
   const c = d.conversation;
   const ch = d.changes;
@@ -2007,6 +2175,7 @@ function SidePanel({ d, projects, apply, pull, busy, setBusy, changeCount, diff,
   return (
     <section className="enter grid min-w-0 content-start gap-3 rounded-2xl border bg-card px-3 py-3 shadow-card" style={{ animationDelay: "60ms" }} aria-label="About this conversation">
       {plan ? <PlanList step={plan} compact /> : null}
+      <SubConversations d={d} busy={busy} setBusy={setBusy} pull={pull} />
       <Tabs value={tab} onValueChange={setTab} className="min-w-0 gap-3">
         <TabsList className="w-full">
           {/* Three tabs in a side column (14-22rem): tight padding, small icons, nothing wraps. */}

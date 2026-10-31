@@ -687,6 +687,9 @@ pub struct Agent {
     /// Whether the `finish` tool is offered: the [`Ui`] has a conversation
     /// to close (the hub's), not just a keyboard.
     finish_tool: bool,
+    /// Whether the `chat` tool is offered: the [`Ui`] can start
+    /// sub-conversations (the hub's).
+    chat_tool: bool,
     /// Where the text of a reply goes as it streams in, when the provider
     /// streams; the Assistant step still carries the whole text.
     stream: Option<Box<dyn StreamSink>>,
@@ -765,6 +768,31 @@ pub trait Ui: Send {
     fn finish(&mut self, _summary: &str) -> bool {
         false
     }
+    /// The model starts, steers or reads a sub-conversation (`chat` tool).
+    /// `Ok` is what the model reads back, `Err` why the hub refused; None
+    /// where there are no conversations to have (a terminal chat), which
+    /// the model is told.
+    fn chat(&mut self, _request: &ChatRequest) -> Option<ChatReply> {
+        None
+    }
+}
+
+/// What the hub answers a `chat` tool call with: what the model reads
+/// back, or why the hub refused.
+pub type ChatReply = std::result::Result<String, String>;
+
+/// What a conversation's agent asks of its hub with the `chat` tool
+/// ([`Ui::chat`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatRequest {
+    /// Start a sub-conversation on `text`, titled `title` (empty: from the
+    /// text's first line).
+    Start { title: String, text: String },
+    /// Send `text` to sub-conversation `id`.
+    Send { id: String, text: String },
+    /// Read sub-conversation `id` (its state and what it said), or list
+    /// every sub-conversation when `id` is empty.
+    Read { id: String },
 }
 
 /// A call the model wants to make that changes the checkout or leaves the
@@ -799,6 +827,9 @@ pub const QUESTION_TOOL: &str = "question";
 /// The name of the tool a hub conversation offers for closing itself once
 /// the request is done ([`Ui::finish`]).
 pub const FINISH_TOOL: &str = "finish";
+/// The name of the tool a hub conversation offers for starting, steering
+/// and reading its sub-conversations ([`Ui::chat`]).
+pub const CHAT_TOOL: &str = "chat";
 
 /// The status an interactive session ends with.
 pub const EXIT_ENDED: &str = "ended";
@@ -828,6 +859,23 @@ pub fn finish_tool() -> Tool {
                 "summary": {"type": "string", "description": "what was done and where it landed, one or two sentences"}
             },
             "required": ["summary"]
+        }),
+    }
+}
+
+pub fn chat_tool() -> Tool {
+    Tool {
+        name: CHAT_TOOL.into(),
+        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it for a part of the request that runs on its own for a while - a long check, a second opinion, a piece in another area - not for a quick lookup (the subagent tool) or for work you can do yourself now.".into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["start", "send", "read"], "description": "start a sub-conversation, send it a message, or read it"},
+                "text": {"type": "string", "description": "start: the full brief, with the goal, what is already known, and what to report back; send: the message"},
+                "title": {"type": "string", "description": "start: a short title for the hub's list (default: the brief's first line)"},
+                "id": {"type": "string", "description": "send, read: the sub-conversation's id, as `start` returned it"}
+            },
+            "required": ["action"]
         }),
     }
 }
@@ -1105,6 +1153,7 @@ pub fn new_shared(
         current_subjects: Vec::new(),
         ui: None,
         finish_tool: false,
+        chat_tool: false,
         stream: None,
         state: LoopState::default(),
         ended: false,
@@ -1320,6 +1369,12 @@ impl Agent {
         self.finish_tool = on;
     }
 
+    /// Offers the `chat` tool: the [`Ui`] starts and steers
+    /// sub-conversations on it.
+    pub fn offer_chat(&mut self, on: bool) {
+        self.chat_tool = on;
+    }
+
     /// Sends the text of each reply to `f` as it streams in from a
     /// provider that streams; the Assistant step still carries it whole.
     /// When the stream breaks part way the reply is asked for again (up
@@ -1496,6 +1551,10 @@ impl Agent {
         self.finish_tool && self.offers_question()
     }
 
+    fn offers_chat(&self) -> bool {
+        self.chat_tool && self.offers_question()
+    }
+
     /// Whether `bash` takes `background: true` and `process` is offered:
     /// the environment must be able to keep a process running, and a
     /// read-only run runs its commands to completion only (a change a
@@ -1535,6 +1594,9 @@ impl Agent {
         }
         if self.offers_finish() {
             out.push(finish_tool());
+        }
+        if self.offers_chat() {
+            out.push(chat_tool());
         }
         out.extend(self.mcp.advertised());
         out.retain(|t| !self.permissions.withdraws(&t.name));
@@ -1577,6 +1639,9 @@ impl Agent {
         }
         if self.offers_finish() {
             out.push(FINISH_TOOL.to_string());
+        }
+        if self.offers_chat() {
+            out.push(CHAT_TOOL.to_string());
         }
         if self.mcp.deferred() {
             out.push(MCP_SEARCH_TOOL.to_string());
@@ -2584,6 +2649,7 @@ impl Agent {
             SUBAGENT_TOOL if self.offers_subagents() => self.run_subagent(cancel, &call.arguments),
             QUESTION_TOOL if self.offers_question() => self.run_question_tool(&call.arguments),
             FINISH_TOOL if self.offers_finish() => self.run_finish_tool(&call.arguments),
+            CHAT_TOOL if self.offers_chat() => self.run_chat_tool(&call.arguments),
             MCP_SEARCH_TOOL if self.mcp.deferred() => {
                 let query = serde_json::from_str::<Value>(&call.arguments)
                     .ok()
@@ -2720,6 +2786,92 @@ impl Agent {
             }
         };
         self.emit_observation(&format!("{FINISH_TOOL} tool"), &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// The `chat` tool: a sub-conversation starts, hears from the model,
+    /// or is read, through the session's [`Ui`].
+    fn run_chat_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+        let field = |name: &str| -> String {
+            args.get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let action = field("action");
+        let text = field("text");
+        let title = field("title");
+        let id = field("id");
+        let request = match action.as_str() {
+            "start" if !text.is_empty() => ChatRequest::Start { title, text },
+            "send" if !id.is_empty() && !text.is_empty() => ChatRequest::Send { id, text },
+            "read" => ChatRequest::Read { id },
+            "start" => {
+                return self.tool_error(
+                    "chat: start needs text, the sub-conversation's full brief".to_string(),
+                );
+            }
+            "send" => {
+                return self.tool_error(
+                    "chat: send needs id (the sub-conversation) and text (the message)".to_string(),
+                );
+            }
+            _ => {
+                return self.tool_error(
+                    "chat: action must be start, send or read (a JSON object with a string action)"
+                        .to_string(),
+                );
+            }
+        };
+        let line = match &request {
+            ChatRequest::Start { title, text } => format!(
+                "chat start: {}",
+                if title.is_empty() {
+                    text.lines().next().unwrap_or("")
+                } else {
+                    title
+                }
+            ),
+            ChatRequest::Send { id, text } => {
+                format!("chat send {id}: {}", text.lines().next().unwrap_or(""))
+            }
+            ChatRequest::Read { id } if id.is_empty() => "chat read".to_string(),
+            ChatRequest::Read { id } => format!("chat read {id}"),
+        };
+        self.result.steps += 1;
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: line,
+            command: CHAT_TOOL.to_string(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        let answer = self
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.lock().unwrap_or_else(|e| e.into_inner()).chat(&request));
+        let obs = match answer {
+            Some(Ok(output)) => Observation {
+                output,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            Some(Err(why)) => Observation {
+                output: format!("chat: {why}"),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            None => Observation {
+                output: "There are no sub-conversations to have here: do the work yourself, or use the subagent tool for a helper.".to_string(),
+                exit_code: 1,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+        };
+        self.emit_observation(&format!("{CHAT_TOOL} tool"), &obs);
         ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
     }
 

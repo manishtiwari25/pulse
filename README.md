@@ -379,7 +379,30 @@ activity fold under **Details for this machine**.
   **Conversation** tabs; a step with a run opens that run on the Harness
   page. Tasks in progress stay listed; finished ones a week (the latest
   three unfolded, *Show all finished tasks* for the rest), all of them with
-  **Show archived**. The start form asks **Who does it**: *One agent* starts
+  **Show archived**. A conversation can hold **sub-conversations** of its
+  own: whole conversations - their own transcript, session and page, opened
+  and steered like any other - that its agent starts with the `chat` tool
+  (`start` with a title and a brief) for a part of the work worth a page of
+  its own - a long check, a second opinion, a piece that should keep going
+  while it answers you - or that you start from the **Sub-conversations**
+  panel on its page (**Start one**: a title and the brief). A
+  sub-conversation inherits the parent's project, worktree and branch (it
+  works in the same folder, so it attaches nothing of its own), model,
+  effort and **Auto**; what it does comes back to the parent as a framed
+  note in the parent's transcript with a link to it - *replied*,
+  *finished* with its summary, *asks you* with the question and its
+  choices, *is blocked*, *stopped*, *ended its session* - and the note
+  wakes the parent's agent (reopening it if it had finished) so it can
+  read the report and answer, steer the child (`send`) or read its last
+  messages (`read`); a parent's steer shows in the child on the right as
+  *From <parent>* and answers a question the child was asking if one
+  waits. Two levels deep at most and eight open sub-conversations to a
+  parent; an archived parent takes no new ones and its reports are dropped,
+  while archiving a parent leaves its sub-conversations in place. In the
+  list each sub-conversation is a line under its parent with its own state,
+  the parent's card taking the family's most pressing state, and a
+  sub-conversation's header says *part of <parent>* with the way back.
+  The start form asks **Who does it**: *One agent* starts
   a conversation as before; *The project's team* gives a task - the whole
   text is the brief, its first line (without list or heading marks, cut at
   a word past 120 characters) the title, priority 10 - and the lead agent
@@ -455,8 +478,12 @@ activity fold under **Details for this machine**.
   shows, and `/api/v1/chat` (`GET` for the list - `conversations`, and
   `tasks` with each task's thread summed up and one entry per job with its
   latest harness session, the tasks in progress plus a week of finished
-  ones, every one with `?all=1` - `POST` to start, `GET /chat/<id>?since=N&after=N`
-  for the transcript and live steps past what you hold, `/message` with an
+  ones, every one with `?all=1` - `POST` to start (`parent` with a
+  conversation's id makes a sub-conversation of it: 409 when there is no
+  such conversation, refused when it is archived, two levels down or has
+  eight open ones), `GET /chat/<id>?since=N&after=N`
+  for the transcript and live steps past what you hold, with
+  `parent_title` and the `children` it holds, `/message` with an
   optional `attachments` list of uploaded names and an optional `images`
   list of inline pictures (`mime`, base64 `data`, optional `name`; png, jpeg
   or webp) that the model sees with the message when its provider takes
@@ -2388,6 +2415,7 @@ and subject to the same deny rules and output cap as a shell command:
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
 | `web_search` | a web search, numbered results with title, address and snippet (**Web search**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
+| `chat` | in a hub conversation only: `start` a sub-conversation with a title and a brief, `send` it a message, `read` its last messages (**Sub-conversations** under **Chat** in [The owner's path](#the-owners-path)) |
 
 A reply may carry **several calls**, and every one gets its own
 observation, so a model reads three files in one turn instead of three.
@@ -2643,7 +2671,15 @@ steps and usage count against the parent's budgets; a child that loses
 the clone ends the parent with `sandbox_lost` too. `harness.subagents`
 (`on`) turns it off, `--no-subagents` for one run. A helper never sees the
 tool; a job's brief is still written for one agent and the lead still plans
-with jobs, not helpers.
+with jobs, not helpers. A hub conversation has the `chat` tool beside it
+for the other shape of delegation: a **sub-conversation** is not bounded
+by the parent's turn - it is a conversation of its own with its own
+session, page and budget, in the parent's worktree, that the owner can
+open and steer, and it reports back to the parent as notes that wake it
+(**Chat** in [The owner's path](#the-owners-path)). The brief tells the
+agent which to pick: a helper for a quick self-contained lookup whose
+answer it needs now, a sub-conversation for work that should keep going
+and be watched on its own while it answers the owner.
 
 **Web pages.** The `fetch` tool reads one `http(s)` page - a documentation
 page, a changelog, an issue the model was pointed at - as text (HTML

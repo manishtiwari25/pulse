@@ -38,6 +38,10 @@ pub struct Conversation {
     pub turns: i64,
     pub cost: f64,
     pub note: String,
+    /// The conversation this one is a sub-conversation of (its agent
+    /// started it and hears how it ends); empty at the top level.
+    #[serde(default)]
+    pub parent: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -50,7 +54,7 @@ pub struct ConversationMessage {
     pub extra: Value,
 }
 
-const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning";
+const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning, parent";
 const MESSAGE_COLS: &str = "conversation_id, n, at, role, content, extra";
 
 fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
@@ -74,6 +78,7 @@ fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
         cost: r.get(15)?,
         note: r.get(16)?,
         reasoning: r.get(17)?,
+        parent: r.get(18)?,
     })
 }
 
@@ -172,7 +177,7 @@ impl Store {
         let now = self.now();
         let tx = self.begin()?;
         tx.execute(
-            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
             params![
                 c.id,
                 c.title,
@@ -191,7 +196,8 @@ impl Store {
                 c.turns,
                 c.cost,
                 c.note,
-                c.reasoning
+                c.reasoning,
+                c.parent
             ],
         )?;
         tx.commit()?;
@@ -225,6 +231,50 @@ impl Store {
         Ok(stmt
             .query_map(params![limit.max(1)], scan_chat)?
             .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The sub-conversations of `parent`, oldest first; archived ones
+    /// only when asked for.
+    pub fn chat_children(&self, parent: &str, archived: bool) -> Result<Vec<Conversation>> {
+        let conn = self.conn()?;
+        let where_ = if archived {
+            ""
+        } else {
+            "AND status != 'archived'"
+        };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CHAT_COLS} FROM conversations WHERE parent = ? AND parent != '' {where_} ORDER BY created_at, id"
+        ))?;
+        Ok(stmt
+            .query_map(params![parent], scan_chat)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// How many conversations stand above this one: 0 at the top level, 1
+    /// for a sub-conversation, and so on up the `parent` links (a missing
+    /// parent row ends the count).
+    pub fn chat_depth(&self, id: &str) -> Result<usize> {
+        let conn = self.conn()?;
+        let mut depth = 0;
+        let mut at = id.to_string();
+        let mut seen = vec![at.clone()];
+        loop {
+            let parent: Option<String> = conn
+                .query_row(
+                    "SELECT parent FROM conversations WHERE id = ?",
+                    params![at],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match parent {
+                Some(p) if !p.is_empty() && !seen.contains(&p) => {
+                    depth += 1;
+                    seen.push(p.clone());
+                    at = p;
+                }
+                _ => return Ok(depth),
+            }
+        }
     }
 
     /// Sets the status and the one-line note that explains it.
@@ -526,6 +576,71 @@ mod tests {
         assert_eq!(made.reasoning, "low");
     }
 
+    /// A sub-conversation keeps its parent's id; the parent lists its
+    /// children (archived ones on request) and the depth counts the links
+    /// up to the top.
+    #[test]
+    fn sub_conversations_link_to_their_parent() {
+        let (s, _home) = new_store();
+        let top = s.chat_create(&chat("chat-top")).expect("top");
+        assert_eq!(top.parent, "");
+        let child = s
+            .chat_create(&Conversation {
+                parent: "chat-top".into(),
+                ..chat("chat-child")
+            })
+            .expect("child");
+        assert_eq!(child.parent, "chat-top");
+        s.chat_create(&Conversation {
+            parent: "chat-top".into(),
+            ..chat("chat-child-2")
+        })
+        .expect("child 2");
+        s.chat_set_status("chat-child-2", "archived", "")
+            .expect("archive");
+        s.chat_create(&Conversation {
+            parent: "chat-child".into(),
+            ..chat("chat-grandchild")
+        })
+        .expect("grandchild");
+        let open: Vec<String> = s
+            .chat_children("chat-top", false)
+            .expect("children")
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(open, ["chat-child"]);
+        let all: Vec<String> = s
+            .chat_children("chat-top", true)
+            .expect("children")
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(all, ["chat-child", "chat-child-2"]);
+        assert!(
+            s.chat_children("chat-grandchild", true)
+                .expect("none")
+                .is_empty()
+        );
+        assert!(
+            s.chat_children("", true).expect("no parent").is_empty(),
+            "top-level rows are nobody's children"
+        );
+        assert_eq!(s.chat_depth("chat-top").expect("depth"), 0);
+        assert_eq!(s.chat_depth("chat-child").expect("depth"), 1);
+        assert_eq!(s.chat_depth("chat-grandchild").expect("depth"), 2);
+        assert_eq!(s.chat_depth("chat-missing").expect("depth"), 0);
+        // The list still carries every row, children included, each with
+        // its parent for the hub to group by.
+        let listed = s.chat_list(false, 10).expect("list");
+        assert_eq!(listed.len(), 3);
+        assert!(
+            listed
+                .iter()
+                .any(|c| c.id == "chat-grandchild" && c.parent == "chat-child")
+        );
+    }
+
     /// A store from before the `closed` status (and the `reasoning`
     /// column) is rebuilt on open: the conversations and their messages
     /// survive, `closed` is accepted, and it is not rebuilt again.
@@ -550,12 +665,16 @@ mod tests {
         s.chat_add_message("chat-old", "assistant", "hi", &Value::Null)
             .expect("message");
         // Give the table the shape a store made before `closed` has: no
-        // `closed` in the CHECK, no `reasoning` column.
+        // `closed` in the CHECK, no `reasoning` or `parent` column.
         let narrow = crate::chat_ddl::CHAT_DDL[0]
             .replace("'closed',", "")
             .replace(
                 "  reasoning TEXT NOT NULL DEFAULT '',  -- effort the agent runs with; '' = the provider's default\n",
                 "",
+            )
+            .replace(
+                "  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line\n  parent TEXT NOT NULL DEFAULT ''      -- the conversation this one is a sub-conversation of; '' = top level\n",
+                "  note TEXT NOT NULL DEFAULT ''\n",
             )
             .replacen(
                 "CREATE TABLE IF NOT EXISTS conversations (",
@@ -563,6 +682,7 @@ mod tests {
                 1,
             );
         assert!(!narrow.contains("reasoning"), "{narrow}");
+        assert!(!narrow.contains("parent"), "{narrow}");
         {
             let conn = s.conn().unwrap();
             conn.pragma_update(None, "foreign_keys", 0).unwrap();
@@ -576,6 +696,7 @@ mod tests {
             conn.pragma_update(None, "foreign_keys", 1).unwrap();
             assert!(!crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
             assert!(!crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
+            assert!(!crate::store::has_column(&conn, "conversations", "parent").unwrap());
         }
         s.close().unwrap();
         let s = open();
@@ -583,6 +704,7 @@ mod tests {
             let conn = s.conn().unwrap();
             assert!(crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
             assert!(crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
+            assert!(crate::store::has_column(&conn, "conversations", "parent").unwrap());
             assert!(!crate::store::table_present(&conn, "conversations_widened").unwrap());
             let fk: i64 = conn
                 .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {

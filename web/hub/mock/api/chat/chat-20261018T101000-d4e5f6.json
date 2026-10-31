@@ -17,7 +17,8 @@
     "last_at": "2026-10-18T10:12:40Z",
     "turns": 1,
     "cost": 0.2,
-    "note": ""
+    "note": "",
+    "parent": ""
   },
   "live": {
     "status": "waiting",
@@ -111,5 +112,7 @@
   ],
   "after": -1,
   "artifacts": [],
-  "changes": null
+  "changes": null,
+  "parent_title": "",
+  "children": []
 }
