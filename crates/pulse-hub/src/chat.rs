@@ -171,16 +171,28 @@ impl Handler {
         let Some(auto) = payload_bool(w, &payload, "auto_approve", true) else {
             return;
         };
+        let (parent, ok) = addition_string(w, &payload, "parent", false);
+        if !ok {
+            return;
+        }
         let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
-        match chats.create_with(
-            &title,
-            &project,
-            &model,
-            &reasoning,
-            auto,
-            &text,
-            pulse_store::HUMAN_AGENT,
-        ) {
+        // A sub-conversation of `parent` (the owner starting one from the
+        // parent's page) takes the parent's workspace and settings; the
+        // other fields are the parent's.
+        let created = if parent.is_empty() {
+            chats.create_with(
+                &title,
+                &project,
+                &model,
+                &reasoning,
+                auto,
+                &text,
+                pulse_store::HUMAN_AGENT,
+            )
+        } else {
+            chats.create_child(&parent, &title, &text)
+        };
+        match created {
             Ok(row) => write_json(
                 w,
                 201,
@@ -233,6 +245,26 @@ impl Handler {
         };
         let artifacts = chats.artifacts(id);
         let changes = chats.changes(&row);
+        // The family: the conversation this one is a sub-conversation of,
+        // and its own sub-conversations (every one, put-away ones too,
+        // each with its live state).
+        let parent_title = if row.parent.is_empty() {
+            String::new()
+        } else {
+            store
+                .chat_get(&row.parent)
+                .ok()
+                .flatten()
+                .map(|p| p.title)
+                .unwrap_or_default()
+        };
+        let children: Vec<Value> = match store.chat_children(id, true) {
+            Ok(rows) => rows.iter().map(|c| conversation_json(c, chats)).collect(),
+            Err(e) => {
+                addition_failure(w, e);
+                return;
+            }
+        };
         write_json(
             w,
             200,
@@ -246,6 +278,8 @@ impl Handler {
                 "after": after,
                 "artifacts": artifacts,
                 "changes": changes,
+                "parent_title": parent_title,
+                "children": children,
             }),
         );
     }
@@ -1339,6 +1373,93 @@ mod tests {
             Value::Null,
         );
         assert_eq!(code, 200);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// `POST /chat` with `parent` starts a sub-conversation in the parent's
+    /// workspace; the parent's page lists it under `children` and the
+    /// child's names its `parent_title`; the child's reply reaches the
+    /// parent as a report note; the list carries `parent` on every row.
+    #[test]
+    fn a_sub_conversation_is_started_shown_and_reports_over_http() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(
+            &ts,
+            json!([{"content": "First."}, {"content": "Second."}, {"content": "Third."}]),
+        );
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "plan the release", "title": "Release"}),
+        );
+        assert_eq!(code, 201, "{raw}");
+        let pid = body["conversation"]["id"].as_str().unwrap().to_string();
+        assert_eq!(body["conversation"]["parent"], "");
+        let parent = wait_status(&h, &pid, &["idle"]);
+        let cwd = parent["conversation"]["cwd"].as_str().unwrap().to_string();
+        assert!(!cwd.is_empty());
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "check the changelog", "title": "Changelog", "parent": pid}),
+        );
+        assert_eq!(code, 201, "{raw}");
+        let cid = body["conversation"]["id"].as_str().unwrap().to_string();
+        assert_eq!(body["conversation"]["parent"], pid);
+        assert_eq!(body["conversation"]["cwd"], cwd);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "x", "parent": "chat-missing"}),
+        );
+        assert_eq!(code, 409, "{raw}");
+        assert!(raw.contains("no such conversation"), "{raw}");
+        let child = wait_status(&h, &cid, &["idle"]);
+        assert_eq!(child["parent_title"], "Release");
+        assert_eq!(child["children"].as_array().unwrap().len(), 0);
+        // The child's reply is a report in the parent, which ran on it.
+        let mut parent = JsonMap::new();
+        for _ in 0..400 {
+            parent = wait_status(&h, &pid, &["idle"]);
+            let got = parent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["extra"]["report"]["child"] == cid);
+            if got {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let msgs = parent["messages"].as_array().unwrap();
+        let report = msgs
+            .iter()
+            .find(|m| m["extra"]["report"]["child"] == cid)
+            .unwrap_or_else(|| panic!("no report: {msgs:#?}"));
+        assert_eq!(report["role"], "note");
+        assert_eq!(report["content"], "First.");
+        assert_eq!(report["extra"]["report"]["kind"], "replied");
+        assert_eq!(report["extra"]["report"]["title"], "Changelog");
+        assert!(
+            msgs.iter()
+                .any(|m| m["extra"]["child"] == cid && m["role"] == "note"),
+            "the parent notes the start: {msgs:#?}"
+        );
+        let children = parent["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["id"], cid);
+        assert_eq!(children[0]["title"], "Changelog");
+        assert!(children[0]["live"]["status"].is_string());
+        assert_eq!(parent["parent_title"], "");
+        let (code, body, _) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200);
+        let rows = body["conversations"].as_array().unwrap();
+        let row = rows.iter().find(|r| r["id"] == cid).unwrap();
+        assert_eq!(row["parent"], pid);
         std::thread::sleep(Duration::from_millis(100));
     }
 

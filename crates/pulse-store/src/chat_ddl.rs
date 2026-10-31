@@ -24,7 +24,8 @@ pub const CHAT_DDL: &[&str] = &[
   last_at TEXT NOT NULL DEFAULT '',    -- the newest message either way
   turns INTEGER NOT NULL DEFAULT 0,
   cost REAL NOT NULL DEFAULT 0,
-  note TEXT NOT NULL DEFAULT ''        -- why it ended or waits, one line
+  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line
+  parent TEXT NOT NULL DEFAULT ''      -- the conversation this one is a sub-conversation of; '' = top level
 );"####,
     r####"CREATE TABLE IF NOT EXISTS conversation_messages (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -40,8 +41,16 @@ pub const CHAT_DDL: &[&str] = &[
 
 /// Columns added after the first cut; `ensure_records` adds them to an
 /// older table. `reasoning`: the effort the owner picks per conversation.
-pub const CHAT_COLUMNS: &[Column] = &[Column {
-    table: r####"conversations"####,
-    name: r####"reasoning"####,
-    ddl: r####"TEXT NOT NULL DEFAULT ''"####,
-}];
+/// `parent`: the conversation a sub-conversation reports to.
+pub const CHAT_COLUMNS: &[Column] = &[
+    Column {
+        table: r####"conversations"####,
+        name: r####"reasoning"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"conversations"####,
+        name: r####"parent"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+];
