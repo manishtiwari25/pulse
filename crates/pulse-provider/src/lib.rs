@@ -1154,11 +1154,17 @@ mod tests {
         assert_eq!(wait.duration, Duration::from_secs(12));
 
         let err = anyhow!(ProviderError::new("unit", 500, "server", "boom", true));
-        for _ in 0..32 {
+        for factor in [0.8, 1.0, 1.2] {
+            set_retry_jitter_for_tests(vec![factor]);
             let wait = retry_wait(&err, Duration::from_secs(10));
             assert!(!wait.from_header);
             assert!(wait.duration >= Duration::from_secs(8), "{wait:?}");
             assert!(wait.duration <= Duration::from_secs(12), "{wait:?}");
+            assert_eq!(
+                wait.duration,
+                Duration::from_secs_f64(10.0 * factor),
+                "{wait:?}"
+            );
         }
         set_retry_jitter_for_tests(Vec::new());
     }
