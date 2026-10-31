@@ -829,6 +829,23 @@ pub(crate) fn atoi(s: &str) -> i32 {
     n
 }
 
+/// How many failed experiments that never ran a command, because the
+/// provider refused the first call, a card may take before it counts as tried
+/// anyway: a provider that keeps refusing must not replan the same card forever.
+const PROVIDER_STOP_RETIRE: usize = 2;
+
+/// A failed experiment whose harness stopped on a provider error before it ran
+/// a single command (`provider_error after N model calls and 0 commands`): the
+/// provider refused the call - a model setting it does not support, an outage -
+/// so the card's idea was never tried. Failure recovery leaves experiments to
+/// the loop (`recovery_owned_elsewhere`), so nothing else runs the card again.
+fn untried_provider_stop(kind: &str, status: &str, result: &str) -> bool {
+    kind == "experiment"
+        && status == "failed"
+        && result.contains("harness stopped: provider_error after ")
+        && result.contains(" model calls and 0 commands")
+}
+
 pub(crate) fn suggestion_jobs(
     s: &pulse_store::Store,
 ) -> AnyResult<(
@@ -838,17 +855,26 @@ pub(crate) fn suggestion_jobs(
     let conn = s.conn()?;
     let mut out = BTreeMap::new();
     {
-        let mut stmt = conn.prepare("SELECT source, status, kind FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('done', 'failed', 'cancelled') ORDER BY id")?;
+        let mut stmt = conn.prepare("SELECT source, status, kind, result FROM jobs WHERE source LIKE 'suggestion:%' AND status IN ('done', 'failed', 'cancelled') ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?;
+        let mut provider_stops: BTreeMap<String, usize> = BTreeMap::new();
         for row in rows {
-            let (source, status, kind) = row?;
+            let (source, status, kind, result) = row?;
             let sid = source.trim_start_matches("suggestion:").to_string();
+            if untried_provider_stop(&kind, &status, &result) {
+                let stops = provider_stops.entry(sid.clone()).or_default();
+                *stops += 1;
+                if *stops < PROVIDER_STOP_RETIRE {
+                    continue;
+                }
+            }
             let seen = out.contains_key(&sid);
             if status == "done" || !seen {
                 let v = if status == "done" && kind == "reflect" {
@@ -1102,4 +1128,82 @@ pub fn load_post(s: &pulse_store::Store, id: &str) -> AnyResult<Post> {
 #[error("No post {id:?}")]
 pub struct NoPostError {
     pub id: String,
+}
+
+#[cfg(test)]
+mod provider_stop_tests {
+    use super::*;
+    use crate::tests::test_fixture;
+
+    const NOW: &str = "2026-09-10T12:00:00Z";
+    const PROVIDER_STOP: &str = "worker exited 3: harness stopped: provider_error after 1 model calls and 0 commands; format_errors=0; error: copilot: reasoning_effort \"xhigh\" is not supported by model kimi-k3; supported values: [low high max] (HTTP 400)";
+
+    fn add_job(f: &test_fixture::Fixture, id: &str, card: &str, kind: &str, result: &str) {
+        f.st.conn()
+            .expect("conn")
+            .execute(
+                "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at, result) VALUES (?, 'fixture', ?, 'card', '', ?, 'failed', ?, ?)",
+                rusqlite::params![id, kind, format!("suggestion:{card}"), NOW, result],
+            )
+            .expect("insert job");
+    }
+
+    fn card_status(f: &test_fixture::Fixture, card: &str) -> String {
+        let th = crate::thresholds::load_thresholds(
+            &f.st,
+            "fixture",
+            Thresholds {
+                now: NOW.into(),
+                ..Default::default()
+            },
+        );
+        let res = compute(&f.st, "fixture", "", th).expect("tally");
+        res.suggestions
+            .iter()
+            .find(|s| s.id == card)
+            .map(|s| s.status.clone())
+            .expect("card in the tally")
+    }
+
+    #[test]
+    fn only_a_failed_experiment_stopped_before_any_command_is_untried() {
+        assert!(untried_provider_stop("experiment", "failed", PROVIDER_STOP));
+        let ran = PROVIDER_STOP.replace("0 commands", "3 commands");
+        assert!(!untried_provider_stop("experiment", "failed", &ran));
+        assert!(!untried_provider_stop("improve", "failed", PROVIDER_STOP));
+        assert!(!untried_provider_stop("experiment", "done", PROVIDER_STOP));
+        let other = "harness stopped: step_limit after 150 model calls and 0 commands";
+        assert!(!untried_provider_stop("experiment", "failed", other));
+    }
+
+    #[test]
+    fn a_provider_stop_leaves_the_card_eligible_until_the_second() {
+        let _serial = crate::test_helpers::serial();
+        let f = test_fixture::new_fixture(true);
+        let card = f.ids["eligible"].clone();
+        assert_eq!(card_status(&f, &card), "eligible");
+        add_job(&f, "job-1", &card, "experiment", PROVIDER_STOP);
+        assert_eq!(card_status(&f, &card), "eligible", "one provider stop");
+        add_job(&f, "job-2", &card, "experiment", PROVIDER_STOP);
+        assert_eq!(card_status(&f, &card), "tried", "retired after two");
+    }
+
+    #[test]
+    fn a_failure_that_ran_commands_still_marks_the_card_tried() {
+        let _serial = crate::test_helpers::serial();
+        let f = test_fixture::new_fixture(true);
+        let card = f.ids["eligible"].clone();
+        add_job(
+            &f,
+            "job-1",
+            &card,
+            "experiment",
+            "1 commit(s) but verify exit 101; nothing landed",
+        );
+        assert_eq!(card_status(&f, &card), "tried");
+        let f = test_fixture::new_fixture(true);
+        let card = f.ids["eligible"].clone();
+        add_job(&f, "job-1", &card, "improve", PROVIDER_STOP);
+        assert_eq!(card_status(&f, &card), "tried", "improve jobs recover");
+    }
 }
