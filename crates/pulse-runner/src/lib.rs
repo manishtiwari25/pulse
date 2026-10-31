@@ -82,6 +82,7 @@ pub mod schedule_script;
 pub mod security;
 pub mod selfupdate;
 pub mod service;
+pub mod setup_repair;
 pub mod sign;
 pub mod steps_mirror;
 pub mod suggestions;

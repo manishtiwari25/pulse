@@ -171,6 +171,9 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     let security = job
         .str("source")
         .starts_with(crate::security::SOURCE_PREFIX);
+    // The setup repair (`setup_repair.rs`): the one job that runs without the
+    // recipe's setup and may regenerate a lockfile.
+    let repair = crate::setup_repair::is_repair_job(job);
     let finish = format!(
         "`pulse job finish {jid} done --result '<SUMMARY line>' --branch pulse/{agent}/{jid}`"
     );
@@ -319,6 +322,18 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
                 o.setup
             );
         }
+    } else if repair {
+        w!("3. Never push, never add remotes, never call gh, never touch credentials.");
+        w!(
+            "   This job repairs the project's setup: the runner did not run the environment recipe's setup in this clone"
+        );
+        w!(
+            "   because it is what fails. Run it yourself as the task says, install only what the project's own setup"
+        );
+        w!(
+            "   installs, and change a lockfile only to regenerate it at the versions its manifest already pins - never"
+        );
+        w!("   add, remove or upgrade a dependency.");
     } else {
         w!(
             "3. Never push, never add remotes, never call gh, never touch credentials, never install packages."

@@ -423,8 +423,17 @@ pub(crate) fn take_job_first(
             unfit.insert(slug, reason);
         }
     }
+    // A project a repeated setup failure froze on this machine still gets its
+    // repair job here, the one job that can lift the mark (setup_repair.rs);
+    // nothing else of the project runs until it does.
+    let only_source: Vec<(String, String)> = unfit
+        .iter()
+        .filter(|(_, why)| crate::setup_repair::unfit_is_setup(why))
+        .map(|(slug, _)| (slug.clone(), crate::setup_repair::repair_source(slug)))
+        .collect();
+    let repairable = |slug: &str| only_source.iter().any(|(s, _)| s == slug);
     if !unfit.is_empty() {
-        if !project.is_empty() && unfit.contains_key(project) {
+        if !project.is_empty() && unfit.contains_key(project) && !repairable(project) {
             let why = unfit.get(project).cloned().unwrap_or_default();
             return Ok((
                 Row::new(),
@@ -449,7 +458,7 @@ pub(crate) fn take_job_first(
             .collect();
             any_proj = false;
         }
-        projects.retain(|p| !unfit.contains_key(p));
+        projects.retain(|p| !unfit.contains_key(p) || repairable(p));
         if projects.is_empty() {
             let slugs = sorted_keys(&unfit);
             let reasons = slugs
@@ -493,6 +502,7 @@ pub(crate) fn take_job_first(
             any_proj,
             fits: fits.to_vec(),
             hold_except,
+            only_source,
             work_first,
             caps: Some(caps.clone()),
             reserved,
@@ -500,6 +510,24 @@ pub(crate) fn take_job_first(
         },
     )?;
     if is_nil(&job) {
+        // A project frozen here by a repeated setup failure passed the gate
+        // above for its repair job alone; with none queued the wait reason
+        // still names the mark, not an empty queue.
+        if !project.is_empty()
+            && let Some(why) = unfit.get(project)
+        {
+            return Ok((
+                Row::new(),
+                exrow.clone(),
+                format!(
+                    "executor {} {} for {} ({}); only its setup repair job runs here and none is queued",
+                    exrow.str("name"),
+                    crate::recipe::unfit_phrase(why),
+                    project,
+                    crate::recipe::tool_hint(why)
+                ),
+            ));
+        }
         let mut why = "no queued job".to_string();
         if !project.is_empty() {
             why.push_str(&format!(" for {project}"));
@@ -722,6 +750,9 @@ struct PreparedSetup {
     pins: Vec<String>,
 }
 
+/// `repair` is a setup repair job (setup_repair.rs): the recipe's setup lines
+/// are what it fixes, so they are not run in its clone and their failure
+/// plans nothing.
 #[allow(clippy::too_many_arguments)]
 fn prepare_setup(
     s: &pulse_store::Store,
@@ -732,6 +763,7 @@ fn prepare_setup(
     ex: &dyn Executor,
     cancel: &pulse_bus::CancellationToken,
     dry_run: bool,
+    repair: bool,
     log: &mut RunLog,
 ) -> Result<PreparedSetup> {
     let slug = project.str("slug");
@@ -811,7 +843,15 @@ fn prepare_setup(
         }
     }
     let (setup_cmd, setup_files, setup_shown) = crate::recipe::project_setup(root, base, &r, clone);
-    if !setup_cmd.is_empty() && !dry_run {
+    if repair && !setup_cmd.is_empty() {
+        log.add(format!(
+            "setup from {} not run: this job repairs it (source {}{})",
+            setup_files.join(", "),
+            crate::setup_repair::SOURCE_PREFIX,
+            project.str("slug")
+        ));
+    }
+    if !setup_cmd.is_empty() && !dry_run && !repair {
         let (rc, sout) = ex.verify(cancel, &setup_cmd, setup_budget);
         log.add(format!(
             "$ {}  # setup from {}\n{}",
@@ -851,7 +891,33 @@ fn prepare_setup(
                     &summary,
                 ) {
                     let tool = crate::recipe::setup_unfit_tool(&setup_files);
-                    return Err(crate::executor::ExecutorUnfit { msg: format!("setup on {} for {} failed the same way again ({}); {} jobs run elsewhere until the machine is fixed and `pulse executor probe {}` passes", ex.name(), setup_files.join(", "), t, project.str("slug"), ex.name()), tool, project: project.str("slug"), detail: t }.into());
+                    // The same failure twice at the project's own commit is
+                    // the project's fault: the repair job fixes it while the
+                    // unfit mark keeps the other jobs off this machine.
+                    let planned = crate::setup_repair::plan_repair(
+                        s,
+                        project,
+                        &crate::setup_repair::SetupFailure {
+                            base: base.to_string(),
+                            files: setup_files.join(", "),
+                            cmd: setup_cmd.clone(),
+                            rc: Some(code),
+                            tail: squeeze(&sout, 2500),
+                            executor: ex.name(),
+                            seen: "run",
+                        },
+                        "daemon",
+                        &s.now(),
+                    );
+                    if !planned.note.is_empty() {
+                        log.add(planned.note.clone());
+                    }
+                    let repair_note = if planned.job.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; repair job {} planned", planned.job)
+                    };
+                    return Err(crate::executor::ExecutorUnfit { msg: format!("setup on {} for {} failed the same way again ({}); {} jobs run elsewhere until the machine is fixed and `pulse executor probe {}` passes{repair_note}", ex.name(), setup_files.join(", "), t, project.str("slug"), ex.name()), tool, project: project.str("slug"), detail: t }.into());
                 }
                 return Err(run_err(summary));
             }
@@ -1104,7 +1170,16 @@ pub(crate) fn run_job(
             setup_shown,
             pins,
         } = prepare_setup(
-            s, &project, &root, &base, &clone, &*ex, &cancel, o.dry_run, &mut log,
+            s,
+            &project,
+            &root,
+            &base,
+            &clone,
+            &*ex,
+            &cancel,
+            o.dry_run,
+            crate::setup_repair::is_repair_job(&job),
+            &mut log,
         )?;
         // A project without a verify command takes the recipe's
         // `suggested_check` here, so this run is already checked by it.
@@ -3529,6 +3604,7 @@ mod tests {
             &ex,
             &cancel,
             false,
+            false,
             &mut log,
         )
         .unwrap();
@@ -3708,6 +3784,170 @@ mod tests {
         assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
         let got = std::fs::read_to_string(marker_path).unwrap();
         assert_eq!(got, "setup\nworker\nverify\n");
+    }
+
+    #[test]
+    fn run_job_setup_failing_twice_plans_the_repair_job_which_runs_without_the_setup() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, _) = new_repo(&s);
+        join(&s, "aurora");
+        let marker_path = std::path::Path::new(&s.home).join("setup-ran");
+        let marker = crate::util::shell_quote(&marker_path.display().to_string());
+        let recipe = recipe_with(
+            None,
+            Some(&[&format!(
+                "touch {marker}; echo setup broken at this commit >&2; exit 3"
+            )]),
+            None,
+            None,
+            "",
+        );
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe,
+            crate::util::HUMAN_AGENT.to_string(),
+            "store".into(),
+            "broken setup".into(),
+        )
+        .unwrap();
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &conn,
+            "UPDATE projects SET verify_cmd = 'test -f worker.txt' WHERE slug = ?",
+            &[&proj.str("slug")],
+        );
+        let (plain, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "plain work".into(),
+            "add worker.txt".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let worker = "printf 'worker\\n' > worker.txt && git add worker.txt && git commit -q -m 'worker' && echo 'SUMMARY: done'";
+        let opts = || RunOpts {
+            worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+            ..Default::default()
+        };
+        // The first failure is one error; the same failure again freezes the
+        // project on this machine and plans the repair.
+        for attempt in 0..2 {
+            let leased = crate::jobs::lease_job(
+                &s,
+                "aurora".into(),
+                TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: plain.str("id"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(!leased.0.is_empty(), "lease {attempt}");
+            let r = run_job(&s, leased, "aurora", TEST_NOW, opts()).unwrap();
+            assert_eq!(r.str("status"), "error", "attempt {attempt}: {r:?}");
+            assert!(
+                r.str("summary").contains("setup"),
+                "attempt {attempt}: {}",
+                r.str("summary")
+            );
+        }
+        let marks = crate::recipe::unfit_projects(&conn, crate::executor::LOCAL_EXECUTOR, TEST_NOW);
+        assert_eq!(
+            marks.get("proj").map(String::as_str),
+            Some("setup:docs/context/environment.md"),
+            "{marks:?}"
+        );
+        let repair = crate::util::must_one(
+            &conn,
+            "SELECT * FROM jobs WHERE project = 'proj' AND source = 'setup:proj'",
+            &[],
+        );
+        assert_eq!(repair.str("status"), "queued", "{repair:?}");
+        assert!(
+            repair.str("brief").contains("setup broken at this commit"),
+            "{}",
+            repair.str("brief")
+        );
+        let ev = crate::util::must_one(
+            &conn,
+            "SELECT detail FROM events WHERE action = 'setup.repair' AND subject = 'proj'",
+            &[],
+        );
+        assert!(
+            ev.str("detail").contains("\"seen\": \"run\""),
+            "{}",
+            ev.str("detail")
+        );
+        // Dispatch on the frozen machine takes the repair job and nothing else
+        // of the project.
+        let (taken, _, why) = take_job(
+            &s,
+            "aurora",
+            "",
+            "",
+            false,
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            0,
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(taken.str("id"), repair.str("id"), "why = {why}");
+        // The repair job runs without the recipe's setup and lands its work.
+        std::fs::remove_file(&marker_path).unwrap();
+        let r = run_job(&s, taken, "aurora", TEST_NOW, opts()).unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("commits"), 1, "run: {r:?}");
+        assert!(
+            !marker_path.exists(),
+            "the repair job ran the failing setup"
+        );
+        let log_text = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log_text.contains("not run: this job repairs it"),
+            "{log_text}"
+        );
+        let brief = crate::util::must_one(
+            &conn,
+            "SELECT text FROM briefs WHERE run_id = ?",
+            &[&r.str("id")],
+        );
+        assert!(
+            brief
+                .str("text")
+                .contains("This job repairs the project's setup"),
+            "{}",
+            brief.str("text")
+        );
+        // The plain job still waits: the machine stays frozen for it until
+        // the mark clears.
+        let (next, _, why) = take_job(
+            &s,
+            "aurora",
+            "",
+            "",
+            false,
+            TEST_NOW,
+            crate::executor::LOCAL_EXECUTOR,
+            0,
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        assert!(next.0.is_empty(), "took {next:?}");
+        assert!(why.contains("cannot set up"), "why = {why}");
     }
 
     #[test]
