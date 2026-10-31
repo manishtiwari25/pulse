@@ -58,7 +58,7 @@ import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, cha
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import { hrefs } from "@/lib/nav";
-import { GROUP_ORDER, familyGroup, families, reportVerb, sessionWords, taskFinished, taskMood, taskTitleOf, type ListGroup, type Mood, type Tone } from "@/components/chat/task-groups";
+import { GROUP_ORDER, entryGroup, listEntries, reportVerb, sessionWords, taskFinished, taskMood, taskTitleOf, type ListGroup, type Mood, type Tone } from "@/components/chat/task-groups";
 import { ACTION_KINDS, beatsOf, brief, countWords, groupNotes, streamTail } from "@/lib/transcript";
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
@@ -81,13 +81,12 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
 }
 
 // The list's sections (task-groups.ts): working, open, finished, archived.
-// A conversation with sub-conversations is listed as one family, in the
-// section of its most pressing member.
+// Every entry is a conversation - a plain one, one with sub-conversations
+// under it, or a task with its steps under it - in the section of its most
+// pressing member.
 const GROUP_TITLES: Record<ListGroup, string> = { working: "Working", open: "Open", finished: "Finished", archived: "Archived" };
-// Finished conversations pile up: the list shows the latest few and unfolds on request.
+// Finished ones pile up: the list shows the latest few and unfolds on request.
 const FINISHED_SHOWN = 8;
-// Finished tasks too: the list keeps the latest few groups open.
-const FINISHED_TASKS_SHOWN = 3;
 
 const TONE_TEXT: Record<Tone, string> = {
   run: "text-primary",
@@ -638,7 +637,7 @@ export function ChatPageClient() {
       ) : (
         <Split list={listNode} listOnMobile main={<NewConversation projects={projects.data} onCreated={(c) => open(c.id)} onTaskCreated={(t) => openTask(t)} busyElsewhere={rows.filter((c) => (c.live?.status || c.status) === "running").length} />} />
       )}
-      <TaskSheet id={task || null} onClose={() => openTask(null)} />
+      <TaskSheet id={task || null} tab="chat" onClose={() => openTask(null)} />
     </div>
   );
 }
@@ -708,15 +707,10 @@ function Split({ list, main, panel, listOnMobile, fill }: { list: ReactNode; mai
 function ConversationList({ rows, tasks, loading, current, currentTask, onOpen, onOpenTask, showArchived, onToggleArchived }: { rows: Conversation[]; tasks: ChatTask[]; loading: boolean; current: string; currentTask: string; onOpen: (id: string) => void; onOpenTask: (id: string) => void; showArchived: boolean; onToggleArchived: () => void }) {
   const now = useNow(15000);
   const [allFinished, setAllFinished] = useState(false);
-  const [allFinishedTasks, setAllFinishedTasks] = useState(false);
-  const fams = useMemo(() => families(rows), [rows]);
-  const groups = GROUP_ORDER.map((g) => ({ g, rows: fams.filter((f) => familyGroup(f) === g) })).filter((x) => x.rows.length);
-  // Tasks first: a task is many conversations at once, so the list shows the
-  // ones still moving, then the latest finished few.
-  const movingTasks = tasks.filter((t) => !taskFinished(t));
-  const finishedTasks = tasks.filter(taskFinished);
-  const foldedTasks = !allFinishedTasks && finishedTasks.length > FINISHED_TASKS_SHOWN;
-  const shownFinishedTasks = foldedTasks ? finishedTasks.slice(0, FINISHED_TASKS_SHOWN) : finishedTasks;
+  // One list: tasks and conversations together, by what moved last, in the
+  // section of their state - the same words for both.
+  const entries = useMemo(() => listEntries(rows, tasks), [rows, tasks]);
+  const groups = GROUP_ORDER.map((g) => ({ g, entries: entries.filter((e) => entryGroup(e) === g) })).filter((x) => x.entries.length);
   return (
     <div className="grid min-w-0 gap-2">
       <div className="flex items-center justify-between px-1">
@@ -727,104 +721,73 @@ function ConversationList({ rows, tasks, loading, current, currentTask, onOpen, 
       </div>
       {loading ? (
         <SkeletonRows n={4} />
-      ) : rows.length === 0 && tasks.length === 0 ? (
-        <EmptyState icon={<PulseMascot mood="happy" size={56} decorative />} hint="Start one on the right. Each conversation is its own agent with its own branch; a task is a group of them under one lead.">
+      ) : entries.length === 0 ? (
+        <EmptyState icon={<PulseMascot mood="happy" size={56} decorative />} hint="Start one on the right. What an agent hands on - a sub-conversation, a task's steps - is listed under it.">
           No conversations yet.
         </EmptyState>
       ) : (
-        <>
-          {tasks.length ? (
-            <section className="grid min-w-0 gap-1.5" aria-label="Tasks">
+        groups.map(({ g, entries: all }) => {
+          const folded = g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
+          const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
+          return (
+            <section key={g} className="grid min-w-0 gap-1.5" aria-label={GROUP_TITLES[g]}>
               <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                Tasks
-                <span className="tnum font-normal">{tasks.length}</span>
-                <Link href={hrefs.tasks()} className="ml-auto font-normal normal-case tracking-normal underline-offset-4 hover:text-foreground hover:underline">
-                  Board
-                </Link>
+                {GROUP_TITLES[g]}
+                <span className="tnum font-normal">{all.length}</span>
               </h3>
               <ul className="grid min-w-0 gap-1.5" role="list">
-                {movingTasks.map((t, i) => (
-                  <TaskItem key={t.id} t={t} index={i} active={t.id === currentTask} now={now} onOpen={onOpenTask} />
-                ))}
-                {shownFinishedTasks.map((t, i) => (
-                  <TaskItem key={t.id} t={t} index={movingTasks.length + i} active={t.id === currentTask} now={now} onOpen={onOpenTask} folded />
-                ))}
+                {shown.map((e, i) =>
+                  e.kind === "task" ? (
+                    <TaskItem key={e.task.id} t={e.task} index={i} active={e.task.id === currentTask} now={now} onOpen={onOpenTask} />
+                  ) : (
+                    <ConversationItem key={e.family.c.id} c={e.family.c} subs={e.family.children} index={i} active={e.family.c.id === current} current={current} now={now} onOpen={onOpen} />
+                  ),
+                )}
               </ul>
-              {foldedTasks ? (
-                <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinishedTasks(true)}>
-                  Show all {finishedTasks.length} finished tasks
+              {folded ? (
+                <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinished(true)}>
+                  Show all {all.length} finished
                 </button>
               ) : null}
             </section>
-          ) : null}
-          {groups.map(({ g, rows: all }) => {
-            const folded = g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
-            const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
-            return (
-              <section key={g} className="grid min-w-0 gap-1.5" aria-label={GROUP_TITLES[g]}>
-                <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                  {GROUP_TITLES[g]}
-                  <span className="tnum font-normal">{all.length}</span>
-                </h3>
-                <ul className="grid min-w-0 gap-1.5" role="list">
-                  {shown.map((f, i) => (
-                    <ConversationItem key={f.c.id} c={f.c} subs={f.children} index={i} active={f.c.id === current} current={current} now={now} onOpen={onOpen} />
-                  ))}
-                </ul>
-                {folded ? (
-                  <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinished(true)}>
-                    Show all {all.length} finished
-                  </button>
-                ) : null}
-              </section>
-            );
-          })}
-        </>
+          );
+        })
       )}
     </div>
   );
 }
 
-// A task in the list: its header opens the task (the owner's thread with the
-// lead, the plan, the activity), and under it one line per conversation the
-// task holds - the lead's thread and each step's agent session. A finished
-// task starts folded to its header; its lines unfold on request.
-function TaskItem({ t, index, active, now, onOpen, folded }: { t: ChatTask; index: number; active: boolean; now: number; onOpen: (id: string) => void; folded?: boolean }) {
+// A task in the list, the same card as a conversation: the row is the
+// owner's conversation with the lead agent (the team icon is the one mark
+// of a task), and under it one line per step the lead cut - the agent on
+// it and its state - the way a conversation lists its sub-conversations. A
+// finished task keeps its steps folded until asked.
+function TaskItem({ t, index, active, now, onOpen }: { t: ChatTask; index: number; active: boolean; now: number; onOpen: (id: string) => void }) {
   const m = taskMood(t);
   const [unfolded, setUnfolded] = useState(false);
-  const showLines = !folded || unfolded || active;
-  const live = t.sessions.some((s) => s.status === "running");
-  const lines = t.sessions;
+  const steps = t.sessions;
+  const showSteps = steps.length > 0 && (!taskFinished(t) || unfolded || active);
+  const live = steps.some((s) => s.status === "running");
   return (
     <li className="enter min-w-0" style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}>
       <div className={cn("grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors", active ? "border-primary/50 shadow-card" : "", m.tone === "wait" && !active && "border-warn/50")}>
-        <button type="button" onClick={() => onOpen(t.id)} aria-current={active ? "page" : undefined} className={cn("lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors", active ? "bg-primary/[0.06]" : "hover:bg-muted/40")}>
+        <button type="button" onClick={() => onOpen(t.id)} aria-current={active ? "page" : undefined} className={cn("lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors", active ? "bg-primary/[0.06]" : "hover:bg-muted/40")} title={t.lead ? `With ${t.lead}, the lead agent of ${t.project}` : `A task for the ${t.project} team`}>
           <span className="flex min-w-0 items-center gap-2">
             <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
-            <UsersIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="task" />
             <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{t.title || t.id}</span>
+            <UsersIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="with the project's team" />
             {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
             <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
             <span aria-hidden>·</span>
             <span className="truncate">{t.project}</span>
-            <span aria-hidden>·</span>
-            <span className="shrink-0 tnum">{t.id}</span>
             <span className="ml-auto shrink-0 tnum">{relShort(t.last_at || t.created_at, now)}</span>
           </span>
         </button>
-        {showLines ? (
-          <ul className="grid min-w-0 gap-px border-t bg-muted/20 py-1" role="list" aria-label={`Conversations of ${t.id}`}>
-            <li className="min-w-0">
-              <button type="button" onClick={() => onOpen(t.id)} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50">
-                <span className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl" aria-hidden />
-                {t.lead ? <Avatar seed={t.lead} size={16} /> : <CircleDashedIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
-                <span className="min-w-0 flex-1 truncate text-foreground">{t.lead ? `Your thread with ${t.lead}` : "Your thread with the lead"}</span>
-                <span className="shrink-0 text-muted-foreground">{t.messages ? plural(t.messages, "message") : "no messages yet"}</span>
-              </button>
-            </li>
-            {lines.map((s) => {
+        {showSteps ? (
+          <ul className="grid min-w-0 gap-px border-t bg-muted/20 py-1" role="list" aria-label={`Steps of ${t.title || t.id}`}>
+            {steps.map((s) => {
               const w = sessionWords(s);
               const body = (
                 <>
@@ -839,11 +802,11 @@ function TaskItem({ t, index, active, now, onOpen, folded }: { t: ChatTask; inde
               return (
                 <li key={s.job} className="min-w-0">
                   {s.session ? (
-                    <Link href={hrefs.harness({ id: s.session })} className={cls} title={`${s.agent || "an agent"} on ${s.job}: open the run`}>
+                    <Link href={hrefs.harness({ id: s.session })} className={cls} title={`${s.agent || "an agent"} on this step: open its run`}>
                       {body}
                     </Link>
                   ) : (
-                    <button type="button" onClick={() => onOpen(t.id)} className={cls} title={`${s.job}: no agent has taken this step yet`}>
+                    <button type="button" onClick={() => onOpen(t.id)} className={cls} title="No agent has taken this step yet">
                       {body}
                     </button>
                   )}
@@ -851,11 +814,11 @@ function TaskItem({ t, index, active, now, onOpen, folded }: { t: ChatTask; inde
               );
             })}
           </ul>
-        ) : (
+        ) : steps.length ? (
           <button type="button" onClick={() => setUnfolded(true)} className="border-t bg-muted/20 px-3 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground">
-            {plural(lines.length + 1, "conversation")} · show
+            {plural(steps.length, "step")} · show
           </button>
-        )}
+        ) : null}
       </div>
     </li>
   );
@@ -954,15 +917,15 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
     if (!canStart) return;
     setBusy(true);
     if (team) {
-      const id = toast.loading("Giving the task…");
+      const id = toast.loading("Starting…");
       try {
         const r = await writes.newTask({ project, title: taskTitleOf(t), brief: t, priority: 10 });
-        toast.success(`Task given. The ${project} lead agent picks it up shortly and replies in its thread.`, { id, description: r.task.id });
+        toast.success(`Started. The ${project} lead agent picks it up shortly and replies in the conversation.`, { id, description: r.task.id });
         invalidate((p) => p.startsWith("chat") || p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects/"));
         onTaskCreated(r.task.id);
       } catch (e) {
         toast.dismiss(id);
-        fail(e, "The task was not given");
+        fail(e, "The conversation did not start");
       } finally {
         setBusy(false);
       }
@@ -987,9 +950,9 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
           <PulseMascot mood={busy ? "busy" : text.trim() ? "curious" : "happy"} size={84} className="float shrink-0 self-center sm:self-start" title="Pip is ready" />
           <div className="grid min-w-0 flex-1 gap-4">
             <div className="grid gap-1">
-              <h2 className="text-xl font-semibold tracking-tight text-foreground">{team ? "What should the team do?" : "What should the agent do?"}</h2>
+              <h2 className="text-xl font-semibold tracking-tight text-foreground">What should the agent do?</h2>
               <p className="text-sm leading-relaxed text-muted-foreground">
-                {team ? "Say it the way you would to a colleague. The project's lead agent reads it, plans the steps, hands each to an agent, and asks you here when it needs a decision. The whole text is the brief; its first line names the task." : "Say it the way you would to a colleague. The agent reads the project, works in its own branch, and reports back here."}{" "}
+                Say it the way you would to a colleague. The agent reads the project, works in its own branch, and reports back here.{" "}
                 {busyElsewhere ? `${plural(busyElsewhere, "other conversation")} ${busyElsewhere === 1 ? "is" : "are"} working right now.` : ""}
               </p>
             </div>
@@ -1002,10 +965,10 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
                   void start();
                 }
               }}
-              placeholder={team ? "For example: ship a settings page with a dark mode toggle, a language switch and tests - one step per part, review before landing." : "For example: add a dark mode toggle to the settings page and make sure the tests still pass."}
+              placeholder="For example: add a dark mode toggle to the settings page and make sure the tests still pass."
               className="min-h-28 text-[15px]"
               autoFocus
-              aria-label={team ? "What should the team do" : "What should the agent do"}
+              aria-label="What should the agent do"
             />
             <div className="flex flex-wrap gap-1.5">
               {STARTERS.map((s) => (
@@ -1054,7 +1017,7 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
                 </Select>
               </label>
               {team ? (
-                <p className="max-w-xs self-center text-xs leading-relaxed text-muted-foreground">{needsProject ? "A task needs a project: its lead agent belongs to one." : "The lead and its agents use the project's own settings; change them under Settings."}</p>
+                <p className="max-w-xs self-center text-xs leading-relaxed text-muted-foreground">{needsProject ? "Pick the project: its lead agent plans the steps and hands each to an agent." : "The project's lead agent plans the steps and hands each to an agent; they show under it in the list. The team uses the project's own settings."}</p>
               ) : (
                 <>
                   <label className="grid gap-1 text-xs font-medium text-muted-foreground">
@@ -1075,7 +1038,7 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
                 </>
               )}
               <Button type="button" className="ml-auto" onClick={() => void start()} disabled={!canStart}>
-                {busy ? <LoaderCircleIcon className="animate-spin" /> : team ? <UsersIcon /> : <ArrowUpIcon />} {team ? "Give the task" : "Start"}
+                {busy ? <LoaderCircleIcon className="animate-spin" /> : <ArrowUpIcon />} Start
                 <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-[10px] opacity-80 sm:inline">⌘↵</kbd>
               </Button>
             </div>
@@ -1083,18 +1046,11 @@ function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: 
         </div>
       </section>
       <div className="grid gap-3 sm:grid-cols-3">
-        {(team
-          ? [
-              { icon: UsersIcon, title: "A lead plans it", body: "The project's lead agent reads your brief, writes the plan and splits it into steps; each step becomes a conversation of its own under the task." },
-              { icon: ShieldCheckIcon, title: "Asks when it must", body: "The lead asks you here when a decision is yours; the task shows 'Needs your reply' until you answer." },
-              { icon: ListChecksIcon, title: "Every step in view", body: "The list shows each step's agent and state; open a step to watch its run, or the task to read the plan and the thread." },
-            ]
-          : [
-              { icon: GitBranchIcon, title: "Its own branch", body: "Each conversation works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like." },
-              { icon: ShieldCheckIcon, title: "Asks when it must", body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too." },
-              { icon: PaperclipIcon, title: "Shows its work", body: "Every command, file edit and note appears as it happens. Attach files for it to read; its screenshots and reports land in Artifacts." },
-            ]
-        ).map((f, i) => (
+        {[
+          { icon: GitBranchIcon, title: "Its own branch", body: "Each conversation works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like." },
+          { icon: ShieldCheckIcon, title: "Asks when it must", body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too." },
+          { icon: ListChecksIcon, title: "Hands work on in view", body: "Big work fans out: the agent starts sub-conversations, or the project's team takes it as steps. Each shows under its conversation in the list, open to watch or steer." },
+        ].map((f, i) => (
           <div key={f.title} className="enter grid gap-1.5 rounded-xl border bg-card/60 px-4 py-3" style={{ animationDelay: 80 + i * 60 + "ms" }}>
             <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <f.icon className="size-4 text-primary" /> {f.title}

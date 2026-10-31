@@ -1,6 +1,7 @@
-// The words the Chat page uses for a task and its steps. A task is a group of
-// conversations: the owner's thread with the lead agent and one agent
-// session per step the lead planned (`tasks` in GET /api/v1/chat). Kept apart
+// The words and the order of the Chat page's one list. Every entry is a
+// conversation: a plain one, one with sub-conversations under it, or a task
+// - the owner's conversation with the lead agent, with one agent session per
+// step the lead planned under it (`tasks` in GET /api/v1/chat). Kept apart
 // from the page so the rules can be tested without a browser.
 
 import type { ChatTask, ChatTaskSession } from "@/lib/api";
@@ -18,7 +19,7 @@ export interface Mood {
 // A task's state in the list's words, on the same scale as a conversation's:
 // the owner's turn first, then what the agents are doing.
 export function taskMood(t: ChatTask): Mood {
-  if (t.needs_you) return { word: "Needs your reply", tone: "wait", pip: "waiting", dot: "bg-warn" };
+  if (t.needs_you) return { word: "Asked you", tone: "wait", pip: "waiting", dot: "bg-warn" };
   if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (t.status === "cancelled") return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
   if (t.sessions.some((s) => s.status === "running" || s.job_status === "leased")) return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
@@ -31,12 +32,21 @@ export function taskFinished(t: ChatTask): boolean {
   return t.status === "done" || t.status === "cancelled";
 }
 
+// A task's section, on the same scale as a conversation's: working while
+// the lead waits on you or an agent is at a step, open while it is new or
+// planned, finished once done or cancelled (a task is never archived).
+export function taskGroup(t: ChatTask): ListGroup {
+  if (taskFinished(t)) return "finished";
+  const tone = taskMood(t).tone;
+  return tone === "wait" || tone === "run" ? "working" : "open";
+}
+
 // A step's state: the job's word, except while its agent's session runs.
 export function sessionWords(s: ChatTaskSession): { word: string; tone: Tone } {
   if (s.status === "running") return { word: "Working", tone: "run" };
   switch (s.job_status) {
     case "queued":
-      return { word: "Waiting for a free agent", tone: "neutral" };
+      return { word: "Waiting", tone: "neutral" };
     case "blocked":
       return { word: "Blocked", tone: "wait" };
     case "leased":
@@ -129,6 +139,40 @@ export function familyGroup<T extends Grouped>(f: Family<T>): ListGroup {
   let at = GROUP_ORDER.indexOf(groupOf(f.c));
   for (const child of f.children) at = Math.min(at, GROUP_ORDER.indexOf(groupOf(child)));
   return GROUP_ORDER[at];
+}
+
+// ----- the one list ---------------------------------------------------------
+
+// An entry of the list: a conversation with its sub-conversations, or a
+// task with its steps. `at` is its latest movement - a sub-conversation's
+// reply counts for its parent - so the list orders by what moved last.
+export type ListEntry<T extends Grouped> = { kind: "conversation"; family: Family<T>; at: string } | { kind: "task"; task: ChatTask; at: string };
+
+interface Moved {
+  created_at?: string;
+  last_at?: string;
+}
+
+function movedAt(c: Moved): string {
+  return c.last_at || c.created_at || "";
+}
+
+export function listEntries<T extends Grouped & Moved>(rows: T[], tasks: ChatTask[]): ListEntry<T>[] {
+  const entries: ListEntry<T>[] = families(rows).map((family) => ({
+    kind: "conversation",
+    family,
+    at: [family.c, ...family.children].map(movedAt).reduce((a, b) => (a > b ? a : b), ""),
+  }));
+  for (const task of tasks) entries.push({ kind: "task", task, at: movedAt(task) });
+  return entries.sort((a, b) => b.at.localeCompare(a.at));
+}
+
+export function entryGroup<T extends Grouped>(e: ListEntry<T>): ListGroup {
+  return e.kind === "task" ? taskGroup(e.task) : familyGroup(e.family);
+}
+
+export function entryId<T extends Grouped>(e: ListEntry<T>): string {
+  return e.kind === "task" ? e.task.id : e.family.c.id;
 }
 
 // What a report note from a sub-conversation says it did, as the verb that

@@ -362,24 +362,25 @@ activity fold under **Details for this machine**.
   it to, and to give its closing reply after), or you press **Finish**
   (which stops a running turn), and the conversation is marked *Finished*
   with the summary as its note; your next message reopens it, so nothing
-  is lost. The list groups conversations by state - **Working** (running
+  is lost. The list is one list, grouped by state - **Working** (running
   or waiting on you), **Open** (idle between turns), **Finished** (the
   latest eight, *Show all* for the rest) and **Archived** when shown - so
-  the ones that need you stay on top. Above them, **Tasks** lists every
-  task as the group of conversations it is: the task's title and state in
-  the list's own words (*Working* while a step's agent runs, *Needs your
-  reply* when the lead stopped for you - counted in the tab title with the
-  conversations that wait - *Planned*, *Done*), and under it one line per
-  conversation the task holds - *Your thread with <lead>* with its message
-  count, then each step the lead cut with the agent on it (or *Waiting for
-  a free agent*), its state (*Starting*, *Working*, *Done*, *Failed*,
-  *Blocked*) and when it last moved. The thread and a step without an agent
-  yet open the task over the page (`?task=TASK-NNN` in the address, so a
-  link lands on it), with its **Activity**, **Overview** and
-  **Conversation** tabs; a step with a run opens that run on the Harness
-  page. Tasks in progress stay listed; finished ones a week (the latest
-  three unfolded, *Show all finished tasks* for the rest), all of them with
-  **Show archived**. A conversation can hold **sub-conversations** of its
+  the ones that need you stay on top, ordered by what moved last. A task
+  the project's team works on is a row like any conversation - its title,
+  a team mark after it, its state in the list's words (*Working* while a
+  step's agent runs, *Asked you* when the lead stopped for you - counted
+  in the tab title with the conversations that wait - *Planned*, *Done*,
+  *Cancelled*) - with the steps the lead cut as lines under it the way
+  sub-conversations sit under their parent: the agent on each (a dashed
+  circle until one takes it), its state (*Waiting*, *Starting*, *Working*,
+  *Done*, *Failed*, *Blocked*) and when it last moved; a finished task
+  folds its steps (*N steps · show*). Opening a task or a step without an
+  agent yet opens the task over the page on its **Conversation** tab - your
+  conversation with the lead (`?task=TASK-NNN` in the address, so a link
+  lands on it) - with **Activity** and **Overview** beside it; a step with a
+  run opens that run on the Harness page. Finished tasks stay listed a
+  week, all of them with **Show archived**. A conversation can hold
+  **sub-conversations** of its
   own: whole conversations - their own transcript, session and page, opened
   and steered like any other - that its agent starts with the `chat` tool
   (`start` with a title and a brief) for a part of the work worth a page of
@@ -402,14 +403,15 @@ activity fold under **Details for this machine**.
   list each sub-conversation is a line under its parent with its own state,
   the parent's card taking the family's most pressing state, and a
   sub-conversation's header says *part of <parent>* with the way back.
-  The start form asks **Who does it**: *One agent* starts
-  a conversation as before; *The project's team* gives a task - the whole
-  text is the brief, its first line (without list or heading marks, cut at
-  a word past 120 characters) the title, priority 10 - and the lead agent
-  answers in the task's thread, which opens at once. A task needs a
-  project, so *Let the agent decide* steps aside for that choice; the model,
-  effort and auto-approve controls belong to a single conversation and
-  hide, the project's settings governing the team. The conversation list and the
+  The start form is the same form whoever does the work - one box, one
+  **Start** - and asks **Who does it**: *One agent* starts a conversation
+  as before; *The project's team* gives a task - the whole text is the
+  brief, its first line (without list or heading marks, cut at a word past
+  120 characters) the title, priority 10 - and the lead agent answers in
+  the task's conversation, which opens at once. A task needs a project, so
+  *Let the agent decide* steps aside for that choice; the model, effort
+  and auto-approve controls belong to a single conversation and hide, the
+  project's settings governing the team. The conversation list and the
   **Changes**, **Artifacts**
   and **Project** panel share the left column, the transcript the right,
   so nothing competes with the reply for width; on a desktop the open
