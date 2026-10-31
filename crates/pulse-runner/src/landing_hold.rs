@@ -836,6 +836,9 @@ pub(crate) fn sync_upstream(
             && v["upstream"] == up_sha
             && v["base"] == def_sha
             && let Some(note) = v["note"].as_str()
+            // A conflict remembered without the resync having run (a memo
+            // from before it existed) is exactly what the resync resolves.
+            && !(v["state"] == "conflict" && v["resync"] != true)
         {
             return (None, Some(note.to_string()));
         }
@@ -894,7 +897,8 @@ pub(crate) fn sync_upstream(
     // re-applied onto the upstream and the result lands as one merge commit
     // (resync.rs), so the forge's truth reaches the checkout.
     let mut resync: Option<crate::resync::Resync> = None;
-    if state == "conflict" {
+    let resync_tried = state == "conflict";
+    if resync_tried {
         match crate::resync::resync_onto_upstream(&s.home, t, &up_sha, &def_sha, &actor) {
             Ok(Some(r)) => {
                 let title = format!(
@@ -997,7 +1001,7 @@ pub(crate) fn sync_upstream(
     );
     if let Ok(conn) = s.conn()
         && let Ok(data) = pulse_store::gojson::to_string(&serde_json::json!({
-            "upstream": up_sha, "base": def_sha, "state": state, "note": hold, "at": now
+            "upstream": up_sha, "base": def_sha, "state": state, "note": hold, "at": now, "resync": resync_tried
         }))
     {
         crate::util::exec1(
@@ -2447,6 +2451,148 @@ mod tests {
                 &[]
             ),
             0
+        );
+    }
+
+    /// A conflict the daemon remembered before the resync existed
+    /// (leben-in-deutschland, 2026-10-31: a memo for the very pair of commits
+    /// the resync would have merged) must not stand in the resync's way: the
+    /// pass re-applies main's own commits onto the upstream, lands and pushes,
+    /// and the memo is gone.
+    #[test]
+    fn landing_resyncs_over_a_conflict_remembered_without_the_resync() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, _) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 1, "lines {lines:?}");
+        commit_file(&repo, "README.md", "# proj\nlocal\n", "local readme");
+        let landed = ref_of(&repo, "refs/heads/main");
+        let other = other_clone(&bare);
+        commit_file(&other, "README.md", "# proj\nremote\n", "remote readme");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let remote_head = bare_ref(&bare, "refs/heads/main");
+        // What an earlier release's merge attempt left for this pair.
+        let data = pulse_store::gojson::to_string(&serde_json::json!({
+            "upstream": remote_head, "base": landed, "state": "conflict", "note": "remembered conflict", "at": TEST_NOW
+        }))
+        .expect("memo");
+        exec1(
+            &s,
+            "INSERT INTO meta (key, value) VALUES ('push-sync:proj', ?)",
+            &[&data],
+        );
+
+        set_setting(&s, "landing.push", "main");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 2, "lines {lines:?}");
+        assert!(
+            lines[0].starts_with(
+                "landing synced proj: origin/main merged into main (1 commit; main's own "
+            ),
+            "lines {lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("landing pushed proj: main -> origin/main ("),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        assert_ne!(bare_ref(&bare, "refs/heads/main"), remote_head);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM meta WHERE key = 'push-sync:proj'",
+                &[]
+            ),
+            0
+        );
+    }
+
+    /// Once the resync was tried for a pair and the push still had to hold,
+    /// the memo says so and the next pass does not merge the pair again.
+    #[test]
+    fn landing_remembers_a_conflict_the_resync_already_tried() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        commit_file(&repo, "README.md", "# proj\nlocal\n", "local readme");
+        let other = other_clone(&bare);
+        commit_file(&other, "README.md", "# proj\nremote\n", "remote readme");
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        // A file where the resync wants its worktree: the re-apply cannot run.
+        let work = Path::new(&s.home).join("work");
+        std::fs::create_dir_all(&work).expect("work dir");
+        std::fs::write(
+            work.join(format!("resync-proj-{}", std::process::id())),
+            "in the way",
+        )
+        .expect("blocker");
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, first) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert_eq!(lines.len(), 2, "lines {lines:?}");
+        let note = first["proj"].clone();
+        assert!(
+            note.contains("merging them conflict: pulse/sync/origin/main conflicts with main")
+                && note.contains(
+                    "; re-applying main's own commits onto origin/main failed too: git worktree add failed: "
+                ),
+            "note {note:?}"
+        );
+        let memo = must_one(
+            &s,
+            "SELECT value FROM meta WHERE key = 'push-sync:proj'",
+            &[],
+        );
+        let memo: serde_json::Value = serde_json::from_str(&memo.str("value")).expect("memo json");
+        assert_eq!(memo["state"], "conflict", "memo {memo}");
+        assert_eq!(memo["resync"], true, "memo {memo}");
+        let conflicts = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict'",
+            &[],
+        );
+        assert_eq!(conflicts, 1);
+
+        let (lines, second) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            first,
+        );
+        assert!(lines.is_empty(), "lines {lines:?}");
+        assert_eq!(second["proj"], note);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict'",
+                &[]
+            ),
+            conflicts,
+            "the remembered pair was merged again"
         );
     }
 

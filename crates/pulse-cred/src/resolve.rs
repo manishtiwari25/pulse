@@ -244,7 +244,7 @@ impl Resolver {
                 bail!(
                     "{} failed: {}",
                     verb,
-                    redact(&first_line("", Some(&e)), &[&token])
+                    without_log_stamp(&redact(&first_line("", Some(&e)), &[&token]))
                 );
             }
         }
@@ -539,6 +539,17 @@ pub fn redact(text: &str, secrets: &[&str]) -> String {
     text
 }
 
+static LOG_STAMP: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\[[A-Z]+\]\s+\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+").unwrap());
+
+/// Drops the `[ERROR] 2026/10/31 09:08:24 ` stamp the 1Password CLI puts
+/// before its message: the time belongs to the log line, not to the
+/// reason, and a reason that changed every attempt would read as a new
+/// hold each tick.
+pub fn without_log_stamp(line: &str) -> String {
+    LOG_STAMP.replace(line, "").to_string()
+}
+
 pub fn first_line(stderr: &str, err: Option<&RunError>) -> String {
     for line in stderr.lines() {
         let line = line.trim();
@@ -746,7 +757,7 @@ mod tests {
             Box::new(|_, _, env| {
                 let tok = env_value(env.unwrap(), TOKEN_ENV).unwrap();
                 Err(RunError::new(format!(
-                    "[ERROR] 2026/09/15 token {tok} rejected: {TEST_KEY}"
+                    "[ERROR] 2026/09/15 06:26:58 token {tok} rejected: {TEST_KEY}"
                 )))
             }),
         );
@@ -760,7 +771,11 @@ mod tests {
             .to_string();
         assert!(!err.contains("ops_filetoken"));
         assert!(!err.contains("b3BlbnNzaC"));
-        assert!(err.contains("op read failed"));
+        assert!(
+            err.contains("op read failed: token [token] rejected"),
+            "{err}"
+        );
+        assert!(!err.contains("2026/09/15"), "{err}");
     }
 
     #[test]
@@ -1008,6 +1023,24 @@ mod tests {
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample pulse-push"
         );
         assert_eq!(fp, "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG");
+    }
+
+    #[test]
+    fn op_errors_lose_their_log_stamp() {
+        assert_eq!(
+            super::without_log_stamp(
+                "[ERROR] 2026/10/31 09:08:24 could not read secret 'op://V/I/F': \"V\" isn't a vault in this account."
+            ),
+            "could not read secret 'op://V/I/F': \"V\" isn't a vault in this account."
+        );
+        assert_eq!(
+            super::without_log_stamp("no account found"),
+            "no account found"
+        );
+        assert_eq!(
+            super::without_log_stamp("[ERROR] not a stamp 2026/10/31"),
+            "[ERROR] not a stamp 2026/10/31"
+        );
     }
 
     #[test]
