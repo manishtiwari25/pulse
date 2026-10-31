@@ -3463,6 +3463,16 @@ fn delivery_follows_a_landing_to_the_forge() {
     s.set_setting("human", "pipeline.watch", "off").unwrap();
     assert_eq!(delivery_for(&s, &id).unwrap().pipeline, "");
     s.set_setting("human", "pipeline.watch", "fix").unwrap();
+    // A rerun of the failed jobs for a fresh log is not a verdict yet.
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "pipeline.rerun",
+        "demo",
+        r#"{"project": "demo", "sha": "59f641d2c3b4", "failed": ["CI"], "rerun": [11]}"#,
+    )
+    .unwrap();
+    assert_eq!(delivery_for(&s, &id).unwrap().pipeline, "watching");
     pulse_bus::emit(
         &s,
         "daemon",
