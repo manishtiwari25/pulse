@@ -199,7 +199,13 @@ activity fold under **Details for this machine**.
 - **Tasks** - write a brief, set a priority, amend or cancel it later; each
   revision is kept. The project's lead agent picks it up the same tick, turns
   it into jobs at the task's priority (urgent runs first) and reports back on
-  the task thread. Your work leases before the fleet's own: a lead run, an
+  the task thread. A task is a group of conversations - yours with the lead,
+  and one agent session per job the lead cut - and the **Chat** page lists
+  it that way, under **Tasks** above the single conversations (see Chat);
+  the Chat composer gives a task too (*The project's team*), so one box
+  starts either. A brief can run long: a write takes up to 1 MB of JSON
+  (before, 16 KB, and a pasted brief past it failed with *JSON body must be
+  1..16384 bytes* and no word in the page). Your work leases before the fleet's own: a lead run, an
   answer, or a job planned from a task (`task:TASK-NNN`, or
   `task:TASK-NNN:<label>` when one task needs several jobs) goes to the next
   free worker ahead of improve jobs and ballots whatever project waited
@@ -359,7 +365,28 @@ activity fold under **Details for this machine**.
   is lost. The list groups conversations by state - **Working** (running
   or waiting on you), **Open** (idle between turns), **Finished** (the
   latest eight, *Show all* for the rest) and **Archived** when shown - so
-  the ones that need you stay on top. The conversation list and the
+  the ones that need you stay on top. Above them, **Tasks** lists every
+  task as the group of conversations it is: the task's title and state in
+  the list's own words (*Working* while a step's agent runs, *Needs your
+  reply* when the lead stopped for you - counted in the tab title with the
+  conversations that wait - *Planned*, *Done*), and under it one line per
+  conversation the task holds - *Your thread with <lead>* with its message
+  count, then each step the lead cut with the agent on it (or *Waiting for
+  a free agent*), its state (*Starting*, *Working*, *Done*, *Failed*,
+  *Blocked*) and when it last moved. The thread and a step without an agent
+  yet open the task over the page (`?task=TASK-NNN` in the address, so a
+  link lands on it), with its **Activity**, **Overview** and
+  **Conversation** tabs; a step with a run opens that run on the Harness
+  page. Tasks in progress stay listed; finished ones a week (the latest
+  three unfolded, *Show all finished tasks* for the rest), all of them with
+  **Show archived**. The start form asks **Who does it**: *One agent* starts
+  a conversation as before; *The project's team* gives a task - the whole
+  text is the brief, its first line (without list or heading marks, cut at
+  a word past 120 characters) the title, priority 10 - and the lead agent
+  answers in the task's thread, which opens at once. A task needs a
+  project, so *Let the agent decide* steps aside for that choice; the model,
+  effort and auto-approve controls belong to a single conversation and
+  hide, the project's settings governing the team. The conversation list and the
   **Changes**, **Artifacts**
   and **Project** panel share the left column, the transcript the right,
   so nothing competes with the reply for width; on a desktop the open
@@ -425,12 +452,18 @@ activity fold under **Details for this machine**.
   remove project <slug> --forget` drops its rows with the project's.
   Everything is yours to script:
   `pulse chat list [--all]` and `pulse chat show <id>` print what the page
-  shows, and `/api/v1/chat` (`POST` to start, `GET /chat/<id>?since=N&after=N`
+  shows, and `/api/v1/chat` (`GET` for the list - `conversations`, and
+  `tasks` with each task's thread summed up and one entry per job with its
+  latest harness session, the tasks in progress plus a week of finished
+  ones, every one with `?all=1` - `POST` to start, `GET /chat/<id>?since=N&after=N`
   for the transcript and live steps past what you hold, `/message` with an
   optional `attachments` list of uploaded names and an optional `images`
   list of inline pictures (`mime`, base64 `data`, optional `name`; png, jpeg
   or webp) that the model sees with the message when its provider takes
-  images and the hub shows back as thumbnails, `/upload?name=` with the
+  images and the hub shows back as thumbnails - this one write takes a body
+  sized for twelve inline pictures, where every other JSON write stops at
+  1 MB and says so (*The request body holds N bytes; this write takes up to
+  1 MB*) - `/upload?name=` with the
   raw bytes, `/attachments/<name>`, `/image/<message>/<n>`, `/model`,
   `/reasoning`, `/answer`, `/approve`, `/cancel`, `/close`, `/auto`,
   `/attach`, `/title`,

@@ -105,5 +105,119 @@
         "session_id": "run-20261017-chat-f7a8b9-1"
       }
     }
+  ],
+  "tasks": [
+    {
+      "id": "TASK-002",
+      "project": "demo-app",
+      "title": "Fix the flaky checkout test",
+      "status": "in_progress",
+      "priority": 30,
+      "lead": "demo-app-lead",
+      "created_by": "human",
+      "created_at": "2026-09-01T18:48:00Z",
+      "updated_at": "2026-09-01T18:55:00Z",
+      "last_at": "2026-09-11T07:26:02Z",
+      "messages": 2,
+      "last_message_at": "2026-09-01T20:12:00Z",
+      "last_author": "demo-app-lead",
+      "needs_you": false,
+      "sessions": [
+        {
+          "job": "job-20260901T190200Z-87e2d1",
+          "kind": "task",
+          "title": "Add a regression test for the checkout total race",
+          "job_status": "done",
+          "agent": "",
+          "session": "",
+          "status": "",
+          "started_at": "2026-09-01T19:02:00Z",
+          "updated_at": "2026-09-01T19:09:00Z",
+          "ended_at": "2026-09-01T19:09:00Z",
+          "cost": 0.0,
+          "steps": 0
+        },
+        {
+          "job": "job-20260901T191600Z-f05f5f",
+          "kind": "improve",
+          "title": "Await the price lookup before reading the total",
+          "job_status": "leased",
+          "agent": "cinder",
+          "session": "run-20260911-001",
+          "status": "running",
+          "started_at": "2026-09-11T06:58:00Z",
+          "updated_at": "2026-09-11T07:26:02Z",
+          "ended_at": "",
+          "cost": 0.0,
+          "steps": 15
+        }
+      ]
+    },
+    {
+      "id": "TASK-001",
+      "project": "demo-app",
+      "title": "Add passwordless sign-in",
+      "status": "planned",
+      "priority": 20,
+      "lead": "demo-app-lead",
+      "created_by": "human",
+      "created_at": "2026-09-01T18:20:00Z",
+      "updated_at": "2026-09-01T18:34:00Z",
+      "last_at": "2026-09-01T20:26:00Z",
+      "messages": 1,
+      "last_message_at": "2026-09-01T18:41:00Z",
+      "last_author": "demo-app-lead",
+      "needs_you": false,
+      "sessions": [
+        {
+          "job": "job-20260901T202600Z-3b3437",
+          "kind": "task",
+          "title": "Send the magic link by email",
+          "job_status": "queued",
+          "agent": "",
+          "session": "",
+          "status": "",
+          "started_at": "2026-09-01T20:26:00Z",
+          "updated_at": "2026-09-01T20:26:00Z",
+          "ended_at": "",
+          "cost": 0.0,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "id": "TASK-004",
+      "project": "demo-app",
+      "title": "Retire the legacy export",
+      "status": "cancelled",
+      "priority": 5,
+      "lead": "demo-app-lead",
+      "created_by": "human",
+      "created_at": "2026-09-01T19:37:00Z",
+      "updated_at": "2026-09-01T19:44:00Z",
+      "last_at": "2026-09-01T19:44:00Z",
+      "messages": 0,
+      "last_message_at": "",
+      "last_author": "",
+      "needs_you": false,
+      "sessions": []
+    },
+    {
+      "id": "TASK-003",
+      "project": "demo-lib",
+      "title": "Publish v2 of the client",
+      "status": "review",
+      "priority": 10,
+      "lead": "demo-lib-lead",
+      "created_by": "human",
+      "created_at": "2026-09-01T19:23:00Z",
+      "updated_at": "2026-09-01T19:30:00Z",
+      "last_at": "2026-09-01T19:30:00Z",
+      "messages": 0,
+      "last_message_at": "",
+      "last_author": "",
+      "needs_you": true,
+      "sessions": []
+    }
   ]
 }

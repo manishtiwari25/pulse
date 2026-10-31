@@ -2341,6 +2341,52 @@ mod tests {
         assert_eq!(result["task"]["status"], "cancelled");
     }
 
+    // The owner pastes a long brief (a spec, a log) into the task dialog:
+    // it goes through whole. Only a body past the hub's cap is refused,
+    // and the refusal says how big the body was and how much fits.
+    #[test]
+    fn a_long_pasted_brief_makes_a_task_and_the_cap_names_its_size() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let brief = "- a line of the pasted spec\n".repeat(2400);
+        assert!(brief.len() > 60_000);
+        let body = serde_json::json!({"project": "one", "title": "Ship the spec", "brief": brief});
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/tasks",
+            &body.to_string(),
+        );
+        assert_eq!(status, 201, "{result:?}");
+        assert_eq!(result["task"]["brief"], brief);
+
+        let huge = serde_json::json!({"project": "one", "title": "Too much", "brief": "x".repeat(crate::server::JSON_BODY_LIMIT)});
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/tasks",
+            &huge.to_string(),
+        );
+        assert_eq!(status, 400, "{result:?}");
+        assert_eq!(
+            result["error"],
+            format!(
+                "JSON body must be 1..{} bytes",
+                crate::server::JSON_BODY_LIMIT
+            )
+        );
+        assert!(
+            result["why"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("this write takes up to 1 MB."),
+            "{result:?}"
+        );
+        let (_, result) = http::additions_request(http::handler(&s), "GET", "/api/v1/tasks", "");
+        assert_eq!(arr(&result, "tasks").len(), 1);
+    }
+
     #[test]
     fn additions_task_status_and_message_choices() {
         let _serial = crate::test_helpers::serial();

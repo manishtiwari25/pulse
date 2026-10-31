@@ -40,6 +40,7 @@ pub mod additions;
 pub mod ask;
 pub mod board;
 pub mod chat;
+pub mod chat_tasks;
 pub mod code_deliveries;
 pub mod cred;
 pub mod decisions;

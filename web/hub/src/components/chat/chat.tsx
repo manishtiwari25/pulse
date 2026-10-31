@@ -35,6 +35,7 @@ import {
   ShieldCheckIcon,
   ShieldQuestionIcon,
   SparklesIcon,
+  UsersIcon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -47,29 +48,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArtifactList, ArtifactViewer, ChangeList, ChangesViewer, ReviewAllButton, bytesWord, fileIcon, useChatDiff, type ChatDiff, type ChatView } from "@/components/chat/changes";
 import { STEP_ICON, STEP_LABEL, exitWords, mergeSteps, planItems } from "@/components/harness/harness";
 import { Markdown } from "@/components/pulse/markdown";
-import { PulseMascot, type PipMood } from "@/components/pulse/mascots";
+import { PulseMascot } from "@/components/pulse/mascots";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
-import { ProjectLink, When } from "@/components/pulse/who";
-import type { ChatArtifact, ChatAttachment, ChatChanges, ChatListResponse, ChatPending, ChatShowResponse, Conversation, ConversationLive, ConversationMessage, HarnessModel, HarnessModelsResponse, HarnessSessionResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
+import { Avatar, ProjectLink, When } from "@/components/pulse/who";
+import { TaskSheet } from "@/components/tasks/task-sheet";
+import type { ChatArtifact, ChatAttachment, ChatChanges, ChatListResponse, ChatPending, ChatShowResponse, ChatTask, Conversation, ConversationLive, ConversationMessage, HarnessModel, HarnessModelsResponse, HarnessSessionResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
 import { ApiError, CHAT_ATTACHMENTS_PER_MESSAGE, CHAT_ATTACHMENT_LIMIT, api, chatAttachmentHref, chatAttachments, chatUpload, enc, errorText, isChatImage, query, writes } from "@/lib/api";
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import { hrefs } from "@/lib/nav";
+import { sessionWords, taskFinished, taskMood, taskTitleOf, type Mood, type Tone } from "@/components/chat/task-groups";
 import { ACTION_KINDS, beatsOf, brief, countWords, groupNotes, streamTail } from "@/lib/transcript";
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // ----- words ----------------------------------------------------------------
-
-type Tone = "run" | "wait" | "ok" | "neutral" | "bad";
-
-interface Mood {
-  word: string;
-  tone: Tone;
-  pip: PipMood;
-  dot: string;
-}
 
 // One sentence per state, the same on the list, the header and the tab title.
 function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
@@ -103,6 +97,8 @@ const GROUP_TITLES: Record<ListGroup, string> = { working: "Working", open: "Ope
 const GROUP_ORDER: ListGroup[] = ["working", "open", "finished", "archived"];
 // Finished conversations pile up: the list shows the latest few and unfolds on request.
 const FINISHED_SHOWN = 8;
+// Finished tasks too: the list keeps the latest few groups open.
+const FINISHED_TASKS_SHOWN = 3;
 
 const TONE_TEXT: Record<Tone, string> = {
   run: "text-primary",
@@ -583,6 +579,9 @@ export function ChatPageClient() {
   const router = useRouter();
   const pathname = usePathname();
   const id = sp.get("id") || "";
+  // A task opens over the page (its sheet) and stays in the address, so a
+  // link to it from a report or another window lands on the same view.
+  const task = sp.get("task") || "";
   const [showArchived, setShowArchived] = useState(false);
   const list = useApi<ChatListResponse>("chat" + (showArchived ? "?all=1" : ""), { refresh: 5000 });
   const projects = useApi<ProjectsPayload>("projects", { refresh: 60000 });
@@ -593,13 +592,23 @@ export function ChatPageClient() {
     },
     [router, pathname],
   );
+  const openTask = useCallback(
+    (next: string | null) => {
+      router.replace(pathname + query({ id: id || undefined, task: next || undefined }), { scroll: false });
+    },
+    [router, pathname, id],
+  );
 
   const rows = useMemo(() => {
     const all = list.data?.conversations ?? [];
     return [...all].sort((a, b) => (b.last_at || b.created_at).localeCompare(a.last_at || a.created_at));
   }, [list.data]);
+  const tasks = useMemo(() => {
+    const all = list.data?.tasks ?? [];
+    return [...all].sort((a, b) => (b.last_at || b.created_at).localeCompare(a.last_at || a.created_at));
+  }, [list.data]);
   const current = rows.find((c) => c.id === id);
-  const attention = rows.filter((c) => (c.live?.status || c.status) === "waiting").length;
+  const attention = rows.filter((c) => (c.live?.status || c.status) === "waiting").length + tasks.filter((t) => t.needs_you).length;
 
   // The tab says when an agent waits on you, even from another window
   // (the shell names the page; this only adds the count).
@@ -612,7 +621,7 @@ export function ChatPageClient() {
   // An older hub has no /chat routes (404) or no conversations table (503).
   const unavailable = !!list.error && !list.data && /not available yet|not found|HTTP 404|HTTP 503/i.test(list.error);
 
-  const listNode = <ConversationList rows={rows} loading={list.loading && !list.data} current={id} onOpen={open} showArchived={showArchived} onToggleArchived={() => setShowArchived((v) => !v)} />;
+  const listNode = <ConversationList rows={rows} tasks={tasks} loading={list.loading && !list.data} current={id} currentTask={task} onOpen={open} onOpenTask={openTask} showArchived={showArchived} onToggleArchived={() => setShowArchived((v) => !v)} />;
 
   return (
     <div className={cn("grid min-w-0 gap-4", id ? "lg:flex lg:h-[calc(100dvh-1rem)] lg:min-h-[34rem] lg:flex-col" : "lg:pb-10")}>
@@ -638,8 +647,9 @@ export function ChatPageClient() {
       {id ? (
         <ConversationView key={id} id={id} seed={current} projects={projects.data} list={listNode} onBack={() => open(null)} onGone={() => open(null)} />
       ) : (
-        <Split list={listNode} listOnMobile main={<NewConversation projects={projects.data} onCreated={(c) => open(c.id)} busyElsewhere={rows.filter((c) => (c.live?.status || c.status) === "running").length} />} />
+        <Split list={listNode} listOnMobile main={<NewConversation projects={projects.data} onCreated={(c) => open(c.id)} onTaskCreated={(t) => openTask(t)} busyElsewhere={rows.filter((c) => (c.live?.status || c.status) === "running").length} />} />
       )}
+      <TaskSheet id={task || null} onClose={() => openTask(null)} />
     </div>
   );
 }
@@ -706,10 +716,17 @@ function Split({ list, main, panel, listOnMobile, fill }: { list: ReactNode; mai
 
 // ----- the list -------------------------------------------------------------
 
-function ConversationList({ rows, loading, current, onOpen, showArchived, onToggleArchived }: { rows: Conversation[]; loading: boolean; current: string; onOpen: (id: string) => void; showArchived: boolean; onToggleArchived: () => void }) {
+function ConversationList({ rows, tasks, loading, current, currentTask, onOpen, onOpenTask, showArchived, onToggleArchived }: { rows: Conversation[]; tasks: ChatTask[]; loading: boolean; current: string; currentTask: string; onOpen: (id: string) => void; onOpenTask: (id: string) => void; showArchived: boolean; onToggleArchived: () => void }) {
   const now = useNow(15000);
   const [allFinished, setAllFinished] = useState(false);
+  const [allFinishedTasks, setAllFinishedTasks] = useState(false);
   const groups = GROUP_ORDER.map((g) => ({ g, rows: rows.filter((c) => groupOf(c) === g) })).filter((x) => x.rows.length);
+  // Tasks first: a task is many conversations at once, so the list shows the
+  // ones still moving, then the latest finished few.
+  const movingTasks = tasks.filter((t) => !taskFinished(t));
+  const finishedTasks = tasks.filter(taskFinished);
+  const foldedTasks = !allFinishedTasks && finishedTasks.length > FINISHED_TASKS_SHOWN;
+  const shownFinishedTasks = foldedTasks ? finishedTasks.slice(0, FINISHED_TASKS_SHOWN) : finishedTasks;
   return (
     <div className="grid min-w-0 gap-2">
       <div className="flex items-center justify-between px-1">
@@ -720,35 +737,137 @@ function ConversationList({ rows, loading, current, onOpen, showArchived, onTogg
       </div>
       {loading ? (
         <SkeletonRows n={4} />
-      ) : rows.length === 0 ? (
-        <EmptyState icon={<PulseMascot mood="happy" size={56} decorative />} hint="Start one on the right. Each conversation is its own agent with its own branch.">
+      ) : rows.length === 0 && tasks.length === 0 ? (
+        <EmptyState icon={<PulseMascot mood="happy" size={56} decorative />} hint="Start one on the right. Each conversation is its own agent with its own branch; a task is a group of them under one lead.">
           No conversations yet.
         </EmptyState>
       ) : (
-        groups.map(({ g, rows: all }) => {
-          const folded = g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
-          const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
-          return (
-            <section key={g} className="grid min-w-0 gap-1.5" aria-label={GROUP_TITLES[g]}>
+        <>
+          {tasks.length ? (
+            <section className="grid min-w-0 gap-1.5" aria-label="Tasks">
               <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-                {GROUP_TITLES[g]}
-                <span className="tnum font-normal">{all.length}</span>
+                Tasks
+                <span className="tnum font-normal">{tasks.length}</span>
+                <Link href={hrefs.tasks()} className="ml-auto font-normal normal-case tracking-normal underline-offset-4 hover:text-foreground hover:underline">
+                  Board
+                </Link>
               </h3>
               <ul className="grid min-w-0 gap-1.5" role="list">
-                {shown.map((c, i) => (
-                  <ConversationItem key={c.id} c={c} index={i} active={c.id === current} now={now} onOpen={onOpen} />
+                {movingTasks.map((t, i) => (
+                  <TaskItem key={t.id} t={t} index={i} active={t.id === currentTask} now={now} onOpen={onOpenTask} />
+                ))}
+                {shownFinishedTasks.map((t, i) => (
+                  <TaskItem key={t.id} t={t} index={movingTasks.length + i} active={t.id === currentTask} now={now} onOpen={onOpenTask} folded />
                 ))}
               </ul>
-              {folded ? (
-                <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinished(true)}>
-                  Show all {all.length} finished
+              {foldedTasks ? (
+                <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinishedTasks(true)}>
+                  Show all {finishedTasks.length} finished tasks
                 </button>
               ) : null}
             </section>
-          );
-        })
+          ) : null}
+          {groups.map(({ g, rows: all }) => {
+            const folded = g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
+            const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
+            return (
+              <section key={g} className="grid min-w-0 gap-1.5" aria-label={GROUP_TITLES[g]}>
+                <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+                  {GROUP_TITLES[g]}
+                  <span className="tnum font-normal">{all.length}</span>
+                </h3>
+                <ul className="grid min-w-0 gap-1.5" role="list">
+                  {shown.map((c, i) => (
+                    <ConversationItem key={c.id} c={c} index={i} active={c.id === current} now={now} onOpen={onOpen} />
+                  ))}
+                </ul>
+                {folded ? (
+                  <button type="button" className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setAllFinished(true)}>
+                    Show all {all.length} finished
+                  </button>
+                ) : null}
+              </section>
+            );
+          })}
+        </>
       )}
     </div>
+  );
+}
+
+// A task in the list: its header opens the task (the owner's thread with the
+// lead, the plan, the activity), and under it one line per conversation the
+// task holds - the lead's thread and each step's agent session. A finished
+// task starts folded to its header; its lines unfold on request.
+function TaskItem({ t, index, active, now, onOpen, folded }: { t: ChatTask; index: number; active: boolean; now: number; onOpen: (id: string) => void; folded?: boolean }) {
+  const m = taskMood(t);
+  const [unfolded, setUnfolded] = useState(false);
+  const showLines = !folded || unfolded || active;
+  const live = t.sessions.some((s) => s.status === "running");
+  const lines = t.sessions;
+  return (
+    <li className="enter min-w-0" style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}>
+      <div className={cn("grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors", active ? "border-primary/50 shadow-card" : "", m.tone === "wait" && !active && "border-warn/50")}>
+        <button type="button" onClick={() => onOpen(t.id)} aria-current={active ? "page" : undefined} className={cn("lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors", active ? "bg-primary/[0.06]" : "hover:bg-muted/40")}>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)} data-live={live} aria-hidden />
+            <UsersIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="task" />
+            <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">{t.title || t.id}</span>
+            {m.tone === "wait" ? <ShieldQuestionIcon className="size-3.5 shrink-0 text-warn attn rounded-full" aria-label="waiting for you" /> : null}
+          </span>
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>{m.word}</span>
+            <span aria-hidden>·</span>
+            <span className="truncate">{t.project}</span>
+            <span aria-hidden>·</span>
+            <span className="shrink-0 tnum">{t.id}</span>
+            <span className="ml-auto shrink-0 tnum">{relShort(t.last_at || t.created_at, now)}</span>
+          </span>
+        </button>
+        {showLines ? (
+          <ul className="grid min-w-0 gap-px border-t bg-muted/20 py-1" role="list" aria-label={`Conversations of ${t.id}`}>
+            <li className="min-w-0">
+              <button type="button" onClick={() => onOpen(t.id)} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50">
+                <span className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl" aria-hidden />
+                {t.lead ? <Avatar seed={t.lead} size={16} /> : <CircleDashedIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+                <span className="min-w-0 flex-1 truncate text-foreground">{t.lead ? `Your thread with ${t.lead}` : "Your thread with the lead"}</span>
+                <span className="shrink-0 text-muted-foreground">{t.messages ? plural(t.messages, "message") : "no messages yet"}</span>
+              </button>
+            </li>
+            {lines.map((s) => {
+              const w = sessionWords(s);
+              const body = (
+                <>
+                  <span className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl" aria-hidden />
+                  {s.agent ? <Avatar seed={s.agent} size={16} /> : <CircleDashedIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+                  <span className="min-w-0 flex-1 truncate text-foreground">{s.title || s.kind}</span>
+                  <span className={cn("shrink-0 font-medium", TONE_TEXT[w.tone])}>{w.word}</span>
+                  <span className="shrink-0 tnum text-muted-foreground">{relShort(s.updated_at || s.started_at, now)}</span>
+                </>
+              );
+              const cls = "flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50";
+              return (
+                <li key={s.job} className="min-w-0">
+                  {s.session ? (
+                    <Link href={hrefs.harness({ id: s.session })} className={cls} title={`${s.agent || "an agent"} on ${s.job}: open the run`}>
+                      {body}
+                    </Link>
+                  ) : (
+                    <button type="button" onClick={() => onOpen(t.id)} className={cls} title={`${s.job}: no agent has taken this step yet`}>
+                      {body}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <button type="button" onClick={() => setUnfolded(true)} className="border-t bg-muted/20 px-3 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground">
+            {plural(lines.length + 1, "conversation")} · show
+          </button>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -802,20 +921,45 @@ const STARTERS = [
   "Review what landed this week and tell me what looks risky.",
 ];
 
-function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: ProjectsPayload; onCreated: (c: Conversation) => void; busyElsewhere: number }) {
+// Who takes the request: one agent in a conversation here, or the project's
+// team - a task the lead agent plans and splits into steps, each a
+// conversation of its own under the task in the list.
+type Who = "agent" | "team";
+
+function NewConversation({ projects, onCreated, onTaskCreated, busyElsewhere }: { projects?: ProjectsPayload; onCreated: (c: Conversation) => void; onTaskCreated: (id: string) => void; busyElsewhere: number }) {
   const [text, setText] = useState("");
   const [project, setProject] = useState(LET_AGENT_DECIDE);
+  const [who, setWho] = useState<Who>("agent");
   const [model, setModel] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [auto, setAuto] = useState(true);
   const [busy, setBusy] = useState(false);
   const list = (projects?.projects ?? []).filter((p) => p.status !== "inactive");
   const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
+  const team = who === "team";
+  // A task belongs to a project from the start: the lead is the project's.
+  const needsProject = team && project === LET_AGENT_DECIDE;
+  const canStart = !!text.trim() && !busy && !needsProject;
 
   const start = async () => {
     const t = text.trim();
-    if (!t || busy) return;
+    if (!canStart) return;
     setBusy(true);
+    if (team) {
+      const id = toast.loading("Giving the task…");
+      try {
+        const r = await writes.newTask({ project, title: taskTitleOf(t), brief: t, priority: 10 });
+        toast.success(`Task given. The ${project} lead agent picks it up shortly and replies in its thread.`, { id, description: r.task.id });
+        invalidate((p) => p.startsWith("chat") || p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects/"));
+        onTaskCreated(r.task.id);
+      } catch (e) {
+        toast.dismiss(id);
+        fail(e, "The task was not given");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     try {
       const r = await writes.chatCreate({ text: t, project: project === LET_AGENT_DECIDE ? "" : project, auto_approve: auto, model, reasoning });
       invalidate("chat");
@@ -835,8 +979,11 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
           <PulseMascot mood={busy ? "busy" : text.trim() ? "curious" : "happy"} size={84} className="float shrink-0 self-center sm:self-start" title="Pip is ready" />
           <div className="grid min-w-0 flex-1 gap-4">
             <div className="grid gap-1">
-              <h2 className="text-xl font-semibold tracking-tight text-foreground">What should the agent do?</h2>
-              <p className="text-sm leading-relaxed text-muted-foreground">Say it the way you would to a colleague. The agent reads the project, works in its own branch, and reports back here. {busyElsewhere ? `${plural(busyElsewhere, "other conversation")} ${busyElsewhere === 1 ? "is" : "are"} working right now.` : ""}</p>
+              <h2 className="text-xl font-semibold tracking-tight text-foreground">{team ? "What should the team do?" : "What should the agent do?"}</h2>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {team ? "Say it the way you would to a colleague. The project's lead agent reads it, plans the steps, hands each to an agent, and asks you here when it needs a decision. The whole text is the brief; its first line names the task." : "Say it the way you would to a colleague. The agent reads the project, works in its own branch, and reports back here."}{" "}
+                {busyElsewhere ? `${plural(busyElsewhere, "other conversation")} ${busyElsewhere === 1 ? "is" : "are"} working right now.` : ""}
+              </p>
             </div>
             <Textarea
               value={text}
@@ -847,10 +994,10 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
                   void start();
                 }
               }}
-              placeholder="For example: add a dark mode toggle to the settings page and make sure the tests still pass."
+              placeholder={team ? "For example: ship a settings page with a dark mode toggle, a language switch and tests - one step per part, review before landing." : "For example: add a dark mode toggle to the settings page and make sure the tests still pass."}
               className="min-h-28 text-[15px]"
               autoFocus
-              aria-label="What should the agent do"
+              aria-label={team ? "What should the team do" : "What should the agent do"}
             />
             <div className="flex flex-wrap gap-1.5">
               {STARTERS.map((s) => (
@@ -860,18 +1007,35 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
               ))}
             </div>
             <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+              <fieldset className="grid gap-1 text-xs font-medium text-muted-foreground">
+                <legend className="mb-1">Who does it</legend>
+                <div className="flex rounded-lg border bg-muted/40 p-0.5" role="radiogroup" aria-label="Who does it">
+                  {(
+                    [
+                      { v: "agent", label: "One agent", icon: MessageSquareIcon },
+                      { v: "team", label: "The project's team", icon: UsersIcon },
+                    ] as { v: Who; label: string; icon: typeof UsersIcon }[]
+                  ).map((o) => (
+                    <button key={o.v} type="button" role="radio" aria-checked={who === o.v} onClick={() => setWho(o.v)} className={cn("flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors", who === o.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                      <o.icon className="size-3.5" aria-hidden /> {o.label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
               <label className="grid gap-1 text-xs font-medium text-muted-foreground">
                 Project
                 <Select value={project} onValueChange={setProject}>
-                  <SelectTrigger className="w-56" aria-label="Project">
-                    <SelectValue />
+                  <SelectTrigger className={cn("w-56", needsProject && "border-warn/60")} aria-label="Project" aria-invalid={needsProject || undefined}>
+                    <SelectValue placeholder="Pick a project" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={LET_AGENT_DECIDE}>
-                      <span className="flex items-center gap-1.5">
-                        <SparklesIcon className="size-3.5 text-primary" /> Let the agent decide
-                      </span>
-                    </SelectItem>
+                    {team ? null : (
+                      <SelectItem value={LET_AGENT_DECIDE}>
+                        <span className="flex items-center gap-1.5">
+                          <SparklesIcon className="size-3.5 text-primary" /> Let the agent decide
+                        </span>
+                      </SelectItem>
+                    )}
                     {list.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
                         {p.slug}
@@ -881,23 +1045,29 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
                   </SelectContent>
                 </Select>
               </label>
-              <label className="grid gap-1 text-xs font-medium text-muted-foreground">
-                Model
-                <ModelPicker value={model} onChange={setModel} models={models.data?.models ?? []} label="Model for this conversation" />
-              </label>
-              <label className="grid gap-1 text-xs font-medium text-muted-foreground">
-                Effort
-                <EffortPicker value={reasoning} onChange={setReasoning} label="Reasoning effort for this conversation" />
-              </label>
-              <label className="flex items-center gap-2 text-sm text-foreground">
-                <Switch checked={auto} onCheckedChange={setAuto} aria-label="Approve tool calls automatically" />
-                <span className="grid">
-                  <span className="font-medium">Approve tools automatically</span>
-                  <span className="text-xs text-muted-foreground">{auto ? "Runs commands and edits files without stopping to ask." : "Stops before each risky command and waits for your yes."}</span>
-                </span>
-              </label>
-              <Button type="button" className="ml-auto" onClick={() => void start()} disabled={!text.trim() || busy}>
-                {busy ? <LoaderCircleIcon className="animate-spin" /> : <ArrowUpIcon />} Start
+              {team ? (
+                <p className="max-w-xs self-center text-xs leading-relaxed text-muted-foreground">{needsProject ? "A task needs a project: its lead agent belongs to one." : "The lead and its agents use the project's own settings; change them under Settings."}</p>
+              ) : (
+                <>
+                  <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                    Model
+                    <ModelPicker value={model} onChange={setModel} models={models.data?.models ?? []} label="Model for this conversation" />
+                  </label>
+                  <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                    Effort
+                    <EffortPicker value={reasoning} onChange={setReasoning} label="Reasoning effort for this conversation" />
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-foreground">
+                    <Switch checked={auto} onCheckedChange={setAuto} aria-label="Approve tool calls automatically" />
+                    <span className="grid">
+                      <span className="font-medium">Approve tools automatically</span>
+                      <span className="text-xs text-muted-foreground">{auto ? "Runs commands and edits files without stopping to ask." : "Stops before each risky command and waits for your yes."}</span>
+                    </span>
+                  </label>
+                </>
+              )}
+              <Button type="button" className="ml-auto" onClick={() => void start()} disabled={!canStart}>
+                {busy ? <LoaderCircleIcon className="animate-spin" /> : team ? <UsersIcon /> : <ArrowUpIcon />} {team ? "Give the task" : "Start"}
                 <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-[10px] opacity-80 sm:inline">⌘↵</kbd>
               </Button>
             </div>
@@ -905,11 +1075,18 @@ function NewConversation({ projects, onCreated, busyElsewhere }: { projects?: Pr
         </div>
       </section>
       <div className="grid gap-3 sm:grid-cols-3">
-        {[
-          { icon: GitBranchIcon, title: "Its own branch", body: "Each conversation works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like." },
-          { icon: ShieldCheckIcon, title: "Asks when it must", body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too." },
-          { icon: PaperclipIcon, title: "Shows its work", body: "Every command, file edit and note appears as it happens. Attach files for it to read; its screenshots and reports land in Artifacts." },
-        ].map((f, i) => (
+        {(team
+          ? [
+              { icon: UsersIcon, title: "A lead plans it", body: "The project's lead agent reads your brief, writes the plan and splits it into steps; each step becomes a conversation of its own under the task." },
+              { icon: ShieldCheckIcon, title: "Asks when it must", body: "The lead asks you here when a decision is yours; the task shows 'Needs your reply' until you answer." },
+              { icon: ListChecksIcon, title: "Every step in view", body: "The list shows each step's agent and state; open a step to watch its run, or the task to read the plan and the thread." },
+            ]
+          : [
+              { icon: GitBranchIcon, title: "Its own branch", body: "Each conversation works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like." },
+              { icon: ShieldCheckIcon, title: "Asks when it must", body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too." },
+              { icon: PaperclipIcon, title: "Shows its work", body: "Every command, file edit and note appears as it happens. Attach files for it to read; its screenshots and reports land in Artifacts." },
+            ]
+        ).map((f, i) => (
           <div key={f.title} className="enter grid gap-1.5 rounded-xl border bg-card/60 px-4 py-3" style={{ animationDelay: 80 + i * 60 + "ms" }}>
             <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <f.icon className="size-4 text-primary" /> {f.title}

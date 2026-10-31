@@ -397,7 +397,21 @@ pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
     true
 }
 
+/// How large a JSON write may be: room for a task brief or a chat message
+/// of a few hundred pages pasted in at once. Routes that carry bytes
+/// inside the JSON (inline images) pass their own limit to
+/// [`read_payload_up_to`].
+pub(crate) const JSON_BODY_LIMIT: usize = 1024 * 1024;
+
 pub(crate) fn read_payload(w: &mut ResponseWriter, r: &Request) -> (JsonMap, bool) {
+    read_payload_up_to(w, r, JSON_BODY_LIMIT)
+}
+
+pub(crate) fn read_payload_up_to(
+    w: &mut ResponseWriter,
+    r: &Request,
+    limit: usize,
+) -> (JsonMap, bool) {
     if !same_origin_write(w, r) {
         return (JsonMap::new(), false);
     }
@@ -414,13 +428,17 @@ pub(crate) fn read_payload(w: &mut ResponseWriter, r: &Request) -> (JsonMap, boo
         return (JsonMap::new(), false);
     }
     let data = &r.body;
-    if data.is_empty() || data.len() > 16_384 {
+    if data.is_empty() || data.len() > limit {
         write_error(
             w,
             400,
-            "JSON body must be 1..16384 bytes".into(),
-            "The request body is outside the allowed size.".into(),
-            "Send a smaller JSON object.".into(),
+            format!("JSON body must be 1..{limit} bytes"),
+            format!(
+                "The request body holds {} bytes; this write takes up to {}.",
+                data.len(),
+                size_words(limit)
+            ),
+            "Send a smaller JSON object: shorten the text or attach it as a file.".into(),
         );
         return (JsonMap::new(), false);
     }
@@ -469,6 +487,16 @@ pub(crate) fn read_payload(w: &mut ResponseWriter, r: &Request) -> (JsonMap, boo
         return (JsonMap::new(), false);
     }
     (map.into_iter().collect(), true)
+}
+
+fn size_words(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{} KB", n / 1024)
+    } else {
+        format!("{} MB", n / (1024 * 1024))
+    }
 }
 
 pub(crate) fn read_method(w: &mut ResponseWriter, r: &Request) -> bool {
