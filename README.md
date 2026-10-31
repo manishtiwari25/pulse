@@ -3920,7 +3920,11 @@ checkout that holds the forge's head lets the pipeline watcher's fix start
 from it. A merge that fails the check for more than the upstream's own
 reasons, or a re-apply that cannot be made (the branch too far ahead, a
 worktree that cannot be added), holds the push with the reason and `git pull
---no-rebase` spelled out, and is not tried again until either side moves.
+--no-rebase` spelled out, and is not tried again until either side moves. A
+conflict a daemon remembered before it knew how to re-apply is retried once
+by the re-apply rather than left waiting for a move. A credential error that
+carries the tool's own timestamp (`[ERROR] 2026/10/31 09:08:24 ...`) is noted
+without it, so the hold is logged once, not again every pass.
 One remote move is not merged at all: an
 upstream rewritten by hand into a squash of history the daemon had already
 pushed - a root commit, or any commit the local branch shares no ancestor
