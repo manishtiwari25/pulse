@@ -133,7 +133,13 @@ pub(crate) fn plan_repair(
             ..Default::default()
         };
     }
-    let transient = f.rc.is_none() || crate::recipe::setup_failure_transient(&f.tail);
+    // Judged on the last lines, where the error is: the same window the
+    // repeated-failure rule read before it marked the machine unfit, so the
+    // two agree. Warnings higher up (npm's peer notes, a deprecation) are not
+    // the failure, and an unfit mark with no repair planned is the one state
+    // this job exists to end.
+    let transient = f.rc.is_none()
+        || crate::recipe::setup_failure_transient(&crate::run::squeeze(&f.tail, 300));
     if transient {
         return Planned {
             note: "the setup failure looks transient (a timeout, the network, the disk), so no repair job is planned; the retry decides".into(),
@@ -562,6 +568,33 @@ mod tests {
         let capped = plan_repair(&s, &p, &failure("abc9"), "daemon", TEST_NOW);
         assert!(capped.job.is_empty(), "{capped:?}");
         assert!(capped.note.contains("plans no more"), "{capped:?}");
+    }
+
+    /// npm prints `npm warn could not resolve dependency:` peer notes above
+    /// the real error; the repeated-failure rule read the last 300 chars
+    /// (the EUSAGE line) and marked the machine unfit, so the repair must
+    /// read the same and plan - a frozen project with no repair is the gap
+    /// this job closes (eszett, 2026-10-31).
+    #[test]
+    fn warnings_above_the_error_do_not_make_it_transient() {
+        let s = new_store();
+        let p = project(&s);
+        let mut f = failure("abc");
+        f.cmd = "npm ci --no-audit --no-fund".into();
+        f.tail = format!(
+            "npm warn ERESOLVE overriding peer dependency npm warn could not resolve dependency: npm warn peerOptional @types/node@\"*\" from ws@8.18.0 {} npm error code EUSAGE npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing. npm error Missing: react@19.3.1 from lock file npm error A complete log of this run can be found in: /Users/work/.npm/_logs/2026-10-31T07_21_02_840Z-debug-0.log",
+            "npm warn ".repeat(40)
+        );
+        let planned = plan_repair(&s, &p, &f, "daemon", TEST_NOW);
+        assert!(planned.created, "{planned:?}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'setup:proj'",
+                &[]
+            ),
+            1
+        );
     }
 
     #[test]

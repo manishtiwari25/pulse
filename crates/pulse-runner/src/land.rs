@@ -30,8 +30,15 @@ const SETUP_RETRY_MINUTES: i64 = 20;
 /// The manifest files that pair with a lockfile: a branch that changes one of
 /// these relative to `before` also changes its lockfile, and main's lockfile
 /// is restored over the merge, so setup can never pass for it.
+// `pnpm-workspace.yaml` is where pnpm 10 keeps `overrides`, `catalog:` and
+// the install settings its lockfile records: a branch that changes it with
+// the lockfile is a dependency bump like any `package.json` change, and
+// main's lockfile over the branch's workspace file fails the frozen install
+// (`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`) just as main's lockfile over a
+// changed `package.json` would.
 static MANIFEST_FILES: &[&str] = &[
     "package.json",
+    "pnpm-workspace.yaml",
     "Cargo.toml",
     "pyproject.toml",
     "setup.py",
@@ -3704,6 +3711,110 @@ mod tests {
         assert_eq!(d["pins"][0]["version"], "16.4.1");
         assert_eq!(d["pins"][0]["previous"], "16.3.8");
         assert_eq!(d["pins"][0]["published_at"], "2026-08-20T10:00:00Z");
+    }
+
+    /// pnpm 10 keeps `overrides` in `pnpm-workspace.yaml`: a branch that bumps
+    /// a pin there changes that file and `pnpm-lock.yaml`, never a
+    /// `package.json`. It is a dependency bump all the same - judged by the
+    /// release-age rule and checked with its own lockfile - where before the
+    /// landing restored main's lockfile over the branch's workspace file and
+    /// the frozen install failed for every landing of the project (amistio,
+    /// `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`, 2026-10-31).
+    #[test]
+    fn pnpm_workspace_pins_make_a_lockfile_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let branch = "pulse/aurora/override-next";
+        let verify_cmd =
+            "sh -c 'grep -q 16.4.1 pnpm-workspace.yaml && grep -q 16.4.1 pnpm-lock.yaml'";
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        let dir = std::path::Path::new(&root);
+        let recipe = dir.join(crate::recipe::RECIPE_PATH);
+        std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+        std::fs::write(&recipe, "---\nrecipe: 1\nsetup: []\n---\n").unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            "{\"dependencies\":{\"next\":\"^16.0.0\"}}\n",
+        )
+        .unwrap();
+        let workspace = |v: &str| format!("packages:\n  - .\noverrides:\n  next: {v}\n");
+        let lock = |v: &str| {
+            format!(
+                "lockfileVersion: '9.0'\n\noverrides:\n  next: {v}\n\nimporters:\n\n  .:\n    dependencies:\n      next:\n        specifier: ^16.0.0\n        version: {v}\n\npackages:\n\n  next@{v}:\n    resolution: {{integrity: sha512-x}}\n\nsnapshots:\n\n  next@{v}: {{}}\n"
+            )
+        };
+        std::fs::write(dir.join("pnpm-workspace.yaml"), workspace("16.3.8")).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock("16.3.8")).unwrap();
+        run(&root, &["git", "add", "-A"]);
+        run(
+            &root,
+            &["git", "commit", "-q", "-m", "override next 16.3.8"],
+        );
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(dir.join("pnpm-workspace.yaml"), workspace("16.4.1")).unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), lock("16.4.1")).unwrap();
+        run(&root, &["git", "add", "-A"]);
+        run(
+            &root,
+            &["git", "commit", "-q", "-m", "override next 16.4.1"],
+        );
+        run(&root, &["git", "switch", "-q", "main"]);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "override next".into(),
+            "b".into(),
+            1,
+            30,
+            String::new(),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &branch, &job.str("id")],
+        );
+        assert_eq!(
+            super::branch_lockfiles(&["pnpm-workspace.yaml".into(), "pnpm-lock.yaml".into()]),
+            vec!["pnpm-lock.yaml".to_string()]
+        );
+
+        let got = super::land_pending_with_registry(
+            &s,
+            project.clone(),
+            "daemon",
+            TEST_NOW,
+            true,
+            0,
+            false,
+            &next_registry(),
+        );
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].state, "landed", "{}", got[0].note);
+        assert_eq!(job_row(&s, &job.str("id")).str("status"), "done");
+        assert!(run(&root, &["git", "show", "main:pnpm-lock.yaml"]).contains("16.4.1"));
+        assert!(event_details(&s, "land.held").is_empty());
+        let recorded = event_details(&s, "land.release-age");
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0]["verdict"], "ready");
+        assert_eq!(
+            recorded[0]["lockfiles"],
+            serde_json::json!(["pnpm-lock.yaml"])
+        );
+        assert_eq!(recorded[0]["pins"][0]["name"], "next");
+        assert_eq!(recorded[0]["pins"][0]["version"], "16.4.1");
     }
 
     /// A version younger than the rule allows waits for its date, not for a

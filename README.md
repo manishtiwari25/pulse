@@ -3612,7 +3612,10 @@ for the two hours a job may run); a
 setup that fails on the machine defers the landing with a `land.deferred` event
 naming the file and the failure, and nothing is charged to the branch. A setup
 that fails that way at the base - not a timeout, not a dead network or a full
-disk - is a fault of the default branch itself that no retry and no other job
+disk, judged on the output's last lines where the error is, so that npm's
+`could not resolve dependency` peer note above a lockfile error never passes
+for a DNS failure and the unfit mark and the repair read the same evidence -
+is a fault of the default branch itself that no retry and no other job
 can get past: every landing of the project runs the same setup first, and every
 worker clone does too. So the daemon plans the fix (`landing.setup_repair`,
 default `on`): one Tier 1 `task` job with source `setup:SLUG` (the
@@ -4164,6 +4167,11 @@ or gone with the dependency - the watcher answers the finding itself
 per project is the `meta` row `dependabot:<slug>`.
 
 **The landing.** A branch that changes a lockfile together with its manifest
+(`package.json`, or `pnpm-workspace.yaml`, where pnpm 10 keeps `overrides`
+and `catalog:` pins - before this a branch changing those two alone was no
+dependency bump to the landing, main's lockfile was restored over the
+branch's workspace file, and every landing of the project then failed its
+setup with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`)
 used to wait for a human landing in every case. Now the landing diffs the
 pins between the default branch and the branch (`Cargo.lock`,
 `package-lock.json`, `pnpm-lock.yaml` in every shape pnpm has written,
