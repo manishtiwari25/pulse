@@ -55,6 +55,10 @@ pub(crate) struct LeaseOpts {
     /// Projects whose landing kinds wait behind one source (a red default
     /// branch and its fix job): `(project, source)` pairs.
     pub hold_except: Vec<(String, String)>,
+    /// Projects of which only the job with one source may be taken (a
+    /// project frozen on this machine by a setup failure and its repair
+    /// job): `(project, source)` pairs.
+    pub only_source: Vec<(String, String)>,
     /// The slot is one the daemon keeps for the work class: a queued
     /// improve, task or experiment job goes before the meta kinds whatever
     /// project waited longest, and the meta kinds get the slot only when no
@@ -440,6 +444,11 @@ pub(crate) fn lease_job(
             sql.push_str(&format!(
                 " AND NOT (j.project = ? AND j.kind IN ({landing_kinds}) AND j.source != ?)"
             ));
+            vals.push(Box::new(project.clone()));
+            vals.push(Box::new(source.clone()));
+        }
+        for (project, source) in &o.only_source {
+            sql.push_str(" AND NOT (j.project = ? AND j.source != ?)");
             vals.push(Box::new(project.clone()));
             vals.push(Box::new(source.clone()));
         }

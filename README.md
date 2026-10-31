@@ -2207,6 +2207,7 @@ record, read with `pulse record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
+| `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - at a landing, or twice the same way in a worker clone - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only defers the landing and marks the machine unfit, as before. |
 | `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
@@ -3608,7 +3609,38 @@ clone gets - within ten minutes (`SETUP_MINUTES`, the budget every setup
 gets, whatever `minutes_per_job` says: a hung `pnpm install` once held a slot
 for the two hours a job may run); a
 setup that fails on the machine defers the landing with a `land.deferred` event
-naming the file and the failure, and nothing is charged to the branch. Each worker is one `pulse harness
+naming the file and the failure, and nothing is charged to the branch. A setup
+that fails that way at the base - not a timeout, not a dead network or a full
+disk - is a fault of the default branch itself that no retry and no other job
+can get past: every landing of the project runs the same setup first, and every
+worker clone does too. So the daemon plans the fix (`landing.setup_repair`,
+default `on`): one Tier 1 `task` job with source `setup:SLUG` (the
+`land.deferred` detail carries its id as `repair`, the hold note says `repair
+job ID planned`, and a `setup.repair` event records the command, the exit
+code and the last lines), briefed with the base commit, the recipe file, the
+command and the output, and told the three ways such a setup breaks and how to
+prove each fixed: the recipe names paths or tools the tree no longer has
+(`pulse env set --project SLUG --file …`, and `pulse init PATH --verify` for a
+verify command that moved with them), a lockfile out of step with its
+manifest (regenerated only at the versions the manifest already pins, since
+the landing's release-age rule reads every new version it adds), or the tree
+itself. That job is the one job of the project the setup is not run for -
+the runner says so in its log and the brief's rule 3 tells the worker to
+install only what the setup would have - and it is leased even while the
+project is marked unfit for the machine, which holds everything else of the
+project back. The same failure seen in a worker clone plans it too, at the
+point the second same-signature failure marks the project unfit, so a
+project frozen on every machine by a broken `npm ci` no longer waits a day
+per machine for marks to expire. Three repairs a day per project at most; a
+failing repair stays open and is briefed afresh at the next failure rather
+than queued again; and the first landing whose setup passes on the machine
+clears that machine's `setup:` mark for the project at once (an `executor.fit`
+event), so the held work follows the repair out. Before this, a project whose
+`server/package-lock.json` had drifted from its manifest sat frozen on the
+hub for a day behind an `npm ci` that no job was allowed to fix, and a
+pnpm workspace whose lockfile no longer matched its `overrides` held every
+landing the same way.
+Each worker is one `pulse harness
 run` process (the daemon's own binary here; on a paired hand the shipped
 `pulse-hands` binary, which `/usr/local/bin/pulse` links to) given the brief,
 the clone, the limits and the model from Settings, one minute less than
@@ -3787,7 +3819,8 @@ their probe answers `recipe=1` (hands shipped since this landed do; `pulse
 pair` refreshes older ones, then `pulse executor probe NAME`); until then such
 a project runs on the hub only, as before, which kept five of eight projects off
 the hands. A setup that fails twice the same way marks the project unfit for that
-executor; a failure the machine did not cause - a dead network, a full disk
+executor and plans the setup repair job described under landing, which that
+mark lets through; a failure the machine did not cause - a dead network, a full disk
 (`no space left on device`, `disk quota exceeded`) - never does, and the job
 simply goes back to the queue. While a mark holds queued jobs, the daemon's idle
 line says so (`no queued job; 3 queued wait: 3 for blog (local cannot set up
@@ -3904,7 +3937,14 @@ the same push url and credential. When someone else moved the remote, it
 does not stop at "not fast-forward": it brings the remote commits in as a
 landing of their own (`pulse/sync/<remote>/<branch>`, merged in the throwaway
 worktree and judged by the project's check like any other landing, `land.synced`
-in the log), then pushes the result. A plain merge that conflicts is not left
+in the log), then pushes the result. The upstream is the owner's published
+truth, so a sync is set up and checked as upstream has it: its recipe, its
+lockfiles and manifests, and the paths the check names are the merged tree's,
+not restored from the local head the way an agent's branch has them restored
+so it cannot change what checks its own work. (Before this, a sync of an owner's
+rename lost the renamed solution and csproj files the check named and failed
+every setup with `MSB1009: Project file does not exist`, and no retry could
+pass.) A plain merge that conflicts is not left
 to you: the upstream is the published truth, so the daemon re-applies the
 local branch's own commits - the ones the upstream lacks, merges left out, up
 to 200 - onto the upstream tip in a throwaway worktree, one by one, the way a

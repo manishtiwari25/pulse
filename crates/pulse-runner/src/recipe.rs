@@ -979,6 +979,13 @@ fn failure_signature_transient(reason: &str) -> String {
     }
     format!("transient:{head}")
 }
+/// Whether a setup failure's text names a cause the next try will not see
+/// (the network, the disk, a stopped runner) rather than the project's own
+/// fault.
+pub(crate) fn setup_failure_transient(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    contains_any_str(&lower, TRANSIENT_MARKS) || contains_any_str(&lower, SETUP_TRANSIENT_MARKS)
+}
 pub(crate) fn repeated_setup_failure(
     q: &impl Querier,
     now: &str,
@@ -986,9 +993,7 @@ pub(crate) fn repeated_setup_failure(
     executor: &str,
     summary: &str,
 ) -> bool {
-    let lower = summary.to_lowercase();
-    if contains_any_str(&lower, TRANSIENT_MARKS) || contains_any_str(&lower, SETUP_TRANSIENT_MARKS)
-    {
+    if setup_failure_transient(summary) {
         return false;
     }
     let since = crate::util::format_iso(

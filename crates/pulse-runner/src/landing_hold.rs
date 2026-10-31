@@ -2396,6 +2396,100 @@ mod tests {
         );
     }
 
+    /// The owner renamed a tool upstream and moved the recipe and the check
+    /// script with it. A sync sets the merged tree up with upstream's recipe
+    /// and checks it with upstream's files: the lockfile, manifest and
+    /// check-path guard is for an agent's branch, not for the forge's own
+    /// default branch, and restoring those paths from the stale local head
+    /// left a setup no retry could pass.
+    #[test]
+    fn landing_sync_sets_up_and_checks_the_upstreams_own_tree() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        commit_file(
+            &repo,
+            "tools/amistio.sh",
+            "printf installed > .deps\n",
+            "setup tool",
+        );
+        commit_file(
+            &repo,
+            "tools/check.sh",
+            "test -f .deps && test -f tools/amistio.sh\n",
+            "check",
+        );
+        commit_file(
+            &repo,
+            "docs/context/environment.md",
+            "---\nrecipe: 1\nsetup:\n  - sh tools/amistio.sh\n---\n",
+            "recipe",
+        );
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'sh tools/check.sh' WHERE slug = 'proj'",
+            &[],
+        );
+        let other = other_clone(&bare);
+        run(
+            &other,
+            &["git", "mv", "tools/amistio.sh", "tools/lamplit.sh"],
+        );
+        std::fs::write(
+            Path::new(&other).join("tools/check.sh"),
+            "test -f .deps && test -f tools/lamplit.sh\n",
+        )
+        .unwrap();
+        commit_file(
+            &other,
+            "docs/context/environment.md",
+            "---\nrecipe: 1\nsetup:\n  - sh tools/lamplit.sh\n---\n",
+            "rename amistio to lamplit",
+        );
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        let proj = crate::board::project_by_slug(&s.conn().unwrap(), proj.str("slug"));
+
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        let (lines, cur) = tend_landings(
+            &s,
+            vec![proj.clone()],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("landing synced proj: origin/main merged into main")),
+            "lines {lines:?}"
+        );
+        assert!(cur.is_empty(), "hold notes: {cur:?}");
+        for action in ["land.deferred", "setup.repair", "land.held"] {
+            assert_eq!(
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                    &[&action]
+                ),
+                0,
+                "{action}: {lines:?}"
+            );
+        }
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/main"),
+            ref_of(&repo, "refs/heads/main")
+        );
+        run(&repo, &["git", "cat-file", "-e", "main:tools/lamplit.sh"]);
+        run(&repo, &["git", "cat-file", "-e", "main:pulse_worker_1.txt"]);
+        assert!(
+            !Path::new(&repo).join(".deps").exists(),
+            "setup ran in the checkout instead of the worktree"
+        );
+    }
+
     /// A merged result that fails for more than the upstream's own reason is
     /// the merge's fault: the sync holds as before.
     #[test]
@@ -3595,6 +3689,44 @@ mod tests {
         let d: serde_json::Value = serde_json::from_str(&ev.str("detail")).unwrap();
         if d["setup"] != "docs/context/environment.md" || d["rc"] != 3 {
             panic!("land.deferred detail: {d}");
+        }
+        // The failure is the project's own: one repair job is planned for it,
+        // named in the event and the hold note, and a second deferral reuses it.
+        let repair = must_one(
+            &s,
+            "SELECT * FROM jobs WHERE project = 'proj' AND source = 'setup:proj'",
+            &[],
+        );
+        if repair.0.is_empty() || repair.str("status") != "queued" || repair.str("kind") != "task" {
+            panic!("no queued repair job: {repair:?}");
+        }
+        if d["repair"] != repair.str("id").as_str() || !note.contains("repair job") {
+            panic!("deferral does not name the repair job: {d} / {note}");
+        }
+        let base = run(&dir, &["git", "rev-parse", "main"]).trim().to_string();
+        let brief = repair.str("brief");
+        if !brief.contains(&crate::recipe::short(&base, 12))
+            || !brief.contains("no such tool here")
+            || !brief.contains("pulse env set --project proj")
+        {
+            panic!("repair brief: {brief}");
+        }
+        crate::land::clear_landing_retry(&s, "proj");
+        let proj = job_row_project(&s);
+        let (_, held) = tend_landings(
+            &s,
+            vec![proj],
+            "daemon".into(),
+            TEST_NOW.into(),
+            BTreeMap::new(),
+        );
+        let n = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM jobs WHERE source = 'setup:proj'",
+            &[],
+        );
+        if n != 1 || !held.get("proj").is_some_and(|h| h.contains("already open")) {
+            panic!("second deferral did not reuse the repair job: n={n} held={held:?}");
         }
         for action in ["land.failed-verify", "land.base-red", "job.requeue"] {
             let n = count(

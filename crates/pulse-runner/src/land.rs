@@ -1414,7 +1414,19 @@ pub(crate) fn land_branch_with_registry(
             );
         } else {
             let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
-            let mut guarded = check_definition_files(vc.clone(), files.clone(), root.clone());
+            // A sync merges the forge's own default branch: the owner's published
+            // truth, which no guard here reads over (the release-age rule above
+            // skipped it for the same reason). Its lockfiles, manifests, recipe and
+            // the paths the check names stay as upstream has them, and the setup is
+            // the merged tree's. Restoring them from the local head deleted the
+            // solution an owner's rename had moved and put main's lockfile over
+            // upstream's manifest, and no sync of those projects could set up again.
+            let setup_rev = if o.sync { sha.clone() } else { before.clone() };
+            let mut guarded = if o.sync {
+                Vec::new()
+            } else {
+                check_definition_files(vc.clone(), files.clone(), root.clone())
+            };
             // A lockfile branch's lockfiles and manifests stay for the check once the
             // human landing it by hand or the release-age rule accepted its
             // dependencies: main's lockfile over the branch's manifest can never set up.
@@ -1429,21 +1441,21 @@ pub(crate) fn land_branch_with_registry(
             // first, from {def}'s recipe so a branch cannot change what installs for its own check.
             let setup_minutes = crate::recipe::SETUP_MINUTES;
             let (base_recipe, base_problems, _) =
-                crate::recipe::read_recipe(s, &slug, &root, &before);
+                crate::recipe::read_recipe(s, &slug, &root, &setup_rev);
             let base_recipe = if base_problems.is_empty() {
                 base_recipe.unwrap_or_default()
             } else {
                 crate::recipe::Recipe::default()
             };
             let (setup_cmd, setup_files, _) =
-                crate::recipe::project_setup(&root, &before, &base_recipe, &worktree);
+                crate::recipe::project_setup(&root, &setup_rev, &base_recipe, &worktree);
             if !setup_cmd.is_empty() {
                 let setup_budget =
                     Duration::from_secs((setup_minutes as u64) * 60).max(Duration::from_secs(60));
                 let (rc, so, se) = crate::landing_context::sh_with_context(
                     &cancel,
                     worktree.clone(),
-                    setup_cmd,
+                    setup_cmd.clone(),
                     setup_budget,
                 );
                 if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
@@ -1457,6 +1469,28 @@ pub(crate) fn land_branch_with_registry(
                 };
                 if rc.as_deref() != Some(&0) {
                     let from = setup_files.join(", ");
+                    // The fault is the project's own (a recipe naming moved
+                    // paths, a lockfile behind its manifest): one repair job
+                    // fixes it where it is, the retry below only waits.
+                    let planned = crate::setup_repair::plan_repair(
+                        s,
+                        &project,
+                        &crate::setup_repair::SetupFailure {
+                            base: if o.sync && !o.upstream.is_empty() {
+                                o.upstream.clone()
+                            } else {
+                                before.clone()
+                            },
+                            files: from.clone(),
+                            cmd: setup_cmd.clone(),
+                            rc: rc.as_deref().copied(),
+                            tail: crate::run::squeeze(&format!("{so}{se}"), 2500),
+                            executor: crate::executor::LOCAL_EXECUTOR.to_string(),
+                            seen: "landing",
+                        },
+                        &actor,
+                        &now,
+                    );
                     if let Ok(conn) = s.conn() {
                         crate::util::event_at(
                             &conn,
@@ -1469,6 +1503,7 @@ pub(crate) fn land_branch_with_registry(
                                 "setup": from,
                                 "rc": rc.as_deref().copied(),
                                 "tail": prep_tail,
+                                "repair": planned.job,
                             }),
                         );
                     }
@@ -1483,13 +1518,27 @@ pub(crate) fn land_branch_with_registry(
                         .max(1);
                     let hold_until = crate::util::plus_minutes(&now, minutes as f64);
                     set_landing_retry(s, &slug, &hold_until, "setup failed; retry later");
+                    let repair_note = if planned.note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {}", planned.note)
+                    };
                     return Ok((
                         "deferred".into(),
                         format!(
-                            "setup from {from} failed on this machine ({prep_tail}); nothing landed, retry after {hold_until}"
+                            "setup from {from} failed on this machine ({prep_tail}); nothing landed, retry after {hold_until}{repair_note}"
                         ),
                     ));
                 }
+                // The recipe's setup just passed here: a `setup:` unfit mark
+                // a repeated failure left on this machine is stale.
+                crate::setup_repair::setup_passed(
+                    s,
+                    &slug,
+                    crate::executor::LOCAL_EXECUTOR,
+                    &actor,
+                    &now,
+                );
             }
             let budget = Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60));
             let verify_started = std::time::Instant::now();
