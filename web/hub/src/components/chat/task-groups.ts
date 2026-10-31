@@ -69,3 +69,84 @@ export function taskTitleOf(text: string): string {
   const at = cut.lastIndexOf(" ");
   return (at > TASK_TITLE_MAX / 2 ? cut.slice(0, at) : cut).replace(/[\s,;:.!?-]+$/, "") + "\u2026";
 }
+
+// ----- sub-conversations ----------------------------------------------------
+
+// The list's sections: a conversation is working while its agent runs or
+// waits on you, open while it is idle between turns, finished once the
+// agent or the owner closed it (a message reopens it), and archived when
+// it was put away.
+export type ListGroup = "working" | "open" | "finished" | "archived";
+
+export const GROUP_ORDER: ListGroup[] = ["working", "open", "finished", "archived"];
+
+export interface Grouped {
+  id: string;
+  status: string;
+  parent?: string;
+  created_at?: string;
+  live?: { status: string } | null;
+}
+
+export function groupOf(c: Grouped): ListGroup {
+  const status = c.live?.status || c.status;
+  if (status === "running" || status === "waiting") return "working";
+  if (status === "closed") return "finished";
+  if (status === "archived") return "archived";
+  return "open";
+}
+
+// A conversation with its sub-conversations under it: the ones its agent
+// (or the owner, from its page) started. A sub-conversation whose parent is
+// not in the list (put away while it carries on, or outside the latest
+// rows) stands on its own.
+export interface Family<T extends Grouped> {
+  c: T;
+  children: T[];
+}
+
+export function families<T extends Grouped>(rows: T[]): Family<T>[] {
+  const ids = new Set(rows.map((c) => c.id));
+  const top = rows.filter((c) => !c.parent || !ids.has(c.parent) || c.parent === c.id);
+  const byParent = new Map<string, T[]>();
+  for (const c of rows) {
+    if (!c.parent || c.parent === c.id || !ids.has(c.parent)) continue;
+    const list = byParent.get(c.parent) ?? [];
+    list.push(c);
+    byParent.set(c.parent, list);
+  }
+  // Children in the order they were started, oldest first: the way the
+  // parent's transcript names them.
+  return top.map((c) => ({
+    c,
+    children: (byParent.get(c.id) ?? []).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "")),
+  }));
+}
+
+// A family's section is its most pressing member's: a finished parent with
+// a sub-conversation still working is listed under Working.
+export function familyGroup<T extends Grouped>(f: Family<T>): ListGroup {
+  let at = GROUP_ORDER.indexOf(groupOf(f.c));
+  for (const child of f.children) at = Math.min(at, GROUP_ORDER.indexOf(groupOf(child)));
+  return GROUP_ORDER[at];
+}
+
+// What a report note from a sub-conversation says it did, as the verb that
+// follows its title: "Docs check · finished".
+export function reportVerb(kind: string): string {
+  switch (kind) {
+    case "finished":
+      return "finished";
+    case "replied":
+      return "replied";
+    case "asks":
+      return "asks you";
+    case "blocked":
+      return "is blocked";
+    case "stopped":
+      return "stopped";
+    case "ended":
+      return "ended its session";
+  }
+  return "reports";
+}

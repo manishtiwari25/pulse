@@ -1431,6 +1431,9 @@ export interface Conversation {
   turns: number;
   cost: number;
   note: string;
+  // The conversation this one is a sub-conversation of (its agent, or the
+  // owner from its page, started this one); empty for a top-level one.
+  parent: string;
   live?: ConversationLive;
 }
 
@@ -1546,6 +1549,11 @@ export interface ChatShowResponse {
   after: number;
   artifacts: ChatArtifact[];
   changes: ChatChanges | null;
+  // The title of `conversation.parent`; empty for a top-level conversation.
+  parent_title: string;
+  // This conversation's sub-conversations, put-away ones included, each
+  // with its live state.
+  children: Conversation[];
 }
 
 export interface ChatCreateInput {
@@ -1557,6 +1565,31 @@ export interface ChatCreateInput {
   model?: string;
   // A reasoning effort; empty for the harness setting.
   reasoning?: string;
+  // Start a sub-conversation of this one: it takes the parent's workspace,
+  // model, effort and approval setting (project, model, reasoning and
+  // auto_approve are ignored).
+  parent?: string;
+}
+
+// The report a sub-conversation sent its parent, on a `note` row in the
+// parent's transcript: who it is from and what kind of report.
+export interface ChatReport {
+  child: string;
+  title: string;
+  // "finished", "replied", "asks", "blocked", "stopped", "ended".
+  kind: string;
+}
+
+export function chatReport(m: ConversationMessage): ChatReport | null {
+  const r = m.extra?.report;
+  if (!r || typeof r !== "object") return null;
+  const o = r as Record<string, unknown>;
+  if (typeof o.child !== "string" || !o.child) return null;
+  return {
+    child: o.child,
+    title: typeof o.title === "string" ? o.title : "",
+    kind: typeof o.kind === "string" ? o.kind : "",
+  };
 }
 
 export function chatArtifactHref(id: string, name: string): string {
