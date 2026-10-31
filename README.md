@@ -3733,7 +3733,11 @@ still reads a token from stdin; `--remove` forgets it). The hand's probe reports
 whose workdir filesystem has under `daemon.min_free_mb` (default 10240, ten
 gigabytes: a build and the clones beside it, since a run that hits ENOSPC
 mid-build is lost work) megabytes free and names that path in its note; 0
-turns the check off. The daemon checks
+turns the check off. A hand that was drained but never active (added with
+`pulse executor add`, registered in the console, or paired while the host was
+still booting) becomes active on its first passing probe, including the
+daemon's own; a hand drained by the owner, by errors or by the login gate still
+needs a human probe. The daemon checks
 the same floor before it leases new work or starts an experiment measurement,
 so a full work filesystem pauses dispatch with `disk under floor: <free> MB
 free on <path> (daemon.min_free_mb <floor>)`; after fifteen minutes it writes
