@@ -2307,10 +2307,44 @@ export interface ComputeCaps {
   hours_today: number;
 }
 
+// A machine the hub is pairing from the console (POST compute/executors,
+// mode pair): the request answers at once and the pairing runs on the hub;
+// its report grows here until the owner dismisses it. `status` is running,
+// ok or failed.
+export interface Pairing {
+  name: string;
+  admin: string;
+  by: string;
+  started: string;
+  finished: string;
+  status: "running" | "ok" | "failed" | string;
+  ok: boolean;
+  dry_run: boolean;
+  lines: string[];
+  changed: string[];
+}
+
 export interface Compute {
   requests: ComputeRequest[];
   executors: Executor[];
   caps: ComputeCaps;
+  pairings?: Pairing[];
+}
+
+// What "Add machine" sends. `pair` is `pulse pair ADMIN --name NAME`: the hub
+// reaches an admin account over ssh and sets the machine up. `register` is
+// `pulse executor add` for a machine prepared by hand, probed at once when
+// asked. `request` asks the cloud provider the way an agent does and, unless
+// `approve` is false, approves it on the spot.
+export type AddMachineInput =
+  | { mode: "pair"; name: string; admin: string; workdir?: string; workers?: number; projects?: string; labels?: string; dry_run?: boolean }
+  | { mode: "register"; name: string; ssh: string; workdir?: string; workers?: number; projects?: string; labels?: string; probe?: boolean }
+  | { mode: "request"; project: string; size?: string; hours?: number; reason: string; approve?: boolean };
+
+export interface MachineAdded {
+  executor: Executor | null;
+  added: { name: string; status: string; offers: string; line: string };
+  probe: { ok: boolean; status: string; note: string; line: string } | null;
 }
 
 export type RecordKind =
@@ -2685,6 +2719,9 @@ export const writes = {
   // folder; force adopts a checkout that tracks another remote.
   moveProject: (slug: string, path: string, force = false) => post<MovedProject>("projects/" + enc(slug) + "/move", force ? { path, force: true } : { path }),
   removeExecutor: (name: string, dryRun: boolean) => post<RemovePreview>("compute/executors/" + enc(name) + "/remove", { dry_run: dryRun }),
+  // Adding a machine from the console; see AddMachineInput for the three ways.
+  addMachine: (input: AddMachineInput) => post<MachineAdded | { pairing: Pairing } | { request: ComputeRequest }>("compute/executors", input),
+  dismissPairing: (name: string) => post<{ dismissed: string }>("compute/pairings/" + enc(name) + "/dismiss", {}),
   // The owner's held-out fixtures (ADR-032): `pulse evolve setup DIR`, then one
   // write per fixture. The hub answers with counts only and never reads a fixture back.
   heldoutSetup: (dir: string) => post<HeldoutPayload>("heldout", { dir } satisfies HeldoutSetupInput),

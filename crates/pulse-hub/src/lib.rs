@@ -53,6 +53,7 @@ pub mod hygiene;
 pub mod job_repair;
 pub mod leads_api;
 pub mod lifecycle;
+pub mod machines;
 pub mod mcp;
 pub mod privacy;
 pub mod project_goal;

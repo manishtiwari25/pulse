@@ -53,6 +53,7 @@ pub mod lead_roles;
 pub mod lessons;
 pub mod liveness;
 pub mod login_gate;
+pub mod machines;
 pub mod manifest;
 pub mod multipass;
 pub mod onboard;

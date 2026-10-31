@@ -821,6 +821,83 @@ async function handle(req, res) {
       }
       return send(res, 200, preview);
     }
+    // Add machine (POST compute/executors): pair runs "on the hub" for a few
+    // seconds and lands its report under pairings; register adds a drained
+    // row and, when asked, "probes" it; request behaves like an agent's.
+    if (segs[0] === "compute" && segs[1] === "executors" && segs.length === 2) {
+      state.compute.pairings ??= [];
+      const mode = body.mode || "pair";
+      const slug = String(body.name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+      const labels = String(body.labels || "").split(/[\s,]+/).filter(Boolean);
+      if (mode === "request") {
+        if (!body.project) return fail(res, 400, "Invalid project", "project must be a non-empty string.", "Send a JSON object with a valid project.");
+        if (!body.reason) return fail(res, 400, "Invalid reason", "reason must be a non-empty string.", "Send a JSON object with a valid reason.");
+        const r = { id: "CR-" + String(state.compute.requests.length + 1).padStart(3, "0"), project: body.project, requested_by: "human", size: body.size || "Standard_B2s", hours: Number(body.hours) || 4, reason: body.reason, status: body.approve === false ? "pending" : "approved", decided_by: body.approve === false ? "" : "human", executor: "", at: now(), updated_at: now() };
+        state.compute.requests.push(r);
+        emit("human", "compute.requested", r.id, { project: r.project, size: r.size, hours: r.hours, status: r.status });
+        return send(res, 201, { request: r });
+      }
+      if (!slug || slug === "local" || slug === "x" || !/^[a-z][a-z0-9-]*$/.test(slug)) return fail(res, 400, "Executor name must be lowercase words with dashes and not 'local'", "The machine was not added.", "Correct the machine's details and add it again.");
+      if (labels.some((w) => !/^[a-z0-9][a-z0-9._:-]*$/.test(w))) return fail(res, 400, "Invalid label " + labels.find((w) => !/^[a-z0-9][a-z0-9._:-]*$/.test(w)), "labels are lowercase words", "Correct the labels.");
+      const workdir = body.workdir || "/srv/pulse";
+      const workers = Number(body.workers) || 1;
+      const offers = ["linux", "amd64", ...labels].join(" ");
+      if (mode === "register") {
+        if (!body.ssh && !body.address) return fail(res, 400, "The machine's ssh address is needed (user@host[:port], usually pulse@host)", "The machine was not added.", "Correct the machine's details and add it again.");
+        if (state.compute.executors.some((e) => e.name === slug && e.status !== "removed")) return fail(res, 400, "Executor " + slug + " already exists", "The machine was not added.", "Pick another name.");
+        const e = { name: slug, kind: "ssh", status: "drained", address: body.ssh || body.address, workdir, workers, projects: body.projects || "*", last_probe_at: "", probe_note: "", offers, created_at: now(), created_by: "human" };
+        state.compute.executors = state.compute.executors.filter((x) => x.name !== slug).concat([e]);
+        emit("human", "executor.add", slug, { address: e.address, workdir, workers });
+        let probe = null;
+        if (body.probe) {
+          e.status = "active";
+          e.last_probe_at = now();
+          e.probe_note = "ok; hands 0.1.0; git 2.45; harness yes";
+          probe = { ok: true, status: "active", note: e.probe_note, line: slug + " ok, active: " + e.probe_note };
+          emit("human", "executor.probe", slug, { ok: true });
+        }
+        return send(res, 201, { executor: e, added: { name: slug, status: e.status, offers, line: "added " + slug + " (" + e.address + ", " + workdir + "; offers " + offers + "); it is drained until `pulse executor probe " + slug + "` passes" }, probe });
+      }
+      if (!body.admin) return fail(res, 400, "The admin ssh address is needed (admin@host[:port], an account with passwordless sudo)", "The machine was not added.", "Correct the machine's details and pair it again.");
+      if (!body.dry_run && state.compute.executors.some((e) => e.name === slug && e.status !== "removed")) return fail(res, 409, "Executor " + slug + " already exists", "A machine with this name is already paired.", "Pick another name, or remove " + slug + " first.");
+      if (state.compute.pairings.some((p) => p.name === slug && p.status === "running")) return fail(res, 409, "Already pairing " + slug, "A pairing with this name is still running.", "Wait for it to finish.");
+      const p = { name: slug, admin: body.admin, by: "human", started: now(), finished: "", status: "running", ok: false, dry_run: Boolean(body.dry_run), lines: ["pairing executor " + slug], changed: [] };
+      state.compute.pairings = state.compute.pairings.filter((x) => x.name !== slug).concat([p]);
+      const steps = ["inspection: uname=Linux arch=x86_64 user=absent", "hands binary built for linux/amd64", "remote script ran as root on " + body.admin.replace(/^[^@]+@/, ""), "Host " + slug + " added to ~/.ssh/config; known_hosts updated"];
+      steps.forEach((line, i) => setTimeout(() => p.status === "running" && p.lines.push(line), 1200 * (i + 1)));
+      setTimeout(() => {
+        p.finished = now();
+        if (p.dry_run) {
+          p.ok = true;
+          p.status = "ok";
+          p.lines.push("dry run: nothing changed; the remote and undo scripts are above");
+          return;
+        }
+        const unreachable = /unreachable|bad/.test(body.admin);
+        if (unreachable) {
+          p.ok = false;
+          p.status = "failed";
+          p.lines.push("inspection failed: ssh: connect to host " + body.admin.replace(/^[^@]+@/, "") + " port 22: Connection refused");
+          return;
+        }
+        p.ok = true;
+        p.status = "ok";
+        p.changed = ["~/.ssh/config", "~/.ssh/known_hosts"];
+        p.lines.push("executor add " + slug + " --ssh pulse@" + slug + " --workdir " + workdir + " --workers " + workers + " --projects " + (body.projects || "*"), "probe " + slug + " ok, active: hands 0.1.0; git 2.45; harness yes");
+        if (labels.length) p.lines.push("labels " + labels.join(",") + ": offers " + offers);
+        state.compute.executors.push({ name: slug, kind: "ssh", status: "active", address: "pulse@" + slug, workdir, workers, projects: body.projects || "*", last_probe_at: now(), probe_note: "ok; hands 0.1.0; git 2.45; harness yes", offers, created_at: now(), created_by: "human" });
+        emit("human", "executor.add", slug, { address: "pulse@" + slug, workdir, workers });
+      }, 1200 * (steps.length + 1));
+      return send(res, 202, { pairing: p });
+    }
+    if (segs[0] === "compute" && segs[1] === "pairings" && segs.length === 4 && segs[3] === "dismiss") {
+      state.compute.pairings ??= [];
+      const p = state.compute.pairings.find((x) => x.name === segs[2]);
+      if (!p) return fail(res, 404, "No pairing " + segs[2], "No pairing with this name is listed.", "Refresh the machines list.");
+      if (p.status === "running") return fail(res, 409, "Still pairing " + segs[2], "A running pairing cannot be dismissed.", "Wait for it to finish.");
+      state.compute.pairings = state.compute.pairings.filter((x) => x !== p);
+      return send(res, 200, { dismissed: p.name });
+    }
     if (segs[0] === "compute" && segs[1] === "executors" && segs.length === 4 && segs[3] === "remove") {
       const name = segs[2];
       if (name === "local") return fail(res, 400, "The local executor is this machine; use `pulse settings set workers N` to size it", "local is not a row in the store", "pulse settings set workers 0");
