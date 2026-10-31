@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::sync::RwLock;
 
-pub(crate) const JOB_COLS: &str = "id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, lease_agent, lease_until, generation, attempts, finished_at, result, branch, agent";
+pub(crate) const JOB_COLS: &str = "id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, lease_agent, lease_until, generation, attempts, finished_at, result, branch, agent, needs";
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct Job {
@@ -31,6 +31,9 @@ pub struct Job {
     /// The custom agent the job is pinned to (`--run-as`); empty lets the
     /// runner pick one by the card.
     pub agent: String,
+    /// What kind of machine the job must run on, as the words of
+    /// `pulse_store::needs`; empty when any machine will do.
+    pub needs: String,
 }
 
 pub(crate) fn scan_job(row: &Row<'_>) -> rusqlite::Result<Job> {
@@ -54,6 +57,7 @@ pub(crate) fn scan_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         result: row.get(16)?,
         branch: row.get(17)?,
         agent: row.get(18)?,
+        needs: row.get(19)?,
     })
 }
 
@@ -94,6 +98,10 @@ pub struct JobInput {
     /// [`check_run_as`]; the runner falls back to its own choice when the
     /// spec is gone by the time the job runs.
     pub agent: String,
+    /// The machine the job must run on, as the words of
+    /// `pulse_store::needs` (`macos,xcode`); empty takes the project's
+    /// needs as they stand when the job is made.
+    pub needs: String,
 }
 
 /// Answers whether the custom agent `name` loads for `project`, whose
@@ -187,10 +195,20 @@ pub(crate) fn add_job_conn(
             return Ok((job_by_id_conn(conn, &id)?.expect("dedupe job"), false));
         }
     }
+    let needs = if input.needs.trim().is_empty() {
+        let project_needs: String = conn.query_row(
+            "SELECT needs FROM projects WHERE slug = ?",
+            [&input.project],
+            |r| r.get(0),
+        )?;
+        pulse_store::needs::join(&pulse_store::needs::stored(&project_needs))
+    } else {
+        pulse_store::needs::canonical(&input.needs).map_err(|e| refuse(2, e))?
+    };
     let id = new_id(s, "job");
     conn.execute(
-        "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, branch, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
-        params![id, input.project, input.kind, input.tier, input.title, input.brief, input.source, input.priority, s.now(), input.created_by, input.branch, input.agent.trim()],
+        "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, branch, agent, needs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+        params![id, input.project, input.kind, input.tier, input.title, input.brief, input.source, input.priority, s.now(), input.created_by, input.branch, input.agent.trim(), needs],
     )?;
     event_conn(
         conn,
@@ -203,6 +221,90 @@ pub(crate) fn add_job_conn(
         )?,
     )?;
     Ok((job_by_id_conn(conn, &id)?.expect("inserted job"), true))
+}
+
+/// Sets what kind of machine a queued job must run on (`pulse job needs
+/// JOB_ID macos,xcode`; `-` clears it so any machine takes it). A job that
+/// already runs keeps its machine.
+pub fn set_job_needs(
+    s: &pulse_store::Store,
+    job_id: &str,
+    needs: &str,
+    actor: &str,
+) -> Result<Job> {
+    let conn = s.conn()?;
+    let job = job_by_id_conn(&conn, job_id)?
+        .ok_or_else(|| refuse(2, format!("No job {}", py_repr(job_id))))?;
+    if job.status != "queued" && job.status != "blocked" {
+        return Err(refuse(
+            2,
+            format!(
+                "Job {} is {}; only a queued or blocked job can change its needs",
+                job.id, job.status
+            ),
+        ));
+    }
+    let canonical = if needs.trim() == "-" {
+        String::new()
+    } else {
+        pulse_store::needs::canonical(needs).map_err(|e| refuse(2, e))?
+    };
+    conn.execute(
+        "UPDATE jobs SET needs = ? WHERE id = ?",
+        params![canonical, job.id],
+    )?;
+    event_conn(
+        &conn,
+        s,
+        actor,
+        "job.needs",
+        &job.id,
+        pulse_store::Detail::json(json!({"needs": canonical, "was": job.needs}))?,
+    )?;
+    Ok(job_by_id_conn(&conn, &job.id)?.expect("job after needs"))
+}
+
+/// Sets what kind of machine a project's jobs must run on (`pulse init
+/// --needs`, the manifest's `needs:`); the jobs already queued for it
+/// follow, the ones running keep their machine. `-` clears it.
+pub fn set_project_needs(
+    s: &pulse_store::Store,
+    slug: &str,
+    needs: &str,
+    actor: &str,
+) -> Result<String> {
+    let conn = s.conn()?;
+    let was: String = conn
+        .query_row("SELECT needs FROM projects WHERE slug = ?", [slug], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| refuse(2, format!("No project {}", py_repr(slug))))?;
+    let canonical = if needs.trim() == "-" {
+        String::new()
+    } else {
+        pulse_store::needs::canonical(needs).map_err(|e| refuse(2, e))?
+    };
+    if canonical == was {
+        return Ok(canonical);
+    }
+    conn.execute(
+        "UPDATE projects SET needs = ? WHERE slug = ?",
+        params![canonical, slug],
+    )?;
+    conn.execute(
+        "UPDATE jobs SET needs = ? WHERE project = ? AND status IN ('queued', 'blocked') AND needs = ?",
+        params![canonical, slug, was],
+    )?;
+    event_conn(
+        &conn,
+        s,
+        actor,
+        "project.needs",
+        slug,
+        pulse_store::Detail::json(json!({"needs": canonical, "was": was}))?,
+    )?;
+    Ok(canonical)
 }
 
 pub fn finish_job(
@@ -488,6 +590,7 @@ fn retry_as_new(
             created_by: input.actor.clone(),
             no_dedupe: true,
             agent: job.agent.clone(),
+            needs: job.needs.clone(),
             ..Default::default()
         },
     )?;
@@ -2934,5 +3037,113 @@ mod tests {
             count_rows(&s, "jobs", "source = ?", &[&format!("decide:{}", sug.id)]),
             1
         );
+    }
+
+    fn queue_job(s: &pulse_store::Store, title: &str, needs: &str) -> Job {
+        add_job(
+            s,
+            JobInput {
+                project: "demo".into(),
+                kind: "task".into(),
+                title: title.into(),
+                brief: "b".into(),
+                tier: 1,
+                priority: 5,
+                source: format!("test:{title}"),
+                created_by: "human".into(),
+                needs: needs.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0
+    }
+
+    fn lease_by_hand(s: &pulse_store::Store, id: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'leased', lease_agent = 'bob', lease_until = '2026-09-06T11:00:00Z' WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_job_inherits_its_project_needs_unless_it_names_its_own() {
+        let (_dir, s, _p) = fixture();
+        assert_eq!(queue_job(&s, "before", "").needs, "");
+        set_project_needs(&s, "demo", "Mac, Xcode", "human").unwrap();
+        assert_eq!(queue_job(&s, "inherits", "").needs, "macos,xcode");
+        // Its own words win, canonicalised the same way.
+        assert_eq!(queue_job(&s, "own", "x86_64 ubuntu").needs, "amd64,linux");
+        let err = add_job(
+            &s,
+            JobInput {
+                project: "demo".into(),
+                kind: "task".into(),
+                title: "bad".into(),
+                brief: "b".into(),
+                tier: 1,
+                priority: 5,
+                source: "test:bad".into(),
+                created_by: "human".into(),
+                needs: "mac/os".into(),
+                ..Default::default()
+            },
+        )
+        .err()
+        .unwrap();
+        assert_eq!(code(Some(&err)), 2);
+    }
+
+    #[test]
+    fn project_needs_follow_into_queued_jobs_that_did_not_choose_their_own() {
+        let (_dir, s, _p) = fixture();
+        let plain = queue_job(&s, "plain", "");
+        let own = queue_job(&s, "own", "linux");
+        let leased = queue_job(&s, "running", "");
+        lease_by_hand(&s, &leased.id);
+        set_project_needs(&s, "demo", "macos", "human").unwrap();
+        assert_eq!(job_by_id(&s, &plain.id).unwrap().unwrap().needs, "macos");
+        assert_eq!(job_by_id(&s, &own.id).unwrap().unwrap().needs, "linux");
+        assert_eq!(
+            job_by_id(&s, &leased.id).unwrap().unwrap().needs,
+            "",
+            "a running job keeps its machine"
+        );
+        // Unchanged words are a no-op; `-` clears.
+        set_project_needs(&s, "demo", "macos", "human").unwrap();
+        assert_eq!(set_project_needs(&s, "demo", "-", "human").unwrap(), "");
+        assert_eq!(job_by_id(&s, &plain.id).unwrap().unwrap().needs, "");
+        assert_eq!(
+            count_rows(&s, "events", "action = 'project.needs'", &[]),
+            2,
+            "one event per real change"
+        );
+    }
+
+    #[test]
+    fn job_needs_change_only_while_the_job_waits() {
+        let (_dir, s, _p) = fixture();
+        let job = queue_job(&s, "waits", "");
+        assert_eq!(
+            set_job_needs(&s, &job.id, "arm64 linux", "human")
+                .unwrap()
+                .needs,
+            "arm64,linux"
+        );
+        assert_eq!(set_job_needs(&s, &job.id, "-", "human").unwrap().needs, "");
+        let err = set_job_needs(&s, &job.id, "-not-a-word", "human")
+            .err()
+            .unwrap();
+        assert_eq!(code(Some(&err)), 2);
+        let leased = queue_job(&s, "running", "");
+        lease_by_hand(&s, &leased.id);
+        let err = set_job_needs(&s, &leased.id, "macos", "human")
+            .err()
+            .unwrap();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(what_any(&err).contains("only a queued or blocked job"));
     }
 }

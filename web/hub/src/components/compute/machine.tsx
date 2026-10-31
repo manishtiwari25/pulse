@@ -200,6 +200,8 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
   const free = e.free ?? 0;
   const slots = (running ? num(running) + " running, " : "") + num(free) + " of " + plural(e.workers, "slot") + " free";
   const projects = e.projects && e.projects !== "*" ? e.projects.split(",").map((p) => p.trim()).filter(Boolean).join(", ") : "";
+  const reserved = Boolean(e.reserved) || /\(reserved\)/.test(e.offers || "");
+  const offers = (e.offers || "").replace("(reserved)", "").trim();
   const tip = [e.address && "Address: " + e.address, e.workdir && "Folder: " + e.workdir, "Kind: " + e.kind, "Status: " + e.status, e.errors ? "Errors: " + e.errors + (e.backoff_minutes ? ", next try in " + e.backoff_minutes + " min" : "") : ""].filter(Boolean).join("\n");
   return (
     <li className="flex min-w-0 items-start gap-3 rounded-xl border bg-card px-3 py-2.5 text-sm">
@@ -213,6 +215,8 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
           <span className={cn("font-medium", tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : tone === "you" ? "text-you-ink" : "text-foreground/80")}>{statusWord(e.status)}</span>
           <span>{slots}</span>
           {projects ? <span className="anywhere">{"Only " + projects}</span> : null}
+          {offers && offers !== "-" ? <span className="anywhere" title="What this machine offers; a project asks for these words in its .pulse/pulse.yaml needs:">{"Offers " + offers.split(" ").join(", ")}</span> : null}
+          {reserved ? <span className="text-foreground/80" title="Takes only the jobs that need something it offers">Reserved for the work that needs it</span> : null}
         </div>
       </div>
       {action ? <span className="-my-1 -mr-1 shrink-0">{action}</span> : null}

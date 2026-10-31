@@ -65,6 +65,7 @@ const COMPUTE_CLUSTERS: Cluster[] = [
 const DAEMON_CLUSTERS: Cluster[] = [
   { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes"] },
   { title: "Staying awake", keys: ["daemon.keep_awake"] },
+  { title: "What this machine offers", keys: ["machine.labels", "machine.reserve"] },
   { title: "Failed work", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
   { title: "Cleanup and disk space", keys: ["daemon.sweep", "daemon.min_free_mb", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.sweep_keep_days", "daemon.log_keep_days", "daemon.log_max_mb", "daemon.transcript_keep_days", "daemon.sweep_runners", "daemon.runner_keep_days", "daemon.vacuum_free_mb", "daemon.build_cache", "daemon.build_cache_keep_days", "hygiene.cargo_target", "hygiene.cargo_target_hours"] },
   { title: "Agent check-ins", keys: ["heartbeat.dead_after"] },
@@ -110,7 +111,7 @@ const GROUPS: Group[] = [
     title: "This machine",
     note: "Which PULSE runs here, how it updates itself, retries failed work and cleans up after runs.",
     keys: keysOf(DAEMON_CLUSTERS),
-    match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene."),
+    match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene.") || n.startsWith("machine."),
     clusters: DAEMON_CLUSTERS,
     primary: ["daemon.self_update", "daemon.keep_awake", "daemon.recover", "daemon.sweep", "daemon.min_free_mb"],
     strip: () => <RunningStrip />,
@@ -209,6 +210,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
   { name: "daemon.keep_awake", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on", "always"], description: "on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say" },
+  { name: "machine.labels", value: "", default: "", kind: "text", min: null, choices: null, description: "what this machine offers beyond its OS and architecture, as words a project or job can need (pulse.yaml needs:, pulse job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name" },
+  { name: "machine.reserve", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on"], description: "on: this machine takes only the jobs that need something it offers (a project with needs: [macos] on the only Mac), so the rest of the queue goes to the other machines; off: it takes any job it can run" },
   { name: "heartbeat.dead_after", value: "300", default: "300", kind: "count", min: 30, choices: null, description: "seconds an agent may go without a heartbeat before it counts as dead: every pulse command run as an agent beats, so do its hooks, its job lease and the runner supervising its run; a dead worker's run is closed as lost and its job queued again, a dead session simply shows as dead until it beats again; never under 30" },
   { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main", "pr"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it, so every landing waits for your merge on the forge. off: you push - or ask for a pull request from a task's sheet (ADR-037)" },
   { name: "push.credential", value: "", default: "", kind: "reference", min: null, choices: null, description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)" },
@@ -238,6 +241,7 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "evolve.heldout": { choices: { auto: "PULSE writes them", owner: "I write them myself" } },
   "daemon.self_update": { choices: ON_OFF },
   "daemon.keep_awake": { choices: { off: "Off: the machine sleeps as usual", on: "On while plugged in", always: "On, even on battery" } },
+  "machine.reserve": { choices: { off: "Off: takes any job it can run", on: "On: only the jobs that need what it offers" } },
   "daemon.recover": { choices: ON_OFF },
   "daemon.sweep": { choices: ON_OFF },
 };

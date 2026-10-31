@@ -476,6 +476,7 @@ pub(crate) fn recovery_carrier(q: &Querier, job: Row, root: String) -> String {
             result: job.str("result"),
             branch: job.str("branch"),
             agent: job.str("agent"),
+            needs: job.str("needs"),
         },
         &root,
     )

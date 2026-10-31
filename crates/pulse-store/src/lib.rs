@@ -15,6 +15,7 @@ pub mod hooks_ddl;
 pub mod kinds;
 pub mod mcp_ddl;
 pub mod mcp_servers;
+pub mod needs;
 pub mod posts;
 pub mod projects;
 pub mod pyjson;

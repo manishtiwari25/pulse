@@ -356,10 +356,13 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 os={} arch={} found={}",
             self.workdir,
             dash(jobs),
-            dash(keys)
+            dash(keys),
+            pulse_store::needs::this_os(),
+            pulse_store::needs::this_arch(),
+            dash(crate::executor::found_labels().to_vec())
         )?;
         Ok(())
     }

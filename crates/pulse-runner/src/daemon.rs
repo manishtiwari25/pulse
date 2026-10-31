@@ -7,6 +7,9 @@ type Row = crate::util::Row;
 pub const DEFAULT_DAEMON_INTERVAL_SECONDS: i32 = 300;
 pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
+/// Minutes a job whose needs no active machine meets waits before the
+/// owner is asked for such a machine.
+pub(crate) const NEEDS_WANTED_MINUTES: i32 = 10;
 pub(crate) const DISK_FLOOR_WANTED_MINUTES: i32 = 15;
 /// A disk that hovers around the floor clears and re-crosses it many times
 /// an hour; each crossing used to ask the owner again, and every post became
@@ -337,6 +340,155 @@ pub(crate) fn hands_wanted(
     post
 }
 
+/// The order the free slots are offered work in: the reserved machines
+/// first (they take only the jobs that need them), then the ones kept for
+/// certain projects, then the machines that offer the least (a plain Linux
+/// hand before the Mac with Xcode, so the scarce machine stays free for the
+/// work that needs it), then the least loaded machine with its n-th free
+/// slot counting as load, and the hands before this machine on ties (the
+/// list has them first).
+pub(crate) fn slot_order(slots: &[String], rows: &BTreeMap<String, Row>) -> Vec<usize> {
+    let mut nth: BTreeMap<&str, i64> = BTreeMap::new();
+    let mut keys = Vec::with_capacity(slots.len());
+    for (i, name) in slots.iter().enumerate() {
+        let n = nth.entry(name.as_str()).or_insert(0);
+        let k = *n;
+        *n += 1;
+        let row = rows.get(name);
+        let reserved = row.is_some_and(crate::executor::reserved);
+        let unrestricted = row.is_none_or(|r| r.str("projects") == "*");
+        let offers = row.map_or(0, |r| crate::executor::caps(r).len());
+        let workers = i64::from(row.map_or(1, |r| r.int("workers").max(1)));
+        let free = slots.iter().filter(|s| *s == name).count() as i64;
+        // The machine's load once this slot is filled, in thousandths.
+        let load = ((workers - free).max(0) + k + 1) * 1000 / workers;
+        keys.push(((!reserved, unrestricted, offers, load, i), i));
+    }
+    keys.sort();
+    keys.into_iter().map(|(_, i)| i).collect()
+}
+
+/// A kind of machine the queue waits for and no active machine is: the
+/// needs the jobs share, the project, how many, and how long the oldest
+/// has waited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnmetNeeds {
+    pub(crate) project: String,
+    pub(crate) needs: String,
+    pub(crate) jobs: i32,
+    pub(crate) minutes: i32,
+}
+
+/// The queued work no active machine can take because of what it needs,
+/// grouped by project and needs, oldest first.
+pub(crate) fn unmet_needs(s: &pulse_store::Store, now: &str) -> Vec<UnmetNeeds> {
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let machines: Vec<std::collections::BTreeSet<String>> = crate::executor::executor_rows(s, true)
+        .iter()
+        .filter(|r| r.str("status") == "active")
+        .map(crate::executor::caps)
+        .collect();
+    let rows = crate::util::must_rows(
+        &conn,
+        "SELECT j.project, j.needs, COUNT(*) AS n, MIN(j.created_at) AS oldest FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.needs != '' GROUP BY j.project, j.needs ORDER BY oldest",
+        &[],
+    );
+    rows.into_iter()
+        .filter(|r| {
+            let needs = r.str("needs");
+            !machines
+                .iter()
+                .any(|caps| pulse_store::needs::met(&needs, caps))
+        })
+        .map(|r| {
+            let oldest = r.str("oldest");
+            let minutes = if oldest.is_empty() {
+                0
+            } else {
+                (crate::util::must_iso(now) - crate::util::must_iso(&oldest)).num_minutes() as i32
+            };
+            UnmetNeeds {
+                project: r.str("project"),
+                needs: r.str("needs"),
+                jobs: r.int("n"),
+                minutes,
+            }
+        })
+        .collect()
+}
+
+/// Tells the owner that queued work needs a kind of machine none of the
+/// paired ones is, once per project and needs while the question is open:
+/// the daemon can rent Linux, not a Mac, and only the owner pairs or labels
+/// a machine. Returns the posts made.
+pub(crate) fn needs_wanted(
+    s: &pulse_store::Store,
+    brain: Row,
+    unmet: &[UnmetNeeds],
+    now: String,
+    actor: String,
+) -> Vec<Row> {
+    if brain.0.is_empty() || unmet.is_empty() {
+        return Vec::new();
+    }
+    let slug = brain.str("slug");
+    let machines = crate::executor::executor_rows(s, true)
+        .iter()
+        .map(|r| {
+            format!(
+                "{} ({}): {}",
+                r.str("name"),
+                r.str("status"),
+                crate::executor::caps_text(r)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut posts = Vec::new();
+    for u in unmet {
+        let summary = crate::util::trunc(
+            &format!(
+                "machine wanted: {} job(s) of {} need {}, which no active machine offers",
+                u.jobs, u.project, u.needs
+            ),
+            230,
+        );
+        let body = format!(
+            "{} queued job(s) of {} need a machine that offers `{}`; none of the machines paired here does, so they wait ({} min so far, {now}). The machines and what they offer: {machines}. A machine that has it can be paired with `pulse pair` (a Linux machine) or added by `pulse executor add`; a paired machine that does have it can be told so with `pulse executor label NAME +word` (this machine: the setting `machine.labels`); or the project's needs can change in its `.pulse/pulse.yaml` (`needs:`) or with `pulse job needs JOB_ID -`. The daemon rents Linux machines only, so a need such as `macos` is the owner's to meet. This post is a measurement, not a request to act.\n",
+            u.jobs, u.project, u.needs, u.minutes
+        );
+        let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
+            s,
+            crate::hygiene::DaemonQuestionAsk {
+                project: slug.clone(),
+                ask_kind: "needs".into(),
+                area: "runner".into(),
+                thread: "machines".into(),
+                summary,
+                body,
+                actor: actor.clone(),
+                now: now.clone(),
+            },
+        ) else {
+            continue;
+        };
+        if let Ok(conn) = s.conn() {
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "capacity.needs-wanted",
+                &u.project,
+                serde_json::json!({"needs": u.needs, "jobs": u.jobs, "minutes": u.minutes, "post": post.str("id")}),
+            );
+        }
+        posts.push(post);
+    }
+    posts
+}
+
 /// Hours a machine the daemon rents on its own is asked for: enough for
 /// the queued job and its verify, short enough that a machine the queue no
 /// longer needs costs an afternoon, not a day (the compute worker releases
@@ -405,17 +557,30 @@ pub(crate) fn auto_compute(
         });
     }
     let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
+    // The machine the daemon rents is a Linux hand of the provider's default
+    // size: only a job such a machine can run is worth renting one for.
+    let size_setting = pulse_store::compute_size_setting(&s.setting("compute.provider", ""));
+    let rented = pulse_store::needs::caps_of(
+        "linux",
+        &pulse_tasks::compute::default_hands_arch(&s.setting(&size_setting, "")),
+        "",
+    );
+    let (fit, words) = pulse_store::needs::sql_fit("j.needs", &rented);
+    let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
+    for w in &words {
+        vals.push(w);
+    }
     let job = crate::util::must_one(
         &conn,
         &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? ORDER BY j.created_at LIMIT 1",
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} ORDER BY j.created_at LIMIT 1",
             crate::jobs::work_kinds_sql()
         ),
-        &[&since],
+        &vals,
     );
     if job.0.is_empty() {
         return Err(why(format!(
-            "no improve or task job has waited {HANDS_WANTED_MINUTES} min"
+            "no improve or task job that a rented Linux machine could run has waited {HANDS_WANTED_MINUTES} min"
         )));
     }
     let reason = format!(
@@ -2210,13 +2375,7 @@ pub(crate) fn daemon(
                         rows.entry(name.clone())
                             .or_insert_with(|| crate::executor::executor_row(s, name));
                     }
-                    let mut order = (0..slots.len()).collect::<Vec<_>>();
-                    order.sort_by_key(|i| {
-                        let unrestricted = rows
-                            .get(&slots[*i])
-                            .is_some_and(|r| r.str("projects") == "*");
-                        (unrestricted, *i)
-                    });
+                    let order = slot_order(&slots, &rows);
                     let owner_lane = crate::jobs::owner_lane_fits();
                     let local_free = slots
                         .iter()
@@ -2421,6 +2580,43 @@ pub(crate) fn daemon(
                 bulk_line,
                 now.clone(),
             );
+            // Work that needs a kind of machine none of the paired ones is
+            // waits whatever the slots do; the owner hears once per project
+            // and needs, after the job has waited long enough not to be a
+            // manifest the owner is still editing.
+            if queued > 0
+                && let Some(c) = conn.as_ref()
+            {
+                let unmet: Vec<UnmetNeeds> = unmet_needs(s, &now)
+                    .into_iter()
+                    .filter(|u| u.minutes >= NEEDS_WANTED_MINUTES)
+                    .collect();
+                if !unmet.is_empty() {
+                    let line = unmet
+                        .iter()
+                        .map(|u| format!("{} job(s) of {} need {}", u.jobs, u.project, u.needs))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if let Some(line) = idle_log.line(
+                        "needs",
+                        &format!("machine wanted: {line}; no active machine offers that"),
+                        std::time::Instant::now(),
+                    ) {
+                        say(&o, line);
+                    }
+                    for post in needs_wanted(
+                        s,
+                        crate::board::brain_project(c),
+                        &unmet,
+                        now.clone(),
+                        actor.clone(),
+                    ) {
+                        say(&o, format!("machine wanted: {}", post.str("summary")));
+                    }
+                } else {
+                    idle_log.clear("needs");
+                }
+            }
             if !gate.is_empty()
                 && let Some(c) = conn.as_ref()
             {
@@ -3289,7 +3485,7 @@ mod tests {
         );
         assert_eq!(
             auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
-            why("no improve or task job has waited 30 min")
+            why("no improve or task job that a rented Linux machine could run has waited 30 min")
         );
         exec1(
             &s,
@@ -6000,5 +6196,142 @@ mod tests {
         );
         assert_eq!(s.setting("minutes_per_job", ""), "1000");
         assert!(out.string().contains("run(s) in flight to finish"));
+    }
+
+    fn machine(name: &str, workers: i64, projects: &str, caps: &str, reserved: bool) -> Row {
+        let mut r = Row::new();
+        r.insert("name", serde_json::json!(name));
+        r.insert("kind", serde_json::json!("ssh"));
+        r.insert("workers", serde_json::json!(workers));
+        r.insert("projects", serde_json::json!(projects));
+        r.insert("os", serde_json::json!("linux"));
+        r.insert("labels", serde_json::json!(caps));
+        r.insert("reserved", serde_json::json!(i64::from(reserved)));
+        r
+    }
+
+    #[test]
+    fn slots_go_to_the_reserved_the_restricted_the_plainest_and_the_least_loaded_first() {
+        let mut rows = BTreeMap::new();
+        rows.insert("mac".to_string(), machine("mac", 2, "*", "xcode", false));
+        rows.insert("plain".to_string(), machine("plain", 2, "*", "", false));
+        rows.insert("kept".to_string(), machine("kept", 1, "*", "gpu", true));
+        rows.insert(
+            "ios-only".to_string(),
+            machine("ios-only", 1, "app", "", false),
+        );
+        let mut local = machine("local", 2, "*", "xcode,docker", false);
+        local.insert("kind", serde_json::json!("local"));
+        local.insert("os", serde_json::json!("macos"));
+        local.insert("arch", serde_json::json!("arm64"));
+        rows.insert("local".to_string(), local);
+        let slots: Vec<String> = ["mac", "mac", "plain", "ios-only", "kept", "local"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let order: Vec<String> = slot_order(&slots, &rows)
+            .into_iter()
+            .map(|i| slots[i].clone())
+            .collect();
+        // The reserved machine, then the one kept for a project, then by what
+        // they offer: the plain hand (linux) before the hand with Xcode (linux,
+        // xcode) before this Mac (macos, arm64, xcode, docker); the Mac hand's
+        // first free slot (half full once filled) before its second (full).
+        assert_eq!(order, ["kept", "ios-only", "plain", "mac", "mac", "local"]);
+        // Two plain hands, one already busier: the emptier one first.
+        let mut rows = BTreeMap::new();
+        rows.insert("big".to_string(), machine("big", 4, "*", "", false));
+        rows.insert("small".to_string(), machine("small", 1, "*", "", false));
+        let slots: Vec<String> = ["small", "big", "big"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let order: Vec<String> = slot_order(&slots, &rows)
+            .into_iter()
+            .map(|i| slots[i].clone())
+            .collect();
+        // big: 2 of 4 busy, its next slot makes it 3/4 full; small: its only
+        // slot makes it full, as big's second does - the earlier in the list
+        // wins that tie.
+        assert_eq!(order, ["big", "small", "big"]);
+    }
+
+    #[test]
+    fn unmet_needs_groups_the_queued_work_no_active_machine_can_take() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let now = crate::test_helpers::TEST_NOW;
+        let add = |title: &str, needs: &str, minutes_ago: f64| {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "b".into(),
+                1,
+                5,
+                format!("test:{title}"),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            let id = job.str("id");
+            if !needs.is_empty() {
+                pulse_board::set_job_needs(&s, &id, needs, "human").unwrap();
+            }
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE jobs SET created_at = ? WHERE id = ?",
+                    rusqlite::params![crate::util::plus_minutes(now, -minutes_ago), id],
+                )
+                .unwrap();
+        };
+        add("plain", "", 30.0);
+        // Words no machine running this test offers: this one may be a Mac
+        // with Xcode or a Linux box, so the groups wait for Windows and a GPU.
+        add("win", "windows,visualstudio", 25.0);
+        add("win-2", "windows,visualstudio", 5.0);
+        add("gpu", "linux,gpu", 12.0);
+        add("here", pulse_store::needs::this_os(), 40.0);
+        let unmet = unmet_needs(&s, now);
+        assert_eq!(
+            unmet,
+            vec![
+                UnmetNeeds {
+                    project: "proj".into(),
+                    needs: "windows,visualstudio".into(),
+                    jobs: 2,
+                    minutes: 25
+                },
+                UnmetNeeds {
+                    project: "proj".into(),
+                    needs: "linux,gpu".into(),
+                    jobs: 1,
+                    minutes: 12
+                },
+            ],
+            "this machine meets `here`; the plain job needs nothing"
+        );
+        // A paired Linux hand with a gpu label meets the gpu group once it is active.
+        crate::executor::add_executor(&s, now, "box", "pulse@box", "/srv", 1, "*", "human")
+            .unwrap();
+        crate::executor::set_labels(&s, now, "box", "gpu", "human").unwrap();
+        assert_eq!(
+            unmet_needs(&s, now).len(),
+            2,
+            "a drained hand does not count"
+        );
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET status = 'active' WHERE name = 'box'",
+                [],
+            )
+            .unwrap();
+        let unmet = unmet_needs(&s, now);
+        assert_eq!(unmet.len(), 1, "{unmet:?}");
+        assert_eq!(unmet[0].needs, "windows,visualstudio");
     }
 }

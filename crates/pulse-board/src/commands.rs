@@ -38,8 +38,8 @@ pub fn register_commands() {
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"pulse vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"pulse thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       pulse thread show AREA/THREAD --project SLUG [--bodies]\n       pulse thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"pulse decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
-        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
-        cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"pulse init [PATH] [--name N] [--remote URL] [--verify CMD] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
+        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"pulse job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]\n       pulse job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       pulse job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]\n       pulse job needs JOB_ID WORDS|-".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
+        cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"pulse init [PATH] [--name N] [--remote URL] [--verify CMD] [--needs WORDS] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"pulse move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"pulse export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
         cli_register(Command { name:"import".into(), group:"records".into(), summary:"register the projects of a JSON registry (the pre-store ~/.pulse/projects.json)".into(), usage:"pulse import --registry PATH".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_import, flags:Some(import_flags) });
@@ -169,6 +169,11 @@ fn job_flags(fs: &mut FlagSet) {
         "the custom agent the worker runs as, one that pulse agents list shows for the project (add)",
     );
     fs.string_var(
+        "needs",
+        "",
+        "the machine the job must run on, as words every machine either offers or not: macos, linux, arm64, xcode, docker (add; default: the project's needs)",
+    );
+    fs.string_var(
         "result",
         "",
         "the outcome text (finish); retry note (retry)",
@@ -188,6 +193,11 @@ fn init_flags(fs: &mut FlagSet) {
         "verify",
         "",
         "the project's own check command, e.g. 'npm test'",
+    );
+    fs.string_var(
+        "needs",
+        "",
+        "the machine the project's jobs must run on, as words: macos, linux, arm64, xcode, docker (the repo's .pulse/pulse.yaml needs: overrides this)",
     );
     fs.bool_var(
         "brain",
@@ -851,6 +861,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     source: fs.get_string("source"),
                     created_by: c.agent.clone(),
                     agent,
+                    needs: fs.get_string("needs"),
                     ..Default::default()
                 },
             )?;
@@ -942,13 +953,37 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 writeln!(c.out, "job {} re-planned as {}", args[1], r.job.id)?;
             }
         }
+        Some("needs") => {
+            if args.len() != 3 {
+                return Err(usage(
+                    "job",
+                    "needs JOB_ID WORDS (comma-separated, such as macos,xcode; - clears them)",
+                ));
+            }
+            let agent = resolve_agent(s, &c.agent, false)?;
+            let name = agent
+                .as_ref()
+                .map(|a| a.name.as_str())
+                .unwrap_or(pulse_store::HUMAN_AGENT);
+            let j = set_job_needs(s, &args[1], &args[2], name)?;
+            if c.json {
+                write_json(&mut c.out, &j)?
+            } else if j.needs.is_empty() {
+                writeln!(c.out, "{} needs nothing in particular", j.id)?;
+            } else {
+                writeln!(c.out, "{} needs {}", j.id, j.needs)?;
+            }
+        }
         Some(other) => {
             return Err(usage(
                 "job",
-                &format!("unknown action {}; add, finish or retry", py_repr(other)),
+                &format!(
+                    "unknown action {}; add, finish, retry or needs",
+                    py_repr(other)
+                ),
             ));
         }
-        None => return Err(usage("job", "add, finish or retry")),
+        None => return Err(usage("job", "add, finish, retry or needs")),
     }
     Ok(())
 }
@@ -973,6 +1008,10 @@ fn run_init(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         &fs.get_string("verify"),
         &actor(c),
     )?;
+    let needs = fs.get_string("needs");
+    if !needs.is_empty() {
+        set_project_needs(store(c)?, &r.project.slug, &needs, &actor(c))?;
+    }
     if c.json {
         write_json(&mut c.out, &r)?
     } else {

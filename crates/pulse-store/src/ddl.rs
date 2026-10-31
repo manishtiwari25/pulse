@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS projects (
     added_at TEXT NOT NULL,
     added_by TEXT NOT NULL DEFAULT '',
     last_seen TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT ''
+    notes TEXT NOT NULL DEFAULT '',
+    needs TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agents (
     name TEXT PRIMARY KEY,
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at TEXT NOT NULL DEFAULT '',
     result TEXT NOT NULL DEFAULT '',
     branch TEXT NOT NULL DEFAULT '',
-    agent TEXT NOT NULL DEFAULT ''
+    agent TEXT NOT NULL DEFAULT '',
+    needs TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, priority, created_at);
 CREATE TABLE IF NOT EXISTS runs (
@@ -135,7 +137,11 @@ CREATE TABLE IF NOT EXISTS executors (
     runs_done INTEGER NOT NULL DEFAULT 0,
     runs_failed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    created_by TEXT NOT NULL DEFAULT ''
+    created_by TEXT NOT NULL DEFAULT '',
+    os TEXT NOT NULL DEFAULT '',
+    arch TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '',
+    reserved INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS decisions (
     post_id TEXT PRIMARY KEY,
@@ -174,8 +180,44 @@ pub const EVENTS_NO_DELETE_SQL: &str = "CREATE TRIGGER events_no_delete BEFORE D
 /// pinned to (`pulse job add --run-as`, a schedule's or a hook's agent).
 /// `ensure_records` adds each one that is missing, so an older store gains
 /// them on first open.
-pub const JOB_COLUMNS: &[crate::Column] = &[crate::Column {
-    table: "jobs",
-    name: "agent",
-    ddl: "TEXT NOT NULL DEFAULT ''",
-}];
+pub const JOB_COLUMNS: &[crate::Column] = &[
+    crate::Column {
+        table: "jobs",
+        name: "agent",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    // What kind of machine the job must run on (needs.rs); the project's
+    // needs when the job was made, unless the job says otherwise.
+    crate::Column {
+        table: "jobs",
+        name: "needs",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    crate::Column {
+        table: "projects",
+        name: "needs",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    // What a machine offers: its OS and architecture words and the labels
+    // the owner gave it; `reserved` keeps it for the work that needs it.
+    crate::Column {
+        table: "executors",
+        name: "os",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    crate::Column {
+        table: "executors",
+        name: "arch",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    crate::Column {
+        table: "executors",
+        name: "labels",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    crate::Column {
+        table: "executors",
+        name: "reserved",
+        ddl: "INTEGER NOT NULL DEFAULT 0",
+    },
+];

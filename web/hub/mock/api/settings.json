@@ -145,6 +145,33 @@
       "value": "3"
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "what this machine offers beyond its OS and architecture, as words a project or job can need (pulse.yaml needs:, pulse job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name",
+      "kind": "text",
+      "min": null,
+      "name": "machine.labels",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": [
+        "off",
+        "on"
+      ],
+      "default": "off",
+      "description": "on: this machine takes only the jobs that need something it offers (a project with needs: [macos] on the only Mac), so the rest of the queue goes to the other machines; off: it takes any job it can run",
+      "kind": "choice",
+      "min": null,
+      "name": "machine.reserve",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "off"
+    },
+    {
       "choices": [
         "copilot",
         "openai",
