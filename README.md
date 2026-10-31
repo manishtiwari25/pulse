@@ -398,7 +398,10 @@ activity fold under **Details for this machine**.
   messages (`read`); a parent's steer shows in the child on the right as
   *From <parent>* and answers a question the child was asking if one
   waits. Two levels deep at most and eight open sub-conversations to a
-  parent; an archived parent takes no new ones and its reports are dropped,
+  parent by default - `chat.sub_depth` and `chat.sub_open` under Settings,
+  `0` lifting a cap (each level is a paid session, and each open
+  sub-conversation a live one in the parent's worktree, so the defaults
+  stay); an archived parent takes no new ones and its reports are dropped,
   while archiving a parent leaves its sub-conversations in place. In the
   list each sub-conversation is a line under its parent with its own state,
   the parent's card taking the family's most pressing state, and a
@@ -3484,7 +3487,9 @@ its own (see **Three budgets** under the harness).
 A conversation whose turn a transport `provider_error` cut short (a failed
 send or a broken reply body) resumes once by itself after
 `chat.resume_after_provider_error_secs` (default 90; `0` leaves it idle for the
-next message).
+next message). `chat.sub_depth` (default 2) and `chat.sub_open` (default 8) cap
+how deep sub-conversations nest and how many a conversation keeps open; `0`
+lifts a cap.
 
 ### Stall detection
 

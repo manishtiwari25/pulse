@@ -1274,6 +1274,30 @@
       "updated_at": "2026-10-20T07:00:00Z",
       "updated_by": "init",
       "value": "90"
+    },
+    {
+      "choices": null,
+      "default": "2",
+      "description": "levels deep a conversation may start sub-conversations: at 2 a conversation's sub-conversations may start their own and those may not; 0 sets no depth limit (each level is a session of its own, and a brief that tells its sub-conversation to delegate the same way runs on until a step or cost budget stops it)",
+      "kind": "count",
+      "min": 0,
+      "name": "chat.sub_depth",
+      "secret": false,
+      "updated_at": "2026-10-20T07:00:00Z",
+      "updated_by": "init",
+      "value": "2"
+    },
+    {
+      "choices": null,
+      "default": "8",
+      "description": "sub-conversations one conversation may have open (not finished or archived) at a time, each a live session sharing the parent's worktree; 0 sets no limit",
+      "kind": "count",
+      "min": 0,
+      "name": "chat.sub_open",
+      "secret": false,
+      "updated_at": "2026-10-20T07:00:00Z",
+      "updated_by": "init",
+      "value": "8"
     }
   ]
 }

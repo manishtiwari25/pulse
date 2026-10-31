@@ -1607,13 +1607,13 @@ impl std::ops::Deref for Manager {
     }
 }
 
-/// How many levels of sub-conversations a conversation may stand under
-/// and still start one: a top-level conversation's children may have
-/// children of their own, and those may not.
-pub const CHILD_DEPTH_LIMIT: usize = 2;
-/// How many sub-conversations one conversation may have open (not
-/// archived) at a time.
-pub const CHILDREN_LIMIT: usize = 8;
+/// The owner's caps on sub-conversations, `0` lifting each: `chat.sub_depth`
+/// (default 2) is how many levels down a conversation may still start one -
+/// a top-level conversation's children may have children of their own, and
+/// those may not - and `chat.sub_open` (default 8) how many a conversation
+/// may have open (not finished or archived) at a time.
+pub const SUB_DEPTH_SETTING: &str = "chat.sub_depth";
+pub const SUB_OPEN_SETTING: &str = "chat.sub_open";
 /// How many of a sub-conversation's last messages its parent's agent reads
 /// at a time, and how much of each.
 const READ_MESSAGES: usize = 6;
@@ -1766,8 +1766,8 @@ impl Manager {
     /// Starts a sub-conversation of `parent`: its agent's brief is `text`,
     /// and it works in the parent's workspace on the parent's model,
     /// effort and approval setting, reporting each reply back to the
-    /// parent ([`Manager::deliver_report`]). Refused past
-    /// [`CHILD_DEPTH_LIMIT`] levels or [`CHILDREN_LIMIT`] open children,
+    /// parent ([`Manager::deliver_report`]). Refused past the owner's depth
+    /// and open-children caps ([`SUB_DEPTH_SETTING`], [`SUB_OPEN_SETTING`])
     /// and for an archived parent.
     pub fn create_child(&self, parent: &str, title: &str, text: &str) -> Result<Row> {
         let text = text.trim();
@@ -1779,13 +1779,20 @@ impl Manager {
             bail!("conversation {parent} is archived");
         }
         let depth = self.store.chat_depth(parent)?;
-        if depth >= CHILD_DEPTH_LIMIT {
+        let depth_limit = self.store.setting_int(SUB_DEPTH_SETTING);
+        if depth_limit > 0 && depth as i64 >= depth_limit {
             bail!(
-                "this conversation already stands {depth} levels down; sub-conversations go {CHILD_DEPTH_LIMIT} levels deep at most - do this part here, or with the subagent tool"
+                "this conversation already stands {depth} levels down; sub-conversations go {depth_limit} levels deep at most - do this part here, or with the subagent tool"
             );
         }
-        let open = self.store.chat_children(parent, false)?.len();
-        if open >= CHILDREN_LIMIT {
+        let open_limit = self.store.setting_int(SUB_OPEN_SETTING);
+        let open = self
+            .store
+            .chat_children(parent, false)?
+            .iter()
+            .filter(|c| c.status != "closed")
+            .count();
+        if open_limit > 0 && open as i64 >= open_limit {
             bail!(
                 "this conversation already has {open} sub-conversations open; finish or archive one before starting another"
             );
@@ -4581,7 +4588,8 @@ mod tests {
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 
-    /// A sub-conversation is refused for an archived parent, and one the
+    /// A sub-conversation is refused for an archived parent and past the
+    /// owner's depth and open caps (settings, 0 lifting one), and one the
     /// owner closes reports that to its parent.
     #[test]
     fn sub_conversations_need_a_live_parent_and_report_the_owners_close() {
@@ -4605,9 +4613,38 @@ mod tests {
         wait_idle(&m, &child.id);
         wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_REPLIED);
         wait_idle(&m, &pid);
+        // The caps are the owner's settings: one open child at most, and
+        // a closed one no longer counts; one level deep at most; 0 lifts
+        // a cap.
+        s.set_setting("test", SUB_OPEN_SETTING, "1").unwrap();
+        let err = m
+            .create_child(&pid, "", "a second")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 sub-conversations open"), "{err}");
+        s.set_setting("test", SUB_DEPTH_SETTING, "1").unwrap();
+        let err = m
+            .create_child(&child.id, "", "a grandchild")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 levels deep at most"), "{err}");
+        s.set_setting("test", SUB_DEPTH_SETTING, "0").unwrap();
+        let grandchild = m
+            .create_child(&child.id, "", "a grandchild")
+            .expect("no depth limit");
+        assert_eq!(s.chat_depth(&grandchild.id).unwrap(), 2);
+        wait_idle(&m, &grandchild.id);
         m.close(&child.id).expect("close");
         let closed = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
         assert_eq!(closed.content, "The owner finished it.");
+        wait_idle(&m, &pid);
+        let second = m
+            .create_child(&pid, "", "a second")
+            .expect("a closed child leaves room");
+        wait_idle(&m, &second.id);
+        s.set_setting("test", SUB_OPEN_SETTING, "0").unwrap();
+        let third = m.create_child(&pid, "", "a third").expect("no open limit");
+        wait_idle(&m, &third.id);
         wait_idle(&m, &pid);
         m.archive(&pid).expect("archive");
         assert!(
