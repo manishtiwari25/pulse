@@ -50,6 +50,7 @@ The only Markdown in this repository is this file.
   - [Bulk storage on another disk](#bulk-storage-on-another-disk)
   - [Keeping the machine awake](#keeping-the-machine-awake)
   - [Workers, landing and the load governor](#workers-landing-and-the-load-governor)
+  - [Pipelines: what a push set running on GitHub](#pipelines-what-a-push-set-running-on-github)
   - [Dependencies: security alerts and the release-age rule](#dependencies-security-alerts-and-the-release-age-rule)
   - [Credentials](#credentials)
   - [Pairing hands](#pairing-hands)
@@ -293,7 +294,10 @@ activity fold under **Details for this machine**.
   with the push's reason, pushed to the upstream, or on pull request #N -
   with **Open a pull request** while it is not on GitHub yet (`delivery` on
   `GET /api/v1/tasks/<id>`, `POST /api/v1/tasks/<id>/pull-request`; see
-  `landing.push`).
+  `landing.push`). Once the code is on GitHub, `delivery.pipeline` carries
+  the daemon's verdict on the runs that push set off - `watching`, `passed`,
+  `failed` (with `pipeline_job`, the fix job it queued), `none` or
+  `gave-up` (see `pipeline.watch`).
 - **Suggested work** - the agents propose the next task; another agent
   judges it before it reaches you. The Work tab's **Suggested next** panel
   lists each suggestion with who made it and where its review stands; a
@@ -2190,6 +2194,8 @@ record, read with `pulse record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
+| `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
+| `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
 | `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age, and a landing that bumps a lockfile is held until every new version it pins is this old. `0` turns the wait off. |
@@ -3931,6 +3937,57 @@ The daemon can tend multiple projects' finished branches at once with
 `landing.parallel` (default `4`); landings within one project remain serial
 behind that project's landing lock, and `landing.parallel=1` keeps the old
 single-project maintenance-pass behaviour.
+
+### Pipelines: what a push set running on GitHub
+
+A push is not the end of a landing: the repository's GitHub Actions
+workflows run on it, and a red one is a regression PULSE made. So the daemon
+watches what its own pushes set off. Each tick, for every active project
+whose remote is on GitHub, it takes the pushes of the last 48 hours that
+still have no verdict - `land.pushed` to the default branch and `land.pr`
+to `pulse/landed` alike - and asks GitHub for the runs on that commit (`gh
+run list --commit`, the GitHub CLI logged in as the user the daemon runs
+as, with read access to the repository's Actions). It counts the runs the
+push itself caused (`push`, `pull_request`, `pull_request_target`,
+`merge_group`, and the `dynamic` runs of the repository's own workflows,
+not GitHub's **Dependabot Updates** and **Dependency Graph**) and records
+one verdict per push as an event with the runs in its detail:
+`pipeline.passed` when every counted run finished green (`skipped` and
+`neutral` count as green); `pipeline.failed` when one failed, timed out,
+did not start or wants your approval; `pipeline.none` when nothing ran for
+the push ten minutes after it, or every run was cancelled; `pipeline.gave-up`
+when a run is still going `pipeline.wait_hours` (default `3`) after the push.
+While runs are still going the daemon looks again every three minutes - a
+failure beside a run that is still going is reported once the push is half
+an hour old, so one slow deployment does not hide a failed test suite.
+
+A verdict other than `passed` is a `finding` for you on the project's
+`runner/pipeline` thread: which workflow failed, the step that failed in
+each failed job, the last lines of its log (secrets redacted), what the push
+landed, and the command that re-runs the failed jobs (`gh run rerun <id>
+--failed`). With `pipeline.watch` at `fix`, the default, a red pipeline also
+queues one fix job for the project (`task`, tier 1, priority 60, source
+`pipeline:<slug>`) whose brief carries the same evidence and the project's
+verify command: a worker takes it like any other job, and its landing is
+pushed and watched in turn. One such job is open per project at a time -
+a second red push while it waits refreshes the queued job's brief instead
+of queueing a second one - and after three fix jobs in 24 hours the daemon
+plans no more and says so in the finding, so a pipeline that is red for a
+reason outside the code (a secret that expired, a runner that is off) does
+not turn into a day of workers. When several pushes of one project are
+waiting for a verdict, only the newest gets the finding and the job; the
+older ones are recorded as superseded. `watch` keeps the findings and skips
+the jobs; `off` reads nothing. A repository whose runs the login cannot read
+(HTTP 403 or 404) is reported once, as `pipeline.unreadable`; the daemon
+keeps trying and says nothing more until the runs can be read again.
+
+`pulse pipeline` shows, per project, the pushes still being watched and the
+last verdicts, with `--project <slug>` for one, `--all` for every active
+project, `--limit N` for more history and `--json` for the records;
+`pulse pipeline --check` reads GitHub now instead of waiting for the daemon's
+pass. A task's sheet in the hub shows the verdict on its own push on the
+delivery line (`delivery.pipeline` and `delivery.pipeline_job` in `GET
+/api/v1/tasks/<id>`).
 
 ### Dependencies: security alerts and the release-age rule
 

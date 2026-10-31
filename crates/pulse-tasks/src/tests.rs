@@ -3433,7 +3433,7 @@ fn delivery_follows_a_landing_to_the_forge() {
         "daemon",
         "land.pr",
         "demo",
-        r#"{"project": "demo", "remote": "origin", "branch": "main", "head": "pulse/landed", "base": "main", "number": 12, "url": "https://github.com/o/r/pull/12", "commits": 3, "opened": true}"#,
+        r#"{"project": "demo", "remote": "origin", "branch": "main", "head": "pulse/landed", "base": "main", "number": 12, "url": "https://github.com/o/r/pull/12", "commits": 3, "opened": true, "to": "59f641d2c3b4"}"#,
     )
     .unwrap();
     assert!(!pull_request_asked(&s, "demo"));
@@ -3453,6 +3453,28 @@ fn delivery_follows_a_landing_to_the_forge() {
             "origin/main",
             false
         )
+    );
+    // The pipeline watcher has no verdict yet on the pushed commit; with
+    // the watcher off the sheet says nothing about it.
+    assert_eq!(
+        (d.pipeline.as_str(), d.pipeline_job.as_str()),
+        ("watching", "")
+    );
+    s.set_setting("human", "pipeline.watch", "off").unwrap();
+    assert_eq!(delivery_for(&s, &id).unwrap().pipeline, "");
+    s.set_setting("human", "pipeline.watch", "fix").unwrap();
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "pipeline.failed",
+        "demo",
+        r#"{"project": "demo", "sha": "59f641d2c3b4", "failed": ["CI"], "job": "JOB-fix"}"#,
+    )
+    .unwrap();
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(
+        (d.pipeline.as_str(), d.pipeline_job.as_str()),
+        ("failed", "JOB-fix")
     );
 
     // The task's story carries the project-level delivery, not just the
