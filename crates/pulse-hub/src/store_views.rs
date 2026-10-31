@@ -253,6 +253,7 @@ impl Handler {
             return Ok(vec![]);
         };
         let mut rows = self.addition_rows(r, "SELECT * FROM executors ORDER BY name", vec![])?;
+        let machine = pulse_runner::executor::local_machine(store);
         let local = map_from_pairs(vec![
             ("name", json!("local")),
             ("kind", json!("local")),
@@ -273,6 +274,10 @@ impl Handler {
             ("runs_failed", json!(0)),
             ("created_at", json!("")),
             ("created_by", json!("")),
+            ("os", json!(machine.os)),
+            ("arch", json!(machine.arch)),
+            ("labels", json!(machine.labels)),
+            ("reserved", json!(i64::from(machine.reserved))),
             ("running", json!(0)),
             (
                 "free",
@@ -280,6 +285,19 @@ impl Handler {
             ),
         ]);
         rows.insert(0, local);
+        // What each machine offers (needs.rs), as the words a project can need.
+        for row in &mut rows {
+            let text = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let reserved = num_value(row.get("reserved").unwrap_or(&Value::Null)) != 0;
+            let offers = pulse_runner::executor::machine_offers(
+                &text("kind"),
+                &text("os"),
+                &text("arch"),
+                &text("labels"),
+                reserved,
+            );
+            row.insert("offers".into(), json!(offers));
+        }
         let horizon = (crate::read::parse_dt(&store.now()).unwrap_or_else(go_zero_time)
             - chrono::Duration::minutes(2 * store.setting_int("minutes_per_job") + 15))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -314,7 +332,7 @@ impl Handler {
         for row in &executors {
             executor_rows.push(crate::board::pick(
                 row,
-                "name kind status address workers projects last_probe_at probe_note running free",
+                "name kind status address workers projects last_probe_at probe_note running free offers reserved",
             ));
             running += num_value(row.get("running").unwrap_or(&Value::Null));
             if row.get("status").and_then(Value::as_str) == Some("active") {

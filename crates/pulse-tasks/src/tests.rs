@@ -3655,6 +3655,118 @@ fn manifest_parses_entries_and_names_what_is_wrong() {
 }
 
 #[test]
+fn manifest_needs_take_a_list_or_one_string_and_name_a_bad_word() {
+    let m = manifest::parse("needs: [Mac, xcode]\n").unwrap();
+    assert_eq!(m.needs, Some(vec!["Mac".to_string(), "xcode".to_string()]));
+    assert!(manifest::static_problems(&m).is_empty());
+    let m = manifest::parse("needs: linux, arm64\n").unwrap();
+    assert_eq!(m.needs, Some(vec!["linux, arm64".to_string()]));
+    assert!(manifest::static_problems(&m).is_empty());
+    assert_eq!(manifest::parse("schedules: []\n").unwrap().needs, None);
+    let m = manifest::parse("needs: [macos, \"x/code\"]\n").unwrap();
+    let problems = manifest::static_problems(&m);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].starts_with("needs: "), "{problems:?}");
+    assert!(problems[0].contains("x/code"), "{problems:?}");
+}
+
+#[test]
+fn manifest_sync_sets_the_project_needs_and_clears_them_on_an_empty_list() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    let project_needs = || -> String {
+        s.conn()
+            .unwrap()
+            .query_row("SELECT needs FROM projects WHERE slug = 'demo'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+    let (job, _) = pulse_board::add_job(
+        s,
+        pulse_board::JobInput {
+            project: "demo".into(),
+            kind: "task".into(),
+            title: "Waits for a Mac".into(),
+            brief: "b".into(),
+            tier: 1,
+            priority: 5,
+            source: "test:needs".into(),
+            created_by: "human".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(job.needs, "");
+
+    commit_files(
+        &dir,
+        &[(".pulse/pulse.yaml", "needs: [Mac, xcode]\n")],
+        "needs",
+    );
+    let first = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(!first.skipped, "{}", first.line());
+    assert_eq!(first.needs.as_deref(), Some("macos,xcode"));
+    assert!(
+        first.line().contains("needs macos,xcode"),
+        "{}",
+        first.line()
+    );
+    assert_eq!(project_needs(), "macos,xcode");
+    assert_eq!(
+        pulse_board::job_by_id(s, &job.id).unwrap().unwrap().needs,
+        "macos,xcode",
+        "the queued job follows its project"
+    );
+
+    // Unchanged words: nothing to report.
+    commit_files(
+        &dir,
+        &[(".pulse/pulse.yaml", "needs: macos, xcode\n")],
+        "same words, one string",
+    );
+    let again = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(again.needs, None, "{}", again.line());
+    assert_eq!(project_needs(), "macos,xcode");
+
+    // A bad word is a problem and leaves the needs as they were.
+    commit_files(
+        &dir,
+        &[(".pulse/pulse.yaml", "needs: [\"x/code\"]\n")],
+        "bad",
+    );
+    let bad = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(
+        bad.problems.iter().any(|p| p.contains("x/code")),
+        "{:?}",
+        bad.problems
+    );
+    assert_eq!(project_needs(), "macos,xcode");
+
+    // An empty list clears them; a file without the key leaves them alone.
+    commit_files(&dir, &[(".pulse/pulse.yaml", "needs: []\n")], "clear");
+    let cleared = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(cleared.needs.as_deref(), Some(""));
+    assert!(
+        cleared.line().contains("needs cleared"),
+        "{}",
+        cleared.line()
+    );
+    assert_eq!(project_needs(), "");
+    assert_eq!(
+        pulse_board::job_by_id(s, &job.id).unwrap().unwrap().needs,
+        ""
+    );
+    pulse_board::set_project_needs(s, "demo", "linux", "human").unwrap();
+    commit_files(&dir, &[(".pulse/pulse.yaml", "schedules: []\n")], "no key");
+    let none = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(none.needs, None, "{}", none.line());
+    assert_eq!(project_needs(), "linux");
+}
+
+#[test]
 fn manifest_sync_adds_updates_pauses_and_ends_schedules_and_imports_skills() {
     let _serial = crate::test_helpers::serial();
     let t = new_store();

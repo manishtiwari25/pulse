@@ -460,7 +460,10 @@ activity fold under **Details for this machine**.
   constitutional amendments; a yes queues one job. With `owner.presence` set to
   `away`, each project's lead answers its board proposals here in your stead,
   signed as the lead.
-- **Machines** (`/compute/`) - agents' requests for more machines (size, hours, why). Approve
+- **Machines** (`/compute/`) - every machine that runs agents, with what it
+  offers (`macos arm64 xcode docker`; *Reserved* when it is kept for the work
+  that needs it, [Machines: what runs where](#machines-what-runs-where)), and
+  agents' requests for more machines (size, hours, why). Approve
   or deny; approved requests are provisioned by the configured provider
   (`compute.provider`: `azure`, `aws`, `gcp`, or `multipass` for a VM on the
   hub machine itself; `pulse compute providers` lists them) inside the caps
@@ -876,6 +879,7 @@ changed nothing reads nothing and writes nothing.
 
 ```yaml
 # .pulse/pulse.yaml
+needs: [macos, xcode]                # the kind of machine this project's jobs run on; see Machines
 schedules:
   - name: deps-audit                 # the identity: a slug, unique in the file
     title: Audit the dependencies
@@ -901,6 +905,7 @@ schedules:
 
 | Field | Meaning |
 | --- | --- |
+| `needs` | Top level, beside `schedules`: the words a machine must offer to run this project's jobs (`[macos, xcode]`, or one string `macos, xcode`), as `pulse init PATH --needs` sets them; see [Machines: what runs where](#machines-what-runs-where). `[]` clears them; a file without the line leaves what was set by hand. |
 | `name` | Required. Lowercase letters, digits and dashes. A renamed entry is a new schedule; the old one ends. |
 | `title` | The title of every job; the name when empty. |
 | `every`, `at` | The cadence and its anchor, exactly as `pulse schedule add --every --at`. |
@@ -2196,6 +2201,8 @@ record, read with `pulse record show WF-evolve`.
 | `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
 | `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
+| `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
+| `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `pulse executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
 | `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age, and a landing that bumps a lockfile is held until every new version it pins is this old. `0` turns the wait off. |
@@ -3965,11 +3972,12 @@ While runs are still going the daemon looks again every three minutes - a
 failure beside a run that is still going is reported once the push is half
 an hour old, so one slow deployment does not hide a failed test suite.
 
-A verdict other than `passed` is a `finding` for you on the project's
+A `failed` or `gave-up` verdict is a `finding` for you on the project's
 `runner/pipeline` thread: which workflow failed, the step that failed in
 each failed job, the last lines of its log (secrets redacted), what the push
 landed, and the command that re-runs the failed jobs (`gh run rerun <id>
---failed`). With `pipeline.watch` at `fix`, the default, a red pipeline also
+--failed`); `none` is only recorded, since a push that ran nothing broke
+nothing. With `pipeline.watch` at `fix`, the default, a red pipeline also
 queues one fix job for the project (`task`, tier 1, priority 60, source
 `pipeline:<slug>`) whose brief carries the same evidence and the project's
 verify command: a worker takes it like any other job, and its landing is
@@ -4144,6 +4152,83 @@ key of the daemon's own hold there too. Windows is not a host for the daemon
 today - the module does not build there (process groups, signals and disk
 statistics are POSIX-only), so nothing in this section applies until that is
 a decision of its own.
+
+### Machines: what runs where
+
+Work runs on more than one machine: this one, the Linux hands `pulse pair`
+adds, the machines compute rents. They are not alike - the iOS app needs a
+Mac with Xcode, a model evaluation wants a GPU, most jobs want nothing in
+particular - so a job can say what it **needs** and a machine says what it
+**offers**, and the daemon puts each job on a machine that offers everything
+it needs, keeping the scarce machines for the work that needs them.
+
+Needs and offers are the same plain lowercase words, with no fixed list:
+`macos`, `linux`, `windows`; `arm64`, `amd64`; `xcode`, `docker`, `gpu`,
+`android`, the name of a tool. The common spellings fold into one
+(`darwin`/`osx`/`mac` → `macos`, `x86_64`/`intel` → `amd64`,
+`aarch64`/`apple-silicon` → `arm64`, `ubuntu`/`debian` → `linux`). A job
+fits a machine when every word it needs is among the words the machine
+offers; a job that needs nothing fits every machine that is not reserved.
+
+**What a machine offers** is its OS word, its architecture word and its
+labels. This machine reads its own OS and chip and finds `xcode`
+(`xcode-select -p` inside `Xcode.app`) and `docker` (on the path) by itself;
+you add the rest with the setting `machine.labels` (`pulse settings set
+machine.labels gpu,android`). A paired hand reports its OS and chip and what
+it found on every probe (`pulse executor probe NAME`; hands paired before
+this count as Linux until their next probe, the only platform `pulse pair`
+takes), and you label it with `pulse executor label NAME gpu,android`
+(replaces your words, keeps the found ones) or `pulse executor label NAME
++cuda,-gpu` (adds and removes); `pulse executor add NAME --labels a,b`
+labels it from the start. `pulse executor list` shows every machine's
+`offers …` line, and the hub's Machines page the same.
+
+**What a job needs** comes from its project by default: `pulse init PATH
+--needs macos,xcode`, or the `needs:` line of the project's
+[`.pulse/pulse.yaml`](#the-projects-own-file-pulsepulseyaml), sets the words
+every new job of the project inherits, and changing them moves the project's
+queued jobs along (a running job keeps its machine). One job can differ:
+`pulse job add --needs linux,gpu …` at creation, `pulse job needs JOB_ID
+WORDS` while it waits (`-` clears). A word that is not a word (`x/code`) is
+refused where it is typed and is a manifest problem when it is committed.
+
+**Where a job goes.** Each tick the daemon offers the free slots in this
+order: the reserved machines first (they take only the jobs that need
+them), then the machines kept for certain projects (`--projects`), then the
+machine that offers the *least* - a plain Linux hand before the hand with
+a GPU before the Mac with Xcode - so the scarce machine stays free for the
+work only it can do, and among equals the least loaded one, counting the
+slot about to be filled. Each machine then leases the oldest highest-priority
+job that fits it, with one change to the usual order: a job that needs
+something comes before a job that needs nothing, because fewer machines can
+take it. `machine.reserve on` (this machine) or `pulse executor reserve
+NAME` (a hand; `--off` to release it) makes a machine take needy jobs only -
+the Mac works the iOS app and the Linux hands take everything else. A
+machine whose queue holds jobs it cannot take says so in its idle line
+(`queued: 2 need macos,xcode, which linux-1 does not offer (it offers linux
+amd64; pulse executor list)`).
+
+**When no machine fits.** A job whose needs no active machine offers waits
+in the queue, and after ten minutes the daemon asks you once per project
+and set of words, on the brain's `runner/machines` thread: pair or label a
+machine that offers them, or change the needs (`pulse job needs`, the
+manifest, `pulse init --needs`). The question stays open until one of those
+happens; a second group of the same words does not ask again. The daemon
+can rent Linux machines by itself (compute requests, `compute.auto_approve`), never
+a Mac, so it rents only when a queued job fits what a rented machine would
+offer (`linux` and the size's architecture), and leaves the rest to you.
+
+```bash
+pulse settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
+pulse settings set machine.reserve on                  # this machine takes only the jobs that need something it offers
+pulse executor add gpu-box --ssh pulse@gpu-box --workdir /srv/pulse --labels gpu
+pulse executor label gpu-box +cuda                     # add a word; -word removes one; a plain list replaces yours
+pulse executor reserve gpu-box                         # keep it for the jobs that need it; --off to release
+pulse executor list                                    # every machine, its slots and an `offers …` line
+pulse init ~/code/ios-app --needs macos,xcode          # every job of the project needs a Mac with Xcode
+pulse job add --project ml --title 'Train' --brief … --needs linux,gpu
+pulse job needs JOB_ID -                               # this one job may run anywhere after all
+```
 
 ### Pairing hands
 

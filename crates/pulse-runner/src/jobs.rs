@@ -60,6 +60,13 @@ pub(crate) struct LeaseOpts {
     /// project waited longest, and the meta kinds get the slot only when no
     /// work is there to take it.
     pub work_first: bool,
+    /// What the machine taking the job offers (executor::caps): a job runs
+    /// only where every word it needs is offered. `None` leases without
+    /// looking at needs (a lease by job id from a test or a tool).
+    pub caps: Option<std::collections::BTreeSet<String>>,
+    /// The machine is kept for the work that needs it: only a job with
+    /// needs is taken.
+    pub reserved: bool,
 }
 
 pub(crate) fn queue_onboarding_job(
@@ -402,6 +409,19 @@ pub(crate) fn lease_job(
             sql.push_str(" AND j.id = ?");
             vals.push(Box::new(o.job_id.clone()));
         }
+        // The machine must offer what the job needs (needs.rs); a reserved
+        // machine takes only the jobs that need something.
+        if let Some(caps) = &o.caps {
+            let (cond, words) = pulse_store::needs::sql_fit("j.needs", caps);
+            sql.push_str(" AND ");
+            sql.push_str(&cond);
+            for w in words {
+                vals.push(Box::new(w));
+            }
+        }
+        if o.reserved {
+            sql.push_str(" AND j.needs != ''");
+        }
         if is_owner_lane(&o.fits) {
             sql.push_str(&format!(" AND {OWNER_DRIVEN_SQL}"));
         } else if !o.fits.is_empty() {
@@ -462,10 +482,12 @@ pub(crate) fn lease_job(
         ));
         vals.push(Box::new(agent.clone()));
         // The work this agent holds first - its clone and conversation carry
-        // on only under it; then the owner's work; then the work class, on a
-        // slot kept for it or once a work job has waited WORK_WAITED_HOURS;
-        // then the project that waited longest (fairness between projects);
-        // then priority and age.
+        // on only under it; then the owner's work; then the jobs that need
+        // this kind of machine (fewer machines can take them, so the ones
+        // that can do, and the plain jobs go to the others); then the work
+        // class, on a slot kept for it or once a work job has waited
+        // WORK_WAITED_HOURS; then the project that waited longest (fairness
+        // between projects); then priority and age.
         let work_class = work_class_sql();
         let work_waited = if o.work_first {
             "1".to_string()
@@ -473,7 +495,7 @@ pub(crate) fn lease_job(
             "j.created_at <= ?".to_string()
         };
         sql.push_str(&format!(
-            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.needs != '' THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
         ));
         vals.push(Box::new(agent.clone()));
         if !o.work_first {
@@ -3367,6 +3389,16 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             crate::recipe::hands_take_recipe(&s.conn().unwrap(), "hands"),
             "these hands answer recipe=1: {note:?}"
+        );
+        // The probe reports the hands' platform; the fake hands run here.
+        let hands = crate::executor::executor_row(&s, "hands");
+        assert_eq!(
+            (hands.str("os"), hands.str("arch")),
+            (
+                pulse_store::needs::this_os().to_string(),
+                pulse_store::needs::this_arch().to_string()
+            ),
+            "probe: {note:?}"
         );
         let job = crate::jobs::add_job(
             &s,
@@ -7753,5 +7785,138 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 "stored private reference was released to a remote worker: {text:?}"
             );
         }
+    }
+
+    fn queued(s: &pulse_store::Store, title: &str, needs: &str) -> String {
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            title.into(),
+            "b".into(),
+            1,
+            5,
+            format!("test:{title}"),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        if !needs.is_empty() {
+            pulse_board::set_job_needs(s, &job.str("id"), needs, "human").unwrap();
+        }
+        job.str("id")
+    }
+
+    fn take(s: &pulse_store::Store, agent: &str, caps: Option<&[&str]>, reserved: bool) -> String {
+        join(s, agent);
+        super::lease_job(
+            s,
+            agent.into(),
+            crate::test_helpers::TEST_NOW.into(),
+            super::LeaseOpts {
+                any_proj: true,
+                caps: caps.map(|c| c.iter().map(|w| w.to_string()).collect()),
+                reserved,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .str("id")
+    }
+
+    #[test]
+    fn a_machine_leases_only_what_it_can_serve_and_the_needy_jobs_first() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "10")
+            .unwrap();
+        let plain = queued(&s, "plain", "");
+        let mac = queued(&s, "mac", "macos,xcode");
+        let linux = queued(&s, "linux", "linux");
+        // A reserved Mac takes only the job that needs it, and only one such job exists.
+        assert_eq!(
+            take(&s, "mac-1", Some(&["macos", "arm64", "xcode"]), true),
+            mac
+        );
+        assert_eq!(
+            take(&s, "mac-2", Some(&["macos", "arm64", "xcode"]), true),
+            ""
+        );
+        // A Linux hand: the job that needs Linux before the plain one, by age
+        // notwithstanding (plain is older).
+        assert_eq!(take(&s, "linux-1", Some(&["linux", "amd64"]), false), linux);
+        assert_eq!(take(&s, "linux-2", Some(&["linux", "amd64"]), false), plain);
+        // A Mac without Xcode cannot take a job that needs Xcode; unreserved it
+        // takes a plain job.
+        let plain2 = queued(&s, "plain2", "");
+        let mac2 = queued(&s, "mac2", "macos,xcode");
+        assert_eq!(take(&s, "mac-3", Some(&["macos", "arm64"]), false), plain2);
+        assert_eq!(take(&s, "mac-4", Some(&["macos", "arm64"]), false), "");
+        // No caps: no filter (lease by id and the tests' own leases), the
+        // needy jobs still first and the older of them before the newer.
+        let win = queued(&s, "win", "windows");
+        assert_eq!(take(&s, "any", None, false), mac2);
+        assert_eq!(take(&s, "any-2", None, false), win);
+    }
+
+    #[test]
+    fn labels_merge_found_words_and_signed_edits() {
+        assert_eq!(
+            crate::executor::merge_found_labels("gpu,docker", "xcode"),
+            "gpu,xcode"
+        );
+        assert_eq!(crate::executor::merge_found_labels("", ""), "");
+        assert_eq!(
+            crate::executor::merge_found_labels("docker", "docker,notfound"),
+            "docker",
+            "only the words a probe can find are taken from it"
+        );
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let now = crate::test_helpers::TEST_NOW;
+        crate::executor::add_executor(&s, now, "box", "pulse@box", "/srv", 1, "*", "human")
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET labels = 'docker' WHERE name = 'box'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            crate::executor::set_labels(&s, now, "box", "gpu, Android", "human").unwrap(),
+            "gpu,android,docker",
+            "a list replaces the owner's words and keeps the found ones"
+        );
+        assert_eq!(
+            crate::executor::set_labels(&s, now, "box", "+cuda -gpu", "human").unwrap(),
+            "android,docker,cuda"
+        );
+        assert!(crate::executor::set_labels(&s, now, "box", "x/y", "human").is_err());
+        assert!(crate::executor::set_labels(&s, now, "local", "gpu", "human").is_err());
+        assert!(crate::executor::set_labels(&s, now, "nobody", "gpu", "human").is_err());
+        let row = crate::executor::executor_row(&s, "box");
+        assert_eq!(
+            crate::executor::caps_text(&row),
+            "linux android cuda docker"
+        );
+        assert!(
+            crate::executor::caps(&row).contains("linux"),
+            "ssh hands are Linux until probed"
+        );
+        crate::executor::set_reserved(&s, now, "box", true, "human").unwrap();
+        let row = crate::executor::executor_row(&s, "box");
+        assert!(crate::executor::reserved(&row));
+        assert!(crate::executor::caps_text(&row).ends_with(" (reserved)"));
+        assert!(crate::executor::set_reserved(&s, now, "local", true, "human").is_err());
+        assert_eq!(
+            crate::executor::machine_offers("local", "macos", "arm64", "xcode,docker", false),
+            "macos arm64 docker xcode"
+        );
+        assert_eq!(
+            crate::executor::machine_offers("local", "", "", "", false),
+            "-"
+        );
     }
 }

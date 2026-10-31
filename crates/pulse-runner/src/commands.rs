@@ -51,7 +51,7 @@ pub fn register() {
         cli_register(Command { name:"bulk".into(), group:"runner".into(), summary:"keep the regenerable bulk (work, cache, worktrees, build dirs) on another disk; the daemon waits while that disk is away".into(), usage:"pulse bulk status | attach VOLUME [--any-folder] [--dry-run] | detach [--lost] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_bulk, flags:Some(bulk_flags) });
         cli_register(Command { name:"lead".into(), group:"agents".into(), summary:"the role leads of a project: seat one per concern (rsi, docs, security, monitor, or a word of your own), list, pause, resume, end, run, and ask which roles the project is missing".into(), usage:"pulse lead add --project SLUG --role R [--title T] [--brief B | --brief-file F] [--every 1d]\npulse lead list [--project SLUG] [--status S] [--json]\npulse lead show LEAD-NNN [--json]\npulse lead pause|resume|end|run LEAD-NNN [--note N]\npulse lead suggest --project SLUG [--json]\npulse lead roles --project SLUG [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::lead_cli::cmd_lead, flags:Some(crate::lead_cli::lead_flags) });
         cli_register(Command { name:"toolkit".into(), group:"agents".into(), summary:"the tools (MCP servers) and skills a project's shape asks for and does not have: show them, add one, print a drafted skill".into(), usage:"pulse toolkit [show] [--project SLUG] [--all] [--json]\npulse toolkit add tool|skill NAME --project SLUG\npulse toolkit draft NAME --project SLUG      (prints the skill body pulse would add)\n\nA suggestion comes from what the checkout shows: its remote, manifests, lockfiles and folders, and what is already registered. Without --project every active project is read. The daemon asks the owner about one suggestion per project at a time (toolkit.suggest_days); a yes registers it, a declined thread rests it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::toolkit::cmd_toolkit, flags:Some(crate::toolkit::toolkit_flags) });
-        cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
+        cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"pulse executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] [--labels a,b] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | label NAME WORDS|+a,-b | reserve NAME [--off] | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
         cli_register(Command { name:"env".into(), group:"runner".into(), summary:"the environment recipe per project (a CTX-environment record): show, set, import, check".into(), usage:"pulse env show|set|import|check [--project SLUG] [--executor NAME] [--file F] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_env, flags:Some(env_flags) });
         cli_register(Command { name:"hands".into(), group:"runner".into(), summary:"the forced command on a paired machine (probe, prepare, key, run, ...)".into(), usage:"pulse hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)".into(), aliases:vec![], no_store:true, read_only:false, raw:true, run:cmd_hands, flags:None });
         cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"pulse pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
@@ -179,6 +179,12 @@ fn executor_flags(fs: &mut FlagSet) {
     fs.string_var("workdir", "", "absolute work directory on the executor");
     fs.int_var("workers", 1, "parallel workers there");
     fs.string_var("projects", "*", "comma-separated project slugs or *");
+    fs.string_var(
+        "labels",
+        "",
+        "what the machine offers beyond its OS and architecture, comma-separated words a project can need (add)",
+    );
+    fs.bool_var("off", false, "reserve: let the machine take any job again");
     fs.string_var("admin", "", "admin ssh address for login");
     fs.bool_var(
         "with-token",
@@ -1073,6 +1079,11 @@ pub(crate) fn executors_text(s: &pulse_store::Store, now: &str) -> String {
             busy,
             r.str("projects")
         ));
+        out.push(format!(
+            "{:14} offers {}",
+            "",
+            crate::executor::caps_text(&r)
+        ));
         if name != crate::executor::LOCAL_EXECUTOR {
             let next = if r.str("next_probe_at").is_empty() {
                 String::new()
@@ -1155,7 +1166,7 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
     let Some(action) = args.first().map(String::as_str) else {
         return Err(crate::util::fail(
             2,
-            "pulse executor needs an action: list|add|probe|drain|activate|remove|login|token",
+            "pulse executor needs an action: list|add|probe|drain|activate|remove|label|reserve|login|token",
         )
         .into());
     };
@@ -1206,7 +1217,11 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
                 )
                 .into());
             }
-            let r = crate::executor::add_executor(
+            let labels = str_flag(fs, "labels");
+            if !labels.is_empty() {
+                pulse_store::needs::parse(&labels).map_err(|e| crate::util::fail(2, e))?;
+            }
+            let mut r = crate::executor::add_executor(
                 &s,
                 &now,
                 name,
@@ -1216,13 +1231,48 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
                 &str_flag(fs, "projects"),
                 &actor_of(c),
             )?;
+            if !labels.is_empty() {
+                crate::executor::set_labels(&s, &now, &r.str("name"), &labels, &actor_of(c))?;
+                r = crate::executor::executor_row(&s, &r.str("name"));
+            }
             c.printf(format_args!(
-                "added {} ({}, {}); it is drained until `pulse executor probe {}` passes\n",
+                "added {} ({}, {}; offers {}); it is drained until `pulse executor probe {}` passes\n",
                 r.str("name"),
                 r.str("address"),
                 r.str("workdir"),
+                crate::executor::caps_text(&r),
                 r.str("name")
             ))?;
+            Ok(())
+        }
+        "label" => {
+            let name = &args[1];
+            let Some(change) = args.get(2) else {
+                return Err(crate::util::fail(
+                    2,
+                    "executor label NAME WORDS (a comma-separated list replaces the labels; +word and -word add and remove)",
+                )
+                .into());
+            };
+            crate::executor::set_labels(&s, &now, name, change, &actor_of(c))?;
+            let r = crate::executor::executor_row(&s, name);
+            c.printf(format_args!(
+                "{name} offers {}\n",
+                crate::executor::caps_text(&r)
+            ))?;
+            Ok(())
+        }
+        "reserve" => {
+            let name = &args[1];
+            let on = !bool_flag(fs, "off");
+            crate::executor::set_reserved(&s, &now, name, on, &actor_of(c))?;
+            if on {
+                c.printf(format_args!(
+                    "{name} reserved: it takes only the jobs that need something it offers\n"
+                ))?;
+            } else {
+                c.printf(format_args!("{name} takes any job it can run again\n"))?;
+            }
             Ok(())
         }
         "probe" => {
@@ -1763,7 +1813,7 @@ mod tests {
         );
         assert!(
             code == 0
-                && out.contains("added hands (pulse@hands, /srv/pulse); it is drained until `pulse executor probe hands` passes"),
+                && out.contains("added hands (pulse@hands, /srv/pulse; offers linux); it is drained until `pulse executor probe hands` passes"),
             "add: {code} {out:?}"
         );
         let (_, err_text, code) = invoke(&s, "executor", "", &["activate", "hands"]);

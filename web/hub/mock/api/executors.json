@@ -17,7 +17,12 @@
     "runs_failed": 0,
     "status": "active",
     "workdir": "",
-    "workers": 4
+    "workers": 4,
+    "os": "macos",
+    "arch": "arm64",
+    "labels": "docker,xcode",
+    "reserved": 0,
+    "offers": "macos arm64 docker xcode"
   },
   {
     "address": "agent@pulse-vm1.internal",
@@ -39,6 +44,11 @@
     "runs_failed": 0,
     "status": "drained",
     "workdir": "/srv/pulse",
-    "workers": 1
+    "workers": 1,
+    "os": "linux",
+    "arch": "amd64",
+    "labels": "",
+    "reserved": 0,
+    "offers": "linux amd64"
   }
 ]

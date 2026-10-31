@@ -4,7 +4,7 @@ pub(crate) use crate::exec::RunLog;
 use crate::util::Row;
 use anyhow::Result;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{
     Arc, LazyLock, RwLock,
@@ -480,6 +480,8 @@ pub(crate) fn take_job_first(
         .keys()
         .map(|slug| (slug.clone(), crate::redbase::fix_source(slug)))
         .collect();
+    let caps = crate::executor::caps(&exrow);
+    let reserved = crate::executor::reserved(&exrow);
     let job = crate::jobs::lease_job(
         s,
         agent.to_string(),
@@ -492,6 +494,8 @@ pub(crate) fn take_job_first(
             fits: fits.to_vec(),
             hold_except,
             work_first,
+            caps: Some(caps.clone()),
+            reserved,
             ..Default::default()
         },
     )?;
@@ -510,9 +514,78 @@ pub(crate) fn take_job_first(
             let only: Vec<String> = vec![project.to_string()];
             why.push_str(&crate::redbase::queue_note(&c, &only, false, &red));
         }
+        why.push_str(&needs_queue_note(
+            &c, &exrow, &caps, reserved, &projects, any_proj, project,
+        ));
         return Ok((Row::new(), exrow, why));
     }
     Ok((job, exrow, String::new()))
+}
+
+/// Names the queued jobs an executor cannot take because they need what it
+/// does not offer, or because it is reserved and they need nothing, so an
+/// idle line never says "no queued job" over a queue the machine cannot
+/// serve.
+fn needs_queue_note(
+    c: &(impl crate::util::Querier + ?Sized),
+    exrow: &Row,
+    caps: &BTreeSet<String>,
+    reserved: bool,
+    projects: &[String],
+    any_proj: bool,
+    project: &str,
+) -> String {
+    let mut sql = "SELECT j.needs FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind != ?".to_string();
+    let lead = crate::lead::LEAD_KIND.to_string();
+    let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(lead)];
+    if !project.is_empty() {
+        sql.push_str(" AND j.project = ?");
+        vals.push(Box::new(project.to_string()));
+    } else if !any_proj && !projects.is_empty() {
+        let marks = vec!["?"; projects.len()].join(",");
+        sql.push_str(&format!(" AND j.project IN ({marks})"));
+        for p in projects {
+            vals.push(Box::new(p.clone()));
+        }
+    }
+    let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| &**v).collect();
+    let rows = crate::util::query_rows(c, &sql, &refs).unwrap_or_default();
+    let mut unmet: BTreeMap<String, i32> = BTreeMap::new();
+    let mut plain = 0;
+    for r in &rows {
+        let needs = r.str("needs");
+        if needs.is_empty() {
+            plain += 1;
+            continue;
+        }
+        let missing = pulse_store::needs::missing(&needs, caps);
+        if !missing.is_empty() {
+            *unmet.entry(missing.join(",")).or_insert(0) += 1;
+        }
+    }
+    let name = exrow.str("name");
+    let mut parts = Vec::new();
+    if !unmet.is_empty() {
+        let list = unmet
+            .iter()
+            .map(|(m, n)| format!("{n} need {m}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!(
+            "{list}, which {name} does not offer (it offers {}; pulse executor list)",
+            crate::executor::caps_text(exrow)
+        ));
+    }
+    if reserved && plain > 0 {
+        parts.push(format!(
+            "{plain} need nothing in particular and {name} is reserved for the work that needs it"
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("; queued: {}", parts.join("; "))
+    }
 }
 
 /// Names the queued jobs an executor cannot take because their project is

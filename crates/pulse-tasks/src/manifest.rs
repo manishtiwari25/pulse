@@ -50,13 +50,36 @@ const DESCRIPTION_LIMIT: usize = 200;
 /// Where the daemon keeps what it last applied for a project.
 const META_PREFIX: &str = "manifest:";
 
-/// The file: a list of schedules. Every key is checked, so a misspelt one
-/// is a problem, not a silent default.
+/// The file: a list of schedules and, when the project's work must run on a
+/// certain kind of machine, its needs. Every key is checked, so a misspelt
+/// one is a problem, not a silent default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    /// What kind of machine the project's jobs run on, as words every
+    /// machine either offers or not: `macos`, `linux`, `arm64`, `xcode`,
+    /// `docker`, or a label the owner gave a machine. When the key is
+    /// present it sets the project's needs (an empty list clears them);
+    /// when absent the project keeps what `pulse init --needs` set.
+    #[serde(default, deserialize_with = "needs_list")]
+    pub needs: Option<Vec<String>>,
     #[serde(default)]
     pub schedules: Vec<Entry>,
+}
+
+/// `needs:` as a list (`[macos, xcode]`) or one string (`macos, xcode`).
+fn needs_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Words {
+        List(Vec<String>),
+        One(String),
+    }
+    Ok(match Option::<Words>::deserialize(d)? {
+        None => None,
+        Some(Words::List(v)) => Some(v),
+        Some(Words::One(s)) => Some(vec![s]),
+    })
 }
 
 /// One schedule of the file. `name` is its identity: the row keeps the
@@ -191,6 +214,11 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
 /// cadences, the fields each kind needs. Empty when the file is sound.
 pub fn static_problems(m: &Manifest) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(needs) = &m.needs
+        && let Err(e) = pulse_store::needs::parse(&needs.join(","))
+    {
+        out.push(format!("needs: {e}"));
+    }
     let mut seen = BTreeSet::new();
     for (i, e) in m.schedules.iter().enumerate() {
         let name = e.name.trim();
@@ -396,6 +424,8 @@ pub struct Synced {
     pub problems: Vec<String>,
     /// The last sync had problems too (the daemon posts on the change).
     pub had_problems: bool,
+    /// The project's needs when the file's `needs:` changed them.
+    pub needs: Option<String>,
 }
 
 impl Synced {
@@ -425,6 +455,13 @@ impl Synced {
         let skills = self.skills.summary("disabled");
         if !skills.is_empty() {
             line.push_str(&format!("; skills: {skills}"));
+        }
+        if let Some(needs) = &self.needs {
+            if needs.is_empty() {
+                line.push_str("; needs cleared");
+            } else {
+                line.push_str(&format!("; needs {needs}"));
+            }
         }
         if !self.problems.is_empty() {
             line.push_str(&format!(
@@ -844,6 +881,7 @@ pub fn sync(
                         })
                         .collect();
                     synced.problems.extend(problems);
+                    sync_needs(s, slug, actor, &m, &mut synced)?;
                     sync_schedules(s, slug, actor, &path, &m, &held, &mut synced)?;
                 }
             }
@@ -876,6 +914,37 @@ pub fn sync(
     )?;
     tx.commit()?;
     Ok(Some(synced))
+}
+
+/// Sets the project's needs from the file's `needs:` when the key is there
+/// and sound; a file without the key leaves them.
+fn sync_needs(
+    s: &pulse_store::Store,
+    slug: &str,
+    actor: &str,
+    m: &Manifest,
+    synced: &mut Synced,
+) -> Result<()> {
+    let Some(needs) = &m.needs else {
+        return Ok(());
+    };
+    let Ok(words) = pulse_store::needs::canonical(&needs.join(",")) else {
+        return Ok(());
+    };
+    let was: String =
+        s.conn()?
+            .query_row("SELECT needs FROM projects WHERE slug = ?", [slug], |r| {
+                r.get(0)
+            })?;
+    if words != was {
+        let set = if words.is_empty() {
+            "-"
+        } else {
+            words.as_str()
+        };
+        synced.needs = Some(pulse_board::set_project_needs(s, slug, set, actor)?);
+    }
+    Ok(())
 }
 
 /// Imports the repository's skills into the project's registry; returns

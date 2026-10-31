@@ -522,6 +522,11 @@ export interface Executor {
   runs_failed?: number;
   created_at?: string;
   created_by?: string;
+  // What the machine offers, as the words a project can need: its system
+  // and chip first (macos arm64), then its labels (xcode docker), then
+  // "(reserved)" when it keeps itself for the work that needs it.
+  offers?: string;
+  reserved?: number | boolean;
   // Only the runner route reports live occupancy; the compute route omits it.
   running?: number;
   free?: number;

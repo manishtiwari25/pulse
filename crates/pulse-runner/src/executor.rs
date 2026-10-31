@@ -202,6 +202,7 @@ pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
     if workers < 0 {
         workers = 0;
     }
+    let reserved = s.setting("machine.reserve", "") == "on";
     let mut r = Row::new();
     for (k, v) in [
         ("name", json!(LOCAL_EXECUTOR)),
@@ -220,10 +221,253 @@ pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
         ("runs_failed", json!(0_i64)),
         ("created_at", json!("")),
         ("created_by", json!("")),
+        ("os", json!(pulse_store::needs::this_os())),
+        ("arch", json!(pulse_store::needs::this_arch())),
+        ("labels", json!(local_labels(s))),
+        ("reserved", json!(i64::from(reserved))),
     ] {
         r.insert(k, v);
     }
     r
+}
+
+/// The labels a machine finds on itself, so nobody types them: `docker`
+/// when the docker client is on PATH, `xcode` when a full Xcode is the
+/// selected developer directory (the command line tools alone build no app).
+pub(crate) const FOUND_LABELS: [&str; 2] = ["docker", "xcode"];
+
+/// What this machine finds on itself (FOUND_LABELS), looked up once.
+pub(crate) fn found_labels() -> &'static [String] {
+    static FOUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FOUND.get_or_init(|| {
+        if let Ok(fake) = std::env::var("PULSE_MACHINE_FOUND") {
+            return pulse_store::needs::stored(&fake);
+        }
+        let mut found = Vec::new();
+        if which::which("docker").is_ok() {
+            found.push("docker".to_string());
+        }
+        if pulse_store::needs::this_os() == "macos"
+            && std::process::Command::new("xcode-select")
+                .arg("-p")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .is_some_and(|p| p.contains("Xcode.app"))
+        {
+            found.push("xcode".to_string());
+        }
+        found
+    })
+}
+
+/// The labels of this machine: what it finds on itself plus the setting
+/// `machine.labels`, canonical and without repeats.
+pub(crate) fn local_labels(s: &pulse_store::Store) -> String {
+    let typed = s.setting("machine.labels", "");
+    pulse_store::needs::join(&pulse_store::needs::stored(&format!(
+        "{},{typed}",
+        found_labels().join(",")
+    )))
+}
+
+/// The labels of a hand after a probe: the words it found on itself replace
+/// the FOUND_LABELS of the stored list, the owner's words stay.
+pub(crate) fn merge_found_labels(stored: &str, found: &str) -> String {
+    let mut words: Vec<String> = pulse_store::needs::stored(stored)
+        .into_iter()
+        .filter(|w| !FOUND_LABELS.contains(&w.as_str()))
+        .collect();
+    for w in pulse_store::needs::stored(found) {
+        if FOUND_LABELS.contains(&w.as_str()) && !words.contains(&w) {
+            words.push(w);
+        }
+    }
+    pulse_store::needs::join(&words)
+}
+
+/// What a machine offers (needs.rs): its OS and architecture words and its
+/// labels. Hands paired before their probe reported an OS are Linux, the
+/// only platform `pulse pair` takes.
+pub(crate) fn caps(r: &Row) -> BTreeSet<String> {
+    let mut os = r.str("os");
+    if os.is_empty() && r.str("kind") == "ssh" {
+        os = "linux".to_string();
+    }
+    pulse_store::needs::caps_of(&os, &r.str("arch"), &r.str("labels"))
+}
+
+/// Whether the machine takes only the jobs that need something it offers.
+pub(crate) fn reserved(r: &Row) -> bool {
+    r.int("reserved") != 0
+}
+
+/// `caps` as one line for a listing: `macos arm64 xcode docker`, with
+/// `(reserved)` when the machine is kept for the work that needs it.
+pub(crate) fn caps_text(r: &Row) -> String {
+    machine_offers(
+        &r.str("kind"),
+        &r.str("os"),
+        &r.str("arch"),
+        &r.str("labels"),
+        reserved(r),
+    )
+}
+
+/// What a machine offers as one line, from its stored columns: OS and
+/// architecture first, then its labels, then `(reserved)`; `-` when nothing
+/// is known. The hub's Machines page and `pulse executor list` share it.
+pub fn machine_offers(kind: &str, os: &str, arch: &str, labels: &str, reserved: bool) -> String {
+    let mut r = Row::new();
+    r.insert("kind", json!(kind));
+    r.insert("os", json!(os));
+    r.insert("arch", json!(arch));
+    r.insert("labels", json!(labels));
+    let mut words: Vec<String> = caps(&r).into_iter().collect();
+    // OS and architecture first, the labels after them.
+    words.sort_by_key(|w| {
+        (
+            !pulse_store::needs::OS_WORDS.contains(&w.as_str()),
+            !pulse_store::needs::ARCH_WORDS.contains(&w.as_str()),
+            w.clone(),
+        )
+    });
+    if reserved {
+        words.push("(reserved)".to_string());
+    }
+    if words.is_empty() {
+        "-".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+/// What this machine offers, for the hub: its OS and architecture words,
+/// its labels (found and typed), and whether it is reserved.
+pub struct LocalMachine {
+    pub os: String,
+    pub arch: String,
+    pub labels: String,
+    pub reserved: bool,
+}
+
+pub fn local_machine(s: &pulse_store::Store) -> LocalMachine {
+    let r = local_executor_row(s);
+    LocalMachine {
+        os: r.str("os"),
+        arch: r.str("arch"),
+        labels: r.str("labels"),
+        reserved: reserved(&r),
+    }
+}
+
+/// Sets the owner's labels of a hand (`pulse executor label NAME a,b` or
+/// `+a -b`): a list replaces them, signed words add and remove. The words
+/// the hand finds on itself (FOUND_LABELS) are kept as found.
+pub(crate) fn set_labels(
+    s: &pulse_store::Store,
+    now: &str,
+    name: &str,
+    change: &str,
+    actor: &str,
+) -> Result<String> {
+    if name == LOCAL_EXECUTOR {
+        return Err(fail(
+            2,
+            "this machine's labels are the setting machine.labels (pulse set machine.labels a,b); xcode and docker it finds on its own",
+        )
+        .into());
+    }
+    let r = executor_row(s, name);
+    if is_nil(&r) {
+        return Err(fail(2, format!("No executor {name}")).into());
+    }
+    let signed = change
+        .split([',', ' '])
+        .filter(|w| !w.is_empty())
+        .all(|w| w.starts_with('+') || w.starts_with('-'));
+    let mut words: Vec<String> = pulse_store::needs::stored(&r.str("labels"));
+    if signed && !change.trim().is_empty() {
+        for raw in change.split([',', ' ']).filter(|w| !w.is_empty()) {
+            let (add, rest) = (raw.starts_with('+'), &raw[1..]);
+            let Some(w) = pulse_store::needs::word(rest).map_err(|e| fail(2, e))? else {
+                continue;
+            };
+            if add {
+                if !words.contains(&w) {
+                    words.push(w);
+                }
+            } else {
+                words.retain(|x| *x != w);
+            }
+        }
+    } else {
+        let found: Vec<String> = words
+            .iter()
+            .filter(|w| FOUND_LABELS.contains(&w.as_str()))
+            .cloned()
+            .collect();
+        words = pulse_store::needs::parse(change).map_err(|e| fail(2, e))?;
+        for w in found {
+            if !words.contains(&w) {
+                words.push(w);
+            }
+        }
+    }
+    let labels = pulse_store::needs::join(&words);
+    let conn = s.conn().unwrap();
+    exec1(
+        &conn,
+        "UPDATE executors SET labels = ? WHERE name = ?",
+        &[&labels, &name],
+    );
+    event_at(
+        &conn,
+        now,
+        actor,
+        "executor.labels",
+        name,
+        json!({"labels": labels}),
+    );
+    Ok(labels)
+}
+
+/// Keeps a hand for the jobs that need something it offers (`pulse executor
+/// reserve NAME`), or lets it take any job again (`--off`).
+pub(crate) fn set_reserved(
+    s: &pulse_store::Store,
+    now: &str,
+    name: &str,
+    on: bool,
+    actor: &str,
+) -> Result<()> {
+    if name == LOCAL_EXECUTOR {
+        return Err(fail(
+            2,
+            "this machine is reserved by the setting machine.reserve (pulse set machine.reserve on)",
+        )
+        .into());
+    }
+    let r = executor_row(s, name);
+    if is_nil(&r) {
+        return Err(fail(2, format!("No executor {name}")).into());
+    }
+    let conn = s.conn().unwrap();
+    exec1(
+        &conn,
+        "UPDATE executors SET reserved = ? WHERE name = ?",
+        &[&i64::from(on), &name],
+    );
+    event_at(
+        &conn,
+        now,
+        actor,
+        "executor.reserve",
+        name,
+        json!({"reserved": on}),
+    );
+    Ok(())
 }
 
 pub(crate) fn executor_rows(s: &pulse_store::Store, include_local: bool) -> Vec<Row> {
@@ -1439,6 +1683,41 @@ fn log_login_event(
     event_at(conn, now, actor, "executor.login", name, Value::Object(d));
 }
 
+/// Stores what a hand's probe said about the machine: its OS and
+/// architecture words and the labels it found on itself (`found=`); hands
+/// that predate those fields leave the stored words as they are.
+fn record_caps(s: &pulse_store::Store, r: &Row, fields: &BTreeMap<String, String>) {
+    let Ok(conn) = s.conn() else {
+        return;
+    };
+    let os = fields
+        .get("os")
+        .and_then(|v| pulse_store::needs::word(v).ok().flatten());
+    let arch = fields
+        .get("arch")
+        .and_then(|v| pulse_store::needs::word(v).ok().flatten());
+    if let (Some(os), Some(arch)) = (os, arch)
+        && (os != r.str("os") || arch != r.str("arch"))
+    {
+        exec1(
+            &conn,
+            "UPDATE executors SET os = ?, arch = ? WHERE name = ?",
+            &[&os, &arch, &r.str("name")],
+        );
+    }
+    if let Some(found) = fields.get("found") {
+        let found = if found == "-" { "" } else { found.as_str() };
+        let labels = merge_found_labels(&r.str("labels"), found);
+        if labels != r.str("labels") {
+            exec1(
+                &conn,
+                "UPDATE executors SET labels = ? WHERE name = ?",
+                &[&labels, &r.str("name")],
+            );
+        }
+    }
+}
+
 pub(crate) fn parse_probe(text: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
     for tok in text.split_whitespace() {
@@ -1719,6 +1998,7 @@ pub(crate) fn probe_executor(
             }
             ok = problems.is_empty();
             if ok {
+                record_caps(s, &r, &fields);
                 let swept = sweep_executor_jobs(
                     s,
                     now,
