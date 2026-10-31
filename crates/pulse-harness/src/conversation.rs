@@ -1802,7 +1802,7 @@ impl Manager {
     }
 
     /// The reasoning effort the conversation's next turn runs with
-    /// (`minimal` to `xhigh`; empty or `default` for the provider's own).
+    /// (`minimal` to `max`; empty or `default` for the provider's own).
     /// Like [`Manager::set_model`], a turn in flight finishes as it
     /// started; the session then restarts with the conversation carried
     /// over.

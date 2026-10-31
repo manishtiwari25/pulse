@@ -885,12 +885,14 @@ mod go_harness_tests {
             validate_setting("harness.reasoning", "default").unwrap(),
             "default"
         );
+        // Claude models offer an effort above xhigh; the gate takes it.
+        assert_eq!(validate_setting("harness.reasoning", "Max").unwrap(), "max");
         assert!(
-            validate_setting("harness.reasoning", "max")
+            validate_setting("harness.reasoning", "extreme")
                 .unwrap_err()
                 .to_string()
                 .contains(
-                    "harness.reasoning takes one of default, minimal, low, medium, high, xhigh"
+                    "harness.reasoning takes one of default, minimal, low, medium, high, xhigh, max"
                 )
         );
         assert!(

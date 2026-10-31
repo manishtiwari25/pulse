@@ -2231,7 +2231,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `harness.context_window` | `0` tokens (= the model list) | The context window the harness assumes for context discipline (collapsing harder past 80% of it); `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none keeps the first level. `pulse harness run --context-window N` overrides it for one run. |
 | `harness.compact_at` | `70` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness)). `--compact-at N` for one run. |
-| `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](#the-harness)). `--reasoning LEVEL` for one run. |
+| `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](#the-harness)). `--reasoning LEVEL` for one run. |
 | `harness.instructions` | `on` | A native-harness run reads the owner's `~/.pulse/AGENTS.md`, the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and its rules (`.pulse/rules`, `.claude/rules`, `.github/instructions`) into its system prompt; path-scoped rules and nested `AGENTS.md` files arrive with the files they cover. |
 | `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
 | `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
@@ -2246,7 +2246,7 @@ record, read with `pulse record show WF-evolve`.
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also the loop's measurements while `measure_model` is empty, and every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `measure_model` | empty (= `worker_model`) | Model the self-improvement loop measures fixtures with: every baseline, experiment and landing re-measure. It is part of the evaluator, so a change re-measures every baseline; while it is pinned, a `worker_model` change keeps them. Empty measures with the model the workers use, so the tree is tuned for the agent that ships it. |
-| `worker_reasoning` | empty (= `harness.reasoning`) | Reasoning effort (`default`, `minimal`, `low`, `medium`, `high`, `xhigh`) of the runs that change code and of a worker-class agent; `default` sends nothing. Jobs get it as `--reasoning`. |
+| `worker_reasoning` | empty (= `harness.reasoning`) | Reasoning effort (`default`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) of the runs that change code and of a worker-class agent; `default` sends nothing. Jobs get it as `--reasoning`. |
 | `light_reasoning` | empty (= `harness.reasoning`) | Reasoning effort of the light runs and of a light-class agent, so the cheap model can also think less. |
 | `measure_reasoning` | empty (= `worker_reasoning`) | Reasoning effort the loop measures fixtures with. Like `measure_model` it is part of the evaluator: a non-default value enters the baseline key, so a change re-measures every baseline. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
@@ -2688,7 +2688,7 @@ helper started by a read-only run is read-only too, and the fenced
 **Reasoning effort and prompt caching.** `harness.reasoning` (`default`;
 Settings → Harness **Run mode and transcript size**, `--reasoning LEVEL` for
 one run) asks the model for a reasoning effort - `minimal`, `low`,
-`medium`, `high` or `xhigh` - sent as `reasoning_effort` to the
+`medium`, `high`, `xhigh` or `max` - sent as `reasoning_effort` to the
 OpenAI-compatible providers and to Copilot for the models that take it;
 `default` sends nothing and leaves the model's own setting. A model that
 does not take the field rejects the call, so set it per project with the
@@ -3140,6 +3140,7 @@ Beside each sits its reasoning effort (`worker_reasoning`, `light_reasoning`,
 `measure_reasoning`), `harness.reasoning` while empty. A model that does not
 take the chosen effort gets the nearest one it offers instead of failing the
 run - a model that offers `low`, `high` and `max` runs an `xhigh` setting as
+`high`, and a model without `max` runs a `max` setting as its `xhigh` or
 `high` - and the run's log says so; the choice is kept for that model while
 the harness runs.
 

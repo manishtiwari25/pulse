@@ -89,9 +89,9 @@ pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
         "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
         "measure_model"=>("text",None,[],None,"the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes"),
         "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model"),
-        "worker_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort of the runs that change code - task, improve and experiment jobs - and of a worker-class agent; empty means harness.reasoning; default sends nothing and leaves the model's own setting"),
-        "light_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing"),
-        "measure_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh"],None,"the reasoning effort the self-improvement loop measures fixtures with; empty means worker_reasoning, then harness.reasoning; default sends nothing. Like measure_model it is part of the evaluator: a change re-measures every baseline"),
+        "worker_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort of the runs that change code - task, improve and experiment jobs - and of a worker-class agent; empty means harness.reasoning; default sends nothing and leaves the model's own setting"),
+        "light_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing"),
+        "measure_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort the self-improvement loop measures fixtures with; empty means worker_reasoning, then harness.reasoning; default sends nothing. Like measure_model it is part of the evaluator: a change re-measures every baseline"),
     }
 });
 pub static HARNESS_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
@@ -151,7 +151,7 @@ pub static HARNESS_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "harness.compact_at"=>("count",Some(0),[],Some(95.0),"percent of harness.context_window (or the model's reported window) at which a native-harness run asks the model to summarise the older part of the conversation and replaces it with that summary, keeping the system prompt, the task and the last 6 messages; the summary call does not count against harness.max_steps and runs at most once every 3 calls; 0 turns compaction off and leaves only the observation collapsing"),
         "harness.allow_tools"=>("text",None,[],None,"permission rules for the calls of an interactive harness session (pulse harness chat) that run without the user's approval, comma- or newline-separated, each a tool name or tool(filter) with * and ? wildcards: bash(git *), edit(src/*), write, fetch(docs.rs), mcp__github__*; --allow-tool adds to the list and a deny rule wins over an allow; a job asks nobody, so this does not change jobs"),
         "harness.deny_tools"=>("text",None,[],None,"permission rules for the calls a native-harness run refuses outright, in jobs and sessions alike, comma- or newline-separated, each a tool name or tool(filter) with * and ? wildcards: bash(git push *), read(.env*), write(*.lock), subagent; a tool denied whole is not offered to the model; --deny-tool adds to the list; the job policy line (no push, no gh, no credentials) stays on top of these"),
-        "harness.reasoning"=>("choice",None,["default","minimal","low","medium","high","xhigh"],None,"the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers (openai, azure-openai, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, github-models, ollama, lmstudio, vllm, custom) and to copilot for the models that take it; default sends nothing and leaves the model's own setting; a model that does not take the field rejects the call, so set this per project with its model in mind"),
+        "harness.reasoning"=>("choice",None,["default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort a native-harness run asks of the model, sent as reasoning_effort to the OpenAI-compatible providers (openai, azure-openai, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, github-models, ollama, lmstudio, vllm, custom) and to copilot for the models that take it; default sends nothing and leaves the model's own setting; a model that does not take the field rejects the call, so set this per project with its model in mind"),
         "models.allowed"=>("text",None,[],None,"the models a custom agent file (.pulse/agents/<name>.md, .claude/agents, .github/agents, an agent record) may ask for with its model key, comma- or newline-separated, * for a run of characters: kimi-k3, claude-*; empty lets any model the provider accepts through; a model outside the list is ignored with a note and the run keeps its routing (run.model, the role's model class), a subagent its parent's model"),
     }
 });
@@ -1567,6 +1567,40 @@ mod go_settings_tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("empty, default, minimal"), "{err}");
+    }
+
+    /// Claude models offer `max` above `xhigh`; every effort setting takes
+    /// it, so an owner can choose it (a model without it gets the nearest
+    /// effort it offers, see `pulse_provider::nearest_reasoning`).
+    #[test]
+    fn reasoning_effort_settings_accept_max() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-10-31T06:00:00Z");
+        for name in [
+            "harness.reasoning",
+            "worker_reasoning",
+            "light_reasoning",
+            "measure_reasoning",
+        ] {
+            s.set_setting("human", name, " Max ")
+                .unwrap_or_else(|e| panic!("{name} refused max: {e}"));
+            assert_eq!(s.setting(name, ""), "max", "{name}");
+        }
+        for kind in ["task", "improve", "experiment"] {
+            assert_eq!(s.run_reasoning(kind), "max");
+        }
+        assert_eq!(s.run_reasoning("lead"), "max");
+        assert_eq!(s.measure_reasoning(), "max");
+        // The settings list the efforts lowest first, max above xhigh.
+        let err = s
+            .set_setting("human", "worker_reasoning", "extreme")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("empty, default, minimal, low, medium, high, xhigh, max"),
+            "{err}"
+        );
     }
 
     #[test]

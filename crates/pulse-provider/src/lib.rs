@@ -277,7 +277,7 @@ pub struct Request {
 }
 
 /// The reasoning efforts a [`Request`] may ask for, lowest first.
-pub const REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+pub const REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Every effort a vendor may name, lowest first: the ones above and the
 /// ends some models add (`none`, `max`), so a refusal can be ranked.
@@ -1012,6 +1012,44 @@ mod tests {
         assert!(refused_reasoning(&copilot, "high").is_none());
         assert!(refused_reasoning(&copilot, "").is_none());
         assert!(nearest_reasoning("xhigh", &["warp".to_string()]).is_none());
+    }
+
+    #[test]
+    fn max_is_an_effort_above_xhigh_that_falls_back_where_unoffered() {
+        // The efforts a request may ask for run low to high in the same
+        // order the fallback ranks them, max last.
+        let ranks: Vec<usize> = REASONING_EFFORTS
+            .iter()
+            .map(|e| REASONING_RANK.iter().position(|r| r == e).unwrap())
+            .collect();
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]), "{ranks:?}");
+        assert_eq!(REASONING_EFFORTS.last(), Some(&"max"));
+        // A model without max gets the highest effort it offers: xhigh
+        // where it has one, else high.
+        let refusal = |message: &str| ProviderError {
+            provider: "copilot".into(),
+            status: 400,
+            code: String::new(),
+            message: message.into(),
+            retryable: false,
+            status_suffix: String::new(),
+        };
+        let gpt = refusal(
+            r#"reasoning_effort "max" is not supported by model gpt-5.5; supported values: [low medium high xhigh]"#,
+        );
+        let supported = refused_reasoning(&gpt, "max").unwrap();
+        assert_eq!(
+            nearest_reasoning("max", &supported).as_deref(),
+            Some("xhigh")
+        );
+        let openai = refusal(
+            "Unsupported value: 'max' is not supported with this model. Supported values are: 'low', 'medium', 'high'.",
+        );
+        let supported = refused_reasoning(&openai, "max").unwrap();
+        assert_eq!(
+            nearest_reasoning("max", &supported).as_deref(),
+            Some("high")
+        );
     }
 
     #[test]

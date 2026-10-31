@@ -223,7 +223,7 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
     fs.string_var(
         "reasoning",
         "",
-        "reasoning effort asked of the model (minimal, low, medium, high, xhigh) where the provider takes one; empty leaves the model's default; overrides harness.reasoning",
+        "reasoning effort asked of the model (minimal, low, medium, high, xhigh, max) where the provider takes one; empty leaves the model's default; overrides harness.reasoning",
     );
     fs.string_var(
         "agent",

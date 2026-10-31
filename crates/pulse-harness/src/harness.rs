@@ -319,7 +319,7 @@ pub struct Config {
     /// command that changes it anyway is reverted. Set for `answer` and
     /// `ballot` jobs, whose findings are the whole deliverable.
     pub read_only: bool,
-    /// Reasoning effort to ask the model for (`minimal`..`xhigh`, see
+    /// Reasoning effort to ask the model for (`minimal`..`max`, see
     /// [`pulse_provider::REASONING_EFFORTS`]); empty leaves the vendor's
     /// default in place. Providers without the knob ignore it.
     pub reasoning: String,
