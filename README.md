@@ -4103,13 +4103,23 @@ is judged by the same rules, its verdict recorded with `head: true` and the
 login or name that pushed it (`by`), and a red one is a finding and a fix job
 like a push's - with one difference: a worker starts from the project
 checkout, so the job is planned only once the checkout's default branch
-holds the commit. Until then the daemon looks again every three minutes and
-the log says it is waiting; when the checkout still lacks the commit two
-hours after the daemon first saw the failure, the finding goes out without a
-job and names what holds the checkout behind (the push's hold note, when
-there is one), so you can see what to clear. The brief of a head's fix job
-says that the push was not PULSE's and that PULSE looks after the branch
-all the same.
+holds the commit. The landing pass brings it there: with `landing.push` on,
+the daemon fetches each project's upstream every ten minutes whether or not
+anything landed - a quiet project gets a landing worker for it (`landing
+<slug>: started (upstream refresh)` in the log) - because a tracking ref
+nobody fetches never says the forge moved: before this, a merge made on
+GitHub never reached the checkout, and the red head waited its two hours
+for nothing. A checkout that is behind then follows: a clean checkout on the default branch is fast-forwarded, a
+checkout on another branch or detached has its default branch moved by ref
+and its working tree left alone (`land.fast-forward` with `how`), a dirty
+checkout on the default branch keeps its HEAD and the sync merges the remote
+commits in as above. Until the checkout holds the commit the daemon looks
+again every three minutes and the log says it is waiting; when the checkout
+still lacks the commit two hours after the daemon first saw the failure, the
+finding goes out without a job and names what holds the checkout behind (the
+push's hold note, when there is one), so you can see what to clear. The
+brief of a head's fix job says that the push was not PULSE's and that PULSE
+looks after the branch all the same.
 
 `pulse pipeline` shows, per project, the branch head last read (who pushed
 it, and since when a red one waits for the checkout), the pushes still being

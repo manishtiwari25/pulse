@@ -68,8 +68,10 @@ impl LandingWorkers {
             return lines;
         }
         // Projects with landings to do go first; one that only owes a push,
-        // or carries a hold note to re-check (so a cleared hold is seen to
-        // clear), takes a slot that is left and never starves a landing.
+        // carries a hold note to re-check (so a cleared hold is seen to
+        // clear), or is due a fetch of its upstream (so a merge made on the
+        // forge reaches the checkout; `landing_hold::refresh_upstream`)
+        // takes a slot that is left and never starves a landing.
         let push_on = crate::landing_hold::push_on(s);
         let mut with_landings = Vec::new();
         let mut to_recheck = Vec::new();
@@ -87,6 +89,8 @@ impl LandingWorkers {
                 to_recheck.push((project, "push owed".to_string()));
             } else if held.contains_key(&slug) {
                 to_recheck.push((project, "hold to re-check".to_string()));
+            } else if push_on && crate::landing_hold::refresh_due(s, &slug, now) {
+                to_recheck.push((project, "upstream refresh".to_string()));
             }
         }
         for (project, why) in with_landings.into_iter().chain(to_recheck) {
@@ -428,6 +432,32 @@ rm -f "{active}/$$"
         let (project, _repo) = add_project(&s, "proj-quiet", "");
         let cancel = pulse_bus::CancellationToken::new();
         let mut workers = LandingWorkers::default();
+        // A quiet project is visited once every UPSTREAM_REFRESH_MINUTES so
+        // its upstream is fetched; this one tracks nothing, so the visit is
+        // silent and the next is in ten minutes.
+        let lines = workers.start_projects(
+            &cancel,
+            &s,
+            std::slice::from_ref(&project),
+            "daemon",
+            TEST_NOW,
+            &BTreeMap::new(),
+            &stage(),
+        );
+        assert_eq!(
+            lines,
+            vec!["landing proj-quiet: started (upstream refresh)".to_string()]
+        );
+        let (results, cut) = workers.finish(&cancel, None);
+        assert!(!cut, "finish cut workers: {results:?}");
+        assert!(
+            results[0].hold.is_none()
+                && results[0]
+                    .lines
+                    .iter()
+                    .all(|l| l.starts_with("landing proj-quiet: finished in")),
+            "a refresh of a branch that tracks nothing said {results:?}"
+        );
         assert!(
             workers
                 .start_projects(
@@ -442,6 +472,14 @@ rm -f "{active}/$$"
                 .is_empty(),
             "a project with nothing to do got a worker"
         );
+        assert!(crate::landing_hold::refresh_due(
+            &s,
+            "proj-quiet",
+            &crate::util::plus_minutes(
+                TEST_NOW,
+                crate::landing_hold::UPSTREAM_REFRESH_MINUTES as f64
+            )
+        ));
 
         // A hold note left behind (the push went through by hand) is
         // re-checked and seen to clear.
