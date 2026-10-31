@@ -279,6 +279,64 @@ pub struct Request {
 /// The reasoning efforts a [`Request`] may ask for, lowest first.
 pub const REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
 
+/// Every effort a vendor may name, lowest first: the ones above and the
+/// ends some models add (`none`, `max`), so a refusal can be ranked.
+const REASONING_RANK: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// The efforts a model accepts, read from a provider's refusal of the
+/// effort `asked` - Copilot: `reasoning_effort "xhigh" is not supported by
+/// model kimi-k3; supported values: [low high max]`; OpenAI: `Unsupported
+/// value: 'xhigh' is not supported with this model. Supported values are:
+/// 'low', 'medium', 'high'` - or `None` when the error is about something
+/// else or names no effort this crate knows.
+pub fn refused_reasoning(err: &ProviderError, asked: &str) -> Option<Vec<String>> {
+    let asked = asked.trim().to_ascii_lowercase();
+    if asked.is_empty() {
+        return None;
+    }
+    let low = err.message.to_ascii_lowercase();
+    // OpenAI names the parameter outside the message, so the quoted effort
+    // stands in for the word.
+    let about_reasoning = low.contains("reasoning")
+        || low.contains(&format!("'{asked}'"))
+        || low.contains(&format!("\"{asked}\""));
+    let refused =
+        low.contains("not supported") || low.contains("unsupported") || low.contains("invalid");
+    if !about_reasoning || !refused || !low.contains(&asked) {
+        return None;
+    }
+    // The last mention: "Unsupported value: ..." precedes the list itself.
+    let (_, tail) = low.rsplit_once("supported value")?;
+    let mut supported: Vec<String> = Vec::new();
+    for word in tail.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if REASONING_RANK.contains(&word) && !supported.iter().any(|s| s == word) {
+            supported.push(word.to_string());
+        }
+    }
+    if supported.is_empty() || supported.contains(&asked) {
+        return None;
+    }
+    Some(supported)
+}
+
+/// The effort nearest `asked` among `supported`: the highest at or below
+/// it, else the lowest above it; `None` when neither side is ranked.
+pub fn nearest_reasoning(asked: &str, supported: &[String]) -> Option<String> {
+    let rank = |e: &str| REASONING_RANK.iter().position(|r| *r == e);
+    let want = rank(asked.trim())?;
+    let mut ranked: Vec<(usize, &str)> = supported
+        .iter()
+        .filter_map(|s| rank(s).map(|r| (r, s.as_str())))
+        .collect();
+    ranked.sort_unstable();
+    ranked
+        .iter()
+        .rev()
+        .find(|(r, _)| *r <= want)
+        .or_else(|| ranked.first())
+        .map(|(_, s)| (*s).to_string())
+}
+
 /// Usage is what one call cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
@@ -907,6 +965,54 @@ mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::json;
+
+    #[test]
+    fn a_refused_reasoning_effort_steps_to_the_nearest_the_model_offers() {
+        let copilot = ProviderError {
+            provider: "copilot".into(),
+            status: 400,
+            code: String::new(),
+            message: r#"reasoning_effort "xhigh" is not supported by model kimi-k3; supported values: [low high max]"#.into(),
+            retryable: false,
+            status_suffix: String::new(),
+        };
+        let supported = refused_reasoning(&copilot, "xhigh").unwrap();
+        assert_eq!(supported, ["low", "high", "max"]);
+        assert_eq!(
+            nearest_reasoning("xhigh", &supported).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            nearest_reasoning("minimal", &supported).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            nearest_reasoning("medium", &supported).as_deref(),
+            Some("low")
+        );
+
+        let openai = ProviderError {
+            message: "Unsupported value: 'xhigh' is not supported with this model. Supported values are: 'low', 'medium', 'high'.".into(),
+            ..copilot.clone()
+        };
+        let supported = refused_reasoning(&openai, "xhigh").unwrap();
+        assert_eq!(supported, ["low", "medium", "high"]);
+        assert_eq!(
+            nearest_reasoning("xhigh", &supported).as_deref(),
+            Some("high")
+        );
+
+        // Another 400, a refusal of a different effort than the one sent,
+        // and no effort sent at all are not this fallback's business.
+        let other = ProviderError {
+            message: "messages[2].content must not be empty".into(),
+            ..copilot.clone()
+        };
+        assert!(refused_reasoning(&other, "xhigh").is_none());
+        assert!(refused_reasoning(&copilot, "high").is_none());
+        assert!(refused_reasoning(&copilot, "").is_none());
+        assert!(nearest_reasoning("xhigh", &["warp".to_string()]).is_none());
+    }
 
     #[test]
     fn squeeze_cuts_on_char_boundaries() {

@@ -127,6 +127,9 @@ struct Inner {
     denied_at: Option<DateTime<Utc>>,
     /// Steps down as the API complains about streamed calls.
     stream_mode: StreamMode,
+    /// The effort a model took in place of the one asked for, by
+    /// `model\nasked`, once the API refused the asked one.
+    reasoning: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -433,7 +436,19 @@ impl Copilot {
                 include_usage: true,
             });
         }
-        let body = pulse_store::gojson::to_vec(&wire)?;
+        let reasoning_key = format!("{}\n{}", req.model, req.reasoning);
+        if !req.reasoning.is_empty()
+            && let Some(effort) = self
+                .inner
+                .lock()
+                .expect("copilot provider poisoned")
+                .reasoning
+                .get(&reasoning_key)
+        {
+            wire.reasoning_effort = effort.clone();
+        }
+        let mut body = pulse_store::gojson::to_vec(&wire)?;
+        let mut stepped_reasoning = false;
         let mut refreshed_for_401 = false;
         let mut attempt = 0usize;
         loop {
@@ -470,6 +485,34 @@ impl Copilot {
             match self.chat_once(cancel, &base, &token, &body, req, on_text) {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
+                    // A model that does not take the asked effort gets the
+                    // nearest it offers, once, and that choice is kept for
+                    // the model so later calls do not pay the refusal.
+                    if !stepped_reasoning
+                        && !wire.reasoning_effort.is_empty()
+                        && let Some(perr) = provider_error(&err).filter(|perr| perr.status == 400)
+                        && let Some(offered) =
+                            pulse_provider::refused_reasoning(perr, &wire.reasoning_effort)
+                        && let Some(effort) =
+                            pulse_provider::nearest_reasoning(&wire.reasoning_effort, &offered)
+                    {
+                        self.log_redacted(&format!(
+                            "copilot: {} does not take reasoning_effort {}; using {} (it offers {})",
+                            req.model,
+                            wire.reasoning_effort,
+                            effort,
+                            offered.join(", ")
+                        ));
+                        self.inner
+                            .lock()
+                            .expect("copilot provider poisoned")
+                            .reasoning
+                            .insert(reasoning_key.clone(), effort.clone());
+                        wire.reasoning_effort = effort;
+                        body = pulse_store::gojson::to_vec(&wire)?;
+                        stepped_reasoning = true;
+                        continue;
+                    }
                     if provider_error(&err).is_some_and(|perr| perr.status == 401)
                         && !refreshed_for_401
                     {
@@ -2043,6 +2086,62 @@ mod tests {
         assert_eq!(calls[0].arguments, "{\"id\":2}");
         assert_eq!(resp.usage.prompt_tokens, 11);
         assert_eq!(resp.usage.completion_tokens, 7);
+        drop(srv);
+    }
+
+    #[test]
+    fn a_refused_reasoning_effort_is_stepped_down_once_and_remembered_for_the_model() {
+        let _serial = test_serial();
+        let efforts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = efforts.clone();
+        let srv = copilot_test_server(move |req| {
+            let body: Value = req.json().unwrap();
+            let effort = body["reasoning_effort"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            seen.lock().unwrap().push(effort.clone());
+            if effort == "xhigh" && body["model"] == "kimi-k3" {
+                return HttpResponse::json(
+                    400,
+                    &json!({"error": {"code": "invalid_request_error", "message": "reasoning_effort \"xhigh\" is not supported by model kimi-k3; supported values: [low high max]"}}),
+                );
+            }
+            HttpResponse::json(200, &chat_content("chatcmpl-1", "kimi-k3", "ok"))
+        });
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env_token()),
+        );
+        let ask = || Request {
+            model: "kimi-k3".to_string(),
+            messages: vec![msg(Role::User, "hi")],
+            reasoning: "xhigh".to_string(),
+            ..Request::default()
+        };
+        let resp = p.chat(&cancel(), ask()).unwrap();
+        assert_eq!(resp.message.unwrap().content, "ok");
+        assert_eq!(*efforts.lock().unwrap(), ["xhigh", "high"]);
+        // The next call for the model sends the stepped-down effort at once.
+        p.chat(&cancel(), ask()).unwrap();
+        assert_eq!(*efforts.lock().unwrap(), ["xhigh", "high", "high"]);
+        // Another model still asks for what the owner chose.
+        p.chat(
+            &cancel(),
+            Request {
+                model: "gpt-5".to_string(),
+                ..ask()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            efforts.lock().unwrap().last().map(String::as_str),
+            Some("xhigh")
+        );
         drop(srv);
     }
 
