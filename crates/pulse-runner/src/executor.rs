@@ -375,7 +375,7 @@ pub(crate) fn set_labels(
     if name == LOCAL_EXECUTOR {
         return Err(fail(
             2,
-            "this machine's labels are the setting machine.labels (pulse set machine.labels a,b); xcode and docker it finds on its own",
+            "this machine's labels are the setting machine.labels (pulse settings set machine.labels a,b); xcode and docker it finds on its own",
         )
         .into());
     }
@@ -445,7 +445,7 @@ pub(crate) fn set_reserved(
     if name == LOCAL_EXECUTOR {
         return Err(fail(
             2,
-            "this machine is reserved by the setting machine.reserve (pulse set machine.reserve on)",
+            "this machine is reserved by the setting machine.reserve (pulse settings set machine.reserve on)",
         )
         .into());
     }
