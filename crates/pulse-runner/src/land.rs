@@ -1487,6 +1487,7 @@ pub(crate) fn land_branch_with_registry(
                             tail: crate::run::squeeze(&format!("{so}{se}"), 2500),
                             executor: crate::executor::LOCAL_EXECUTOR.to_string(),
                             seen: "landing",
+                            sync: o.sync,
                         },
                         &actor,
                         &now,
@@ -3191,6 +3192,62 @@ mod tests {
             bare_ref(&bare, "refs/heads/main"),
             ref_of(&repo, "refs/heads/main")
         );
+    }
+
+    /// A failed setup leaves a retry hold whose note says `pulse land` retries
+    /// now; the push step's sync read the same hold and waited. By hand, the
+    /// hold is lifted first, so the upstream is merged and pushed at once.
+    #[test]
+    fn land_by_hand_retries_a_held_sync_now() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        set_setting(&s, "landing.push", "main");
+        let other = tempfile::tempdir().expect("other").keep().join("other");
+        let other = other.display().to_string();
+        test_helpers::run(".", &["git", "clone", "-q", &bare, &other]);
+        std::fs::write(std::path::Path::new(&other).join("upstream.txt"), "x\n").unwrap();
+        test_helpers::run(&other, &["git", "add", "-A"]);
+        test_helpers::run(&other, &["git", "commit", "-q", "-m", "moved upstream"]);
+        test_helpers::run(&other, &["git", "push", "-q", "origin", "main"]);
+        push_branch(&s, &proj, &repo, "pulse/worker/1");
+        super::set_landing_retry(
+            &s,
+            "proj",
+            &crate::util::plus_minutes(test_helpers::TEST_NOW, 20.0),
+            "setup failed; retry later",
+        );
+        let out_buf = pulse_cli::Buffer::default();
+        let err_buf = pulse_cli::Buffer::default();
+        let mut ctx = pulse_cli::Context {
+            store: Some((*s).clone()),
+            home: s.home.clone(),
+            out: Box::new(out_buf.clone()),
+            err: Box::new(err_buf),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: "proj".into(),
+            session: String::new(),
+            now: test_helpers::TEST_NOW.into(),
+            args: Vec::new(),
+        };
+        commands::cmd_land(&mut ctx, &pulse_cli::FlagSet::new("land"), &[]).unwrap();
+        let out = out_buf.string();
+        assert!(
+            out.contains("proj landed:")
+                && out.contains("landing synced proj: origin/main merged into main")
+                && !out.contains("merging them waits"),
+            "out {out:?}"
+        );
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/main"),
+            ref_of(&repo, "refs/heads/main")
+        );
+        test_helpers::run(&repo, &["git", "cat-file", "-e", "main:upstream.txt"]);
+        assert!(super::landing_retry_hold(&s, "proj", test_helpers::TEST_NOW).is_none());
     }
 
     #[test]

@@ -3632,7 +3632,13 @@ project is marked unfit for the machine, which holds everything else of the
 project back. The same failure seen in a worker clone plans it too, at the
 point the second same-signature failure marks the project unfit, so a
 project frozen on every machine by a broken `npm ci` no longer waits a day
-per machine for marks to expire. Three repairs a day per project at most; a
+per machine for marks to expire - unless the checkout is behind its upstream
+(the `origin/main` the last push pass fetched, `origin/pr` in PR mode): then
+no repair is planned and the hold note says the sync lands first, because
+the recipe may already describe upstream's tree, set by hand after the owner
+renamed a solution, and a worker sent to fix it at the stale head would write
+the old paths back; the sync's own setup failure, whose base is upstream's
+tip, still plans one. Three repairs a day per project at most; a
 failing repair stays open and is briefed afresh at the next failure rather
 than queued again; and the first landing whose setup passes on the machine
 clears that machine's `setup:` mark for the project at once (an `executor.fit`
@@ -3846,7 +3852,11 @@ the machine, a broken dependency, a suite that fails on its own - the branch
 is kept, the project's landings wait `landing.base_red_retry_minutes`
 (default 10 minutes), the hold names the failing line and logs `retry in 10m`,
 a `land.base-red` event records the tail, and `pulse land --project X`
-retries at once after you fixed it. The hold
+retries at once after you fixed it - the branches and the push step's sync
+of the upstream alike, which reads the same hold (before this, `pulse land`
+by hand on a project whose setup had failed landed nothing, reported nothing
+waiting, and left the sync behind the hold its own note said the command
+lifts). The hold
 shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
 `land.resumed` when the branches land again. A red default branch is also a

@@ -548,6 +548,10 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             }
             continue;
         }
+        // The hold a failed setup or a red base left says this command retries
+        // now; the push step's sync reads the same hold, so it is lifted here
+        // for the branches and the sync alike.
+        crate::land::clear_landing_retry(&s, &slug);
         let results = if !branch.is_empty() {
             let job = query_one_row(
                 &*s.conn()?,
