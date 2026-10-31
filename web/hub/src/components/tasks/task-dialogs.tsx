@@ -204,11 +204,12 @@ export function AmendTaskDialog({ task, open, onOpenChange }: { task: Task; open
 
 const sentenceCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-// The details of a task: Markdown, with a preview a tab away.
+// The details of a task: Markdown, with a preview a tab away. `min-w-0` on
+// the tabs keeps a long pasted token or code line from widening the dialog.
 export function BriefField({ id, value, onChange, placeholder, rows = 9, label = "Details", hint = "Markdown works: headings, lists, links and code. The lead agent and every step see this." }: { id: string; value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; label?: string; hint?: string }) {
   return (
     <div className="grid gap-1.5">
-      <Tabs defaultValue="write" className="gap-1.5">
+      <Tabs defaultValue="write" className="min-w-0 gap-1.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Label htmlFor={id}>{label}</Label>
           <TabsList className="h-8">
