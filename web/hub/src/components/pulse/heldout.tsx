@@ -33,9 +33,9 @@ type Variant = "default" | "outline" | "ghost" | "secondary";
 
 // The Select value for the owner's own scorer script.
 const OWN = "own-script";
-// The hub caps a write's JSON body at 16 KB; the form warns a little before.
-const HARD_LIMIT = 16384;
-const SOFT_LIMIT = 15000;
+// The hub caps a write's JSON body at 1 MB; the form warns a little before.
+const HARD_LIMIT = 1024 * 1024;
+const SOFT_LIMIT = 1000 * 1024;
 // The template pair's marker: text that still carries it counts as pending.
 const MARKER = "PULSE_HELDOUT_TEMPLATE";
 
@@ -330,7 +330,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
               </div>
             ) : null}
             {marker ? <p className="text-xs text-warn">The text still contains the template marker {MARKER}. Replace it with your own words.</p> : null}
-            {bytes > SOFT_LIMIT ? <p className={cn("text-xs", tooBig ? "text-bad" : "text-warn")}>{(tooBig ? "Too long: " : "Nearly too long: ") + kb(bytes) + " of the 16 KB PULSE accepts at once."}</p> : null}
+            {bytes > SOFT_LIMIT ? <p className={cn("text-xs", tooBig ? "text-bad" : "text-warn")}>{(tooBig ? "Too long: " : "Nearly too long: ") + kb(bytes) + " of the 1 MB PULSE accepts at once."}</p> : null}
           </div>
         ) : null}
 

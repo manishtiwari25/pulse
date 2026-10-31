@@ -26,6 +26,13 @@ pub(crate) type Chats = Arc<Mutex<Option<Arc<Manager>>>>;
 const ARTIFACT_LIMIT: u64 = 20 * 1024 * 1024;
 /// How many conversations a list returns.
 const LIST_LIMIT: i64 = 200;
+/// How large a `/message` body may be: every inline image a message may
+/// carry at its largest, base64 (4/3), plus the text.
+const MESSAGE_BODY_LIMIT: usize = pulse_harness::conversation::ATTACHMENTS_PER_MESSAGE
+    * pulse_harness::conversation::IMAGE_LIMIT
+    / 3
+    * 4
+    + crate::server::JSON_BODY_LIMIT;
 
 impl Handler {
     pub(crate) fn chats(&self) -> Option<Arc<Manager>> {
@@ -121,7 +128,16 @@ impl Handler {
             .iter()
             .map(|row| conversation_json(row, chats))
             .collect();
-        write_json(w, 200, json!({"conversations": items}));
+        // The tasks the page groups conversations under (chat_tasks); an
+        // older store without the task tables lists none.
+        let tasks = match crate::chat_tasks::task_groups(store, all) {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                addition_failure(w, e);
+                return;
+            }
+        };
+        write_json(w, 200, json!({"conversations": items, "tasks": tasks}));
     }
 
     fn chat_create(&self, w: &mut ResponseWriter, r: &Request, chats: &Manager) {
@@ -296,7 +312,12 @@ impl Handler {
         id: &str,
         action: &str,
     ) {
-        let (payload, ok) = crate::server::read_payload(w, r);
+        let limit = if action == "message" {
+            MESSAGE_BODY_LIMIT
+        } else {
+            crate::server::JSON_BODY_LIMIT
+        };
+        let (payload, ok) = crate::server::read_payload_up_to(w, r, limit);
         if !ok {
             return;
         }
@@ -1488,5 +1509,87 @@ mod tests {
         let (code, _, _) = call(&h, "POST", "/api/v1/chat", json!({"text": ""}));
         assert_eq!(code, 400);
         std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // The list carries the tasks the page groups conversations under: each
+    // with its thread with the lead summed up and one session per step the
+    // lead planned - a queued step with no agent yet, a running one with
+    // its harness session. A task finished long ago is listed only with
+    // `all=1`; the newest change sorts first.
+    #[test]
+    fn the_list_groups_a_tasks_sessions_and_keeps_old_finished_tasks_for_all() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        additions_project(&ts, "one");
+        let h = handler(&ts);
+        let task = pulse_tasks::new(&ts, "one", "Ship the spec", "the brief", 10, "human").unwrap();
+        let old = pulse_tasks::new(&ts, "one", "Long done", "the brief", 10, "human").unwrap();
+        let conn = ts.conn().unwrap();
+        conn.execute(
+            "UPDATE tasks SET status='in_progress', lead='one-lead' WHERE id=?",
+            [&task.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tasks SET status='done', updated_at='2026-01-01T00:00:00Z' WHERE id=?",
+            [&old.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, project, task_id, author, body, at) VALUES ('MSG-1', 'one', ?, 'one-lead', 'Planned 2 steps.', '2026-10-31T10:00:00Z')",
+            [&task.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, created_at) VALUES \
+             ('job-a', 'one', 'task', 'Write the page', ?1, 'leased', 'iris', '2026-10-31T10:01:00Z'), \
+             ('job-b', 'one', 'task', 'Add the test', ?1 || ':ui', 'queued', '', '2026-10-31T10:02:00Z')",
+            [format!("task:{}", task.id)],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO harness_sessions (id, job_id, agent, project, status, steps, cost, started_at, updated_at) VALUES \
+             ('run-a', 'job-a', 'iris', 'one', 'running', 12, 0.25, '2026-10-31T10:05:00Z', '2026-10-31T10:09:00Z')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let (code, body, raw) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        let tasks = body["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1, "the old finished task stays out: {raw}");
+        let g = &tasks[0];
+        assert_eq!(g["id"], task.id);
+        assert_eq!(g["lead"], "one-lead");
+        assert_eq!(g["messages"], 1);
+        assert_eq!(g["last_author"], "one-lead");
+        assert_eq!(g["needs_you"], false);
+        assert_eq!(
+            g["last_at"], "2026-10-31T10:09:00Z",
+            "the newest change of any session"
+        );
+        let sessions = g["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0]["job"], "job-a");
+        assert_eq!(sessions[0]["session"], "run-a");
+        assert_eq!(sessions[0]["agent"], "iris");
+        assert_eq!(sessions[0]["status"], "running");
+        assert_eq!(sessions[0]["job_status"], "leased");
+        assert_eq!(sessions[0]["steps"], 12);
+        assert_eq!(sessions[1]["job"], "job-b");
+        assert_eq!(sessions[1]["title"], "Add the test");
+        assert_eq!(sessions[1]["session"], "");
+        assert_eq!(sessions[1]["job_status"], "queued");
+
+        let (code, body, raw) = call(&h, "GET", "/api/v1/chat?all=1", Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        let ids: Vec<&str> = body["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![task.id.as_str(), old.id.as_str()]);
     }
 }

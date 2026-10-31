@@ -1494,6 +1494,46 @@ export interface ChatChanges {
 
 export interface ChatListResponse {
   conversations: Conversation[];
+  // The tasks the Chat page groups conversations under (GET /chat): every
+  // task in progress and those finished in the last week; all with ?all=1.
+  tasks?: ChatTask[];
+}
+
+// One task as the Chat page lists it: the owner's thread with the lead
+// summed up, and one session per step (job) the lead planned.
+export interface ChatTask {
+  id: string; // TASK-NNN
+  project: string;
+  title: string;
+  status: TaskStatus | string;
+  priority: number;
+  lead: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  last_at: string; // the newest change of the task, its thread or any session
+  messages: number;
+  last_message_at: string;
+  last_author: string;
+  needs_you: boolean; // the lead waits for your reply (status review)
+  sessions: ChatTaskSession[];
+}
+
+// A step of a task as a conversation: the job and, once an agent took it,
+// its latest harness session (empty `session` while the step waits).
+export interface ChatTaskSession {
+  job: string;
+  kind: string;
+  title: string;
+  job_status: string; // queued, leased, blocked, done, failed, cancelled
+  agent: string;
+  session: string; // run-… or ""
+  status: string; // the session's status, "" without one
+  started_at: string;
+  updated_at: string;
+  ended_at: string;
+  cost: number;
+  steps: number;
 }
 
 export interface ChatShowResponse {
