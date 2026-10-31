@@ -905,6 +905,7 @@ fn prepare_setup(
                             tail: squeeze(&sout, 2500),
                             executor: ex.name(),
                             seen: "run",
+                            sync: false,
                         },
                         "daemon",
                         &s.now(),

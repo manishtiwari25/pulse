@@ -55,6 +55,27 @@ pub(crate) fn enabled(s: &pulse_store::Store) -> bool {
     s.setting(SETTING, "on") != "off"
 }
 
+/// The upstream a sync of the default branch merges, as the push step names
+/// it (landing_hold::upstream_ahead_of_default).
+fn upstream_name(s: &pulse_store::Store) -> &'static str {
+    if crate::landing_pr::pr_mode(s) {
+        "origin/pr"
+    } else {
+        "origin/main"
+    }
+}
+
+/// Whether the project's checkout lacks commits its upstream already holds,
+/// read from the tracking ref the last push pass fetched (no network).
+fn checkout_behind_upstream(s: &pulse_store::Store, project: &Row) -> bool {
+    let root = project.str("path");
+    if root.is_empty() {
+        return false;
+    }
+    let def = crate::baseline::default_branch(project.clone());
+    crate::landing_hold::upstream_ahead_of_default(&root, &def, s)
+}
+
 /// One setup failure at a commit of the default branch, as a landing or a run
 /// saw it.
 #[derive(Debug, Clone, Default)]
@@ -75,6 +96,9 @@ pub(crate) struct SetupFailure {
     pub executor: String,
     /// `landing` or `run`.
     pub seen: &'static str,
+    /// The failing landing was a sync of the upstream: `base` is upstream's
+    /// tip, and the checkout being behind it is the very thing failing.
+    pub sync: bool,
 }
 
 /// What `plan_repair` did: the job (empty when none was planned) and the
@@ -113,6 +137,20 @@ pub(crate) fn plan_repair(
     if transient {
         return Planned {
             note: "the setup failure looks transient (a timeout, the network, the disk), so no repair job is planned; the retry decides".into(),
+            ..Default::default()
+        };
+    }
+    // A checkout behind its upstream is a sync waiting, not a setup to repair:
+    // the recipe may already describe upstream's tree (an owner's rename, set
+    // by hand before the sync came through), and a worker sent to "fix" it at
+    // the stale head would write the old paths back. The sync lands first; its
+    // own setup failure plans the repair with upstream's tip as the base.
+    if !f.sync && checkout_behind_upstream(s, project) {
+        return Planned {
+            note: format!(
+                "the checkout is behind its upstream, so no repair job is planned: the sync of {} lands first and plans one if its own setup fails",
+                upstream_name(s)
+            ),
             ..Default::default()
         };
     }
@@ -351,8 +389,8 @@ fn must_one_line(rc: &Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{TEST_NOW, count, new_repo, new_store};
-    use crate::test_helpers_daemon::set_setting;
+    use crate::test_helpers::{TEST_NOW, count, new_repo, new_store, run};
+    use crate::test_helpers_daemon::{push_fixture, set_setting};
     use crate::util::must_one;
 
     fn failure(base: &str) -> SetupFailure {
@@ -364,12 +402,73 @@ mod tests {
             tail: "MSBUILD : error MSB1009: Project file does not exist. Switch: src/backend/Amistio.sln".into(),
             executor: "local".into(),
             seen: "landing",
+            sync: false,
         }
     }
 
     fn project(s: &pulse_store::Store) -> Row {
         let (p, _) = new_repo(s);
         p
+    }
+
+    /// The owner pushed a rename and the recipe was corrected to it before
+    /// the sync came through: a clone of the stale head fails the setup, but
+    /// the fix is the sync, not a worker writing the old paths back. The
+    /// sync's own failure, whose base is upstream's tip, still plans one.
+    #[test]
+    fn a_checkout_behind_its_upstream_waits_for_the_sync() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (p, repo, bare) = push_fixture(&s);
+        let other = tempfile::tempdir().expect("other").keep().join("other");
+        let other = other.display().to_string();
+        run(".", &["git", "clone", "-q", &bare, &other]);
+        std::fs::write(std::path::Path::new(&other).join("renamed.txt"), "x\n").unwrap();
+        run(&other, &["git", "add", "-A"]);
+        run(&other, &["git", "commit", "-q", "-m", "rename upstream"]);
+        run(&other, &["git", "push", "-q", "origin", "main"]);
+        run(&repo, &["git", "fetch", "-q", "origin"]);
+        let head = run(&repo, &["git", "rev-parse", "main"]).trim().to_string();
+
+        let seen_in_run = SetupFailure {
+            seen: "run",
+            ..failure(&head)
+        };
+        let planned = plan_repair(&s, &p, &seen_in_run, "daemon", TEST_NOW);
+        assert!(planned.job.is_empty(), "{planned:?}");
+        assert!(
+            planned.note.contains("behind its upstream")
+                && planned.note.contains("sync of origin/main lands first"),
+            "{planned:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE source = 'setup:proj'",
+                &[]
+            ),
+            0
+        );
+        let upstream = run(&repo, &["git", "rev-parse", "origin/main"])
+            .trim()
+            .to_string();
+        let sync = SetupFailure {
+            sync: true,
+            ..failure(&upstream)
+        };
+        let planned = plan_repair(&s, &p, &sync, "daemon", TEST_NOW);
+        assert!(planned.created, "{planned:?}");
+        let job = must_one(
+            &s.conn().unwrap(),
+            "SELECT brief FROM jobs WHERE source = 'setup:proj'",
+            &[],
+        );
+        assert!(
+            job.str("brief")
+                .contains(&crate::recipe::short(&upstream, 12)),
+            "{}",
+            job.str("brief")
+        );
     }
 
     #[test]

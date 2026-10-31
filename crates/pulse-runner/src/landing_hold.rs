@@ -1023,7 +1023,7 @@ pub(crate) fn sync_upstream(
 /// pass is owed even with nothing to push, so a merge made on the forge
 /// reaches the brain within one landing pass instead of waiting for a local
 /// landing.
-fn upstream_ahead_of_default(root: &str, def: &str, s: &pulse_store::Store) -> bool {
+pub(crate) fn upstream_ahead_of_default(root: &str, def: &str, s: &pulse_store::Store) -> bool {
     let upstream = if crate::landing_pr::pr_mode(s) {
         "origin/pr"
     } else {
