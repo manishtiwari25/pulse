@@ -83,7 +83,8 @@ function jobWhen(j: TaskJob): [string, string | undefined] {
 
 function JobRow({ j, t, working }: { j: TaskJob; t: Task; working?: ReturnType<typeof taskProgress>["working"][number] }) {
   const [label, at] = jobWhen(j);
-  const tip = ["Job " + j.id, j.kind ? "kind: " + j.kind : "", j.branch ? "branch " + j.branch : "", j.executor ? "machine " + j.executor : ""].filter(Boolean).join(", ");
+  const needs = (j.needs ?? "").split(",").filter(Boolean).join(", ");
+  const tip = ["Job " + j.id, j.kind ? "kind: " + j.kind : "", j.branch ? "branch " + j.branch : "", j.executor ? "machine " + j.executor : "", needs ? "needs " + needs : ""].filter(Boolean).join(", ");
   return (
     <li className="grid min-w-0 gap-1.5 px-4 py-3" title={tip}>
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
@@ -115,6 +116,7 @@ function JobRow({ j, t, working }: { j: TaskJob; t: Task; working?: ReturnType<t
               See the run
             </Link>
           ) : null}
+          {needs && !j.executor ? <span title="Only a machine that offers all of these takes this job">{(j.status === "blocked" ? "Waits for a machine with " : "Needs a machine with ") + needs}</span> : null}
         </p>
       )}
       <Disclosure summary="Technical details" contentClassName="mt-1.5">
@@ -125,6 +127,7 @@ function JobRow({ j, t, working }: { j: TaskJob; t: Task; working?: ReturnType<t
             ...(j.kind ? [["Kind", <Mono key="kind">{j.kind}</Mono>] as [string, React.ReactNode]] : []),
             ...(j.branch ? [["Branch", <Mono key="branch">{j.branch}</Mono>] as [string, React.ReactNode]] : []),
             ...(j.executor ? [["Machine", <Mono key="machine">{j.executor}</Mono>] as [string, React.ReactNode]] : []),
+            ...(needs ? [["Needs", <Mono key="needs">{needs}</Mono>] as [string, React.ReactNode]] : []),
           ]}
         />
       </Disclosure>

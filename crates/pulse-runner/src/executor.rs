@@ -291,11 +291,24 @@ pub(crate) fn merge_found_labels(stored: &str, found: &str) -> String {
 /// labels. Hands paired before their probe reported an OS are Linux, the
 /// only platform `pulse pair` takes.
 pub(crate) fn caps(r: &Row) -> BTreeSet<String> {
-    let mut os = r.str("os");
-    if os.is_empty() && r.str("kind") == "ssh" {
-        os = "linux".to_string();
-    }
-    pulse_store::needs::caps_of(&os, &r.str("arch"), &r.str("labels"))
+    machine_caps(
+        &r.str("kind"),
+        &r.str("os"),
+        &r.str("arch"),
+        &r.str("labels"),
+    )
+}
+
+/// The words a machine offers from its stored columns, for the hub as well
+/// as the lease: a hand paired before its probe recorded an OS counts as
+/// Linux, the only system `pulse pair` accepts.
+pub fn machine_caps(kind: &str, os: &str, arch: &str, labels: &str) -> BTreeSet<String> {
+    let os = if os.is_empty() && kind == "ssh" {
+        "linux"
+    } else {
+        os
+    };
+    pulse_store::needs::caps_of(os, arch, labels)
 }
 
 /// Whether the machine takes only the jobs that need something it offers.
@@ -319,12 +332,7 @@ pub(crate) fn caps_text(r: &Row) -> String {
 /// architecture first, then its labels, then `(reserved)`; `-` when nothing
 /// is known. The hub's Machines page and `pulse executor list` share it.
 pub fn machine_offers(kind: &str, os: &str, arch: &str, labels: &str, reserved: bool) -> String {
-    let mut r = Row::new();
-    r.insert("kind", json!(kind));
-    r.insert("os", json!(os));
-    r.insert("arch", json!(arch));
-    r.insert("labels", json!(labels));
-    let mut words: Vec<String> = caps(&r).into_iter().collect();
+    let mut words: Vec<String> = machine_caps(kind, os, arch, labels).into_iter().collect();
     // OS and architecture first, the labels after them.
     words.sort_by_key(|w| {
         (

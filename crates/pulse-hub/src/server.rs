@@ -222,6 +222,30 @@ impl Handler {
                     );
                     return;
                 }
+                // A build's own files are named by their content, so one that
+                // is missing belongs to an older build: a tab opened before
+                // PULSE updated itself. A real 404 lets the browser drop the
+                // stale page and load the current one; the page fallback
+                // below would hand it HTML in place of a script. A folder
+                // under `_next/` is a typed address, and keeps the page.
+                let stale_asset = name.starts_with("_next/")
+                    && !r.path().ends_with('/')
+                    && name
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|file| file.contains('.'));
+                if stale_asset {
+                    w.header_mut()
+                        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                    write_error(
+                        w,
+                        404,
+                        "Not part of this build".into(),
+                        format!("{name} is not in the console PULSE serves now."),
+                        "Reload the page.".into(),
+                    );
+                    return;
+                }
                 match self
                     .ui
                     .read_file("404.html")
@@ -747,6 +771,24 @@ mod tests {
         h.ui = map_fs(&[("index.html", b"fallback")]);
         let (status, text, _) = handler_response(h.clone_for_test(), "GET", "/absent", "");
         assert_eq!((status, text.as_str()), (200, "fallback"));
+        // A chunk of an older build is a real 404, never the HTML fallback:
+        // a tab opened before PULSE updated itself must not run a page as
+        // a script, and must not cache the answer as if it were one.
+        let (status, text, headers) = handler_response(
+            h.clone_for_test(),
+            "GET",
+            "/_next/static/chunks/old-build.js",
+            "",
+        );
+        assert_eq!(status, 404, "stale chunk: {text}");
+        assert!(text.contains("Reload the page"), "{text}");
+        assert_eq!(headers["cache-control"].to_str().unwrap(), "no-store");
+        assert!(
+            headers["content-type"]
+                .to_str()
+                .unwrap()
+                .contains("application/json")
+        );
         for path in ["/api/v1/unknown", "/api/v2/tasks", "/one/api/v2/posts"] {
             let (status, text, headers) = handler_response(h.clone_for_test(), "GET", path, "");
             assert_eq!(status, 404, "API fell through to HTML: {path} {text}");

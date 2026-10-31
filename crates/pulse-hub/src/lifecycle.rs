@@ -38,6 +38,10 @@ impl Handler {
             }
             return true;
         }
+        if parts.get(2).is_some_and(|p| p == "needs") {
+            self.addition_project_needs(w, r, parts[1].clone());
+            return true;
+        }
         if !crate::addition_method(w, r, vec!["POST".into()])
             || !self.addition_available(w, r, vec!["projects".into()])
         {
@@ -162,6 +166,135 @@ impl Handler {
             ])),
         );
     }
+    // GET /api/v1/projects/<slug>/needs: what kind of machine the project's
+    // jobs must run on (needs.rs) and which machines can take them right
+    // now. POST {"needs": "macos xcode"} sets it the way `pulse init --needs`
+    // and the manifest's `needs:` do: the jobs already queued follow, the
+    // ones running keep their machine; an empty string or `-` clears it.
+    pub(crate) fn addition_project_needs(
+        &self,
+        w: &mut crate::httpx::ResponseWriter,
+        r: &crate::httpx::Request,
+        slug: String,
+    ) {
+        if !crate::addition_method(w, r, vec!["GET".into(), "POST".into()])
+            || !self.addition_available(w, r, vec!["projects".into()])
+        {
+            return;
+        }
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        let mut was = String::new();
+        if r.method == "POST" {
+            let (payload, ok) = crate::server::read_payload(w, r);
+            if !ok {
+                return;
+            }
+            let needs = payload
+                .get("needs")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let needs = if needs.is_empty() {
+                "-".to_string()
+            } else {
+                needs
+            };
+            let _lock = crate::additions::ADDITION_WRITES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            was = match store.project(&slug) {
+                Ok(Some(p)) => p.needs,
+                _ => String::new(),
+            };
+            if let Err(err) =
+                pulse_board::set_project_needs(store, &slug, &needs, pulse_store::HUMAN_AGENT)
+            {
+                crate::addition_failure(w, err.to_string());
+                return;
+            }
+        }
+        match self.project_needs(store, &slug, r) {
+            Ok(Some(mut body)) => {
+                if r.method == "POST" {
+                    body.insert("was".into(), json!(was));
+                }
+                crate::server::write_json(w, 200, json!(body));
+            }
+            Ok(None) => crate::addition_failure(
+                w,
+                pulse_cli::errorf(
+                    2,
+                    &format!("No project {slug}"),
+                    "only a registered project has needs",
+                    "pulse projects",
+                )
+                .to_string(),
+            ),
+            Err(err) => crate::addition_failure(w, err.to_string()),
+        }
+    }
+    // The needs payload: the project's words, every machine with what it
+    // offers and whether it fits, the names of the active ones that do, and
+    // the words the owner can pick from (the systems and chips needs.rs
+    // knows plus every label some machine offers).
+    fn project_needs(
+        &self,
+        store: &pulse_store::Store,
+        slug: &str,
+        r: &crate::httpx::Request,
+    ) -> Result<Option<JsonMap>> {
+        let Some(project) = store.project(slug)? else {
+            return Ok(None);
+        };
+        let words = pulse_store::needs::stored(&project.needs);
+        let needs = pulse_store::needs::join(&words);
+        let mut known: Vec<String> = pulse_store::needs::OS_WORDS
+            .iter()
+            .chain(pulse_store::needs::ARCH_WORDS.iter())
+            .map(|w| w.to_string())
+            .collect();
+        let mut machines = Vec::new();
+        let mut fits = Vec::new();
+        for row in self.executors(r)? {
+            let text = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let caps = pulse_runner::executor::machine_caps(
+                &text("kind"),
+                &text("os"),
+                &text("arch"),
+                &text("labels"),
+            );
+            for w in &caps {
+                if !known.contains(w) {
+                    known.push(w.clone());
+                }
+            }
+            let missing = pulse_store::needs::missing(&needs, &caps);
+            let active = text("status") == "active";
+            let name = text("name");
+            if active && missing.is_empty() {
+                fits.push(name.clone());
+            }
+            machines.push(json!(map_from_pairs(vec![
+                ("name", json!(name)),
+                ("kind", json!(text("kind"))),
+                ("status", json!(text("status"))),
+                ("offers", json!(text("offers"))),
+                ("fits", json!(active && missing.is_empty())),
+                ("missing", json!(missing)),
+            ])));
+        }
+        Ok(Some(map_from_pairs(vec![
+            ("slug", json!(project.slug)),
+            ("needs", json!(needs)),
+            ("words", json!(words)),
+            ("fits", json!(fits)),
+            ("machines", json!(machines)),
+            ("known", json!(known)),
+        ])))
+    }
     pub(crate) fn addition_project_list(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -196,6 +329,7 @@ impl Handler {
                                     "brain": p.brain, "status": p.status, "verify_cmd": p.verify_cmd,
                                     "default_branch": p.default_branch, "added_at": p.added_at,
                                     "added_by": p.added_by, "last_seen": p.last_seen,
+                                    "needs": p.needs,
                                     "present": self.present_cached(&p),
                                     "goal_source": goal.source, "goal_preview": goal.preview,
                                 });
@@ -405,7 +539,7 @@ pub(crate) fn lifecycle_route(parts: Vec<String>) -> bool {
         1 => true,
         3 => matches!(
             parts[2].as_str(),
-            "remove" | "restore" | "rename" | "move" | "goal"
+            "remove" | "restore" | "rename" | "move" | "goal" | "needs"
         ),
         4 => parts[2] == "goal" && parts[3] == "review",
         _ => false,
@@ -703,6 +837,132 @@ mod tests {
             http::additions_request(h, "GET", &format!("/api/v1/projects/{slug}/rename"), "");
         assert_eq!(status, 405);
         assert_eq!(s.project(&slug).unwrap().unwrap().name, "Distillery (prod)");
+    }
+
+    /// The console reads and sets what kind of machine a project's jobs
+    /// need, the way `pulse init --needs` and the manifest do: the answer
+    /// names the machines that can take them, the jobs already queued
+    /// follow, a running one keeps its machine, a word that is not a word
+    /// is refused, and an empty string clears it.
+    #[test]
+    fn a_project_says_what_its_jobs_need_from_the_console() {
+        let _serial = crate::test_helpers::serial();
+        let (s, slug) = starter_store();
+        let h = http::handler(&s);
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "INSERT INTO executors (name, address, projects, status, created_at, os, labels) VALUES ('vm-one', 'one@10.0.0.9', '*', 'active', ?, 'linux', 'gpu')",
+            [s.now()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO executors (name, address, projects, status, created_at, os, labels) VALUES ('vm-two', 'two@10.0.0.9', '*', 'held', ?, 'linux', 'gpu')",
+            [s.now()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES ('job-q', ?, 'task', 'Queued', 'queued', ?)",
+            rusqlite::params![slug, s.now()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, status, created_at, lease_agent) VALUES ('job-l', ?, 'task', 'Running', 'leased', ?, 'bob')",
+            rusqlite::params![slug, s.now()],
+        )
+        .unwrap();
+        drop(conn);
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect()
+        };
+
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "GET",
+            &format!("/api/v1/projects/{slug}/needs"),
+            "",
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["needs"], "");
+        assert_eq!(result["words"], json!([]));
+        let fits = names(&result["fits"]);
+        assert!(fits.contains(&"local".to_string()), "{fits:?}");
+        assert!(fits.contains(&"vm-one".to_string()), "{fits:?}");
+        assert!(!fits.contains(&"vm-two".to_string()), "held: {fits:?}");
+        let known = names(&result["known"]);
+        for w in ["macos", "linux", "arm64", "gpu"] {
+            assert!(known.contains(&w.to_string()), "{known:?}");
+        }
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        assert_eq!(status, 200);
+        assert_eq!(result["projects"][0]["needs"], "");
+
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/needs"),
+            r#"{"needs":"gpu linux"}"#,
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["was"], "");
+        let mut words = names(&result["words"]);
+        words.sort();
+        assert_eq!(words, ["gpu", "linux"]);
+        assert_eq!(names(&result["fits"]), ["vm-one"]);
+        let local = result["machines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "local")
+            .expect("local row");
+        assert_eq!(local["fits"], false);
+        assert!(
+            names(&local["missing"]).contains(&"gpu".to_string()),
+            "{local:?}"
+        );
+        let stored = s.project(&slug).unwrap().unwrap().needs;
+        assert_eq!(stored, result["needs"].as_str().unwrap());
+        let conn = s.conn().unwrap();
+        let job_needs = |id: &str| -> String {
+            conn.query_row("SELECT needs FROM jobs WHERE id = ?", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(job_needs("job-q"), stored, "queued work follows");
+        assert_eq!(job_needs("job-l"), "", "running work keeps its machine");
+        drop(conn);
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
+        assert_eq!(status, 200);
+        assert_eq!(result["projects"][0]["needs"], stored);
+
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/needs"),
+            r#"{"needs":"x/code"}"#,
+        );
+        assert_ne!(status, 200, "{result:?}");
+        assert_eq!(s.project(&slug).unwrap().unwrap().needs, stored);
+
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/projects/{slug}/needs"),
+            r#"{"needs":"  "}"#,
+        );
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["needs"], "");
+        assert_eq!(result["was"], stored);
+        assert_eq!(s.project(&slug).unwrap().unwrap().needs, "");
+
+        let (status, _) =
+            http::additions_request(h.clone(), "GET", "/api/v1/projects/nobody/needs", "");
+        assert_ne!(status, 200);
+        let (status, _) =
+            http::additions_request(h, "DELETE", &format!("/api/v1/projects/{slug}/needs"), "");
+        assert_eq!(status, 405);
     }
 
     /// A project whose checkout the owner moved is pointed at the new folder

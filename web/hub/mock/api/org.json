@@ -137,7 +137,8 @@
       "suggestions_needing_votes": 0,
       "suggestions_plannable": 0,
       "threads_open": 2,
-      "owner_questions": 2
+      "owner_questions": 2,
+      "needs": "macos,xcode"
     },
     {
       "active_claims": [],
@@ -209,7 +210,8 @@
       "suggestions_needing_votes": 1,
       "suggestions_plannable": 0,
       "threads_open": 2,
-      "owner_questions": 0
+      "owner_questions": 0,
+      "needs": ""
     },
     {
       "active_claims": [],
@@ -256,7 +258,8 @@
       "suggestions_needing_votes": 0,
       "suggestions_plannable": 2,
       "threads_open": 2,
-      "owner_questions": 0
+      "owner_questions": 0,
+      "needs": ""
     }
   ],
   "proposals": [

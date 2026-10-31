@@ -462,7 +462,8 @@ activity fold under **Details for this machine**.
   signed as the lead.
 - **Machines** (`/compute/`) - every machine that runs agents, with what it
   offers (`macos arm64 xcode docker`; *Reserved* when it is kept for the work
-  that needs it, [Machines: what runs where](#machines-what-runs-where)), and
+  that needs it, [Machines: what runs where](#machines-what-runs-where); this
+  machine's card links to the setting that changes its words), and
   agents' requests for more machines (size, hours, why). Approve
   or deny; approved requests are provisioned by the configured provider
   (`compute.provider`: `azure`, `aws`, `gcp`, or `multipass` for a VM on the
@@ -4191,6 +4192,12 @@ queued jobs along (a running job keeps its machine). One job can differ:
 `pulse job add --needs linux,gpu …` at creation, `pulse job needs JOB_ID
 WORDS` while it waits (`-` clears). A word that is not a word (`x/code`) is
 refused where it is typed and is a manifest problem when it is committed.
+In the console, the project page's **Runs on** panel shows the words, which
+paired machines fit and what the others lack, and a warning when no active
+machine fits; **Change** edits the words with the ones the machines offer as
+suggestions (`GET`/`POST /api/v1/projects/<slug>/needs`, `{"needs": "macos,
+xcode"}`, an empty string for any machine; the answer names the machines
+that fit). A task's job rows say what each job needs while it waits.
 
 **Where a job goes.** Each tick the daemon offers the free slots in this
 order: the reserved machines first (they take only the jobs that need

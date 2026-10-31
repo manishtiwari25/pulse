@@ -217,6 +217,11 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
           {projects ? <span className="anywhere">{"Only " + projects}</span> : null}
           {offers && offers !== "-" ? <span className="anywhere" title="What this machine offers; a project asks for these words in its .pulse/pulse.yaml needs:">{"Offers " + offers.split(" ").join(", ")}</span> : null}
           {reserved ? <span className="text-foreground/80" title="Takes only the jobs that need something it offers">Reserved for the work that needs it</span> : null}
+          {e.kind === "local" ? (
+            <Link href={hrefs.settings("daemon")} className="underline decoration-foreground/25 underline-offset-4 hover:decoration-foreground/60" title="Settings → This machine: what it offers, and whether it is reserved for the work that needs it">
+              Change what it offers
+            </Link>
+          ) : null}
         </div>
       </div>
       {action ? <span className="-my-1 -mr-1 shrink-0">{action}</span> : null}

@@ -23,6 +23,7 @@ import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
 import { ProjectGoalPanel } from "@/components/project/goal";
 import { LeadsPanel } from "@/components/project/leads";
+import { MachinesPanel } from "@/components/project/machines";
 import { ToolkitPanel } from "@/components/project/toolkit";
 import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
@@ -190,6 +191,7 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
             </div>
             <aside className="grid min-w-0 content-start gap-4" aria-label={commons ? "About the shared board" : "About this project"}>
               <RepositoryPanel q={info} commons={commons} />
+              {commons ? null : <MachinesPanel key={"machines-" + slug} slug={slug} canDecide={canDecide} />}
               <OverviewStats o={o} slug={slug} commons={commons} />
               <AgentsPanel agents={o.agents} />
               {tl.data ? <ActivityChart tl={tl.data} bys={["total"]} height={140} title="Posts per day" /> : null}

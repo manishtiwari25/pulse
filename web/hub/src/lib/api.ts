@@ -375,6 +375,9 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   // goal - and a hub that predates the field sends neither.
   goal_source?: GoalSource;
   goal_preview?: string; // the first line of the goal, at most ~120 characters; "" when nothing is stored
+  // What kind of machine this project's jobs need, comma-separated words
+  // such as "macos,xcode"; "" means any machine. Project rows only.
+  needs?: string;
   last_post: PostRef | null;
   active_claims: Claim[];
   present: boolean;
@@ -552,6 +555,32 @@ export interface RegisteredProject extends Partial<EvolveGate> {
   // ADR-040: the same goal fields the org row carries (see ProjectCardData).
   goal_source?: GoalSource;
   goal_preview?: string;
+  // What kind of machine the project's jobs need ("macos,xcode"); "" is any.
+  needs?: string;
+}
+
+// One machine's answer to a project's needs: `fits` when it offers every
+// word, else `missing` lists the words it lacks.
+export interface ProjectNeedsMachine {
+  name: string;
+  kind: string;
+  status: string;
+  offers: string;
+  fits: boolean;
+  missing: string[];
+}
+
+// GET/POST /api/v1/projects/{slug}/needs: what the project's jobs need and
+// which paired machines can take them. `known` lists every word a machine
+// here offers plus the OS and architecture words, for suggestions.
+export interface ProjectNeeds {
+  slug: string;
+  needs: string;
+  words: string[];
+  fits: string[];
+  machines: ProjectNeedsMachine[];
+  known: string[];
+  was?: string;
 }
 
 export interface ProjectsPayload {
@@ -1968,6 +1997,7 @@ export interface TaskJob {
   leased_at?: string;
   finished_at?: string;
   harness_session?: string;
+  needs?: string; // the machine words this job waited for, "" when any machine would do
 }
 
 // An answer the owner can pick under an agent's message instead of writing:
@@ -2648,6 +2678,9 @@ export const writes = {
   removeProject: (slug: string, dryRun: boolean) => post<RemovePreview>("projects/" + enc(slug) + "/remove", { dry_run: dryRun }),
   restoreProject: (slug: string) => post<InitResult>("projects/" + enc(slug) + "/restore", {}),
   renameProject: (slug: string, name: string) => post<{ slug: string; name: string; was: string }>("projects/" + enc(slug) + "/rename", { name }),
+  // Sets what kind of machine the project's jobs need; "" means any machine.
+  // Queued jobs follow, running ones keep their machine.
+  setProjectNeeds: (slug: string, needs: string) => post<ProjectNeeds>("projects/" + enc(slug) + "/needs", { needs }),
   // `pulse move SLUG PATH [--force]`: the project follows its checkout to a new
   // folder; force adopts a checkout that tracks another remote.
   moveProject: (slug: string, path: string, force = false) => post<MovedProject>("projects/" + enc(slug) + "/move", force ? { path, force: true } : { path }),
