@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { CheckCircle2Icon, ServerIcon } from "lucide-react";
+import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { ExecutorRow, MachinePanel } from "@/components/compute/machine";
 import { HygienePanel } from "@/components/pulse/hygiene";
 import { CapsPanel, ComputeInboxCard, ComputeRequestCard } from "@/components/compute/compute";
@@ -44,6 +45,10 @@ export default function ComputePage() {
   // running / free counts (and the local machine), so prefer it once loaded.
   const executors: Executor[] = runner.data?.executors?.length ? runner.data.executors : (c.executors ?? []).map((e) => ({ ...e, running: e.running ?? 0, free: e.free ?? 0 }));
   const active = executors.filter((e) => e.status === "active").length;
+  const pairings = c.pairings ?? [];
+  // A finished pairing's machine is in the executors list already; the row
+  // under it is the report, kept until dismissed.
+  const machinesNote = executors.length ? plural(active, "machine") + " taking work right now." : "Every machine your agents can use.";
   return (
     <>
       <PageTitle icon={ServerIcon} sub={SUB}>
@@ -92,18 +97,21 @@ export default function ComputePage() {
 
           <div className="grid min-w-0 gap-10 lg:gap-6">
             <section aria-label="All machines" className="min-w-0">
-              <SectionHeading count={executors.length || undefined} note={executors.length ? plural(active, "machine") + " taking work right now." : "Every machine your agents can use."}>
+              <SectionHeading count={executors.length || undefined} note={machinesNote} action={<AddMachineButton caps={c.caps} />}>
                 All machines
               </SectionHeading>
-              {executors.length ? (
+              {executors.length || pairings.length ? (
                 <ul className="grid gap-2">
+                  {pairings.map((p) => (
+                    <PairingRow key={"pairing:" + p.name + ":" + p.started} p={p} />
+                  ))}
                   {executors.map((e) => (
                     // The local executor is this machine and a removed row is already gone: neither gets Remove.
                     <ExecutorRow key={e.name} e={e} action={e.name !== "local" && e.status !== "removed" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
                   ))}
                 </ul>
               ) : (
-                <EmptyState>No machine is set up yet. Approve a request or add a machine; agents start using it after its first check-in.</EmptyState>
+                <EmptyState>No machine is set up yet. Add one above - PULSE sets it up over ssh - or approve an agent&apos;s request; it starts taking work after its first check passes.</EmptyState>
               )}
             </section>
 

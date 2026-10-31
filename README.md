@@ -485,7 +485,14 @@ activity fold under **Details for this machine**.
   machine was ready gives its hours back to the day's
   `compute.max_hours_per_day`: nothing was bought, so the retry that fixes
   the cause is not held by the attempt that found it. Each executor row offers the same
-  preview-then-remove as `pulse remove executor`.
+  preview-then-remove as `pulse remove executor`. **Add machine** on the same
+  page takes a machine in without the terminal, three ways: *Pair* does what
+  `pulse pair` does from an admin account on a Linux machine - the console
+  answers at once, the pairing runs on the hub, and its report sits above the
+  machines until you dismiss it; *Register* adds a machine you prepared by
+  hand (`pulse executor add`, with a probe when asked); *Ask the cloud* makes
+  a compute request in your name, approved on the spot
+  ([Adding a machine from the console](#adding-a-machine-from-the-console)).
 - **Settings** - runner caps, board rules, amendment quorum, the models
   the runs get (`worker_model` for the work that changes code - task, improve
   and experiment jobs; `light_model` for the rest - the lead, answers,
@@ -4227,7 +4234,8 @@ this count as Linux until their next probe, the only platform `pulse pair`
 takes), and you label it with `pulse executor label NAME gpu,android`
 (replaces your words, keeps the found ones) or `pulse executor label NAME
 +cuda,-gpu` (adds and removes); `pulse executor add NAME --labels a,b`
-labels it from the start. `pulse executor list` shows every machine's
+labels it from the start, and so does the console's **Add machine** dialog
+(its *Labels* field). `pulse executor list` shows every machine's
 `offers …` line, and the hub's Machines page the same.
 
 **What a job needs** comes from its project by default: `pulse init PATH
@@ -4342,6 +4350,46 @@ A run that applied records one `pair.applied` event with the host, the
 executor and the probe outcome (`active`, `drained` or `undone`); refusals
 and failed applies record nothing. `pulse remove executor NAME` is the undo
 for a paired hand.
+
+#### Adding a machine from the console
+
+The Machines page's **Add machine** button is the same three commands behind
+one route, `POST /api/v1/compute/executors`, told apart by `mode`:
+
+- `pair` (the default; `{"mode": "pair", "name": "gpu-box", "admin":
+  "ubuntu@10.0.0.9", "workdir": "/srv/pulse", "workers": 1, "projects": "*",
+  "labels": "gpu", "dry_run": false}`) runs `pulse pair` on the hub, from
+  the account that runs it, with the same checks and the same undo. The name,
+  address, workdir, worker count and labels are checked on the request, so a
+  bad one answers 400 and starts nothing; a name that is already an executor,
+  or already pairing, answers 409. Otherwise the answer is 202 with the
+  pairing, and `GET /api/v1/compute` lists it under `pairings` (newest first:
+  `name`, `admin`, `by`, `started`, `finished`, `status` `running`/`ok`/
+  `failed`, `ok`, `dry_run`, `lines` - the report as it grows - and
+  `changed`, the local ssh files it touched). The console shows a finished
+  pairing's report above the machines until
+  `POST /api/v1/compute/pairings/<name>/dismiss` (409 while it runs); a dry
+  run leaves the remote and undo scripts in `lines` and changes nothing.
+- `register` (`{"mode": "register", "name": "mac-mini", "ssh":
+  "pulse@mac-mini", "workdir": "/srv/pulse", "workers": 2, "projects":
+  "ios-app", "labels": "macos arm64 xcode", "probe": true}`) is `pulse
+  executor add` for a machine someone prepared by hand - it answers 201 with
+  the executor row, `added` (its first `offers …` line) and `probe`
+  (`{ok, status, note, line}` when `probe` was true, `null` otherwise). The
+  machine stays `drained` until a probe you ask for passes - the dialog's
+  probe or `pulse executor probe NAME` after fixing what its note says; the
+  runner's own probes wake only a hand that went unreachable.
+- `request` (`{"mode": "request", "project": "ml", "size": "small",
+  "hours": 4, "reason": "a GPU for the evaluation", "approve": true}`) is
+  `pulse compute request` in your name: 201 with the request row, approved
+  at once unless `approve` is false, provisioned by `compute.provider` inside
+  the caps like any agent's request (the dialog says so when no provider is
+  set and points at the setting). `size` falls back to the provider's
+  configured size.
+
+Each way records what its command would: `executor.add`, `executor.probe`,
+`pair.applied`, `compute.requested`. The hub serving one project
+(`pulse hub --project`) takes requests for that project only.
 
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) still reads
 the machine and prints the apply, undo and commit scripts and the local

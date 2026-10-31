@@ -538,6 +538,14 @@ impl Handler {
             self.addition_executor_remove(w, r, parts[2].clone());
             return;
         }
+        if parts.len() == 2 && parts[1] == "executors" {
+            self.addition_machine_add(w, r);
+            return;
+        }
+        if parts.len() == 4 && parts[1] == "pairings" && parts[3] == "dismiss" {
+            self.addition_pairing_dismiss(w, r, parts[2].clone());
+            return;
+        }
         if parts.len() != 1 && (parts.len() != 3 || (parts[2] != "approve" && parts[2] != "deny")) {
             addition_not_found(w);
             return;
@@ -587,7 +595,7 @@ impl Handler {
         write_json(
             w,
             200,
-            json!({"requests": requests, "executors": executors, "caps": caps}),
+            json!({"requests": requests, "executors": executors, "caps": caps, "pairings": self.pairings_json()}),
         );
     }
 

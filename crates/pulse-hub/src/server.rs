@@ -39,6 +39,10 @@ pub struct Handler {
     pub(crate) logins: crate::mcp::Logins,
     /// The conversations' agents, built on first use.
     pub(crate) chats: crate::chat::Chats,
+    /// Machines being paired from the console, and their reports until dismissed.
+    pub(crate) pairings: crate::machines::Pairings,
+    /// How a pairing runs; tests replace the ssh-bound real one.
+    pub(crate) pairer: crate::machines::Pairer,
 }
 
 /// Where the console's files are served from: the embedded static export, or
@@ -321,6 +325,8 @@ pub fn new_handler(
         org_cache_ttl: Duration::from_secs(60),
         logins: crate::mcp::Logins::default(),
         chats: crate::chat::Chats::default(),
+        pairings: crate::machines::Pairings::default(),
+        pairer: crate::machines::real_pairer(),
     }
 }
 
@@ -553,6 +559,8 @@ impl Handler {
             org_cache_ttl: self.org_cache_ttl,
             logins: self.logins.clone(),
             chats: self.chats.clone(),
+            pairings: self.pairings.clone(),
+            pairer: self.pairer.clone(),
         }
     }
 }
