@@ -401,14 +401,133 @@ pub(crate) fn split_trailer(s: &str) -> Vec<String> {
         .map(ToOwned::to_owned)
         .collect()
 }
+/// Probe the drained hands that were never active once their `next_probe_at` is empty or due,
+/// as the daemon. A pass activates them (`NEVER_ACTIVE_SQL`); a failure waits the daemon interval
+/// or the first `LOGIN_BACKOFF_MINS` step, whichever is longer. Returns `[name, note]` per hand
+/// that became active.
 pub(crate) fn reprobe_due(s: &pulse_store::Store, interval: i32, now: &str) -> Vec<[String; 2]> {
-    let _ = (s, interval, now);
-    Vec::new()
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let names: Vec<String> = conn
+        .prepare(&format!(
+            "SELECT name FROM executors WHERE kind = 'ssh' AND {} AND (next_probe_at = '' OR next_probe_at <= ?) ORDER BY name",
+            crate::executor::NEVER_ACTIVE_SQL
+        ))
+        .and_then(|mut q| {
+            q.query_map([now], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    let wait = (interval / 60).max(crate::executor::LOGIN_BACKOFF_MINS[0]);
+    let mut back = Vec::new();
+    for name in names {
+        let (ok, note) = crate::executor::probe_executor(s, &name, "daemon", now)
+            .unwrap_or_else(|e| (false, e.to_string()));
+        let active = crate::executor::executor_row(s, &name).str("status") == "active";
+        if ok && active {
+            back.push([name, format!("first probe passed, now active: {note}")]);
+        } else if crate::executor::executor_row(s, &name).str("status") == "drained" {
+            let _ = conn.execute(
+                "UPDATE executors SET next_probe_at = ? WHERE name = ?",
+                [crate::util::plus_minutes(now, wait), name],
+            );
+        }
+    }
+    back
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn passing_probe(
+        _ctx: &pulse_bus::CancellationToken,
+        _argv: &[String],
+        _stdin: &[u8],
+        _timeout: std::time::Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
+        Ok((
+            0,
+            "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=20480".into(),
+            String::new(),
+        ))
+    }
+
+    fn registered_hand(s: &pulse_store::Store) {
+        crate::executor::add_executor(
+            s,
+            crate::test_helpers::TEST_NOW,
+            "vm-new",
+            "pulse@new",
+            "/srv/pulse",
+            1,
+            "*",
+            pulse_store::HUMAN_AGENT,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn daemon_first_probe_activates_a_hand_that_was_never_active() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = crate::test_helpers::new_store();
+        registered_hand(&s);
+        assert_eq!(
+            crate::executor::executor_row(&s, "vm-new").str("status"),
+            "drained"
+        );
+        let old = crate::executor::set_run_ssh(passing_probe);
+        let back = reprobe_due(&s, 30, crate::test_helpers::TEST_NOW);
+        crate::executor::restore_run_ssh(old);
+        assert_eq!(back.len(), 1, "{back:?}");
+        assert_eq!(back[0][0], "vm-new");
+        assert_eq!(
+            crate::executor::executor_row(&s, "vm-new").str("status"),
+            "active"
+        );
+    }
+
+    #[test]
+    fn daemon_probe_keeps_a_hand_drained_after_errors() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = crate::test_helpers::new_store();
+        registered_hand(&s);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET status = 'active' WHERE name = 'vm-new'",
+                [],
+            )
+            .unwrap();
+        crate::executor::note_executor_run(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "vm-new",
+            "error",
+            "disk full",
+            false,
+            true,
+        );
+        assert_eq!(
+            crate::executor::executor_row(&s, "vm-new").str("status"),
+            "drained"
+        );
+        let old = crate::executor::set_run_ssh(passing_probe);
+        let back = reprobe_due(&s, 30, crate::test_helpers::TEST_NOW);
+        let (ok, _) =
+            crate::executor::probe_executor(&s, "vm-new", "daemon", crate::test_helpers::TEST_NOW)
+                .unwrap();
+        crate::executor::restore_run_ssh(old);
+        assert!(back.is_empty(), "{back:?}");
+        assert!(ok);
+        assert_eq!(
+            crate::executor::executor_row(&s, "vm-new").str("status"),
+            "drained"
+        );
+    }
 
     #[test]
     fn signing_key_must_exist_before_identity() {

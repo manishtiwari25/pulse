@@ -23,7 +23,13 @@ pub(crate) const LOGIN_EXPIRY_WARN: i32 = 7;
 pub(crate) const GITHUB_API: &str = "https://api.github.com";
 
 static EXECUTOR_STATUSES: &[&str] = &["active", "drained", "unreachable"];
-static LOGIN_BACKOFF_MINS: [i32; 2] = [15, 360];
+pub(crate) static LOGIN_BACKOFF_MINS: [i32; 2] = [15, 360];
+/// A drained hand that was never active since it was registered: no `executor.drained` event
+/// (owner drain, error drain or login drain) names it since its `created_at`. Its first passing
+/// probe activates it whoever probes, so a hand from `pulse executor add`, the console's Register
+/// tab or a pair whose first probe met a still-booting host needs no human probe; a hand drained
+/// after errors or by the owner still does.
+pub(crate) const NEVER_ACTIVE_SQL: &str = "(status = 'drained' AND NOT EXISTS (SELECT 1 FROM events e WHERE e.action = 'executor.drained' AND e.subject = executors.name AND e.at >= executors.created_at))";
 static SSH_OPTIONS: &[&str] = &[
     "-o",
     "BatchMode=yes",
@@ -2093,7 +2099,9 @@ pub(crate) fn probe_executor(
         let args: [&dyn ToSql; 4] = [&now, &note, &actor, &name];
         exec1(
             &conn,
-            "UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0, backoff_minutes = 0, next_probe_at = '', status = CASE WHEN status = 'drained' AND ? = 'human' THEN 'active' WHEN status = 'unreachable' THEN 'active' ELSE status END WHERE name = ?",
+            &format!(
+                "UPDATE executors SET last_probe_at = ?, probe_note = ?, errors = 0, backoff_minutes = 0, next_probe_at = '', status = CASE WHEN status = 'drained' AND (? = 'human' OR {NEVER_ACTIVE_SQL}) THEN 'active' WHEN status = 'unreachable' THEN 'active' ELSE status END WHERE name = ?"
+            ),
             &args,
         );
     } else {
