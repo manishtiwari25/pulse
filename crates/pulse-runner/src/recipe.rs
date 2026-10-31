@@ -1164,9 +1164,15 @@ pub(crate) fn tool_hint(tool: &str) -> String {
         );
     }
     if tool.starts_with("setup:") {
+        let commands = setup_unfit_commands(tool);
         return format!(
-            "the setup command {} fails the same way on every run; fix the machine (see the run log), then `pulse executor probe <executor>`",
-            setup_unfit_commands(tool)
+            "{} fails the same way on every run; fix the machine (see the run log), then `pulse executor probe <executor>`",
+            if commands.starts_with('`') {
+                format!("the setup command {commands}")
+            } else {
+                // The recipe's own setup: no lockfile rule names a command.
+                format!("the setup command of {}", setup_unfit_files(tool))
+            }
         );
     }
     if let Some(h) = TOOL_HINTS.get(tool) {
@@ -2221,6 +2227,17 @@ mod tests {
         ));
         assert_eq!(recipe_block(&svc.unwrap(), false), RECIPE_UNFIT_SERVICES);
         assert!(tool_hint(RECIPE_UNFIT_HANDS).contains("recipe=1"));
+        // A setup mark names the lockfile's command, or the recipe's own
+        // setup file when no rule has one - never "the setup command the
+        // setup command".
+        assert!(
+            tool_hint("setup:package-lock.json")
+                .starts_with("the setup command `npm ci --no-audit --no-fund` fails")
+        );
+        assert!(
+            tool_hint("setup:docs/context/environment.md")
+                .starts_with("the setup command of docs/context/environment.md fails")
+        );
     }
 
     #[test]

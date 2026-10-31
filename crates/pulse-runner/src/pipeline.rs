@@ -215,6 +215,9 @@ pub(crate) enum Ask<'a> {
     Log { repo: &'a str, id: i64 },
     /// The branch's head commit: `gh api repos/REPO/branches/BRANCH`.
     Head { repo: &'a str, branch: &'a str },
+    /// Run the failed jobs again: `gh run rerun ID --failed`. Asked once per
+    /// commit, when GitHub no longer has the failed log.
+    Rerun { repo: &'a str, id: i64 },
 }
 
 pub(crate) type Gh<'a> = dyn Fn(&Ask) -> Result<String, String> + 'a;
@@ -259,6 +262,15 @@ fn gh_ask(ask: &Ask) -> Result<String, String> {
             "gh".into(),
             "api".into(),
             format!("repos/{repo}/branches/{branch}"),
+        ],
+        Ask::Rerun { repo, id } => vec![
+            "gh".into(),
+            "run".into(),
+            "rerun".into(),
+            id.to_string(),
+            "--repo".into(),
+            repo.to_string(),
+            "--failed".into(),
         ],
     };
     let what = format!("gh {} {}", argv[1], argv[2]);
@@ -408,7 +420,7 @@ pub(crate) fn pending(
     let since = plus_hours(now, -WINDOW_HOURS);
     let judged: BTreeSet<String> = must_rows(
         q,
-        "SELECT json_extract(detail, '$.sha') AS sha FROM events WHERE subject = ? AND action LIKE 'pipeline.%' AND at >= ?",
+        "SELECT json_extract(detail, '$.sha') AS sha FROM events WHERE subject = ? AND action LIKE 'pipeline.%' AND action != 'pipeline.rerun' AND at >= ?",
         &[&slug, &since],
     )
     .iter()
@@ -479,17 +491,29 @@ pub(crate) struct Watch {
     /// did not hold its commit yet; cleared when the head moves or is judged.
     #[serde(default)]
     pub head_waiting_since: String,
+    /// sha -> when its failed jobs were rerun because GitHub no longer had
+    /// their log; a commit is rerun once.
+    #[serde(default)]
+    pub reruns: BTreeMap<String, String>,
 }
 
 /// Whether a `pipeline.*` verdict was recorded for the commit, ever: a head
-/// may be older than the window pushes are looked for in.
+/// may be older than the window pushes are looked for in. A rerun is not a
+/// verdict: the commit is judged when the rerun finishes.
 pub(crate) fn judged_sha(q: &(impl crate::util::Querier + ?Sized), slug: &str, sha: &str) -> bool {
     !must_rows(
         q,
-        "SELECT seq FROM events WHERE subject = ? AND action LIKE 'pipeline.%' AND json_extract(detail, '$.sha') = ? LIMIT 1",
+        "SELECT seq FROM events WHERE subject = ? AND action LIKE 'pipeline.%' AND action != 'pipeline.rerun' AND json_extract(detail, '$.sha') = ? LIMIT 1",
         &[&slug, &sha],
     )
     .is_empty()
+}
+
+/// Whether the error reading a run's log says GitHub no longer has it
+/// (retention passed or deleted), so only a rerun produces one.
+fn log_gone(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    low.contains("http 410") || low.contains("http 404")
 }
 
 /// Whether the project checkout's default branch holds the commit, so a
@@ -714,15 +738,22 @@ pub(crate) fn tend_pipeline_with(
             superseded: push.sha != newest,
             held: "",
             gh,
+            watch: &mut watch,
             lines: &mut lines,
         };
         match verdict {
             Verdict::Wait => continue,
             Verdict::Passed => pass.passed(push, &runs),
-            Verdict::Failed => pass.failed(push, &runs),
+            Verdict::Failed => {
+                if !pass.failed(push, &runs) {
+                    // Rerun for a fresh log: no verdict yet, polled on.
+                    continue;
+                }
+            }
             Verdict::None { cancelled } => pass.none(push, &runs, cancelled),
             Verdict::GaveUp => pass.gave_up(push, &runs, wait_hours),
         }
+        watch.reruns.remove(&push.sha);
         judged.push(push.sha.clone());
     }
     watch
@@ -745,6 +776,9 @@ pub(crate) fn tend_pipeline_with(
         &mut watch,
         &mut lines,
     );
+    watch
+        .reruns
+        .retain(|sha, _| sha == &watch.head_sha || pushes.iter().any(|p| &p.sha == sha));
     save_watch(&conn, slug, &watch);
     lines
 }
@@ -908,15 +942,23 @@ fn tend_head(h: &HeadPass<'_>, watch: &mut Watch, lines: &mut Vec<String>) {
         superseded: false,
         held: &held,
         gh: h.gh,
-        lines,
+        watch: &mut *watch,
+        lines: &mut *lines,
     };
     match verdict {
         Verdict::Wait => {}
         Verdict::Passed => pass.passed(&push, &runs),
-        Verdict::Failed => pass.failed(&push, &runs),
+        Verdict::Failed => {
+            if !pass.failed(&push, &runs) {
+                // Rerun for a fresh log: judged again when it finishes.
+                watch.head_next = plus_minutes(h.now, POLL_MINUTES);
+                return;
+            }
+        }
         Verdict::None { cancelled } => pass.none(&push, &runs, cancelled),
         Verdict::GaveUp => pass.gave_up(&push, &runs, h.wait_hours),
     }
+    watch.reruns.remove(&push.sha);
     watch.head_waiting_since.clear();
 }
 
@@ -981,6 +1023,8 @@ struct Pass<'a> {
     /// Empty when a job may be planned.
     held: &'a str,
     gh: &'a Gh<'a>,
+    /// The project's watch: which commits had their failed jobs rerun.
+    watch: &'a mut Watch,
     lines: &'a mut Vec<String>,
 }
 
@@ -1011,21 +1055,36 @@ impl Pass<'_> {
 
     fn passed(&mut self, push: &Push, runs: &[Run]) {
         let counted: Vec<&Run> = runs.iter().filter(|r| r.counts()).collect();
+        let mut d = self.detail(push, runs);
+        let rerun = self
+            .watch
+            .reruns
+            .get(&push.sha)
+            .cloned()
+            .unwrap_or_default();
+        if !rerun.is_empty() {
+            d.insert("rerun".into(), json!(rerun));
+        }
         event_at(
             self.conn,
             self.now,
             self.actor,
             "pipeline.passed",
             self.slug,
-            Value::Object(self.detail(push, runs)),
+            Value::Object(d),
         );
         self.lines.push(format!(
-            "pipeline {}: green at {} on {}{} ({})",
+            "pipeline {}: green at {} on {}{} ({}){}",
             self.slug,
             push.short(),
             push.target(),
             pushed_by(push),
-            names(&counted)
+            names(&counted),
+            if rerun.is_empty() {
+                String::new()
+            } else {
+                format!(" - the failed jobs passed when rerun at {rerun}; nothing to fix")
+            }
         ));
     }
 
@@ -1115,7 +1174,11 @@ impl Pass<'_> {
         ));
     }
 
-    fn failed(&mut self, push: &Push, runs: &[Run]) {
+    /// Records the red verdict, tells the owner and plans the fix job.
+    /// Returns false when no verdict was recorded yet: GitHub no longer had
+    /// the failed log, so the failed jobs were rerun for a fresh one and the
+    /// commit is judged again when they finish.
+    fn failed(&mut self, push: &Push, runs: &[Run]) -> bool {
         let failed: Vec<&Run> = runs.iter().filter(|r| r.counts() && r.failed()).collect();
         let passed: Vec<&Run> = runs.iter().filter(|r| r.counts() && r.passed()).collect();
         let running: Vec<&Run> = runs.iter().filter(|r| r.counts() && !r.done()).collect();
@@ -1140,9 +1203,74 @@ impl Pass<'_> {
                 push.target(),
                 names(&failed)
             ));
-            return;
+            return true;
         }
-        let details = self.failure_details(&failed);
+        let (details, unread) = self.failure_details(&failed);
+        let rerun_at = self
+            .watch
+            .reruns
+            .get(&push.sha)
+            .cloned()
+            .unwrap_or_default();
+        let mut log_notes = String::new();
+        if !unread.is_empty()
+            && unread.len() == details.len()
+            && unread.iter().all(|(_, e)| log_gone(e))
+            && rerun_at.is_empty()
+            && self.fix
+        {
+            let mut reran = Vec::new();
+            let mut refused = String::new();
+            for (run, _) in &unread {
+                match (self.gh)(&Ask::Rerun {
+                    repo: self.repo,
+                    id: run.id,
+                }) {
+                    Ok(_) => reran.push(run.id),
+                    Err(e) => refused = trunc(e.trim(), 300),
+                }
+            }
+            if !reran.is_empty() {
+                self.watch
+                    .reruns
+                    .insert(push.sha.clone(), self.now.to_string());
+                d.insert("rerun".into(), json!(reran));
+                d.insert("reason".into(), json!(trunc(&unread[0].1, 300)));
+                event_at(
+                    self.conn,
+                    self.now,
+                    self.actor,
+                    "pipeline.rerun",
+                    self.slug,
+                    Value::Object(d),
+                );
+                self.lines.push(format!(
+                    "pipeline {}: red at {} on {}{} ({} failed), but GitHub no longer has the failed log ({}); the failed jobs were rerun for a fresh one and are judged again when they finish",
+                    self.slug,
+                    push.short(),
+                    push.target(),
+                    pushed_by(push),
+                    names(&failed),
+                    trunc(&unread[0].1, 160)
+                ));
+                return false;
+            }
+            log_notes.push_str(&format!(
+                "\nThe failed jobs could not be rerun for a fresh log: {refused}\n"
+            ));
+        }
+        for (run, err) in &unread {
+            log_notes.push_str(&format!(
+                "\n{} - the failed steps' log could not be read: {}\n",
+                run.workflow,
+                trunc(err, 300)
+            ));
+        }
+        if !rerun_at.is_empty() {
+            log_notes.push_str(&format!(
+                "\nGitHub no longer had the log of the first attempt, so pulse reran the failed jobs at {rerun_at}; the runs and lines above are the rerun's.\n"
+            ));
+        }
         let landed = self.what_landed(push);
         let verify_cmd = self.project.str("verify_cmd");
         let mut job_id = String::new();
@@ -1193,6 +1321,7 @@ impl Pass<'_> {
                     &passed,
                     &running,
                     &details,
+                    &log_notes,
                     &landed,
                     &verify_cmd,
                 );
@@ -1297,6 +1426,7 @@ impl Pass<'_> {
                 ));
             }
         }
+        body.push_str(&log_notes);
         if !landed.is_empty() {
             body.push_str(&format!("\nWhat the push carried:\n\n{landed}\n"));
         }
@@ -1347,11 +1477,18 @@ impl Pass<'_> {
                 format!(" ({post})")
             }
         ));
+        true
     }
 
-    /// The failed jobs' steps and the log tail of the first failed runs.
-    fn failure_details(&self, failed: &[&Run]) -> Vec<(Run, Vec<String>, String)> {
-        failed
+    /// The failed jobs' steps and the log tail of the first failed runs,
+    /// and beside them the runs whose log could not be read, with the error.
+    #[allow(clippy::type_complexity)]
+    fn failure_details(
+        &self,
+        failed: &[&Run],
+    ) -> (Vec<(Run, Vec<String>, String)>, Vec<(Run, String)>) {
+        let mut unread = Vec::new();
+        let details = failed
             .iter()
             .take(DETAIL_RUNS)
             .map(|r| {
@@ -1361,15 +1498,20 @@ impl Pass<'_> {
                 })
                 .map(|b| failed_steps(&b))
                 .unwrap_or_default();
-                let log = (self.gh)(&Ask::Log {
+                let log = match (self.gh)(&Ask::Log {
                     repo: self.repo,
                     id: r.id,
-                })
-                .map(|l| log_tail(&l))
-                .unwrap_or_default();
+                }) {
+                    Ok(l) => log_tail(&l),
+                    Err(e) => {
+                        unread.push(((*r).clone(), e));
+                        String::new()
+                    }
+                };
                 ((*r).clone(), steps, log)
             })
-            .collect()
+            .collect();
+        (details, unread)
     }
 
     /// The commits the push carried, from the project checkout.
@@ -1410,6 +1552,7 @@ fn fix_brief(
     passed: &[&Run],
     running: &[&Run],
     details: &[(Run, Vec<String>, String)],
+    log_notes: &str,
     landed: &str,
     verify_cmd: &str,
 ) -> String {
@@ -1463,6 +1606,7 @@ fn fix_brief(
             ));
         }
     }
+    b.push_str(log_notes);
     if !landed.is_empty() {
         b.push_str(&format!("\nWhat the push carried:\n\n{landed}\n"));
     }
@@ -1577,10 +1721,28 @@ mod tests {
         runs: Vec<Value>,
         head: Value,
     ) -> (Box<Gh<'static>>, std::rc::Rc<RefCell<Vec<String>>>) {
+        gh_answering(runs, head, Ok(LOG.to_string()), Ok(String::new()))
+    }
+
+    const LOG: &str = "test (ubuntu)\tnpm test\tFAIL src/a.test.ts\ntest (ubuntu)\tnpm test\t  expected 2, got 3\ntest (ubuntu)\tnpm test\tToken: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n";
+    const LOG_GONE: &str =
+        "gh run view --log-failed exited 1: failed to get run log: HTTP 410: Server Error";
+
+    /// `gh_with`, with what `run view --log-failed` and `run rerun` answer.
+    fn gh_answering(
+        runs: Vec<Value>,
+        head: Value,
+        log_answer: Result<String, String>,
+        rerun_answer: Result<String, String>,
+    ) -> (Box<Gh<'static>>, std::rc::Rc<RefCell<Vec<String>>>) {
         let log = std::rc::Rc::new(RefCell::new(Vec::new()));
         let seen = log.clone();
         let f = move |ask: &Ask| -> Result<String, String> {
             match ask {
+                Ask::Rerun { repo, id } => {
+                    seen.borrow_mut().push(format!("rerun {repo} {id}"));
+                    rerun_answer.clone()
+                }
                 Ask::Head { repo, branch } => {
                     seen.borrow_mut().push(format!("head {repo} {branch}"));
                     if head.is_null() {
@@ -1606,7 +1768,7 @@ mod tests {
                 }
                 Ask::Log { repo, id } => {
                     seen.borrow_mut().push(format!("log {repo} {id}"));
-                    Ok("test (ubuntu)\tnpm test\tFAIL src/a.test.ts\ntest (ubuntu)\tnpm test\t  expected 2, got 3\ntest (ubuntu)\tnpm test\tToken: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n".into())
+                    log_answer.clone()
                 }
             }
         };
@@ -2154,6 +2316,254 @@ mod tests {
         );
         assert_eq!(events(&s, "pipeline.failed").len(), 1);
         assert!(load_watch(&s, "proj").head_waiting_since.is_empty());
+    }
+
+    #[test]
+    fn a_red_run_whose_log_github_lost_is_rerun_once_and_judged_when_it_finishes() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_answering(
+            vec![run("CI", "push", "completed", "failure", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err(LOG_GONE.to_string()),
+            Ok(String::new()),
+        );
+        let lines = tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("pipeline proj: red at 8f377827f6c6 on origin/main (CI failed), but GitHub no longer has the failed log (gh run view --log-failed exited 1: failed to get run log: HTTP 410: Server Error); the failed jobs were rerun"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            &*log.borrow(),
+            &[
+                format!("runs o/r {SHA}"),
+                "jobs o/r 11".to_string(),
+                "log o/r 11".to_string(),
+                "rerun o/r 11".to_string(),
+                "head o/r main".to_string()
+            ]
+        );
+        // No verdict, no job, no finding: the rerun decides.
+        assert!(jobs(&s).is_empty());
+        assert!(posts(&s).is_empty());
+        assert!(events(&s, "pipeline.failed").is_empty());
+        let rerun = events(&s, "pipeline.rerun");
+        assert_eq!(rerun.len(), 1);
+        assert_eq!(rerun[0]["sha"], SHA);
+        assert_eq!(rerun[0]["rerun"], json!([11]));
+        assert_eq!(rerun[0]["reason"], LOG_GONE);
+        assert_eq!(load_watch(&s, "proj").reruns.get(SHA).unwrap(), NOW);
+        assert!(!judged_sha(&s.conn().unwrap(), "proj", SHA));
+        assert_eq!(pending(&s.conn().unwrap(), "proj", NOW).len(), 1);
+
+        // The rerun is going: wait, and do not rerun again.
+        let (gh2, log2) = gh_answering(
+            vec![run("CI", "push", "in_progress", "", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err(LOG_GONE.to_string()),
+            Ok(String::new()),
+        );
+        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T10:03:30Z", "daemon", &*gh2);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(
+            !log2.borrow().iter().any(|l| l.starts_with("rerun")),
+            "{log2:?}"
+        );
+
+        // Red again, with a log this time: the fix job carries it and says
+        // whose log it is. One rerun per commit.
+        let (gh3, log3) = self::gh(vec![run("CI", "push", "completed", "failure", 11)]);
+        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T10:07:00Z", "daemon", &*gh3);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            !log3.borrow().iter().any(|l| l.starts_with("rerun")),
+            "{log3:?}"
+        );
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{js:?}");
+        let brief = js[0].str("brief");
+        assert!(brief.contains("expected 2, got 3"), "{brief}");
+        assert!(
+            brief.contains(&format!(
+                "GitHub no longer had the log of the first attempt, so pulse reran the failed jobs at {NOW}; the runs and lines above are the rerun's."
+            )),
+            "{brief}"
+        );
+        assert!(!brief.contains("could not be read"), "{brief}");
+        let failed = events(&s, "pipeline.failed");
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["job"], js[0].str("id"));
+        assert_eq!(events(&s, "pipeline.rerun").len(), 1);
+        assert_eq!(posts(&s).len(), 1);
+        // The push is judged: the rerun mark goes with it.
+        assert!(load_watch(&s, "proj").reruns.is_empty());
+    }
+
+    #[test]
+    fn a_rerun_that_passes_is_green_with_nothing_to_fix() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, _) = gh_answering(
+            vec![run("CI", "push", "completed", "failure", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err(LOG_GONE.to_string()),
+            Ok(String::new()),
+        );
+        assert_eq!(tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh).len(), 1);
+        let (gh2, _) = self::gh(vec![run("CI", "push", "completed", "success", 11)]);
+        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T10:04:00Z", "daemon", &*gh2);
+        assert_eq!(
+            lines,
+            vec![format!(
+                "pipeline proj: green at 8f377827f6c6 on origin/main (CI) - the failed jobs passed when rerun at {NOW}; nothing to fix"
+            )]
+        );
+        let passed = events(&s, "pipeline.passed");
+        assert_eq!(passed.len(), 1);
+        assert_eq!(passed[0]["rerun"], NOW);
+        assert!(jobs(&s).is_empty());
+        assert!(posts(&s).is_empty());
+    }
+
+    #[test]
+    fn a_refused_rerun_or_a_readable_error_plans_the_fix_job_with_the_log_named() {
+        // GitHub refuses the rerun: the job is planned now, the brief says
+        // what the log answered and that the rerun was refused.
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_answering(
+            vec![run("CI", "push", "completed", "failure", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err(LOG_GONE.to_string()),
+            Err("gh run rerun exited 1: HTTP 403: Resource not accessible by integration".into()),
+        );
+        let lines = tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            log.borrow().contains(&"rerun o/r 11".to_string()),
+            "{log:?}"
+        );
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{js:?}");
+        let brief = js[0].str("brief");
+        assert!(
+            brief.contains("The failed jobs could not be rerun for a fresh log: gh run rerun exited 1: HTTP 403"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(&format!(
+                "CI - the failed steps' log could not be read: {LOG_GONE}"
+            )),
+            "{brief}"
+        );
+        assert!(
+            posts(&s)[0].str("body").contains("could not be read"),
+            "{}",
+            posts(&s)[0].str("body")
+        );
+        assert!(events(&s, "pipeline.rerun").is_empty());
+        assert_eq!(events(&s, "pipeline.failed").len(), 1);
+        assert!(load_watch(&s, "proj").reruns.is_empty());
+
+        // A log that could not be read for another reason is not rerun for:
+        // the error goes in the brief and the job is planned.
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_answering(
+            vec![run("CI", "push", "completed", "failure", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err("gh run view --log-failed did not answer within 60s".into()),
+            Ok(String::new()),
+        );
+        tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh);
+        assert!(
+            !log.borrow().iter().any(|l| l.starts_with("rerun")),
+            "{log:?}"
+        );
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{js:?}");
+        assert!(
+            js[0].str("brief").contains(
+                "CI - the failed steps' log could not be read: gh run view --log-failed did not answer within 60s"
+            ),
+            "{}",
+            js[0].str("brief")
+        );
+
+        // In watch mode nothing is rerun: the owner is told what the log answered.
+        let s = setup();
+        set_setting(&s, WATCH, "watch");
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_answering(
+            vec![run("CI", "push", "completed", "failure", 11)],
+            head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z"),
+            Err(LOG_GONE.to_string()),
+            Ok(String::new()),
+        );
+        tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh);
+        assert!(
+            !log.borrow().iter().any(|l| l.starts_with("rerun")),
+            "{log:?}"
+        );
+        assert!(jobs(&s).is_empty());
+        assert!(
+            posts(&s)[0].str("body").contains(&format!(
+                "CI - the failed steps' log could not be read: {LOG_GONE}"
+            )),
+            "{}",
+            posts(&s)[0].str("body")
+        );
+    }
+
+    #[test]
+    fn a_red_head_whose_log_is_gone_is_rerun_and_judged_on_the_next_poll() {
+        let s = setup();
+        let head = checkout_head(&s);
+        let (gh, log) = gh_answering(
+            vec![run("Android Release", "push", "completed", "failure", 91)],
+            head_json(&head, "dependabot[bot]", "2026-10-31T09:20:00Z"),
+            Err(LOG_GONE.to_string()),
+            Ok(String::new()),
+        );
+        let lines = tend_pipeline_with(&s, "proj", NOW, "daemon", &*gh);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("(pushed by dependabot[bot]) (Android Release failed), but GitHub no longer has the failed log"),
+            "{lines:?}"
+        );
+        assert_eq!(log.borrow().last().unwrap(), "rerun o/r 91");
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.reruns.get(&head).unwrap(), NOW);
+        assert_eq!(
+            w.head_next, "2026-10-31T10:03:00Z",
+            "polled like a push, not in {HEAD_POLL_MINUTES} minutes"
+        );
+        assert!(jobs(&s).is_empty());
+        assert!(events(&s, "pipeline.failed").is_empty());
+
+        let (gh2, log2) = gh_with(
+            vec![run("Android Release", "push", "completed", "failure", 91)],
+            head_json(&head, "dependabot[bot]", "2026-10-31T09:20:00Z"),
+        );
+        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T10:03:00Z", "daemon", &*gh2);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            !log2.borrow().iter().any(|l| l.starts_with("rerun")),
+            "{log2:?}"
+        );
+        let js = jobs(&s);
+        assert_eq!(js.len(), 1, "{js:?}");
+        assert!(
+            js[0]
+                .str("brief")
+                .contains("pulse reran the failed jobs at"),
+            "{}",
+            js[0].str("brief")
+        );
+        assert_eq!(events(&s, "pipeline.failed").len(), 1);
+        // Judged: the rerun mark goes with the verdict.
+        assert!(load_watch(&s, "proj").reruns.is_empty());
     }
 
     #[test]

@@ -354,7 +354,8 @@ pub fn delivery_for(s: &pulse_store::Store, task_id: &str) -> Result<TaskDeliver
 /// The daemon's verdict on the pipeline of the pushed commit `sha`
 /// (`pipeline.*` events, the runner's pipeline watcher) and the fix job it
 /// planned, as (verdict, job). `watching` while no verdict is in and the
-/// watcher is on; empty when it is off.
+/// watcher is on - a rerun of the failed jobs for a fresh log is not a
+/// verdict yet; empty when it is off.
 fn pipeline_verdict(
     s: &pulse_store::Store,
     conn: &rusqlite::Connection,
@@ -365,7 +366,7 @@ fn pipeline_verdict(
         return Ok((String::new(), String::new()));
     }
     let mut stmt = conn.prepare(
-        "SELECT action, detail FROM events WHERE subject = ?1 AND action LIKE 'pipeline.%' AND action != 'pipeline.unreadable' AND json_extract(detail, '$.sha') = ?2 ORDER BY seq DESC LIMIT 1",
+        "SELECT action, detail FROM events WHERE subject = ?1 AND action LIKE 'pipeline.%' AND action NOT IN ('pipeline.unreadable', 'pipeline.rerun') AND json_extract(detail, '$.sha') = ?2 ORDER BY seq DESC LIMIT 1",
     )?;
     let verdict = stmt
         .query_row(rusqlite::params![project, sha], |r| {

@@ -475,13 +475,16 @@ pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> R
             match verdict {
                 "failed" => line.push_str(&format!(" - {} failed", failed.join(", "))),
                 "passed" => line.push_str(&format!(" - {}", runs.join(", "))),
+                "rerun" => line.push_str(
+                    " - GitHub no longer had the failed log; the failed jobs were rerun for a fresh one",
+                ),
                 _ => {}
             }
             if let Some(by) = v["by"].as_str() {
                 line.push_str(&format!(" (pushed by {by})"));
             }
             if let Some(job) = v["job"].as_str() {
-                line.push_str(&format!("; fix job {job}"));
+                line.push_str(&format!("; fix job {job}{}", fix_job_state(&conn, job)));
             }
             if v["superseded"].as_bool() == Some(true) {
                 line.push_str(" (superseded)");
@@ -494,6 +497,28 @@ pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> R
 
 fn pushes_text(n: usize) -> String {
     format!("{n} {}", crate::util::plural(n as i32, "push"))
+}
+
+/// ` (done)`, ` (queued)`, ` (failed: blocked: ...)`: how the fix job a
+/// verdict names ended, so a red pipeline nobody fixed is not read as
+/// looked after. Empty when the job is not in the store.
+fn fix_job_state(conn: &rusqlite::Connection, id: &str) -> String {
+    let rows = crate::util::must_rows(conn, "SELECT status, result FROM jobs WHERE id = ?", &[&id]);
+    let Some(job) = rows.first() else {
+        return String::new();
+    };
+    let status = job.str("status");
+    let result = crate::util::trunc(
+        &job.str("result")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        160,
+    );
+    match status.as_str() {
+        "failed" | "cancelled" if !result.is_empty() => format!(" ({status}: {result})"),
+        _ => format!(" ({status})"),
+    }
 }
 
 /// `origin/main` or `pull request #7`, from a watch or verdict record.

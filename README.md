@@ -4071,7 +4071,19 @@ nothing. With `pipeline.watch` at `fix`, the default, a red pipeline also
 queues one fix job for the project (`task`, tier 1, priority 60, source
 `pipeline:<slug>`) whose brief carries the same evidence and the project's
 verify command: a worker takes it like any other job, and its landing is
-pushed and watched in turn. One such job is open per project at a time -
+pushed and watched in turn. A worker has no `gh` of its own, so the brief is
+what it knows of the failure; when GitHub no longer has the failed log
+(HTTP 410 or 404: the repository's log retention passed, or someone deleted
+it) the daemon does not plan a job around a brief with no error in it. It
+reruns the failed jobs instead (`gh run rerun <id> --failed`, once per
+commit, recorded as `pipeline.rerun` with the reason), polls the rerun like
+a push of its own and judges that: green means there was nothing to fix and
+the verdict says so; red again gives a fresh log, and the brief carries it
+with a line that says the first attempt's log had expired. A rerun GitHub
+refuses, and a log the daemon could not read for another reason (a timeout,
+say), plan the job at once with the error named in the brief and the
+finding, so a worker knows the log is missing rather than empty. One such
+job is open per project at a time -
 a second red push while it waits refreshes the queued job's brief instead
 of queueing a second one - and after three fix jobs in 24 hours the daemon
 plans no more and says so in the finding, so a pipeline that is red for a
@@ -4101,7 +4113,10 @@ all the same.
 
 `pulse pipeline` shows, per project, the branch head last read (who pushed
 it, and since when a red one waits for the checkout), the pushes still being
-watched and the last verdicts (`(pushed by X)` on a head's), with `--project
+watched and the last verdicts (`(pushed by X)` on a head's; a red one names
+its fix job and how that job stands - `(queued)`, `(leased)`, `(done)`, or
+`(failed: blocked: ...)` with the worker's first words, so a red pipeline
+whose fix came back blocked reads as yours, not as looked after), with `--project
 <slug>` for one, `--all` for every active project, `--limit N` for more
 history and `--json` for the records (`head` holds the sha, `by`, `read`,
 `next` and `waiting_since`); `pulse pipeline --check` reads GitHub now
