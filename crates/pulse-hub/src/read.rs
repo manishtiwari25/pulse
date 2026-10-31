@@ -662,6 +662,7 @@ impl Handler {
             let goal = crate::lifecycle::goal_summary(store, &p.slug);
             row.insert("goal_source".into(), json!(goal.source));
             row.insert("goal_preview".into(), json!(goal.preview));
+            row.insert("needs".into(), json!(p.needs));
         }
         row
     }

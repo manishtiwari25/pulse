@@ -113,7 +113,7 @@ const GROUPS: Group[] = [
     keys: keysOf(DAEMON_CLUSTERS),
     match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene.") || n.startsWith("machine."),
     clusters: DAEMON_CLUSTERS,
-    primary: ["daemon.self_update", "daemon.keep_awake", "daemon.recover", "daemon.sweep", "daemon.min_free_mb"],
+    primary: ["daemon.self_update", "daemon.keep_awake", "daemon.recover", "daemon.sweep", "daemon.min_free_mb", "machine.labels", "machine.reserve"],
     strip: () => <RunningStrip />,
   },
   {

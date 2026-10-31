@@ -18,8 +18,11 @@ pub struct Project {
     pub added_by: String,
     pub last_seen: String,
     pub notes: String,
+    /// What kind of machine its jobs must run on (`needs.rs`), stored
+    /// comma-separated: `macos,xcode`. Empty: any machine.
+    pub needs: String,
 }
-const PROJECT_COLS: &str = "slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen, notes";
+const PROJECT_COLS: &str = "slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen, notes, needs";
 fn scan_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     let brain: i64 = r.get(4)?;
     Ok(Project {
@@ -35,6 +38,7 @@ fn scan_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         added_by: r.get(9)?,
         last_seen: r.get(10)?,
         notes: r.get(11)?,
+        needs: r.get(12)?,
     })
 }
 

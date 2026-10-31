@@ -370,7 +370,7 @@ impl Handler {
             r,
             &format!(
                 "SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,\
-             lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch,\
+             lease_agent AS agent,lease_until,generation,attempts,finished_at,result,branch,needs,\
              (SELECT hs.id FROM harness_sessions hs WHERE hs.job_id = jobs.id ORDER BY hs.started_at DESC LIMIT 1) AS harness_session \
              FROM jobs WHERE project=? AND ({} OR (? != '' AND id=?)) ORDER BY created_at,id",
                 pulse_store::task_source_clause("source")

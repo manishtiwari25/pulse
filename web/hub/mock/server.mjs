@@ -91,7 +91,7 @@ async function init() {
   const gate = (p) => ({ fixtures_enabled: p.fixtures_enabled ?? 0, baseline: p.baseline === true, evolve_level: p.evolve_level ?? "", evolve_next: p.evolve_next ?? "none", constitution: p.constitution ?? null, evaluators: p.evaluators ?? null, baseline_job: p.baseline_job ?? null, baseline_failed_at: p.baseline_failed_at ?? "" });
   state.projects = org.projects
     .filter((p) => p.kind !== "commons")
-    .map((p) => ({ slug: p.slug, name: p.slug, path: p.path, remote: p.remote || "", brain: !!p.brain, status: "active", verify_cmd: "", default_branch: "main", added_at: "2026-09-01T09:00:00Z", added_by: "human", last_seen: "2026-09-07T09:00:00Z", present: p.present !== false, ...gate(p) }));
+    .map((p) => ({ slug: p.slug, name: p.slug, path: p.path, remote: p.remote || "", brain: !!p.brain, status: "active", verify_cmd: "", default_branch: "main", added_at: "2026-09-01T09:00:00Z", added_by: "human", last_seen: "2026-09-07T09:00:00Z", present: p.present !== false, needs: p.needs || "", ...gate(p) }));
   state.projects.push({ slug: "old-site", name: "old-site", path: "/home/owner/src/old-site", remote: "", brain: false, status: "inactive", verify_cmd: "", default_branch: "main", added_at: "2026-08-20T09:00:00Z", added_by: "human", last_seen: "2026-09-03T09:00:00Z", present: true, ...gate({}) });
   // A registered checkout that vanished from disk: its path is not in TREE, so the
   // picker shows "missing on disk" and Restore is refused like the real hub does.
@@ -177,6 +177,38 @@ function checkoutRefusal(path) {
 function recordView(r) {
   const o = state.records[r.id];
   return o ? { ...r, status: o.status, current_rev: r.current_rev + o.revisions.length, updated_at: now() } : r;
+}
+
+// What kind of machine a project's jobs need (ADR: machines), the way the
+// hub's pulse-store needs module reads it: lowercase words, a few spellings
+// folded, "" for any machine. Fit is computed against the executors fixture
+// the compute page shows, so both views agree.
+const OS_WORDS = ["macos", "linux", "windows"];
+const ARCH_WORDS = ["arm64", "amd64"];
+const NEED_ALIASES = { darwin: "macos", osx: "macos", mac: "macos", "mac-os": "macos", macosx: "macos", x86_64: "amd64", "x86-64": "amd64", x64: "amd64", intel: "amd64", aarch64: "arm64", arm: "arm64", "apple-silicon": "arm64", win: "windows", win32: "windows", win64: "windows", "gnu-linux": "linux", ubuntu: "linux", debian: "linux" };
+function needWords(text) {
+  const words = [];
+  for (const raw of String(text || "").split(/[\s,]+/)) {
+    const w = raw.trim().toLowerCase();
+    if (!w) continue;
+    if (!/^[a-z0-9][a-z0-9._:-]*$/.test(w)) return { error: "`" + raw.trim() + "` is not a need: use lowercase words such as macos, linux, arm64, xcode or docker" };
+    const canon = NEED_ALIASES[w] || w;
+    if (!words.includes(canon)) words.push(canon);
+  }
+  words.sort();
+  return { words };
+}
+async function projectNeeds(p) {
+  const rows = (await fixture("executors")) || [];
+  const words = needWords(p.needs || "").words || [];
+  const machines = rows.map((e) => {
+    const caps = new Set(String(e.offers || "").replace(/\s*\(reserved\)$/, "").split(/\s+/).filter(Boolean));
+    const missing = words.filter((w) => !caps.has(w));
+    return { name: e.name, kind: e.kind, status: e.status, offers: e.offers || "", fits: missing.length === 0, missing };
+  });
+  const known = new Set([...OS_WORDS, ...ARCH_WORDS]);
+  for (const e of rows) for (const w of String(e.offers || "").replace(/\s*\(reserved\)$/, "").split(/\s+/)) if (w) known.add(w);
+  return { slug: p.slug, needs: words.join(","), words, fits: machines.filter((m) => m.fits && m.status === "active").map((m) => m.name), machines, known: [...known].sort() };
 }
 
 function projectGoal(p) {
@@ -407,6 +439,7 @@ async function handle(req, res) {
     if (req.method !== method) return fail(res, 405, "Method not allowed", "Use " + method + " for this route.", "Open Failed job repair.");
   }
   if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal" && !["GET", "POST"].includes(req.method)) return fail(res, 405, "Method not allowed", "Goals support GET and POST.", "Use the project goal editor.");
+  if (segs[0] === "projects" && segs.length === 3 && segs[2] === "needs" && !["GET", "POST"].includes(req.method)) return fail(res, 405, "Method not allowed", "Needs support GET and POST.", "Use the project's Runs on panel.");
 
   // SSE
   if (segs[0] === "events" && segs[1] === "stream") {
@@ -691,6 +724,17 @@ async function handle(req, res) {
           }, 6000);
         }, 3000);
       return send(res, 200, { request: r });
+    }
+    if (segs[0] === "projects" && segs.length === 3 && segs[2] === "needs") {
+      const p = state.projects.find((x) => x.slug === segs[1]);
+      if (!p) return fail(res, 404, "No project " + segs[1], "only a registered project has needs", "pulse projects");
+      const parsed = needWords(typeof body.needs === "string" ? body.needs : "");
+      if (parsed.error) return fail(res, 400, parsed.error, "a need is a word a machine can offer", "pulse machines");
+      const was = p.needs || "";
+      p.needs = parsed.words.join(",");
+      for (const t of state.tasks) if (t.project === p.slug && t.job_id && t.status === "open") t.needs = p.needs;
+      emit("human", "project.needs", p.slug, { project: p.slug, needs: p.needs, was });
+      return send(res, 200, { ...(await projectNeeds(p)), was });
     }
     if (segs[0] === "projects" && segs.length === 3 && segs[2] === "goal") {
       if (!body || typeof body !== "object" || Array.isArray(body)) return fail(res, 400, "Invalid goal change", "Send a JSON object.", "Use the project goal editor.");
@@ -993,7 +1037,7 @@ async function handle(req, res) {
       }
       return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
     }
-    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status");
+    return fail(res, 405, "no such write", req.method + " " + url.pathname + " is not an owner action", "the writes are tasks, tasks/<id>/amend|cancel, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status");
   }
 
   // GET - live state first, fixtures second
@@ -1009,6 +1053,11 @@ async function handle(req, res) {
     const p = state.projects.find((x) => x.slug === segs[1]);
     if (!p) return fail(res, 404, "No project " + segs[1], "Goals belong to registered projects.", "Choose a project.");
     return send(res, 200, projectGoal(p));
+  }
+  if (segs[0] === "projects" && segs.length === 3 && segs[2] === "needs") {
+    const p = state.projects.find((x) => x.slug === segs[1]);
+    if (!p) return fail(res, 404, "No project " + segs[1], "only a registered project has needs", "pulse projects");
+    return send(res, 200, await projectNeeds(p));
   }
   if (segs[0] === "harness" && segs.length === 1) {
     const failed = new Set(["step_limit", "time_limit", "format_error", "provider_error", "not_logged_in", "cancelled", "lost"]);
@@ -1160,7 +1209,7 @@ async function handle(req, res) {
     const projects = org.projects
       .filter((p) => p.kind === "commons" || state.projects.some((x) => x.slug === p.slug && x.status === "active"))
       .map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !GATE_FIELDS.includes(k))))
-      .map((p) => (p.kind === "commons" ? p : { ...p, owner_questions: state.questions.filter((x) => x.slug === p.slug).length, ...goalFields(state.projects.find((x) => x.slug === p.slug)) }));
+      .map((p) => (p.kind === "commons" ? p : { ...p, owner_questions: state.questions.filter((x) => x.slug === p.slug).length, needs: state.projects.find((x) => x.slug === p.slug)?.needs || "", ...goalFields(state.projects.find((x) => x.slug === p.slug)) }));
     return send(res, 200, { ...org, projects, proposals: state.proposals, questions: state.questions, totals: { ...org.totals, owner_questions: state.questions.length }, generated_at: now() });
   }
   if (segs[0] === "events" && segs.length === 1) {
