@@ -31,7 +31,7 @@ const isActive = (t: Task) => t.status !== "done" && t.status !== "cancelled";
 // "active" (shown as "Open", the word the summary line and the project
 // Work tab use) is the default and means no `status` param, so links from the
 // palette and other pages (hrefs.tasks) keep working unchanged. What waits
-// for the owner ("review", read "Needs you") comes right after it.
+// for the owner ("review", read "Asked you") comes right after it.
 const STATUS_FILTERS: [string, string][] = [
   ["active", "Open"],
   ["review", statusWord("review")],

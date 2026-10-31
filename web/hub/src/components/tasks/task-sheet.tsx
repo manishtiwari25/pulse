@@ -63,11 +63,16 @@ export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
   { key: "updated", label: "Updated", nowrap: true, sort: (t) => t.updated_at, render: (t) => <When d={t.updated_at} /> },
 ];
 
-export function TaskSheet({ id, slug, onClose }: { id: string | null; slug?: string; onClose: () => void }) {
+// `tab` names the tab to open on: the Chat page opens a task on its
+// conversation with the lead, the board on its activity (a review puts the
+// conversation first either way).
+export type TaskTab = "activity" | "brief" | "chat";
+
+export function TaskSheet({ id, slug, tab, onClose }: { id: string | null; slug?: string; tab?: TaskTab; onClose: () => void }) {
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="flex flex-col gap-0 overflow-hidden rounded-l-xl p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
-        {id ? <TaskBody id={id} slug={slug} /> : null}
+        {id ? <TaskBody id={id} slug={slug} first={tab} /> : null}
       </SheetContent>
     </Sheet>
   );
@@ -135,7 +140,7 @@ function JobRow({ j, t, working }: { j: TaskJob; t: Task; working?: ReturnType<t
   );
 }
 
-function TaskBody({ id, slug }: { id: string; slug?: string }) {
+function TaskBody({ id, slug, first }: { id: string; slug?: string; first?: TaskTab }) {
   const { data, error, loading, reload } = useApi<TaskDetail>("tasks/" + enc(id), { refresh: 10000 });
   const [amend, setAmend] = useState(false);
   const [cancel, setCancel] = useState(false);
@@ -170,7 +175,7 @@ function TaskBody({ id, slug }: { id: string; slug?: string }) {
   const by = (a: string) => (a === "human" || a === "owner" ? "you" : a);
   // The feed is the first thing to see while agents work; a review puts the
   // conversation first, where the question waits.
-  const current = tab ?? (review ? "chat" : "activity");
+  const current = tab ?? (review ? "chat" : (first ?? "activity"));
   // On a phone the conversation and the feed need the room (see the header).
   const chat = current === "chat" || current === "activity";
   return (

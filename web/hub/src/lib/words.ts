@@ -9,7 +9,7 @@ const STATUS: Record<string, string> = {
   open: "Open",
   planned: "Planned",
   in_progress: "In progress",
-  review: "Needs you",
+  review: "Asked you",
   done: "Done",
   cancelled: "Cancelled",
   // suggested work

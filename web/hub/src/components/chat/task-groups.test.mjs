@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessionWords, taskFinished, taskMood, taskTitleOf } from "./task-groups.ts";
+import { entryGroup, entryId, listEntries, sessionWords, taskFinished, taskGroup, taskMood, taskTitleOf } from "./task-groups.ts";
 
 const session = (over = {}) => ({ job: "job-1", kind: "feature", title: "Build it", job_status: "queued", agent: "", session: "", status: "", started_at: "", updated_at: "", ended_at: "", cost: 0, steps: 0, ...over });
 const task = (over = {}) => ({ id: "TASK-001", project: "one", title: "Ship it", status: "in_progress", priority: 10, lead: "one-lead", created_by: "owner", created_at: "", updated_at: "", last_at: "", messages: 0, last_message_at: "", last_author: "", needs_you: false, sessions: [], ...over });
 
 test("a task's word puts the owner's turn first, then what the agents do", () => {
-  assert.equal(taskMood(task({ status: "review", needs_you: true })).word, "Needs your reply");
+  assert.equal(taskMood(task({ status: "review", needs_you: true })).word, "Asked you");
   assert.equal(taskMood(task({ status: "review", needs_you: true })).tone, "wait");
   assert.equal(taskMood(task({ sessions: [session({ job_status: "leased", status: "running" })] })).word, "Working");
   assert.equal(taskMood(task({ sessions: [session({ job_status: "leased" })] })).word, "Working");
@@ -21,8 +21,32 @@ test("a task's word puts the owner's turn first, then what the agents do", () =>
   assert.equal(taskFinished(task({ status: "review" })), false);
 });
 
+test("a task takes the same section a conversation would", () => {
+  assert.equal(taskGroup(task({ status: "review", needs_you: true })), "working");
+  assert.equal(taskGroup(task({ sessions: [session({ job_status: "leased" })] })), "working");
+  assert.equal(taskGroup(task({ status: "planned" })), "open");
+  assert.equal(taskGroup(task({ status: "open", lead: "" })), "open");
+  assert.equal(taskGroup(task({ status: "in_progress", sessions: [session({ job_status: "done", status: "ended" })] })), "open");
+  assert.equal(taskGroup(task({ status: "done" })), "finished");
+  assert.equal(taskGroup(task({ status: "cancelled" })), "finished");
+});
+
+test("the one list orders tasks and conversations by what moved last, a sub-conversation counting for its parent", () => {
+  const rows = [
+    { id: "c-old", status: "idle", parent: "", created_at: "2026-10-18T08:00:00Z", last_at: "2026-10-18T08:30:00Z" },
+    { id: "c-kid", status: "running", parent: "c-old", created_at: "2026-10-18T09:00:00Z", last_at: "2026-10-18T12:30:00Z" },
+    { id: "c-new", status: "closed", parent: "", created_at: "2026-10-18T11:00:00Z", last_at: "2026-10-18T11:00:00Z" },
+  ];
+  const tasks = [task({ id: "TASK-001", status: "planned", created_at: "2026-10-18T10:00:00Z", last_at: "2026-10-18T12:00:00Z" })];
+  const entries = listEntries(rows, tasks);
+  assert.deepEqual(entries.map(entryId), ["c-old", "TASK-001", "c-new"]);
+  assert.deepEqual(entries.map(entryGroup), ["working", "open", "finished"]);
+  assert.equal(entries[0].kind, "conversation");
+  assert.deepEqual(entries[0].family.children.map((c) => c.id), ["c-kid"]);
+});
+
 test("a step's word follows the job until its session runs", () => {
-  assert.deepEqual(sessionWords(session()), { word: "Waiting for a free agent", tone: "neutral" });
+  assert.deepEqual(sessionWords(session()), { word: "Waiting", tone: "neutral" });
   assert.deepEqual(sessionWords(session({ job_status: "leased" })), { word: "Starting", tone: "run" });
   assert.deepEqual(sessionWords(session({ job_status: "leased", status: "running" })), { word: "Working", tone: "run" });
   assert.deepEqual(sessionWords(session({ job_status: "blocked" })), { word: "Blocked", tone: "wait" });
