@@ -43,7 +43,7 @@ pub fn register() {
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
         cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
-        cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
+        cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
@@ -388,6 +388,10 @@ pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> R
                 "number": p.number, "url": p.url,
                 "last_read": watch.polled.get(&p.sha).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
+            "head": if watch.head_sha.is_empty() { serde_json::Value::Null } else { json!({
+                "sha": watch.head_sha, "by": watch.head_by, "read": watch.head_read, "next": watch.head_next,
+                "waiting_since": watch.head_waiting_since,
+            }) },
             "verdicts": verdicts,
             "lines": lines,
         }));
@@ -412,11 +416,29 @@ pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> R
             }
             continue;
         }
-        if watching.is_empty() && verdicts.is_empty() {
+        if watching.is_empty() && verdicts.is_empty() && p["head"].is_null() {
             if bool_flag(fs, "all") || !c.project.is_empty() {
-                c.printf(format_args!("{slug}: no push of pulse's to watch\n"))?;
+                c.printf(format_args!(
+                    "{slug}: no push of pulse's to watch; the branch head is read on the daemon's next pass\n"
+                ))?;
             }
             continue;
+        }
+        if let Some(head) = p["head"].as_object() {
+            let sha = head["sha"].as_str().unwrap_or_default();
+            let by = head["by"].as_str().unwrap_or_default();
+            let waiting = head["waiting_since"].as_str().unwrap_or_default();
+            c.printf(format_args!(
+                "{slug}: branch head {} (pushed by {}), read {}{}\n",
+                crate::recipe::short(sha, 12),
+                if by.is_empty() { "pulse" } else { by },
+                head["read"].as_str().unwrap_or_default(),
+                if waiting.is_empty() {
+                    String::new()
+                } else {
+                    format!("; red, waiting since {waiting} for the checkout to hold it")
+                }
+            ))?;
         }
         for w in &watching {
             let at = w["at"].as_str().unwrap_or_default();
@@ -454,6 +476,9 @@ pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> R
                 "failed" => line.push_str(&format!(" - {} failed", failed.join(", "))),
                 "passed" => line.push_str(&format!(" - {}", runs.join(", "))),
                 _ => {}
+            }
+            if let Some(by) = v["by"].as_str() {
+                line.push_str(&format!(" (pushed by {by})"));
             }
             if let Some(job) = v["job"].as_str() {
                 line.push_str(&format!("; fix job {job}"));

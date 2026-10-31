@@ -3897,9 +3897,31 @@ the same push url and credential. When someone else moved the remote, it
 does not stop at "not fast-forward": it brings the remote commits in as a
 landing of their own (`pulse/sync/<remote>/<branch>`, merged in the throwaway
 worktree and judged by the project's check like any other landing, `land.synced`
-in the log), then pushes the result. A merge conflict or a red check holds the
-push with the reason and `git pull --no-rebase` spelled out, and is not tried
-again until either side moves. One remote move is not merged at all: an
+in the log), then pushes the result. A plain merge that conflicts is not left
+to you: the upstream is the published truth, so the daemon re-applies the
+local branch's own commits - the ones the upstream lacks, merges left out, up
+to 200 - onto the upstream tip in a throwaway worktree, one by one, the way a
+pull with a hand resolution would end. A commit the upstream already holds in
+another form becomes empty and is dropped; one that clashes only on files the
+upstream removed loses those files and keeps the rest; one that conflicts for
+real is set aside. The tree that results becomes one merge commit of both
+sides (`Sync <remote>/<branch> into <default>` in the log, listing where each
+commit went), landed and checked like any sync, so the push is a fast-forward
+and the local history still holds every set-aside commit through the merge's
+first parent. Each set-aside commit gets its patch under
+`~/.pulse/patches/<slug>/resync-<sha>.patch` and one job (`task`, tier 1,
+source `resync:<slug>:<sha>`) that re-applies what it meant on the synced
+branch, or finishes without a change when the upstream holds it another way;
+a `finding` for you names them, and `land.synced` carries `resync` with each
+commit's fate. A merged result that fails the project's check lands all the
+same when the upstream tip fails it the same way (`land.upstream-red` in the
+log): the forge is red already, holding would protect nothing, and only a
+checkout that holds the forge's head lets the pipeline watcher's fix start
+from it. A merge that fails the check for more than the upstream's own
+reasons, or a re-apply that cannot be made (the branch too far ahead, a
+worktree that cannot be added), holds the push with the reason and `git pull
+--no-rebase` spelled out, and is not tried again until either side moves.
+One remote move is not merged at all: an
 upstream rewritten by hand into a squash of history the daemon had already
 pushed - a root commit, or any commit the local branch shares no ancestor
 with, whose tree equals a commit on the local branch's first-parent line. The
@@ -3954,7 +3976,9 @@ single-project maintenance-pass behaviour.
 
 A push is not the end of a landing: the repository's GitHub Actions
 workflows run on it, and a red one is a regression PULSE made. So the daemon
-watches what its own pushes set off. Each tick, for every active project
+watches what its own pushes set off - and, since a project's default branch
+is PULSE's to keep green whoever pushed to it, the head of that branch on
+the forge as well. Each tick, for every active project
 whose remote is on GitHub, it takes the pushes of the last 48 hours that
 still have no verdict - `land.pushed` to the default branch and `land.pr`
 to `pulse/landed` alike - and asks GitHub for the runs on that commit (`gh
@@ -3994,13 +4018,31 @@ the jobs; `off` reads nothing. A repository whose runs the login cannot read
 (HTTP 403 or 404) is reported once, as `pipeline.unreadable`; the daemon
 keeps trying and says nothing more until the runs can be read again.
 
-`pulse pipeline` shows, per project, the pushes still being watched and the
-last verdicts, with `--project <slug>` for one, `--all` for every active
-project, `--limit N` for more history and `--json` for the records;
-`pulse pipeline --check` reads GitHub now instead of waiting for the daemon's
-pass. A task's sheet in the hub shows the verdict on its own push on the
-delivery line (`delivery.pipeline` and `delivery.pipeline_job` in `GET
-/api/v1/tasks/<id>`).
+The branch head is read every ten minutes (`gh api
+repos/<owner>/<repo>/branches/<branch>`, the branch the local default branch
+tracks, `origin/<default>` when it tracks none). A head that is one of
+PULSE's own pushes, or a commit already judged, is left alone; any other
+is judged by the same rules, its verdict recorded with `head: true` and the
+login or name that pushed it (`by`), and a red one is a finding and a fix job
+like a push's - with one difference: a worker starts from the project
+checkout, so the job is planned only once the checkout's default branch
+holds the commit. Until then the daemon looks again every three minutes and
+the log says it is waiting; when the checkout still lacks the commit two
+hours after the daemon first saw the failure, the finding goes out without a
+job and names what holds the checkout behind (the push's hold note, when
+there is one), so you can see what to clear. The brief of a head's fix job
+says that the push was not PULSE's and that PULSE looks after the branch
+all the same.
+
+`pulse pipeline` shows, per project, the branch head last read (who pushed
+it, and since when a red one waits for the checkout), the pushes still being
+watched and the last verdicts (`(pushed by X)` on a head's), with `--project
+<slug>` for one, `--all` for every active project, `--limit N` for more
+history and `--json` for the records (`head` holds the sha, `by`, `read`,
+`next` and `waiting_since`); `pulse pipeline --check` reads GitHub now
+instead of waiting for the daemon's pass. A task's sheet in the hub shows
+the verdict on its own push on the delivery line (`delivery.pipeline` and
+`delivery.pipeline_job` in `GET /api/v1/tasks/<id>`).
 
 ### Dependencies: security alerts and the release-age rule
 
