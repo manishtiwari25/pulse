@@ -172,6 +172,8 @@ const LABELS: Record<string, string> = {
   "harness.format_retries": "Free retries for replies in the wrong format",
   "chat.resume_after_provider_error_secs":
     "Resume a conversation once after a network provider error (seconds, 0 = off)",
+  "chat.sub_depth": "Levels deep a conversation may start sub-conversations (0 = no limit)",
+  "chat.sub_open": "Sub-conversations one conversation may have open at a time (0 = no limit)",
   "harness.max_cost": "Model credits per run",
   "harness.keep_observations": "Recent command results kept in full",
   "harness.context_window": "Context window the model takes (tokens, 0 = from the model list)",

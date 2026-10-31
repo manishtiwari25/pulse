@@ -50,13 +50,15 @@ pub const HARNESS_RUNNER: &str = "pulse";
 
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.resume_after_provider_error_secs"=>"90","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "jobs_per_day"=>("count-or-none",Some(0),[],None,"worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
         "chat.resume_after_provider_error_secs"=>("count",Some(0),[],None,"seconds a conversation waits before it resumes a turn a transport provider_error (a failed send or a broken reply body) cut short, once per failure; 0 leaves the conversation idle for the next message as before"),
+        "chat.sub_depth"=>("count",Some(0),[],None,"levels deep a conversation may start sub-conversations: at 2 a conversation's sub-conversations may start their own and those may not; 0 sets no depth limit (each level is a session of its own, and a brief that tells its sub-conversation to delegate the same way runs on until a step or cost budget stops it)"),
+        "chat.sub_open"=>("count",Some(0),[],None,"sub-conversations one conversation may have open (not finished or archived) at a time, each a live session sharing the parent's worktree; 0 sets no limit"),
         "inbox.retire_days"=>("count",Some(0),[],None,"days before daemon maintenance may close an open owner question only when it is an older duplicate of a newer open question or its job was cancelled; 0 turns the owner-inbox retire sweep off"),
         "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
         "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
