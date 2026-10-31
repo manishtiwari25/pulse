@@ -96,7 +96,7 @@ export function MachinesPanel({ slug, canDecide = true }: { slug: string; canDec
                   {m.fits ? <CheckIcon className="size-3.5 shrink-0 text-ok" aria-label="fits" /> : <XIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="does not fit" />}
                   <span className={cn("font-medium", !m.fits && "text-muted-foreground")}>{m.name}</span>
                   {m.status !== "active" ? <ToneBadge tone="neutral">{m.status}</ToneBadge> : null}
-                  <span className="min-w-0 text-muted-foreground anywhere">{m.fits ? (offersOf(m) ? "offers " + offersOf(m) : "offers nothing named") : "lacks " + m.missing.join(", ")}</span>
+                  <span className="min-w-0 text-muted-foreground anywhere">{m.missing.length ? "lacks " + m.missing.join(", ") : offersOf(m) ? "offers " + offersOf(m) : "offers nothing named"}</span>
                 </li>
               ))}
             </ul>

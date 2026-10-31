@@ -260,6 +260,11 @@ impl Handler {
         let mut fits = Vec::new();
         for row in self.executors(r)? {
             let text = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            // A removed machine is a record on the Machines page, not a
+            // place work can go: it neither fits nor offers.
+            if text("status") == "removed" {
+                continue;
+            }
             let caps = pulse_runner::executor::machine_caps(
                 &text("kind"),
                 &text("os"),
@@ -861,6 +866,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO executors (name, address, projects, status, created_at, os, labels) VALUES ('vm-gone', 'gone@10.0.0.9', '*', 'removed', ?, 'linux', 'tpu')",
+            [s.now()],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO jobs (id, project, kind, title, status, created_at) VALUES ('job-q', ?, 'task', 'Queued', 'queued', ?)",
             rusqlite::params![slug, s.now()],
         )
@@ -896,6 +906,24 @@ mod tests {
         for w in ["macos", "linux", "arm64", "gpu"] {
             assert!(known.contains(&w.to_string()), "{known:?}");
         }
+        assert!(
+            !known.contains(&"tpu".to_string()),
+            "a removed machine offers nothing: {known:?}"
+        );
+        let listed: Vec<String> = result["machines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            listed.contains(&"vm-two".to_string()),
+            "held machines are listed: {listed:?}"
+        );
+        assert!(
+            !listed.contains(&"vm-gone".to_string()),
+            "removed ones are not: {listed:?}"
+        );
         let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         assert_eq!(status, 200);
         assert_eq!(result["projects"][0]["needs"], "");
