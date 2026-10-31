@@ -899,9 +899,13 @@ pub(crate) fn setup_failure_summary(executor: &str, rc: i32, detail: &str) -> St
 // A full disk, like a dead network, says nothing about whether the machine can
 // set the project up; marking the executor unfit for a day would hide the
 // project's queue behind "no queued job" long after the space came back.
+// Each mark names the fault itself: `could not resolve host` is curl's, git's
+// and ssh's DNS line, where a bare `could not resolve` also matched npm's
+// `npm warn could not resolve dependency:` peer note that any npm install
+// prints above a real failure.
 static SETUP_TRANSIENT_MARKS: &[&str] = &[
     "failed to fetch",
-    "could not resolve",
+    "could not resolve host",
     "could not connect",
     "connection timed out",
     "tls handshake",
@@ -1894,6 +1898,19 @@ pub(crate) fn recipe_pulse_cli(r: &Recipe) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_failures_are_transient_and_npm_peer_notes_are_not() {
+        assert!(setup_failure_transient(
+            "curl: (6) Could not resolve host: registry.npmjs.org"
+        ));
+        assert!(setup_failure_transient(
+            "ssh: Could not resolve hostname github.com: nodename nor servname provided"
+        ));
+        assert!(!setup_failure_transient(
+            "npm warn could not resolve dependency: npm warn peerOptional @types/node@\"*\" from ws@8.18.0 npm error code EUSAGE"
+        ));
+    }
 
     #[test]
     fn missing_tool_classifies_broken_bundle_shim() {
