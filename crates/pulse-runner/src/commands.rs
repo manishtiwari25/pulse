@@ -43,6 +43,7 @@ pub fn register() {
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
         cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
+        cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
@@ -319,6 +320,161 @@ pub(crate) fn cmd_work(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         return Err(pulse_cli::errorf(1, "", "", "").into());
     }
     Ok(())
+}
+
+fn pipeline_flags(fs: &mut FlagSet) {
+    fs.bool_var("all", false, "every active project");
+    fs.bool_var(
+        "check",
+        false,
+        "read the runs from GitHub now, record the verdicts and plan what pipeline.watch allows",
+    );
+    fs.int_var("limit", 5, "verdicts shown per project");
+}
+
+/// `pulse pipeline`: the pushes the daemon still watches and the verdicts
+/// it recorded, per project; `--check` runs the watcher's pass by hand.
+pub(crate) fn cmd_pipeline(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("pipeline: store is needed"))?;
+    let now = now_of(c);
+    let actor = actor_of(c);
+    let targets = if bool_flag(fs, "all") || (c.project.is_empty() && !c.json) {
+        crate::board::project_rows(&s.conn()?, false)
+    } else {
+        vec![crate::env::current_project(&s, c.project.clone())?]
+    };
+    let limit = int_flag(fs, "limit").max(1) as i64;
+    let mode = s.setting(crate::pipeline::WATCH, "fix");
+    let conn = s.conn()?;
+    let mut out = Vec::new();
+    for proj in &targets {
+        let slug = proj.str("slug");
+        let lines = if bool_flag(fs, "check") {
+            crate::pipeline::tend_pipeline(&s, &slug, &now, &actor)
+        } else {
+            Vec::new()
+        };
+        let watch = crate::pipeline::load_watch(&s, &slug);
+        let pending = crate::pipeline::pending(&conn, &slug, &now);
+        let verdicts: Vec<serde_json::Value> = crate::pipeline::verdicts(&conn, &slug, limit)
+            .iter()
+            .map(|r| {
+                let mut d: serde_json::Value =
+                    serde_json::from_str(&r.str("detail")).unwrap_or(json!({}));
+                if let Some(o) = d.as_object_mut() {
+                    o.insert(
+                        "verdict".into(),
+                        json!(r.str("action").trim_start_matches("pipeline.")),
+                    );
+                    o.insert("at".into(), json!(r.str("at")));
+                }
+                d
+            })
+            .collect();
+        out.push(json!({
+            "project": slug,
+            "repo": crate::security::github_repo(&proj.str("remote")),
+            "watching": pending.iter().map(|p| json!({
+                "sha": p.sha, "at": p.at, "remote": p.remote, "branch": p.branch,
+                "number": p.number, "url": p.url,
+                "last_read": watch.polled.get(&p.sha).cloned().unwrap_or_default(),
+            })).collect::<Vec<_>>(),
+            "verdicts": verdicts,
+            "lines": lines,
+        }));
+    }
+    if c.json {
+        return pulse_cli::write_json(&mut c.out, &json!({"watch": mode, "projects": out}));
+    }
+    c.printf(format_args!("pipeline.watch is {mode}\n"))?;
+    for p in &out {
+        let slug = p["project"].as_str().unwrap_or_default();
+        for l in p["lines"].as_array().into_iter().flatten() {
+            c.printf(format_args!("{}\n", l.as_str().unwrap_or_default()))?;
+        }
+        let watching = p["watching"].as_array().cloned().unwrap_or_default();
+        let verdicts = p["verdicts"].as_array().cloned().unwrap_or_default();
+        if p["repo"].is_null() {
+            if !watching.is_empty() {
+                c.printf(format_args!(
+                    "{slug}: {} pushed, not on GitHub, so not watched\n",
+                    pushes_text(watching.len())
+                ))?;
+            }
+            continue;
+        }
+        if watching.is_empty() && verdicts.is_empty() {
+            if bool_flag(fs, "all") || !c.project.is_empty() {
+                c.printf(format_args!("{slug}: no push of pulse's to watch\n"))?;
+            }
+            continue;
+        }
+        for w in &watching {
+            let at = w["at"].as_str().unwrap_or_default();
+            let age = crate::util::format_minutes(
+                (chrono::DateTime::parse_from_rfc3339(&now)
+                    .ok()
+                    .zip(chrono::DateTime::parse_from_rfc3339(at).ok()))
+                .map(|(n, a)| (n - a).num_minutes())
+                .unwrap_or(0),
+            );
+            c.printf(format_args!(
+                "{slug}: watching {} on {} (pushed {age} ago)\n",
+                crate::recipe::short(w["sha"].as_str().unwrap_or_default(), 12),
+                target_text(w)
+            ))?;
+        }
+        for v in &verdicts {
+            let failed: Vec<&str> = v["failed"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let runs: Vec<&str> = v["runs"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x["workflow"].as_str()).collect())
+                .unwrap_or_default();
+            let verdict = v["verdict"].as_str().unwrap_or_default();
+            let mut line = format!(
+                "{slug}: {} at {} on {} {}",
+                verdict,
+                crate::recipe::short(v["sha"].as_str().unwrap_or_default(), 12),
+                target_text(v),
+                v["at"].as_str().unwrap_or_default()
+            );
+            match verdict {
+                "failed" => line.push_str(&format!(" - {} failed", failed.join(", "))),
+                "passed" => line.push_str(&format!(" - {}", runs.join(", "))),
+                _ => {}
+            }
+            if let Some(job) = v["job"].as_str() {
+                line.push_str(&format!("; fix job {job}"));
+            }
+            if v["superseded"].as_bool() == Some(true) {
+                line.push_str(" (superseded)");
+            }
+            c.printf(format_args!("{line}\n"))?;
+        }
+    }
+    Ok(())
+}
+
+fn pushes_text(n: usize) -> String {
+    format!("{n} {}", crate::util::plural(n as i32, "push"))
+}
+
+/// `origin/main` or `pull request #7`, from a watch or verdict record.
+fn target_text(v: &serde_json::Value) -> String {
+    match v["number"].as_i64() {
+        Some(n) if n > 0 => format!("pull request #{n}"),
+        _ => format!(
+            "{}/{}",
+            v["remote"].as_str().unwrap_or_default(),
+            v["branch"].as_str().unwrap_or_default()
+        ),
+    }
 }
 
 pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
@@ -1497,7 +1653,7 @@ mod tests {
         register();
         for n in [
             "plan", "work", "land", "daemon", "service", "bulk", "executor", "env", "hands",
-            "pair", "onboard",
+            "pair", "onboard", "pipeline",
         ] {
             let cmd = pulse_cli::lookup(n).unwrap_or_else(|| panic!("{n} not registered"));
             assert_eq!(cmd.group, "runner", "{n} group");

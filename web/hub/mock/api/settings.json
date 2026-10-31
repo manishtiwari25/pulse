@@ -118,6 +118,34 @@
     },
     {
       "choices": [
+        "off",
+        "watch",
+        "fix"
+      ],
+      "default": "fix",
+      "description": "what the daemon does with the GitHub Actions runs a push of its own set off: fix tells the owner on the project's runner/pipeline thread and queues one fix job for a red pipeline; watch tells the owner only; off reads nothing",
+      "kind": "choice",
+      "min": null,
+      "name": "pipeline.watch",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "fix"
+    },
+    {
+      "choices": null,
+      "default": "3",
+      "description": "hours the daemon waits for a run that is still going before it records gave-up and leaves the push to the owner",
+      "kind": "count",
+      "min": 1,
+      "name": "pipeline.wait_hours",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": [
         "copilot",
         "openai",
         "anthropic",

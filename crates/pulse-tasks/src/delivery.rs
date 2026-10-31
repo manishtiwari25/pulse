@@ -49,6 +49,14 @@ pub struct TaskDelivery {
     /// The hold note, or why no delivery is coming on its own.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// What GitHub Actions made of the pushed commit, when the daemon watches
+    /// pipelines (`pipeline.watch`): `watching` until the runs finish, then
+    /// `passed`, `failed`, `none` (nothing ran) or `gave-up`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pipeline: String,
+    /// The fix job the daemon planned for a red pipeline.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pipeline_job: String,
     /// Whether asking for a pull request does something now.
     pub can_ask: bool,
 }
@@ -312,6 +320,8 @@ pub fn delivery_for(s: &pulse_store::Store, task_id: &str) -> Result<TaskDeliver
                 d.number = field(&e.detail, "number").parse().unwrap_or(0);
                 d.note = String::new();
                 d.can_ask = false;
+                (d.pipeline, d.pipeline_job) =
+                    pipeline_verdict(s, &conn, &task.project, &field(&e.detail, "to"))?;
                 return Ok(d);
             }
             a if PR_ANSWERS.contains(&a) => {
@@ -339,6 +349,37 @@ pub fn delivery_for(s: &pulse_store::Store, task_id: &str) -> Result<TaskDeliver
     }
     d.can_ask = true;
     Ok(d)
+}
+
+/// The daemon's verdict on the pipeline of the pushed commit `sha`
+/// (`pipeline.*` events, the runner's pipeline watcher) and the fix job it
+/// planned, as (verdict, job). `watching` while no verdict is in and the
+/// watcher is on; empty when it is off.
+fn pipeline_verdict(
+    s: &pulse_store::Store,
+    conn: &rusqlite::Connection,
+    project: &str,
+    sha: &str,
+) -> Result<(String, String)> {
+    if sha.is_empty() {
+        return Ok((String::new(), String::new()));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT action, detail FROM events WHERE subject = ?1 AND action LIKE 'pipeline.%' AND action != 'pipeline.unreadable' AND json_extract(detail, '$.sha') = ?2 ORDER BY seq DESC LIMIT 1",
+    )?;
+    let verdict = stmt
+        .query_row(rusqlite::params![project, sha], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .ok();
+    Ok(match verdict {
+        Some((action, detail)) => (
+            action.trim_start_matches("pipeline.").to_string(),
+            field(&detail, "job"),
+        ),
+        None if s.setting("pipeline.watch", "fix") != "off" => ("watching".into(), String::new()),
+        None => (String::new(), String::new()),
+    })
 }
 
 /// The owner asks for the project's landed work as a pull request. The

@@ -58,6 +58,7 @@ pub mod multipass;
 pub mod onboard;
 pub mod pair;
 pub mod pair_inspect;
+pub mod pipeline;
 pub mod plan;
 pub(crate) mod precondition;
 pub mod preflight;
