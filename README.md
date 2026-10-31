@@ -3122,7 +3122,11 @@ Harness, or `pulse settings set`) choose among the models the provider lists
 for the signed-in account; empty means the provider's default chat model. The console shows
 each model's vendor, tool-call support, premium multiplier and context window.
 Beside each sits its reasoning effort (`worker_reasoning`, `light_reasoning`,
-`measure_reasoning`), `harness.reasoning` while empty.
+`measure_reasoning`), `harness.reasoning` while empty. A model that does not
+take the chosen effort gets the nearest one it offers instead of failing the
+run - a model that offers `low`, `high` and `max` runs an `xhigh` setting as
+`high` - and the run's log says so; the choice is kept for that model while
+the harness runs.
 
 **Only harness.** The built-in harness is the only way PULSE runs workers,
 leads and measurements; nothing besides the `pulse` binary is installed on a
